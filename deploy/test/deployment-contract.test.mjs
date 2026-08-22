@@ -311,6 +311,10 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
 // verify the local-only override
 test("local Compose binds only loopback and replaces the production connector", () => {
   const compose = renderCompose(["compose.local.yaml"]);
+
+  // require host-reachable local networks
+  assert.notEqual(compose.networks.edge.internal, true);
+  assert.notEqual(compose.networks.data.internal, true);
   const published = [
     ...(compose.services.web.ports ?? []),
     ...(compose.services.postgres.ports ?? []),
