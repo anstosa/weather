@@ -127,6 +127,11 @@ export function parseBackfillArguments(
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
 
+    // guard unchecked indexing
+    if (argument === undefined) {
+      throw new Error("backfill argument parsing failed");
+    }
+
     // retain boolean controls
     if (flagOptions.has(argument)) {
       flags.add(argument);
@@ -262,6 +267,11 @@ export async function executeBackfill(
   // execute each chunk with one retained source session
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
+
+    // guard unchecked indexing
+    if (chunk === undefined) {
+      throw new Error("backfill chunk planning failed");
+    }
 
     // satisfy exact-success resume semantics
     if (
