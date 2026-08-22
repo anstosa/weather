@@ -633,7 +633,16 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     /mkdir -p/u,
   );
   const activationControlGate = startRelease.lastIndexOf("require_control_plane_compatibility");
+  const activationSchemaRead = startRelease.indexOf(
+    'read_optional_release_state "$state_dir/schema-release"',
+  );
+  const activationSchemaGate = startRelease.indexOf(
+    'if [[ -n "$current" && "$current" == "$target" && "$schema_release" != "$target" ]]',
+  );
   const activationCleanupTrap = startRelease.indexOf("trap cleanup_initial_activation EXIT");
+  assert.notEqual(activationSchemaRead, -1);
+  assert.equal(activationSchemaRead < activationSchemaGate, true);
+  assert.equal(activationSchemaGate < activationCleanupTrap, true);
   assert.equal(activationControlGate < activationCleanupTrap, true);
   assert.equal(activationCleanupTrap < startRelease.indexOf('start_postgres "$backup_env"'), true);
   assert.match(update, /imagetools inspect/u);

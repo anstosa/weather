@@ -529,7 +529,7 @@ start_exact_release() (
 # activate one forward release
 start_release() (
   local target=$1
-  local activation_env current current_env backup_env authorization_path
+  local activation_env current current_env backup_env authorization_path schema_release
   local initial_started=false
 
   # clean a partially started first activation
@@ -549,6 +549,18 @@ start_release() (
   validate_release_env "$activation_env" "$target"
   require_control_plane_compatibility "$activation_env"
   current=$(read_optional_release_state "$state_dir/current-release")
+  schema_release=$(read_optional_release_state "$state_dir/schema-release")
+
+  # default legacy state to the active release
+  if [[ -n "$current" && -z "$schema_release" ]]; then
+    schema_release=$current
+  fi
+
+  # reject schema-state regression
+  if [[ -n "$current" && "$current" == "$target" && "$schema_release" != "$target" ]]; then
+    die "cannot reactivate runtime release $target while retained schema release is $schema_release"
+  fi
+
   require_capacity_gate
   require_deployment_secrets
 
@@ -713,6 +725,7 @@ case "$action" in
     fi
 
     if ! mv "$temporary" "$target"; then
+      # remove orphaned authorization
       rm -f "$authorization"
       exit 1
     fi
