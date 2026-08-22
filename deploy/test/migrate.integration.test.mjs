@@ -15,8 +15,14 @@ import {
 const executeFile = promisify(execFile);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const migrationDirectory = join(repoRoot, "packages/database/migrations");
+const runtimeAclPath = join(repoRoot, "deploy/postgres/runtime-acl-v1.sql");
 const siteConfigurationPath = join(repoRoot, "config/sites/ballydidean.json");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
+
+// require PostgreSQL privilege denial
+async function assertPrivilegeDenied(operation) {
+  await assert.rejects(operation, { code: "42501" });
+}
 
 // configure production-equivalent database roles
 async function bootstrapRuntimeRoles(server, directory) {
@@ -95,6 +101,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "weather-migrate-entrypoint-"));
     let server;
     let pool;
+    let ingestPool;
 
     try {
       server = await startPostgres(17, "migrate-entrypoint");
@@ -178,8 +185,53 @@ test(
       assert.deepEqual(firstSnapshot.stations, [
         { id: firstEvent.bootstrap.stationId, slug: "open-meteo-virtual" },
       ]);
+
+      await executeFile(
+        "psql",
+        [
+          "--set=ON_ERROR_STOP=1",
+          "--host",
+          server.host,
+          "--port",
+          String(server.port),
+          "--username",
+          server.user,
+          "--dbname",
+          "weather_test",
+          "--file",
+          runtimeAclPath,
+        ],
+        {
+          env: { ...process.env, PGPASSWORD: server.password },
+          timeout: 30_000,
+        },
+      );
+      ingestPool = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
+      const ingestMigrations = await ingestPool.query(
+        "SELECT name FROM schema_migrations ORDER BY name",
+      );
+      assert.deepEqual(ingestMigrations.rows, [
+        { name: "0001_initial_weather.sql" },
+        { name: "0002_worker_migration_readiness.sql" },
+      ]);
+      await assertPrivilegeDenied(
+        ingestPool.query(
+          "INSERT INTO schema_migrations (name, checksum) VALUES ('forbidden.sql', repeat('0', 64))",
+        ),
+      );
+      await assertPrivilegeDenied(
+        ingestPool.query("UPDATE schema_migrations SET name = name WHERE false"),
+      );
+      await assertPrivilegeDenied(
+        ingestPool.query("DELETE FROM schema_migrations WHERE false"),
+      );
+      await assertPrivilegeDenied(ingestPool.query("TRUNCATE schema_migrations"));
+      await assertPrivilegeDenied(
+        ingestPool.query("CREATE TABLE weather_ingest_acl_probe (id integer)"),
+      );
     } finally {
       // clean disposable resources
+      await ingestPool?.end();
       await pool?.end();
       // stop only a started container
       if (server !== undefined) {
