@@ -97,13 +97,15 @@ drops only a unique compatibility database, applies the candidate's trailing
 migrations, runs the previous API image's `/api/v1/health`, `/api/v1/sites`,
 `/current`, and `/history` reads, and runs one previous worker loop against a
 credential-free deterministic provider stub. The existing release must match
-the installed control plane before these checks. The same previous API and
-worker images must first reject the candidate ledger without the exact
-authorization, so a binary that ignores the authorization contract cannot be
-staged for rollback. Only after every rejection and real previous-image check
-passes, staging publishes a no-replace private authorization bound to that
-previous release and the exact ordered candidate migration ledger. The first
-release records compatibility as not applicable.
+the installed control plane before these checks. When staging adds migration
+history, the same previous API and worker images must first reject the candidate
+ledger without the exact authorization, so a binary that ignores the
+authorization contract cannot be staged for rollback. Code-only upgrades keep
+exact ordinary readiness and do not require a rejection probe. Only after every
+applicable rejection and real previous-image check passes, staging publishes a
+no-replace private authorization bound to that previous release and the exact
+ordered candidate migration ledger. The first release records compatibility as
+not applicable.
 
 Activate requires the pre-provisioned Weather connector token, creates an
 encrypted pre-migration backup, runs forward-only checked migrations, starts

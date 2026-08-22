@@ -612,11 +612,16 @@ test(
       assert.equal((await readFile(`${archive}.sha256`, "utf8")).includes("weather-"), true);
 
       const compatibilityEnv = join(directory, "compatibility.env");
+      const codeOnlyCompatibilityEnv = join(directory, "code-only-compatibility.env");
       const previousCompatibilityEnv = join(directory, "previous-compatibility.env");
       const compatibilityReleases = join(directory, "compatibility-releases");
       const compatibilityAuthorization = join(
         compatibilityReleases,
         "2026.08.22-2.migration-authorization",
+      );
+      const codeOnlyAuthorization = join(
+        compatibilityReleases,
+        "code-only.migration-authorization",
       );
       await mkdir(compatibilityReleases);
       await writeFile(
@@ -626,17 +631,26 @@ test(
           .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${targetServerImage}`),
       );
       await writeFile(
+        codeOnlyCompatibilityEnv,
+        (await readFile(envFile, "utf8"))
+          .replace(/^WEATHER_RELEASE=.*$/mu, "WEATHER_RELEASE=2026.08.22-2")
+          .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${previousServerImage}`),
+      );
+      await writeFile(
         previousCompatibilityEnv,
         (await readFile(envFile, "utf8")).replace(
           /^WEATHER_SERVER_IMAGE=.*$/mu,
           `WEATHER_SERVER_IMAGE=${previousServerImage}`,
         ),
       );
-      await executeFile(
-        "bash",
-        [
-          "-c",
-          `source "$1"
+
+      // run one release compatibility gate
+      const verifyCompatibility = async (candidateEnv, candidateAuthorization) =>
+        await executeFile(
+          "bash",
+          [
+            "-c",
+            `source "$1"
 override=$2
 compatibility_env=$3
 previous_compatibility_env=$4
@@ -654,18 +668,25 @@ compose() {
     --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
 }
 verify_previous_image_compatibility "$compatibility_env" "$previous_compatibility_env" "$authorization"`,
-          "weather-compatibility-test",
-          join(deployRoot, "scripts/update.sh"),
-          override,
-          compatibilityEnv,
-          previousCompatibilityEnv,
-          join(deployRoot, "compose.yaml"),
-          join(deployRoot, "compose.local.yaml"),
-          compatibilityReleases,
-          compatibilityAuthorization,
-        ],
-        { cwd: repoRoot, env: environment, timeout: 300_000 },
+            "weather-compatibility-test",
+            join(deployRoot, "scripts/update.sh"),
+            override,
+            candidateEnv,
+            previousCompatibilityEnv,
+            join(deployRoot, "compose.yaml"),
+            join(deployRoot, "compose.local.yaml"),
+            compatibilityReleases,
+            candidateAuthorization,
+          ],
+          { cwd: repoRoot, env: environment, timeout: 300_000 },
+        );
+
+      await verifyCompatibility(codeOnlyCompatibilityEnv, codeOnlyAuthorization);
+      assert.match(
+        await readFile(codeOnlyAuthorization, "utf8"),
+        /^WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=[a-f0-9]{64}$/mu,
       );
+      await verifyCompatibility(compatibilityEnv, compatibilityAuthorization);
       const authorizationText = await readFile(compatibilityAuthorization, "utf8");
       const authorizationHistorySha256 = authorizationText.match(
         /^WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=([a-f0-9]{64})$/mu,
