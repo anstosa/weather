@@ -722,6 +722,8 @@ test("capacity preflight records every numeric coexistence gate", () => {
   assert.match(preflight, /10 \* 1024 \* 1024 \* 1024/u);
   assert.match(preflight, /4 \* 1024 \* 1024 \* 1024/u);
   assert.match(preflight, /inode_free_percent >= 10/u);
+  assert.match(preflight, /df --output=ipcent/u);
+  assert.doesNotMatch(preflight, /df -Pi --output=ipcent/u);
   assert.match(preflight, /JSON\.stringify/u);
   assert.match(preflight, /while \(\([\s\S]*done\n\nload15=\$\(awk/u);
 });

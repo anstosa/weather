@@ -92,8 +92,8 @@ fi
 
 docker_root=$(docker info --format '{{.DockerRootDir}}')
 docker_free_bytes=$(df -B1 --output=avail "$docker_root" | tail -n 1 | tr -d ' ')
-var_lib_inode_free_percent=$((100 - $(df -Pi --output=ipcent /var/lib | tail -n 1 | tr -dc '0-9')))
-docker_inode_free_percent=$((100 - $(df -Pi --output=ipcent "$docker_root" | tail -n 1 | tr -dc '0-9')))
+var_lib_inode_free_percent=$((100 - $(df --output=ipcent /var/lib | tail -n 1 | tr -dc '0-9')))
+docker_inode_free_percent=$((100 - $(df --output=ipcent "$docker_root" | tail -n 1 | tr -dc '0-9')))
 load_limit=$(awk -v cpus="$cpus" 'BEGIN { printf "%.3f", cpus * 0.50 }')
 
 architecture_pass=false
