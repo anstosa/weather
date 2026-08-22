@@ -24,6 +24,7 @@ EOF
 releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
+control_plane_version=1
 mkdir -p "$releases_dir" "$state_dir"
 
 # locate one validated release environment
@@ -62,13 +63,24 @@ resolve_arm64_image() {
 validate_release_env() {
   local path=$1
   local expected_release=${2:-}
-  local release database_name postgres_dir control_plane
-  local meaningful_lines
+  local release database_name postgres_dir control_plane control_version
+  local meaningful_lines allowed_fields
   require_file "$path"
   [[ ! -L "$path" ]] || die "release environment must not be a symbolic link: $path"
   meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
-  [[ "$meaningful_lines" -eq 8 ]] || die "release environment must contain exactly eight values"
-  grep -qEv '^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_CONTROL_PLANE_SHA256)=' "$path" &&
+  # accept the original version-one release format
+  if [[ "$meaningful_lines" -eq 7 ]]; then
+    allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR)='
+    control_plane=
+    control_version=1
+  elif [[ "$meaningful_lines" -eq 9 ]]; then
+    allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
+    control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
+    control_version=$(env_value "$path" WEATHER_CONTROL_PLANE_VERSION)
+  else
+    die "release environment must use the version-one legacy or current format"
+  fi
+  grep -qEv "$allowed_fields" "$path" &&
     die "release environment contains an unknown or malformed value"
   release=$(env_value "$path" WEATHER_RELEASE)
   validate_release "$release"
@@ -84,19 +96,25 @@ validate_release_env() {
   validate_image_reference "$(env_value "$path" CLOUDFLARED_IMAGE)"
   database_name=$(env_value "$path" WEATHER_DATABASE_NAME)
   postgres_dir=$(env_value "$path" WEATHER_POSTGRES_DIR)
-  control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
   validate_database_name "$database_name"
   require_canonical_descendant "$postgres_dir" /var/lib/weather "PostgreSQL directory"
-  [[ "$control_plane" =~ ^[a-f0-9]{64}$ ]] || die "invalid deployment control-plane digest"
+  [[ -z "$control_plane" || "$control_plane" =~ ^[a-f0-9]{64}$ ]] ||
+    die "invalid deployment control-plane digest"
+  [[ "$control_version" =~ ^[1-9][0-9]*$ ]] || die "invalid deployment control-plane version"
 }
 
 # require the installed deployment contract
 require_control_plane_compatibility() {
   local env_file=$1
-  local expected actual
-  expected=$(env_value "$env_file" WEATHER_CONTROL_PLANE_SHA256)
-  actual=$(control_plane_digest)
-  [[ "$actual" == "$expected" ]] || die "deployment control plane does not match release state"
+  local expected=$control_plane_version
+
+  # preserve the original version-one release format
+  if grep -q '^WEATHER_CONTROL_PLANE_VERSION=' "$env_file"; then
+    expected=$(env_value "$env_file" WEATHER_CONTROL_PLANE_VERSION)
+  fi
+
+  [[ "$expected" == "$control_plane_version" ]] ||
+    die "deployment control-plane version is incompatible with release state"
 }
 
 # write one deterministic release environment
@@ -121,7 +139,8 @@ write_release_env() {
     "CLOUDFLARED_IMAGE=$cloudflared_image" \
     "WEATHER_DATABASE_NAME=$database_name" \
     "WEATHER_POSTGRES_DIR=$postgres_dir" \
-    "WEATHER_CONTROL_PLANE_SHA256=$control_plane" >"$target"
+    "WEATHER_CONTROL_PLANE_SHA256=$control_plane" \
+    "WEATHER_CONTROL_PLANE_VERSION=$control_plane_version" >"$target"
   chmod 600 "$target"
   validate_release_env "$target" "$release"
 }
@@ -459,7 +478,6 @@ case "$action" in
     if [[ -n "$current" ]]; then
       previous_env=$(release_env "$current")
       validate_release_env "$previous_env" "$current"
-      require_control_plane_compatibility "$previous_env"
       require_deployment_secrets
       verify_previous_image_compatibility "$temporary" "$previous_env"
     else

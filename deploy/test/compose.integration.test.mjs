@@ -300,11 +300,12 @@ verify_previous_image_compatibility "$3" "$3"`,
       const releaseRoot = join(directory, "release-control");
       const releases = join(releaseRoot, "releases");
       const releaseState = join(releaseRoot, "state");
+      const rollbackTranscript = join(releaseRoot, "rollback-transcript");
       await executeFile("mkdir", ["-p", releases, releaseState]);
-      const digest = `sha256:${"a".repeat(64)}`;
 
       // create two immutable rollback states
       for (const release of ["2026.08.22-1", "2026.08.22-2"]) {
+        const digest = `sha256:${(release.endsWith("-1") ? "a" : "b").repeat(64)}`;
         await writeFile(
           join(releases, `${release}.env`),
           [
@@ -338,6 +339,7 @@ write_active_symlink() { ln -sfn "../releases/$1.env" "$state_dir/active.env"; }
 # use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$5}
+  printf '%s|%s\\n' "$selected_env" "$*" >>"$8"
   docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
     --file "$6" --file "$7" --file "$override" "$@"
 }
@@ -350,10 +352,14 @@ rollback_release`,
           envFile,
           join(deployRoot, "compose.yaml"),
           join(deployRoot, "compose.local.yaml"),
+          rollbackTranscript,
         ],
         { cwd: repoRoot, env: environment, timeout: 300_000 },
       );
       assert.equal(await readFile(join(releaseState, "current-release"), "utf8"), "2026.08.22-1\n");
+      const rollbackCommands = await readFile(rollbackTranscript, "utf8");
+      assert.match(rollbackCommands, /2026\.08\.22-1\.env\|up -d --no-deps --wait/u);
+      assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
       const migrationAfter = (
         await compose(
           environment,
