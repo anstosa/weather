@@ -183,7 +183,8 @@ interface SourceDetails {
 }
 
 type Route =
-  | Readonly<{ kind: "health" | "sites" }>
+  | Readonly<{ kind: "health" }>
+  | Readonly<{ kind: "sites" }>
   | Readonly<{ kind: "current" | "history"; siteSlug: string }>;
 
 const HISTORY_DEFAULT_LIMIT = 100;
