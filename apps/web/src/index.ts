@@ -135,6 +135,11 @@ const EMPTY_STATE: DashboardState = {
   sites: [],
 };
 
+const INVALID_HISTORY_WALL_CLOCK_MESSAGE =
+  "That site time does not exist or occurs twice because of daylight saving time. Choose another time.";
+const WALL_CLOCK_OFFSET_SAMPLE_MS = 6 * 60 * 60 * 1_000;
+const WALL_CLOCK_OFFSET_WINDOW_MS = 48 * 60 * 60 * 1_000;
+
 // coordinate browser reads and pagination
 export class WeatherDashboardController {
   readonly #apiBaseUrl: string;
@@ -235,6 +240,14 @@ export class WeatherDashboardController {
     this.#state = { ...this.#state, filters };
     this.emit();
     await this.loadSelectedSite();
+  }
+
+  // report a rejected site time
+  reportInvalidHistoryWallClock(): void {
+    this.patch({
+      error: INVALID_HISTORY_WALL_CLOCK_MESSAGE,
+      loading: false,
+    });
   }
 
   // advance to the next cursor page
@@ -712,15 +725,31 @@ function bindDashboardControls(
       event.preventDefault();
       const data = new FormData(form);
       const timezone = controller.state.selectedSite?.timezone ?? "UTC";
+      let from: string | undefined;
+      let to: string | undefined;
+
+      try {
+        from = toInstant(data.get("from"), timezone);
+        to = toInstant(data.get("to"), timezone);
+      } catch (error) {
+        // report site-time validation only
+        if (error instanceof RangeError) {
+          controller.reportInvalidHistoryWallClock();
+          return;
+        }
+
+        throw error;
+      }
+
       void controller.setFilters({
-        ...optionalFilter("from", toInstant(data.get("from"), timezone)),
+        ...optionalFilter("from", from),
         ...optionalFilter("sourceId", readFormValue(data.get("sourceId"))),
         ...optionalFilter(
           "sourceKind",
           readFormValue(data.get("sourceKind")) as SiteSource["kind"] | undefined,
         ),
         ...optionalFilter("stationSlug", readFormValue(data.get("stationSlug"))),
-        ...optionalFilter("to", toInstant(data.get("to"), timezone)),
+        ...optionalFilter("to", to),
       });
     });
   }
@@ -830,36 +859,38 @@ interface WallClockParts {
 export function fromSiteWallClock(value: string, timezone: string): string {
   const requested = parseWallClock(value);
   const requestedEpoch = wallClockEpoch(requested);
-  let candidateEpoch = requestedEpoch;
+  const requestedWallClock = formatWallClock(requested);
+  const matches = new Set<number>();
 
-  // converge on the site offset
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const represented = formatWallClockParts(
-      new Date(candidateEpoch),
-      timezone,
-    );
-    const correction = requestedEpoch - wallClockEpoch(represented);
+  // collect nearby timezone offsets
+  for (
+    let delta = -WALL_CLOCK_OFFSET_WINDOW_MS;
+    delta <= WALL_CLOCK_OFFSET_WINDOW_MS;
+    delta += WALL_CLOCK_OFFSET_SAMPLE_MS
+  ) {
+    const sampleEpoch = requestedEpoch + delta;
+    const represented = formatWallClockParts(new Date(sampleEpoch), timezone);
+    const offset = wallClockEpoch(represented) - sampleEpoch;
+    const candidateEpoch = requestedEpoch - offset;
+    const candidate = new Date(candidateEpoch);
 
-    // stop after an exact wall clock match
-    if (correction === 0) {
-      break;
+    // retain exact round-trip matches
+    if (
+      Number.isFinite(candidateEpoch) &&
+      formatWallClock(formatWallClockParts(candidate, timezone)) ===
+        requestedWallClock
+    ) {
+      matches.add(candidateEpoch);
     }
-
-    candidateEpoch += correction;
   }
 
-  const candidate = new Date(candidateEpoch);
-
-  // reject invalid or nonexistent local times
-  if (
-    !Number.isFinite(candidateEpoch) ||
-    formatWallClock(formatWallClockParts(candidate, timezone)) !==
-      formatWallClock(requested)
-  ) {
+  // require one unambiguous instant
+  if (matches.size !== 1) {
     throw new RangeError("history wall clock is not valid in the site timezone");
   }
 
-  return candidate.toISOString();
+  const [candidateEpoch] = matches;
+  return new Date(candidateEpoch).toISOString();
 }
 
 // convert one UTC instant to a site wall clock
