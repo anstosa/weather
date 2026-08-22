@@ -205,6 +205,7 @@ verify_previous_image_compatibility() (
   active_database=$(env_value "$previous_env" WEATHER_DATABASE_NAME)
 
   # clean every disposable compatibility resource
+  # shellcheck disable=SC2329
   cleanup_compatibility() {
     local status=$?
 
