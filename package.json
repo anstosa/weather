@@ -1,0 +1,28 @@
+{
+  "name": "weather-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace foundation for the Weather platform",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
+  "packageManager": "npm@12.0.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "clean": "node scripts/clean.mjs",
+    "lint": "node scripts/lint.mjs .editorconfig .gitignore .github .npmrc .nvmrc README.md package.json package-lock.json tsconfig.base.json scripts apps packages",
+    "test": "npm run test --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "6.0.3"
+  }
+}
