@@ -19,11 +19,15 @@
     "clean": "node scripts/clean.mjs",
     "lint": "node scripts/lint.mjs .editorconfig .gitignore .github .npmrc .nvmrc README.md package.json package-lock.json tsconfig.base.json scripts apps packages",
     "test": "npm run test --workspaces",
+    "test:deploy": "bash deploy/scripts/verify-static.sh && WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy/test/*.integration.test.mjs",
+    "test:e2e": "npm run test:e2e --workspace @weather/web",
+    "test:integration": "npm run test:integration --workspace @weather/database && npm run test:integration --workspace @weather/worker && npm run test:integration --workspace @weather/api",
     "typecheck": "npm run typecheck --workspaces",
     "weather:backfill": "npm run weather:backfill --workspace @weather/worker --"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "playwright": "^1.62.1",
     "typescript": "6.0.3"
   }
 }

@@ -57,6 +57,9 @@ function makeRecord(overrides = {}) {
   return {
     apparentTemperatureC: 15.5,
     cloudCoverPercent: 42,
+    deviceModel: "virtual-grid",
+    deviceSerial: null,
+    deviceVendor: "Open-Meteo",
     firstReceivedAt: "2026-08-22T04:51:00.000Z",
     id: "100",
     lastReceivedAt: "2026-08-22T04:51:00.000Z",
@@ -64,6 +67,18 @@ function makeRecord(overrides = {}) {
     pressureHpa: 1014.2,
     productRunAt: null,
     providerKey: "open-meteo",
+    providerMetadata: {
+      dataset: "era5",
+      elevation_m: 17,
+      grid_cell: "47.95,-122.43",
+      request_id: "private-request-id",
+    },
+    qualityMetadata: {
+      confidence_percent: 93,
+      flags: ["interpolated"],
+      interpolation: "linear",
+      status: "accepted",
+    },
     relativeHumidityPercent: 78,
     revisionCount: 0,
     siteSlug: "ballydidean",
@@ -72,6 +87,8 @@ function makeRecord(overrides = {}) {
     sourceKind: "reanalysis",
     stationSlug: "open-meteo-virtual",
     temperatureC: 16.2,
+    upstreamModel: "best_match",
+    upstreamTimezone: "America/Los_Angeles",
     validAt: "2026-08-21T04:00:00.000Z",
     windDirectionDegrees: 225,
     windGustMps: 7.2,
@@ -81,7 +98,8 @@ function makeRecord(overrides = {}) {
 }
 
 // create an isolated API fixture
-function createFixture() {
+function createFixture(overrides = {}) {
+  const currentQueries = [];
   const historyQueries = [];
   const historyRows = [
     makeRecord({ id: "103", validAt: "2026-08-21T03:00:00.000Z" }),
@@ -90,8 +108,17 @@ function createFixture() {
   ];
   const store = {
     // return current records
-    async getCurrent() {
+    async getCurrent(siteSlug, filters) {
+      currentQueries.push({ filters, siteSlug });
       return [currentRecord];
+    },
+    // return safe health state
+    async getHealth() {
+      return {
+        database: "ready",
+        migration: { status: "current", version: "0001_initial_weather.sql" },
+        workerLastLoopAt: "2026-08-22T04:45:00.000Z",
+      };
     },
     // capture history filters
     async listHistory(query) {
@@ -102,17 +129,86 @@ function createFixture() {
     async listSites() {
       return siteRows;
     },
+    ...overrides,
   };
   const handler = createWeatherApi(store, {
     // freeze response time
     now: () => new Date("2026-08-22T05:00:00.000Z"),
+    version: "2026.08.22-1",
   });
-  return { handler, historyQueries };
+  return { currentQueries, handler, historyQueries };
 }
 
-test("GET /sites groups sources and retains attribution", async () => {
+test("only exact versioned GET and HEAD routes are public", async () => {
   const { handler } = createFixture();
-  const response = await handler(new Request("http://weather.test/sites"));
+  const accepted = [
+    "/api/v1/sites",
+    "/api/v1/sites/ballydidean/current",
+    "/api/v1/sites/ballydidean/history",
+    "/api/v1/health",
+  ];
+
+  // verify every documented route and read method
+  for (const path of accepted) {
+    // verify both read methods
+    for (const method of ["GET", "HEAD"]) {
+      const response = await handler(
+        new Request(`http://weather.test${path}`, { method }),
+      );
+      assert.equal(response.status, 200, `${method} ${path}`);
+
+      // require bodyless head responses
+      if (method === "HEAD") {
+        assert.equal(await response.text(), "");
+      }
+    }
+  }
+
+  const rejected = [
+    "/",
+    "/sites",
+    "/api/sites",
+    "/api/v1",
+    "/api/v1/sites/",
+    "/api/v1/sites/ballydidean",
+    "/api/v1/sites/ballydidean/current/extra",
+    "/api/v2/sites",
+  ];
+
+  // reject every undocumented route
+  for (const path of rejected) {
+    const response = await handler(new Request(`http://weather.test${path}`));
+    assert.equal(response.status, 404, path);
+  }
+});
+
+test("mutation methods fail on every documented route without store writes", async () => {
+  const { handler } = createFixture();
+  const paths = [
+    "/api/v1/sites",
+    "/api/v1/sites/ballydidean/current",
+    "/api/v1/sites/ballydidean/history",
+    "/api/v1/health",
+  ];
+
+  // verify the complete mutation matrix
+  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+    // verify every documented route
+    for (const path of paths) {
+      const response = await handler(
+        new Request(`http://weather.test${path}`, { method }),
+      );
+      assert.equal(response.status, 405, `${method} ${path}`);
+      assert.equal(response.headers.get("allow"), "GET, HEAD");
+    }
+  }
+});
+
+test("GET sites groups active sources and retains direct attribution", async () => {
+  const { handler } = createFixture();
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites"),
+  );
   const body = await response.json();
 
   assert.equal(response.status, 200);
@@ -122,58 +218,172 @@ test("GET /sites groups sources and retains attribution", async () => {
     body.data[0].stations[0].sources[0].attribution.label,
     "Weather data by Open-Meteo",
   );
-});
-
-test("GET current communicates model provenance and freshness", async () => {
-  const { handler } = createFixture();
-  const response = await handler(
-    new Request("http://weather.test/sites/ballydidean/current"),
+  assert.equal(
+    body.data[0].stations[0].sources[0].attribution.url,
+    "https://open-meteo.com/",
   );
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.data[0].metrics.temperatureC, 16.2);
-  assert.equal(body.data[0].freshness.status, "fresh");
-  assert.equal(body.data[0].provenance.label, "model-derived current conditions");
-  assert.equal(body.data[0].provenance.attribution.url, "https://open-meteo.com/");
 });
 
-test("GET history validates filters and returns an opaque next cursor", async () => {
-  const { handler, historyQueries } = createFixture();
+test("current accepts station and source and returns bounded public metadata", async () => {
+  const { currentQueries, handler } = createFixture();
   const response = await handler(
     new Request(
-      "http://weather.test/sites/ballydidean/history?kind=reanalysis&station=open-meteo-virtual&from=2026-08-01T00%3A00%3A00Z&to=2026-08-22T00%3A00%3A00Z&limit=2",
+      "http://weather.test/api/v1/sites/ballydidean/current?station=open-meteo-virtual&source=10",
     ),
   );
   const body = await response.json();
 
   assert.equal(response.status, 200);
+  assert.deepEqual(currentQueries[0], {
+    filters: { sourceId: "10", stationSlug: "open-meteo-virtual" },
+    siteSlug: "ballydidean",
+  });
+  assert.equal(body.data[0].freshness.status, "fresh");
+  assert.equal(body.data[0].provenance.label, "model-derived current conditions");
+  assert.deepEqual(body.data[0].metadata, {
+    device: { model: "virtual-grid", serial: null, vendor: "Open-Meteo" },
+    provider: {
+      dataset: "era5",
+      elevationM: 17,
+      gridCell: "47.95,-122.43",
+    },
+    quality: {
+      confidencePercent: 93,
+      flags: ["interpolated"],
+      interpolation: "linear",
+      status: "accepted",
+    },
+    upstream: {
+      model: "best_match",
+      timezone: "America/Los_Angeles",
+    },
+  });
+  assert.doesNotMatch(JSON.stringify(body), /private-request-id|request_id/u);
+});
+
+test("history uses frozen filter names, defaults, maximum, and opaque cursor", async () => {
+  const { handler, historyQueries } = createFixture();
+  const defaultResponse = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/history"),
+  );
+  const response = await handler(
+    new Request(
+      "http://weather.test/api/v1/sites/ballydidean/history?sourceKind=reanalysis&station=open-meteo-virtual&source=11&from=2026-08-01T00%3A00%3A00Z&to=2026-08-22T00%3A00%3A00Z&limit=2",
+    ),
+  );
+  const body = await response.json();
+
+  assert.equal(defaultResponse.status, 200);
+  assert.equal(historyQueries[0].limit, 101);
+  assert.equal(response.status, 200);
   assert.equal(body.data.length, 2);
   assert.equal(typeof body.page.nextCursor, "string");
-  assert.equal(historyQueries[0].sourceKind, "reanalysis");
-  assert.equal(historyQueries[0].stationSlug, "open-meteo-virtual");
-  assert.equal(historyQueries[0].limit, 3);
+  assert.equal(historyQueries[1].sourceKind, "reanalysis");
+  assert.equal(historyQueries[1].stationSlug, "open-meteo-virtual");
+  assert.equal(historyQueries[1].sourceId, "11");
+  assert.equal(historyQueries[1].limit, 3);
+
+  const maximum = await handler(
+    new Request(
+      "http://weather.test/api/v1/sites/ballydidean/history?limit=250",
+    ),
+  );
+  const excessive = await handler(
+    new Request(
+      "http://weather.test/api/v1/sites/ballydidean/history?limit=251",
+    ),
+  );
+  const oldName = await handler(
+    new Request(
+      "http://weather.test/api/v1/sites/ballydidean/history?kind=reanalysis",
+    ),
+  );
+
+  assert.equal(maximum.status, 200);
+  assert.equal(historyQueries.at(-1).limit, 251);
+  assert.equal(excessive.status, 400);
+  assert.equal(oldName.status, 400);
 });
 
-test("invalid filters, methods, and sites return bounded errors", async () => {
+test("invalid ranges, cursors, duplicate filters, sites, stations, and sources are bounded", async () => {
   const { handler } = createFixture();
-  const invalidLimit = await handler(
-    new Request("http://weather.test/sites/ballydidean/history?limit=101"),
-  );
-  const invalidMethod = await handler(
-    new Request("http://weather.test/sites", { method: "POST" }),
-  );
-  const unknownSite = await handler(
-    new Request("http://weather.test/sites/elsewhere/current"),
-  );
+  const cases = [
+    ["/api/v1/sites/ballydidean/history?from=2026-08-22T01%3A00%3A00Z&to=2026-08-22T00%3A00%3A00Z", 400],
+    ["/api/v1/sites/ballydidean/history?cursor=not-a-cursor", 400],
+    ["/api/v1/sites/ballydidean/history?source=10&source=11", 400],
+    ["/api/v1/sites/elsewhere/current", 404],
+    ["/api/v1/sites/ballydidean/current?station=missing", 404],
+    ["/api/v1/sites/ballydidean/current?source=999", 404],
+    ["/api/v1/sites/ballydidean/current?unsupported=true", 400],
+  ];
 
-  assert.equal(invalidLimit.status, 400);
-  assert.equal(invalidMethod.status, 405);
-  assert.equal(invalidMethod.headers.get("allow"), "GET");
-  assert.equal(unknownSite.status, 404);
+  // verify each structured failure
+  for (const [path, status] of cases) {
+    const response = await handler(new Request(`http://weather.test${path}`));
+    const body = await response.json();
+    assert.equal(response.status, status, path);
+    assert.equal(typeof body.error.code, "string");
+    assert.equal(typeof body.error.message, "string");
+  }
 });
 
-test("Node server exposes the fetch handler end to end", async (context) => {
+test("health is allowlisted and reports migration readiness and coarse freshness", async () => {
+  const { handler } = createFixture();
+  const response = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body, {
+    data: {
+      database: "ready",
+      live: true,
+      migration: { status: "current", version: "0001_initial_weather.sql" },
+      ready: true,
+      version: "2026.08.22-1",
+      worker: { freshness: "fresh" },
+    },
+  });
+  assert.deepEqual(Object.keys(body.data).sort(), [
+    "database",
+    "live",
+    "migration",
+    "ready",
+    "version",
+    "worker",
+  ]);
+});
+
+test("health failures stay live, fail readiness, and redact raw database errors", async () => {
+  const { handler } = createFixture({
+    // simulate a safely classified database failure
+    async getHealth() {
+      return {
+        database: "unavailable",
+        migration: { status: "unavailable", version: null },
+        workerLastLoopAt: null,
+      };
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(body.data, {
+    database: "unavailable",
+    live: true,
+    migration: { status: "unavailable", version: null },
+    ready: false,
+    version: "2026.08.22-1",
+    worker: { freshness: "unknown" },
+  });
+  assert.doesNotMatch(JSON.stringify(body), /password|postgres|host|stack|error/u);
+});
+
+test("Node server exposes the versioned handler end to end", async (context) => {
   const { handler } = createFixture();
   const server = createWeatherApiServer(handler);
   server.listen(0, "127.0.0.1");
@@ -187,7 +397,9 @@ test("Node server exposes the fetch handler end to end", async (context) => {
 
   const address = server.address();
   assert.ok(address && typeof address === "object");
-  const response = await fetch(`http://127.0.0.1:${String(address.port)}/sites`);
+  const response = await fetch(
+    `http://127.0.0.1:${String(address.port)}/api/v1/sites`,
+  );
   const body = await response.json();
 
   assert.equal(response.status, 200);

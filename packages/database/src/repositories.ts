@@ -102,16 +102,30 @@ export interface HistoryQuery {
   readonly to?: string;
 }
 
+export interface CurrentQuery {
+  readonly sourceId?: string;
+  readonly stationSlug?: string;
+}
+
+export interface LatestWorkerHeartbeat extends QueryResultRow {
+  readonly lastLoopAt: Date | string;
+}
+
 export interface WeatherRecordRow extends QueryResultRow {
   readonly apparentTemperatureC: number | null;
   readonly cloudCoverPercent: number | null;
-  readonly firstReceivedAt: string;
+  readonly deviceModel: string | null;
+  readonly deviceSerial: string | null;
+  readonly deviceVendor: string | null;
+  readonly firstReceivedAt: Date | string;
   readonly id: string;
-  readonly lastReceivedAt: string;
+  readonly lastReceivedAt: Date | string;
   readonly precipitationMm: number | null;
   readonly pressureHpa: number | null;
-  readonly productRunAt: string | null;
+  readonly productRunAt: Date | string | null;
   readonly providerKey: string;
+  readonly providerMetadata: Readonly<Record<string, JsonValue>> | null;
+  readonly qualityMetadata: Readonly<Record<string, JsonValue>> | null;
   readonly relativeHumidityPercent: number | null;
   readonly revisionCount: number;
   readonly siteSlug: string;
@@ -120,7 +134,9 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly sourceKind: SourceKind;
   readonly stationSlug: string;
   readonly temperatureC: number | null;
-  readonly validAt: string;
+  readonly upstreamModel: string | null;
+  readonly upstreamTimezone: string;
+  readonly validAt: Date | string;
   readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
@@ -772,11 +788,27 @@ export async function listActiveSites(pool: Pool): Promise<readonly QueryResultR
   return result.rows;
 }
 
+// read the newest worker loop
+export async function getLatestWorkerHeartbeat(
+  pool: Pool,
+): Promise<LatestWorkerHeartbeat | null> {
+  const result = await pool.query<LatestWorkerHeartbeat>(
+    `
+      SELECT last_loop_at AS "lastLoopAt"
+      FROM worker_heartbeats
+      ORDER BY last_loop_at DESC, worker_instance ASC
+      LIMIT 1
+    `,
+  );
+
+  return result.rows[0] ?? null;
+}
+
 // read the latest row per source
 export async function getCurrentWeather(
   pool: Pool,
   siteSlug: string,
-  sourceId?: string,
+  query: CurrentQuery = {},
 ): Promise<readonly WeatherRecordRow[]> {
   const result = await pool.query<WeatherRecordRow>(
     `
@@ -788,10 +820,15 @@ export async function getCurrentWeather(
       JOIN sites si ON si.id = st.site_id
       JOIN providers p ON p.id = s.provider_id
       WHERE si.slug = $1
-        AND ($2::bigint IS NULL OR wr.source_id = $2)
+        AND si.active
+        AND st.active
+        AND s.active
+        AND p.active
+        AND ($2::text IS NULL OR st.slug = $2)
+        AND ($3::bigint IS NULL OR wr.source_id = $3)
       ORDER BY wr.source_id, wr.valid_at DESC, wr.id DESC
     `,
-    [siteSlug, sourceId ?? null],
+    [siteSlug, query.stationSlug ?? null, query.sourceId ?? null],
   );
 
   return result.rows;
@@ -808,8 +845,8 @@ export async function listWeatherHistory(
   const to = query.to === undefined ? undefined : validateUtcInstant(query.to, "to");
 
   // enforce the API bound at the repository edge
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
-    throw new RangeError("history limit must be between 1 and 250");
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 251) {
+    throw new RangeError("history limit must be between 1 and 251");
   }
 
   // reject reversed query ranges
@@ -817,7 +854,13 @@ export async function listWeatherHistory(
     throw new RangeError("history from must be earlier than to");
   }
 
-  const conditions = ["si.slug = $1"];
+  const conditions = [
+    "si.slug = $1",
+    "si.active",
+    "st.active",
+    "s.active",
+    "p.active",
+  ];
   const values: unknown[] = [query.siteSlug];
 
   // add station filter
@@ -1274,6 +1317,13 @@ function weatherRecordSelection(): string {
     wr.product_run_at AS "productRunAt",
     wr.first_received_at AS "firstReceivedAt",
     wr.last_received_at AS "lastReceivedAt",
+    wr.upstream_timezone AS "upstreamTimezone",
+    wr.upstream_model AS "upstreamModel",
+    wr.device_vendor AS "deviceVendor",
+    wr.device_model AS "deviceModel",
+    wr.device_serial AS "deviceSerial",
+    wr.quality_metadata AS "qualityMetadata",
+    wr.provider_metadata AS "providerMetadata",
     wr.revision_count AS "revisionCount",
     wr.temperature_c AS "temperatureC",
     wr.apparent_temperature_c AS "apparentTemperatureC",

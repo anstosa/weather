@@ -14,6 +14,10 @@ export interface MigrationResult {
   readonly serverVersionNum: number;
 }
 
+export interface MigrationReadiness {
+  readonly version: string;
+}
+
 interface MigrationFile {
   readonly checksum: string;
   readonly name: string;
@@ -76,6 +80,29 @@ export async function runMigrations(
 
     client.release();
   }
+}
+
+// verify the complete ledger without mutation
+export async function verifyMigrationReadiness(
+  pool: Pool,
+  migrationDirectory: string,
+): Promise<MigrationReadiness> {
+  const migrations = await loadMigrationFiles(migrationDirectory);
+  const appliedCount = await validateMigrationHistory(pool, migrations);
+
+  // require every shipped artifact
+  if (appliedCount !== migrations.length) {
+    throw new Error("database has pending migration artifacts");
+  }
+
+  const version = migrations.at(-1)?.name;
+
+  // preserve the non-empty artifact invariant
+  if (version === undefined) {
+    throw new Error("migration directory contains no ordered SQL files");
+  }
+
+  return { version };
 }
 
 // configure bounded lock and statement waits
@@ -146,7 +173,7 @@ async function loadMigrationFiles(
 
 // validate the complete applied prefix
 async function validateMigrationHistory(
-  client: PoolClient,
+  client: Pick<Pool | PoolClient, "query">,
   migrations: readonly MigrationFile[],
 ): Promise<number> {
   const result = await client.query<{ checksum: string; name: string }>(

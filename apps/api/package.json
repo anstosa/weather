@@ -12,6 +12,7 @@
     "build": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "test": "npm run build && node --test test/*.test.mjs",
+    "test:integration": "npm run build && node --test --test-concurrency=1 test/api.integration.mjs",
     "typecheck": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -37,6 +37,16 @@ export interface ProviderFetchOptions {
   readonly timeoutMs?: number;
 }
 
+export type CurrentProviderOperation<Input> = (
+  input: Input,
+  options?: ProviderFetchOptions,
+) => Promise<ProviderBatch>;
+
+export type HistoricalProviderOperation<Input> = (
+  input: Input,
+  options?: ProviderFetchOptions,
+) => Promise<ProviderBatch>;
+
 export class ProviderFailure extends Error {
   readonly attempts: number;
   readonly ingestionError: IngestionError;

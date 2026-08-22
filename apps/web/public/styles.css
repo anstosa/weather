@@ -145,6 +145,20 @@ h2 {
   color: #7d2e28;
 }
 
+.attribution {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 1.25rem;
+  color: #526c65;
+  font-size: 0.88rem;
+}
+
+.attribution a {
+  color: #17604f;
+  font-weight: 750;
+}
+
 .freshness {
   padding: 0.4rem 0.75rem;
   border-radius: 999px;
@@ -232,7 +246,7 @@ h2 {
 
 .filters {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 0.8rem;
   margin: 1.65rem 0;
