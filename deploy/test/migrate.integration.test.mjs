@@ -132,11 +132,17 @@ test(
       const secondEvent = JSON.parse(second.stdout.trim());
 
       assert.equal(firstEvent.event, "migrations_complete");
-      assert.deepEqual(firstEvent.applied, ["0001_initial_weather.sql"]);
+      assert.deepEqual(firstEvent.applied, [
+        "0001_initial_weather.sql",
+        "0002_worker_migration_readiness.sql",
+      ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
       assert.deepEqual(secondEvent.applied, []);
-      assert.deepEqual(secondEvent.current, ["0001_initial_weather.sql"]);
+      assert.deepEqual(secondEvent.current, [
+        "0001_initial_weather.sql",
+        "0002_worker_migration_readiness.sql",
+      ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondSnapshot, firstSnapshot);
       assert.deepEqual(firstSnapshot.identity, {
@@ -144,7 +150,10 @@ test(
         session_user: "weather_owner",
       });
       assert.equal(firstSnapshot.migrationsFirst, true);
-      assert.deepEqual(firstSnapshot.migrations, [{ name: "0001_initial_weather.sql" }]);
+      assert.deepEqual(firstSnapshot.migrations, [
+        { name: "0001_initial_weather.sql" },
+        { name: "0002_worker_migration_readiness.sql" },
+      ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
         { tableowner: "weather_owner", tablename: "schema_migrations" },
