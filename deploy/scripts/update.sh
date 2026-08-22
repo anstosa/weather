@@ -14,106 +14,296 @@ Usage:
   update.sh recover
   update.sh status
 
-stage validates and pulls exact ARM64 images without changing running services
-or the active database. Upgrade staging uses only a disposable compatibility
-database. activate backs up before migration and records success last.
+stage resolves and persists four exact ARM64 image digests without changing
+running services or the active database. Upgrade staging uses only a disposable
+compatibility database. activate backs up before migration and records success
+last. rollback changes images only and never invokes migration.
 EOF
 }
 
 releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
+capacity_evidence=/var/lib/weather/preflight-latest.json
 mkdir -p "$releases_dir" "$state_dir"
 
-# locate staged release state
+# locate one validated release environment
 release_env() {
+  validate_release "$1"
   printf '%s/%s.env\n' "$releases_dir" "$1"
 }
 
-# verify one published ARM64 manifest
-verify_arm64_image() {
+# remove a mutable tag or digest
+image_repository() {
   local image=$1
-  local manifest
-  manifest=$(docker buildx imagetools inspect "$image")
-  grep -qE 'linux/arm64|Platform:[[:space:]]+linux/arm64' <<<"$manifest" ||
-    die "image has no linux/arm64 manifest: $image"
+  local repository=${image%%@*}
+  local leaf=${repository##*/}
+
+  # strip only a tag after the final slash
+  if [[ "$leaf" == *:* ]]; then
+    repository=${repository%:*}
+  fi
+
+  [[ "$repository" =~ ^[a-z0-9][a-z0-9._/:=-]*$ ]] ||
+    die "invalid image repository: $image"
+  printf '%s\n' "$repository"
+}
+
+# resolve one explicit linux arm64 manifest
+resolve_arm64_image() {
+  local image=$1
+  local resolved
+  resolved=$(docker buildx imagetools inspect "$image" --raw |
+    node "$deploy_dir/scripts/resolve-image.mjs" "$image")
+  validate_image_reference "$resolved"
+  printf '%s\n' "$resolved"
+}
+
+# validate one immutable production release environment
+validate_release_env() {
+  local path=$1
+  local expected_release=${2:-}
+  local release database_name postgres_dir
+  local meaningful_lines
+  require_file "$path"
+  [[ ! -L "$path" ]] || die "release environment must not be a symbolic link: $path"
+  meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
+  [[ "$meaningful_lines" -eq 7 ]] || die "release environment must contain exactly seven values"
+  grep -qEv '^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR)=' "$path" &&
+    die "release environment contains an unknown or malformed value"
+  release=$(env_value "$path" WEATHER_RELEASE)
+  validate_release "$release"
+
+  # require the requested release identity
+  if [[ -n "$expected_release" && "$release" != "$expected_release" ]]; then
+    die "release environment identity mismatch"
+  fi
+
+  validate_image_reference "$(env_value "$path" WEATHER_SERVER_IMAGE)"
+  validate_image_reference "$(env_value "$path" WEATHER_WEB_IMAGE)"
+  validate_image_reference "$(env_value "$path" POSTGRES_IMAGE)"
+  validate_image_reference "$(env_value "$path" CLOUDFLARED_IMAGE)"
+  database_name=$(env_value "$path" WEATHER_DATABASE_NAME)
+  postgres_dir=$(env_value "$path" WEATHER_POSTGRES_DIR)
+  [[ "$database_name" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "invalid database name"
+  [[ "$postgres_dir" == /var/lib/weather/* && "$postgres_dir" != *$'\n'* ]] ||
+    die "invalid Weather PostgreSQL directory"
+}
+
+# write one deterministic release environment
+write_release_env() {
+  local source_env=$1
+  local target=$2
+  local release=$3
+  local server_image=$4
+  local web_image=$5
+  local postgres_image=$6
+  local cloudflared_image=$7
+  local database_name postgres_dir
+  database_name=$(env_value "$source_env" WEATHER_DATABASE_NAME)
+  postgres_dir=$(env_value "$source_env" WEATHER_POSTGRES_DIR)
+  umask 077
+  printf '%s\n' \
+    "WEATHER_RELEASE=$release" \
+    "WEATHER_SERVER_IMAGE=$server_image" \
+    "WEATHER_WEB_IMAGE=$web_image" \
+    "POSTGRES_IMAGE=$postgres_image" \
+    "CLOUDFLARED_IMAGE=$cloudflared_image" \
+    "WEATHER_DATABASE_NAME=$database_name" \
+    "WEATHER_POSTGRES_DIR=$postgres_dir" >"$target"
+  chmod 600 "$target"
+  validate_release_env "$target" "$release"
+}
+
+# require recent passing preflight evidence
+require_capacity_gate() {
+  require_file "$capacity_evidence"
+  node --input-type=module - "$capacity_evidence" <<'NODE'
+import { readFile } from "node:fs/promises";
+
+const path = process.argv[2];
+const evidence = JSON.parse(await readFile(path, "utf8"));
+const capturedAt = Date.parse(evidence.capturedAt);
+const ageMilliseconds = Date.now() - capturedAt;
+
+// require a recent full production sample
+if (
+  evidence.pass !== true ||
+  evidence.sampleSeconds < 900 ||
+  evidence.architecture?.host !== "aarch64" ||
+  evidence.architecture?.docker !== "aarch64" ||
+  !Number.isFinite(capturedAt) ||
+  ageMilliseconds < -300_000 ||
+  ageMilliseconds > 3_600_000
+) {
+  throw new Error("capacity evidence is absent, stale, incomplete, or failed");
+}
+NODE
+}
+
+# require host-owned per-consumer secrets
+require_secret_source() {
+  local path=$1
+  local expected_uid=$2
+  local expected_gid=$3
+  local metadata uid gid mode
+  require_file "$path"
+  metadata=$(stat -c '%u %g %a' "$path")
+  read -r uid gid mode <<<"$metadata"
+  [[ "$uid" == "$expected_uid" && "$gid" == "$expected_gid" ]] ||
+    die "secret source has incorrect ownership: $path"
+  (( (8#$mode & 077) == 0 && (8#$mode & 400) != 0 )) ||
+    die "secret source must be owner-readable and private: $path"
+}
+
+# verify every consumer copy without exposing material
+require_deployment_secrets() {
+  require_command cmp
+  require_secret_source "$deploy_dir/secrets/weather_postgres_owner_password" 999 999
+  require_secret_source "$deploy_dir/secrets/weather_postgres_api_password" 999 999
+  require_secret_source "$deploy_dir/secrets/weather_postgres_ingest_password" 999 999
+  require_secret_source "$deploy_dir/secrets/weather_migration_owner_password" 10002 10002
+  require_secret_source "$deploy_dir/secrets/weather_api_password" 10002 10002
+  require_secret_source "$deploy_dir/secrets/weather_worker_ingest_password" 10002 10002
+  require_secret_source "$deploy_dir/secrets/cloudflare_tunnel_token" 65532 65532
+  cmp -s "$deploy_dir/secrets/weather_postgres_owner_password" \
+    "$deploy_dir/secrets/weather_migration_owner_password" ||
+    die "owner password copies differ"
+  cmp -s "$deploy_dir/secrets/weather_postgres_api_password" \
+    "$deploy_dir/secrets/weather_api_password" || die "API password copies differ"
+  cmp -s "$deploy_dir/secrets/weather_postgres_ingest_password" \
+    "$deploy_dir/secrets/weather_worker_ingest_password" ||
+    die "ingest password copies differ"
+}
+
+# record success with the current marker as commit point
+record_release_success() {
+  local target=$1
+  local current=$2
+
+  # retain the replaced release for rollback
+  if [[ -n "$current" && "$current" != "$target" ]]; then
+    write_private_state "$state_dir/previous-release" "$current"
+  fi
+
+  write_active_symlink "$target"
+  write_private_state "$state_dir/current-release" "$target"
 }
 
 # run previous-image checks on a disposable migrated clone
-verify_previous_image_compatibility() {
+verify_previous_image_compatibility() (
   local target_env=$1
   local previous_env=$2
-  local candidate
-  local api_container
-  local api_ready=false
-  local status=0
+  local candidate api_container provider_container provider_image active_database
+  local candidate_created=false
+  local api_started=false
+  local provider_started=false
+  local before_successes after_successes
   candidate="weather_compat_$(date -u +%Y%m%d%H%M%S)_$$"
   api_container="${candidate}_api"
+  provider_container="${candidate}_provider"
+  provider_image=$(env_value "$target_env" WEATHER_SERVER_IMAGE)
+  active_database=$(env_value "$previous_env" WEATHER_DATABASE_NAME)
+
+  # clean every disposable compatibility resource
+  # shellcheck disable=SC2329
+  cleanup_compatibility() {
+    local status=$?
+
+    # remove a started API probe
+    if [[ "$api_started" == true ]]; then
+      docker rm --force "$api_container" >/dev/null 2>&1 || status=1
+    fi
+
+    # remove a started provider stub
+    if [[ "$provider_started" == true ]]; then
+      docker rm --force "$provider_container" >/dev/null 2>&1 || status=1
+    fi
+
+    # drop a created candidate last
+    if [[ "$candidate_created" == true ]]; then
+      WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+        dropdb --username postgres --if-exists "$candidate" >/dev/null || status=1
+    fi
+
+    trap - EXIT
+    exit "$status"
+  }
+  trap cleanup_compatibility EXIT
+  trap 'exit 130' HUP INT TERM
 
   printf 'Creating disposable compatibility database %s...\n' "$candidate"
-  compose exec -T postgres createdb --username postgres --owner weather_owner "$candidate"
+  WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    createdb --username postgres --owner weather_owner "$candidate"
+  candidate_created=true
 
-  # clone active data without plaintext host storage
-  if ! compose exec -T postgres \
-    pg_dump --username weather_owner --dbname weather --format=custom --no-owner --no-acl |
-    compose exec -T postgres pg_restore --username postgres --dbname "$candidate" \
-      --no-owner --role weather_owner --exit-on-error; then
-    status=1
-  fi
+  WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    pg_dump --username weather_owner --dbname "$active_database" \
+      --format=custom --no-owner --no-acl |
+    WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      pg_restore --username postgres --dbname "$candidate" \
+        --no-owner --role weather_owner --exit-on-error
 
-  # migrate and probe only the disposable clone
-  if (( status == 0 )) && ! WEATHER_DATABASE_NAME=$candidate WEATHER_ENV_FILE=$target_env \
-    compose run --rm --no-deps migration; then
-    status=1
-  fi
-  if (( status == 0 )); then
-    # start the previous API command against the migrated clone
-    if ! WEATHER_DATABASE_NAME=$candidate WEATHER_ENV_FILE=$previous_env \
-      compose run --detach --name "$api_container" --no-deps api \
-        node apps/api/dist/main.js >/dev/null; then
-      status=1
+  WEATHER_ENV_FILE=$target_env compose run --rm --no-deps \
+    --env WEATHER_DATABASE_NAME="$candidate" migration
+
+  docker run --detach --rm --name "$provider_container" \
+    --network weather_provider_egress --network-alias "$provider_container" \
+    "$provider_image" node deploy/scripts/compatibility-provider.mjs >/dev/null
+  provider_started=true
+  docker exec "$provider_container" node -e \
+    "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+  before_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+      --command "SELECT count(*) FROM ingestion_runs WHERE state='success'")
+  WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
+    --env WEATHER_DATABASE_NAME="$candidate" \
+    --env WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN="http://$provider_container:3002" \
+    worker node apps/worker/dist/worker.js --once
+  after_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+      --command "SELECT count(*) FROM ingestion_runs WHERE state='success'")
+  (( after_successes > before_successes )) || die "previous worker compatibility failed"
+
+  WEATHER_ENV_FILE=$previous_env compose run --detach --name "$api_container" --no-deps \
+    --env WEATHER_DATABASE_NAME="$candidate" api node apps/api/dist/main.js >/dev/null
+  api_started=true
+
+  # wait for both previous API contracts
+  for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
+    # accept only health and read success together
+    if docker exec "$api_container" node -e \
+      "Promise.all(['/api/v1/health','/api/v1/sites'].map(path=>fetch('http://127.0.0.1:3001'+path))).then(rs=>{if(rs.some(r=>!r.ok))process.exit(1)}).catch(()=>process.exit(1))"; then
+      exit 0
     fi
-  fi
-  # require the previous API read endpoint
-  if (( status == 0 )); then
-    for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
-      # stop retrying after the first successful read
-      if docker exec "$api_container" node -e \
-        "fetch('http://127.0.0.1:3001/sites').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"; then
-        api_ready=true
-        break
-      fi
-      sleep 1
-    done
+    sleep 1
+  done
 
-    # fail when the previous API cannot read the clone
-    if [[ "$api_ready" != true ]]; then
-      status=1
-    fi
-  fi
-  docker rm --force "$api_container" >/dev/null 2>&1 || true
-  if (( status == 0 )) && ! WEATHER_DATABASE_NAME=$candidate WEATHER_ENV_FILE=$previous_env \
-    compose run --rm --no-deps worker node apps/worker/dist/worker.js --once; then
-    status=1
-  fi
+  die "previous API compatibility failed"
+)
 
-  compose exec -T postgres dropdb --username postgres --if-exists "$candidate" || status=1
-  (( status == 0 )) || die "previous image compatibility failed"
+# restore one exact image set without migration
+restore_images() {
+  local env_file=$1
+  WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait \
+    postgres api worker web cloudflared
 }
 
-# start one staged release with health gates
+# activate one forward release
 start_release() {
   local target=$1
   local target_env current current_env backup_env
   target_env=$(release_env "$target")
-  require_file "$target_env"
-  current=$(cat "$state_dir/current-release" 2>/dev/null || true)
-
-  # require the isolated connector credential
-  require_file "$deploy_dir/secrets/cloudflare_tunnel_token"
+  validate_release_env "$target_env" "$target"
+  current=$(read_optional_release_state "$state_dir/current-release")
+  require_capacity_gate
+  require_deployment_secrets
 
   # establish the database used for the safety backup
   if [[ -n "$current" ]]; then
-    backup_env=$(release_env "$current")
+    current_env=$(release_env "$current")
+    validate_release_env "$current_env" "$current"
+    backup_env=$current_env
   else
     backup_env=$target_env
     WEATHER_ENV_FILE=$target_env compose up -d postgres --wait
@@ -128,11 +318,10 @@ start_release() {
 
   printf 'Starting release %s...\n' "$target"
   if ! WEATHER_ENV_FILE=$target_env compose up -d --remove-orphans --wait; then
-    # restore only the previous Weather images
+    # restore only the prior exact image configuration
     if [[ -n "$current" && "$current" != "$target" ]]; then
-      current_env=$(release_env "$current")
       printf 'Activation failed; restoring Weather release %s...\n' "$current" >&2
-      WEATHER_ENV_FILE=$current_env compose up -d --remove-orphans --wait ||
+      restore_images "$current_env" ||
         die "activation and Weather image rollback both failed"
     else
       printf 'Initial activation failed; stopping only the Weather project...\n' >&2
@@ -142,12 +331,30 @@ start_release() {
   fi
 
   # record success only after every health gate
-  if [[ -n "$current" && "$current" != "$target" ]]; then
-    write_private_state "$state_dir/previous-release" "$current"
-  fi
-  ln -sfn "../releases/$target.env" "$state_dir/active.env"
-  write_private_state "$state_dir/current-release" "$target"
+  record_release_success "$target" "$current"
   printf 'Release %s is active.\n' "$target"
+}
+
+# roll back images without migration
+rollback_release() {
+  local current previous current_env previous_env
+  current=$(read_release_state "$state_dir/current-release")
+  previous=$(read_release_state "$state_dir/previous-release")
+  [[ "$current" != "$previous" ]] || die "previous release matches the active release"
+  current_env=$(release_env "$current")
+  previous_env=$(release_env "$previous")
+  validate_release_env "$current_env" "$current"
+  validate_release_env "$previous_env" "$previous"
+  require_deployment_secrets
+
+  # switch only immutable runtime images
+  if ! restore_images "$previous_env"; then
+    restore_images "$current_env" || die "rollback and current-image recovery both failed"
+    die "rollback failed; current Weather images were restored"
+  fi
+
+  record_release_success "$previous" "$current"
+  printf 'Release %s is active after migration-free rollback.\n' "$previous"
 }
 
 (($# >= 1)) || { usage >&2; exit 2; }
@@ -167,36 +374,49 @@ case "$action" in
       [[ "$1" == --from && $# -eq 2 ]] || die "expected --from ENV_FILE"
       source_env=$2
     fi
+
     require_file "$source_env"
     require_command docker
     require_command node
+    require_capacity_gate
     target=$(release_env "$release")
-    [[ ! -e "$target" ]] || die "release is already staged: $release"
-    umask 077
-    awk -v release="$release" '
-      BEGIN { replaced = 0 }
-      /^WEATHER_RELEASE=/ { print "WEATHER_RELEASE=" release; replaced = 1; next }
-      { print }
-      END { if (!replaced) print "WEATHER_RELEASE=" release }
-    ' "$source_env" >"$target"
-    chmod 600 "$target"
-    WEATHER_ENV_FILE=$target compose config --quiet
-    images=$(WEATHER_ENV_FILE=$target compose config --images | sort -u)
+    [[ ! -e "$target" && ! -L "$target" ]] || die "release is already staged: $release"
+    server_source="$(image_repository "$(env_value "$source_env" WEATHER_SERVER_IMAGE)"):$release"
+    web_source="$(image_repository "$(env_value "$source_env" WEATHER_WEB_IMAGE)"):$release"
+    server_image=$(resolve_arm64_image "$server_source")
+    web_image=$(resolve_arm64_image "$web_source")
+    postgres_image=$(resolve_arm64_image "$(env_value "$source_env" POSTGRES_IMAGE)")
+    cloudflared_image=$(resolve_arm64_image "$(env_value "$source_env" CLOUDFLARED_IMAGE)")
+    temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.env.partial")
 
-    # inspect every exact image before pulling
-    while IFS= read -r image; do
-      verify_arm64_image "$image"
-    done <<<"$images"
-    WEATHER_ENV_FILE=$target compose pull
+    # remove failed stage state
+    trap 'rm -f "$temporary"' EXIT
+    write_release_env "$source_env" "$temporary" "$release" \
+      "$server_image" "$web_image" "$postgres_image" "$cloudflared_image"
+    WEATHER_ENV_FILE=$temporary compose config --quiet
+    mapfile -t images < <(WEATHER_ENV_FILE=$temporary compose config --images | sort -u)
+    ((${#images[@]} == 4)) || die "release must contain exactly four images"
 
-    current=$(cat "$state_dir/current-release" 2>/dev/null || true)
+    # reject any tag-only rendered image
+    for image in "${images[@]}"; do
+      validate_image_reference "$image"
+    done
+
+    WEATHER_ENV_FILE=$temporary compose pull
+    current=$(read_optional_release_state "$state_dir/current-release")
 
     # require previous-image compatibility for upgrades
     if [[ -n "$current" ]]; then
-      verify_previous_image_compatibility "$target" "$(release_env "$current")"
+      previous_env=$(release_env "$current")
+      validate_release_env "$previous_env" "$current"
+      require_deployment_secrets
+      verify_previous_image_compatibility "$temporary" "$previous_env"
     else
       printf 'Initial release: previous-image compatibility is not applicable.\n'
     fi
+
+    mv "$temporary" "$target"
+    trap - EXIT
     printf 'Release %s staged without changing running services or the active database.\n' "$release"
     ;;
   activate)
@@ -208,21 +428,18 @@ case "$action" in
     ;;
   rollback)
     (($# == 0)) || die "rollback takes no arguments"
-    previous=$(cat "$state_dir/previous-release" 2>/dev/null || true)
-    [[ -n "$previous" ]] || die "no previous Weather release is recorded"
-    validate_release "$previous"
-    require_command age
     require_command docker
-    start_release "$previous"
+    rollback_release
     ;;
   recover)
     (($# == 0)) || die "recover takes no arguments"
-    current=$(cat "$state_dir/current-release" 2>/dev/null || true)
-    [[ -n "$current" ]] || die "no active Weather release is recorded"
-    validate_release "$current"
+    current=$(read_release_state "$state_dir/current-release")
+    current_env=$(release_env "$current")
+    validate_release_env "$current_env" "$current"
     require_command docker
-    WEATHER_ENV_FILE=$(release_env "$current") compose up -d --remove-orphans --wait
-    ln -sfn "../releases/$current.env" "$state_dir/active.env"
+    require_deployment_secrets
+    restore_images "$current_env"
+    write_active_symlink "$current"
     ;;
   status)
     (($# == 0)) || die "status takes no arguments"

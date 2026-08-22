@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -182,21 +182,29 @@ test("services are non-root, read-only, bounded, ordered, and healthy", () => {
 test("database and connector secrets are scoped to least-privilege consumers", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
   assert.deepEqual(secretSources(compose.services.api), ["weather_api_password"]);
-  assert.deepEqual(secretSources(compose.services.worker), ["weather_ingest_password"]);
-  assert.deepEqual(secretSources(compose.services.migration), ["weather_owner_password"]);
+  assert.deepEqual(secretSources(compose.services.worker), ["weather_worker_ingest_password"]);
+  assert.deepEqual(secretSources(compose.services.migration), ["weather_migration_owner_password"]);
   assert.deepEqual(secretSources(compose.services.cloudflared), ["cloudflare_tunnel_token"]);
   assert.deepEqual(secretSources(compose.services.web), []);
   assert.deepEqual(secretSources(compose.services.postgres), [
-    "weather_api_password",
-    "weather_ingest_password",
-    "weather_owner_password",
+    "weather_postgres_api_password",
+    "weather_postgres_ingest_password",
+    "weather_postgres_owner_password",
   ]);
 
-  // require read-only secret mounts
+  // require distinct host-owned secret sources
+  const passwordSecretFiles = Object.entries(compose.secrets)
+    .filter(([name]) => name !== "cloudflare_tunnel_token")
+    .map(([, secret]) => secret.file);
+  assert.equal(passwordSecretFiles.length, 6);
+  assert.equal(new Set(passwordSecretFiles).size, passwordSecretFiles.length);
+
+  // reject ignored compose ownership metadata
   for (const service of Object.values(compose.services)) {
     for (const secret of service.secrets ?? []) {
-      const mode = typeof secret.mode === "string" ? Number.parseInt(secret.mode, 8) : secret.mode;
-      assert.equal(mode & 0o222, 0, `${secret.source} must be read-only`);
+      assert.equal(secret.uid, undefined, `${secret.source} must use host ownership`);
+      assert.equal(secret.gid, undefined, `${secret.source} must use host ownership`);
+      assert.equal(secret.mode, undefined, `${secret.source} must use host mode`);
     }
   }
 
@@ -210,10 +218,20 @@ test("database and connector secrets are scoped to least-privilege consumers", (
 });
 
 // verify pinned dependencies and durable storage
-test("PostgreSQL and cloudflared are patch-pinned for ARM64 production", () => {
+test("all four production images are immutable digest references", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
-  assert.match(compose.services.postgres.image, /^postgres:17\.10-bookworm$/u);
-  assert.match(compose.services.cloudflared.image, /^cloudflare\/cloudflared:2026\.7\.2$/u);
+  const images = new Set(Object.values(compose.services).map((service) => service.image));
+  assert.equal(images.size, 4);
+
+  // require complete registry references
+  for (const image of images) {
+    assert.match(image, /^[^@\s]+@sha256:[a-f0-9]{64}$/u);
+  }
+
+  assert.match(compose.services.postgres.image, /^postgres@sha256:/u);
+  assert.match(compose.services.cloudflared.image, /^cloudflare\/cloudflared@sha256:/u);
+  assert.equal(compose.services.api.image, compose.services.migration.image);
+  assert.equal(compose.services.api.image, compose.services.worker.image);
   assert.ok(compose.services.cloudflared.command.includes("--token-file"));
   assert.ok(compose.services.cloudflared.command.includes("--no-autoupdate"));
   const postgresData = compose.services.postgres.volumes.find(
@@ -222,6 +240,38 @@ test("PostgreSQL and cloudflared are patch-pinned for ARM64 production", () => {
   assert.equal(postgresData.type, "volume");
   assert.match(postgresData.source, /weather_verify_postgres/u);
   assert.match(read("deploy/compose.yaml"), /\/var\/lib\/weather\/postgres/u);
+});
+
+// verify deterministic arm64 resolution
+test("image resolver selects one exact linux arm64 manifest", () => {
+  const armDigest = `sha256:${"a".repeat(64)}`;
+  const index = JSON.stringify({
+    manifests: [
+      { digest: `sha256:${"b".repeat(64)}`, platform: { architecture: "amd64", os: "linux" } },
+      { digest: armDigest, platform: { architecture: "arm64", os: "linux", variant: "v8" } },
+      { digest: `sha256:${"c".repeat(64)}`, platform: { architecture: "unknown", os: "unknown" } },
+    ],
+  });
+  const result = spawnSync(
+    process.execPath,
+    [join(scriptsRoot, "resolve-image.mjs"), "registry.example/weather/server:release"],
+    { encoding: "utf8", input: index },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `registry.example/weather/server@${armDigest}\n`);
+
+  const ambiguous = JSON.stringify({
+    manifests: [
+      { digest: armDigest, platform: { architecture: "arm64", os: "linux" } },
+      { digest: `sha256:${"d".repeat(64)}`, platform: { architecture: "arm64", os: "linux" } },
+    ],
+  });
+  const rejected = spawnSync(
+    process.execPath,
+    [join(scriptsRoot, "resolve-image.mjs"), "registry.example/weather/server:release"],
+    { encoding: "utf8", input: ambiguous },
+  );
+  assert.notEqual(rejected.status, 0);
 });
 
 // verify cross-lane runtime commands
@@ -238,7 +288,7 @@ test("container commands match the API, worker, and web runtime contracts", () =
   );
   assert.equal(compose.services.api.environment.WEATHER_API_PORT, "3001");
   assert.equal(compose.services.worker.environment.WEATHER_DATABASE_USER, "weather_ingest");
-  assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/sites/u);
+  assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/api\/v1\/health/u);
   assert.deepEqual(compose.services.worker.healthcheck.test, [
     "CMD",
     "node",
@@ -269,8 +319,10 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
 
   // provide one bounded fake API
   const api = createServer((request, response) => {
+    const body = JSON.stringify({ method: request.method, path: request.url });
     response.setHeader("Content-Type", "application/json");
-    response.end(JSON.stringify({ method: request.method, path: request.url }));
+    response.setHeader("Content-Length", String(Buffer.byteLength(body)));
+    response.end(body);
   });
   api.listen(apiPort, "127.0.0.1");
   await once(api, "listening");
@@ -290,8 +342,13 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
     const home = await fetch(`http://127.0.0.1:${webPort}/`);
     const client = await fetch(`http://127.0.0.1:${webPort}/client.js`);
     const library = await fetch(`http://127.0.0.1:${webPort}/index.js`);
-    const proxied = await fetch(`http://127.0.0.1:${webPort}/sites/ballydidean/current?check=1`);
-    const mutation = await fetch(`http://127.0.0.1:${webPort}/sites`, { method: "POST" });
+    const proxied = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/current?check=1`);
+    const health = await fetch(`http://127.0.0.1:${webPort}/api/v1/health`);
+    const head = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "HEAD" });
+    const mutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "POST" });
+    const legacy = await fetch(`http://127.0.0.1:${webPort}/sites`);
+    const future = await fetch(`http://127.0.0.1:${webPort}/api/v2/sites`);
+    const encoded = await fetch(`http://127.0.0.1:${webPort}/api/v1%2fsites`);
     const unknown = await fetch(`http://127.0.0.1:${webPort}/secrets/weather_owner_password`);
     assert.equal(home.status, 200);
     assert.match(await home.text(), /<title>Weather<\/title>/u);
@@ -299,9 +356,15 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
     assert.equal(library.headers.get("content-type"), "text/javascript; charset=utf-8");
     assert.deepEqual(await proxied.json(), {
       method: "GET",
-      path: "/sites/ballydidean/current?check=1",
+      path: "/api/v1/sites/ballydidean/current?check=1",
     });
+    assert.deepEqual(await health.json(), { method: "GET", path: "/api/v1/health" });
+    assert.equal(head.status, 200);
+    assert.ok(Number(head.headers.get("content-length")) > 0);
     assert.equal(mutation.status, 405);
+    assert.equal(legacy.status, 404);
+    assert.equal(future.status, 404);
+    assert.equal(encoded.status, 404);
     assert.equal(unknown.status, 404);
     assert.match(home.headers.get("content-security-policy"), /default-src 'self'/u);
   } finally {
@@ -354,6 +417,9 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(backup, /sha256sum/u);
   assert.match(backup, /chmod 600/u);
   assert.match(backup, /trap cleanup EXIT/u);
+  assert.match(backup, /output_dir=\/var\/lib\/weather\/backups/u);
+  assert.match(backup, /publication_complete/u);
+  assert.match(backup, /sync -f/u);
   assert.doesNotMatch(backup, /pg_dump[^\n]*--file|>[^\n]*\.dump(?:["']|\s)/u);
   assert.match(restore, /only verify mode is supported/u);
   assert.match(restore, /live database replacement and cutover are not supported/u);
@@ -371,19 +437,32 @@ test("backup is encrypted and restore is disposable verification only", () => {
 test("release operations stage, compatibility-check, activate, rollback, and recover Weather only", () => {
   const update = read("deploy/scripts/update.sh");
   const stageCase = update.split("  stage)\n")[1].split("  activate)\n")[0];
+  const rollbackCase = update.split("  rollback)\n")[1].split("  recover)\n")[0];
+  const rollbackFunction = update.split("rollback_release() {")[1].split("\n}\n\n(($# >= 1))")[0];
   assert.match(stageCase, /compose config --quiet/u);
-  assert.match(stageCase, /verify_arm64_image/u);
+  assert.match(stageCase, /resolve_arm64_image/u);
   assert.match(stageCase, /compose pull/u);
+  assert.match(stageCase, /mktemp/u);
+  assert.match(stageCase, /trap[\s\S]*EXIT/u);
+  assert.match(stageCase, /mv[\s\S]*\$target/u);
   assert.doesNotMatch(stageCase, /compose up|compose down/u);
   assert.match(update, /imagetools inspect/u);
   assert.match(update, /weather_compat_/u);
-  assert.match(update, /WEATHER_DATABASE_NAME=\$candidate/u);
+  assert.match(update, /compatibility-provider\.mjs/u);
+  assert.match(update, /WEATHER_OPEN_METEO_/u);
+  assert.match(update, /WEATHER_DATABASE_NAME="\$candidate"/u);
+  assert.match(update, /\/api\/v1\/health/u);
+  assert.match(update, /\/api\/v1\/sites/u);
   assert.match(update, /apps\/api\/dist\/main\.js/u);
   assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
   assert.match(update, /Creating pre-migration encrypted backup/u);
   assert.match(update, /compose up -d --remove-orphans --wait/u);
   assert.match(update, /record success only after every health gate/u);
   assert.match(update, /compose down --remove-orphans/u);
+  assert.match(rollbackCase, /rollback_release/u);
+  assert.match(rollbackFunction, /restore_images/u);
+  assert.match(update, /--no-deps --wait[\s\\\n]*postgres api worker web cloudflared/u);
+  assert.doesNotMatch(rollbackFunction, /backup\.sh|compose run[^\n]*migration|start_release/u);
   assert.doesNotMatch(
     update,
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
@@ -404,6 +483,69 @@ test("capacity preflight records every numeric coexistence gate", () => {
   assert.match(preflight, /4 \* 1024 \* 1024 \* 1024/u);
   assert.match(preflight, /inode_free_percent >= 10/u);
   assert.match(preflight, /JSON\.stringify/u);
+  assert.match(preflight, /while \(\([\s\S]*done\n\nload15=\$\(awk/u);
+});
+
+// verify strict release-state parsing
+test("release state fails closed on missing, multiline, and unsafe values", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-release-state-"));
+  const common = join(scriptsRoot, "common.sh");
+  const cases = ["", "2026.08.22-1\nextra\n", "../../escape\n", "latest\n"];
+
+  try {
+    // reject every malformed state case
+    for (const [index, value] of cases.entries()) {
+      const path = join(directory, `invalid-${index}`);
+      await writeFile(path, value, { mode: 0o600 });
+      const result = spawnSync(
+        "bash",
+        ["-c", 'source "$1"; read_release_state "$2"', "weather-state-test", common, path],
+        { encoding: "utf8" },
+      );
+      assert.notEqual(result.status, 0, `${JSON.stringify(value)} must fail closed`);
+    }
+
+    const valid = join(directory, "valid");
+    await writeFile(valid, "2026.08.22-1\n", { mode: 0o600 });
+    const result = spawnSync(
+      "bash",
+      ["-c", 'source "$1"; read_release_state "$2"', "weather-state-test", common, valid],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "2026.08.22-1\n");
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify deterministic compatibility responses
+test("compatibility provider serves deterministic current and archive payloads", async () => {
+  const providerPort = await reservePort();
+  const provider = spawn(process.execPath, [join(scriptsRoot, "compatibility-provider.mjs")], {
+    cwd: repoRoot,
+    env: { ...process.env, HOST: "127.0.0.1", PORT: String(providerPort) },
+    stdio: "ignore",
+  });
+
+  try {
+    await waitForServer(`http://127.0.0.1:${providerPort}/health`);
+    const current = await fetch(`http://127.0.0.1:${providerPort}/v1/forecast`);
+    const archive = await fetch(`http://127.0.0.1:${providerPort}/v1/archive`);
+    const unknown = await fetch(`http://127.0.0.1:${providerPort}/unknown`);
+    assert.equal(current.status, 200);
+    assert.equal(archive.status, 200);
+    assert.equal(unknown.status, 404);
+    assert.equal((await current.json()).current.time, "2026-08-22T06:30");
+    assert.deepEqual((await archive.json()).hourly.time, ["2026-08-22T05:00", "2026-08-22T06:00"]);
+  } finally {
+    // stop only the disposable provider
+    provider.kill("SIGTERM");
+    await Promise.race([
+      once(provider, "exit"),
+      new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+    ]);
+  }
 });
 
 // verify isolated operator controls
@@ -454,7 +596,24 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
   assert.match(workflow, /push: true/u);
   assert.match(workflow, /imagetools inspect/u);
   assert.match(workflow, /postgres:17\.10-bookworm/u);
-  assert.doesNotMatch(workflow, /:latest|deploy|ssh-run/u);
+  assert.match(workflow, /upload-artifact/u);
+  assert.match(workflow, /npm run check/u);
+  assert.match(workflow, /npm run test:integration/u);
+  assert.match(workflow, /npm run test:e2e/u);
+  assert.match(workflow, /npm run test:deploy/u);
+  assert.doesNotMatch(workflow, /:latest|ssh-run|update\.sh activate/u);
+});
+
+// verify pull-request quality gates
+test("check workflow runs every substantive root and deployment gate", () => {
+  const workflow = read(".github/workflows/check.yml");
+  assert.match(workflow, /npm run check/u);
+  assert.match(workflow, /npm run test:integration/u);
+  assert.match(workflow, /npm run test:e2e/u);
+  assert.match(workflow, /npm run test:deploy/u);
+  assert.match(workflow, /deploy\/scripts\/verify-static\.sh/u);
+  assert.match(workflow, /docker build --target server/u);
+  assert.match(workflow, /docker build --target web/u);
 });
 
 // keep helper coverage visible

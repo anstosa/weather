@@ -32,8 +32,64 @@ jobs:
           fi
           echo "release=${release}" >> "${GITHUB_OUTPUT}"
 
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install dependencies
+        run: npm ci
+      - name: Install deployment validators
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Run deterministic repository checks
+        run: npm run check
+      - name: Run PostgreSQL integration gates
+        run: npm run test:integration
+      - name: Run browser end-to-end gates
+        run: npm run test:e2e
+      - name: Run deployment gates
+        env:
+          WEATHER_RUN_DEPLOY_INTEGRATION: "1"
+        run: npm run test:deploy
+      - name: Verify static deployment contracts
+        run: deploy/scripts/verify-static.sh
+
+  dependency-manifests:
+    needs: [validate-release, quality-gates]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Resolve pinned dependency ARM64 digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > dependency-images.env
+          while read -r variable image; do
+            reference=$(docker buildx imagetools inspect "${image}" --raw |
+              node deploy/scripts/resolve-image.mjs "${image}")
+            printf '%s=%s\n' "${variable}" "${reference}" >> dependency-images.env
+          done <<'EOF'
+          POSTGRES_IMAGE postgres:17.10-bookworm
+          CLOUDFLARED_IMAGE cloudflare/cloudflared:2026.7.2
+          EOF
+          docker run --rm --platform linux/arm64 postgres:17.10-bookworm \
+            postgres --version | grep -E 'PostgreSQL 1[7-9]|PostgreSQL [2-9][0-9]'
+      - name: Retain dependency digest references
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-image-digests
+          path: dependency-images.env
+
   publish:
-    needs: validate-release
+    needs: [validate-release, quality-gates, dependency-manifests]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -52,7 +108,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish ARM64 image
+      - id: build
+        name: Build and publish ARM64 image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -64,27 +121,17 @@ jobs:
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=${{ matrix.target }}
-      - name: Verify published ARM64 manifest
+      - name: Resolve published ARM64 digest
         shell: bash
         run: |
           set -euo pipefail
           image="ghcr.io/anstosa/weather-${{ matrix.target }}:${{ needs.validate-release.outputs.release }}"
-          docker buildx imagetools inspect "${image}" | tee "${RUNNER_TEMP}/${{ matrix.target }}-manifest.txt"
-          grep -Eq 'linux/arm64|Platform:[[:space:]]+linux/arm64' "${RUNNER_TEMP}/${{ matrix.target }}-manifest.txt"
-
-  dependency-manifests:
-    needs: validate-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Verify pinned PostgreSQL and connector ARM64 manifests
-        shell: bash
-        run: |
-          set -euo pipefail
-          for image in postgres:17.10-bookworm cloudflare/cloudflared:2026.7.2; do
-            docker buildx imagetools inspect "${image}" | tee manifest.txt
-            grep -Eq 'linux/arm64|Platform:[[:space:]]+linux/arm64' manifest.txt
-          done
-          docker run --rm --platform linux/arm64 postgres:17.10-bookworm \
-            postgres --version | grep -E 'PostgreSQL 1[7-9]|PostgreSQL [2-9][0-9]'
+          reference=$(docker buildx imagetools inspect "${image}" --raw |
+            node deploy/scripts/resolve-image.mjs "${image}")
+          variable=$(printf '%s' "${{ matrix.target }}" | tr '[:lower:]' '[:upper:]')
+          printf 'WEATHER_%s_IMAGE=%s\n' "${variable}" "${reference}" > image-digest.env
+      - name: Retain published digest reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-image-digest
+          path: image-digest.env

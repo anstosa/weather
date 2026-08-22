@@ -20,11 +20,14 @@ import {
   OPEN_METEO_CURRENT_ADAPTER_VERSION,
   ProviderFailure,
   asProviderFailure,
+  createOpenMeteoCurrentOperation,
   fetchOpenMeteoCurrent,
+  type OpenMeteoCurrentOperation,
   type ProviderFetchOptions,
 } from "@weather/providers";
 
 import { loadWorkerConfiguration } from "./config.js";
+import { boundedWorkerError } from "./errors.js";
 import {
   WORKER_CADENCE_MS,
   createNonOverlappingScheduler,
@@ -44,6 +47,7 @@ export interface WorkerRepository {
 }
 
 export interface WorkerIterationOptions {
+  readonly fetchCurrent?: OpenMeteoCurrentOperation;
   readonly fetchOptions?: ProviderFetchOptions;
   readonly instance: string;
   readonly lastSuccessAt: string | null;
@@ -55,6 +59,7 @@ export interface WorkerIterationOptions {
 
 export interface SourceRunResult {
   readonly reason: string | null;
+  readonly secondaryError: string | null;
   readonly sourceId: string;
   readonly status: "failed" | "skipped" | "succeeded";
 }
@@ -98,6 +103,9 @@ export async function runWorkerIteration(
         now,
         repository,
         site: options.site,
+        ...(options.fetchCurrent === undefined
+          ? {}
+          : { fetchCurrent: options.fetchCurrent }),
       });
       results.push(result);
 
@@ -108,6 +116,7 @@ export async function runWorkerIteration(
     } catch (error) {
       results.push({
         reason: boundedWorkerError(error),
+        secondaryError: null,
         sourceId: source.id,
         status: "failed",
       });
@@ -133,6 +142,7 @@ export async function runScheduledSource(
   pool: DatabasePool,
   source: DueSource,
   options: Readonly<{
+    fetchCurrent?: OpenMeteoCurrentOperation;
     fetchOptions?: ProviderFetchOptions;
     now: () => Date;
     repository: WorkerRepository;
@@ -154,6 +164,7 @@ export async function runScheduledSource(
   ) {
     return {
       reason: "source is not an active configured Open-Meteo current source",
+      secondaryError: null,
       sourceId: source.id,
       status: "skipped",
     };
@@ -167,7 +178,12 @@ export async function runScheduledSource(
 
   // skip a source already owned elsewhere
   if (session === null) {
-    return { reason: "source lock is held", sourceId: source.id, status: "skipped" };
+    return {
+      reason: "source lock is held",
+      secondaryError: null,
+      sourceId: source.id,
+      status: "skipped",
+    };
   }
 
   let runId: string | null = null;
@@ -188,7 +204,7 @@ export async function runScheduledSource(
       sourceConfigFingerprint: source.sourceConfigFingerprint,
     });
     runId = started.id;
-    const batch = await fetchOpenMeteoCurrent(
+    const batch = await (options.fetchCurrent ?? fetchOpenMeteoCurrent)(
       {
         latitude: options.site.site.latitude,
         longitude: options.site.site.longitude,
@@ -222,13 +238,19 @@ export async function runScheduledSource(
       windowStart: window.start,
     });
 
-    return { reason: null, sourceId: source.id, status: "succeeded" };
+    return {
+      reason: null,
+      secondaryError: null,
+      sourceId: source.id,
+      status: "succeeded",
+    };
   } catch (error) {
     const failure = asProviderFailure(error, Math.max(1, attempts));
+    let secondaryError: string | null = null;
 
     // finalize only after a committed running row exists
     if (runId !== null) {
-      await guardFailScheduledRun(
+      secondaryError = await guardFailScheduledRun(
         options.repository,
         session,
         runId,
@@ -238,6 +260,7 @@ export async function runScheduledSource(
 
     return {
       reason: failure.ingestionError.code,
+      secondaryError,
       sourceId: source.id,
       status: "failed",
     };
@@ -276,7 +299,7 @@ async function guardFailScheduledRun(
   session: SourceSession,
   runId: string,
   failure: ProviderFailure,
-): Promise<void> {
+): Promise<string | null> {
   try {
     await repository.failIngestionRun(session, {
       attempts: failure.attempts,
@@ -285,8 +308,10 @@ async function guardFailScheduledRun(
         failure.status === null ? null : { http_status: failure.status },
       runId,
     });
-  } catch {
-    // retain the first failure for loop isolation
+    return null;
+  } catch (error) {
+    // retain bounded secondary diagnostics
+    return boundedWorkerError(error);
   }
 }
 
@@ -307,20 +332,15 @@ function requireContractVersion(
   }
 }
 
-// redact and bound worker-level failure text
-function boundedWorkerError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
-    .replace(/(?:password|token|authorization)=?[^\s&]*/giu, "[redacted]")
-    .slice(0, 512);
-}
-
 // start the long-running worker process
 export async function startWorkerProcess(
   options: Readonly<{ once?: boolean }> = {},
 ): Promise<void> {
   const configuration = await loadWorkerConfiguration();
   const pool = createDatabasePool(configuration.database);
+  const fetchCurrent = createOpenMeteoCurrentOperation(
+    configuration.openMeteoCompatibilityOrigin,
+  );
   await assertSupportedPostgres(pool);
   let lastSuccessAt: string | null = null;
   const scheduler = createNonOverlappingScheduler({
@@ -328,6 +348,7 @@ export async function startWorkerProcess(
     key: configuration.instance,
     run: async () => {
       const result = await runWorkerIteration(pool, {
+        fetchCurrent,
         instance: configuration.instance,
         lastSuccessAt,
         site: configuration.site,

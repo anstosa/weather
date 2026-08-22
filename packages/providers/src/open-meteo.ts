@@ -11,6 +11,8 @@ import {
 
 import {
   ProviderFailure,
+  type CurrentProviderOperation,
+  type HistoricalProviderOperation,
   type ProviderAttribution,
   type ProviderBatch,
   type ProviderFetchOptions,
@@ -28,9 +30,13 @@ export const OPEN_METEO_ARCHIVE_ADAPTER_VERSION =
   "open-meteo-archive-hourly/v1";
 export const OPEN_METEO_ARCHIVE_CHUNK_PLAN_VERSION =
   "open-meteo-archive-hourly/v1";
+export const OPEN_METEO_COMPATIBILITY_ORIGIN_ENV =
+  "WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN";
 
 const CURRENT_ENDPOINT = "https://api.open-meteo.com/v1/forecast";
 const ARCHIVE_ENDPOINT = "https://archive-api.open-meteo.com/v1/archive";
+const CURRENT_PATH = "/v1/forecast";
+const ARCHIVE_PATH = "/v1/archive";
 const CURRENT_VARIABLES = [
   "temperature_2m",
   "apparent_temperature",
@@ -44,7 +50,7 @@ const CURRENT_VARIABLES = [
 ] as const;
 const HOURLY_VARIABLES = CURRENT_VARIABLES;
 
-interface OpenMeteoLocation {
+export interface OpenMeteoLocation {
   readonly latitude: number;
   readonly longitude: number;
   readonly sourceId: string;
@@ -56,6 +62,11 @@ export interface OpenMeteoArchiveRequest extends OpenMeteoLocation {
   readonly startDate: string;
 }
 
+export type OpenMeteoCurrentOperation =
+  CurrentProviderOperation<OpenMeteoLocation>;
+export type OpenMeteoHistoricalOperation =
+  HistoricalProviderOperation<OpenMeteoArchiveRequest>;
+
 // expose the implemented capability set
 export function openMeteoCapabilities(): readonly ["current", "historical"] {
   return ["current", "historical"];
@@ -65,8 +76,16 @@ export function openMeteoCapabilities(): readonly ["current", "historical"] {
 export function buildOpenMeteoCurrentRequest(
   input: OpenMeteoLocation,
 ): ProviderRequestPlan {
+  return buildCurrentRequest(input, CURRENT_ENDPOINT);
+}
+
+// build one current endpoint request
+function buildCurrentRequest(
+  input: OpenMeteoLocation,
+  endpoint: string,
+): ProviderRequestPlan {
   const location = validateLocation(input);
-  const url = new URL(CURRENT_ENDPOINT);
+  const url = new URL(endpoint);
   appendCommonParameters(url, location, "current", CURRENT_VARIABLES);
 
   return {
@@ -81,6 +100,14 @@ export function buildOpenMeteoCurrentRequest(
 export function buildOpenMeteoArchiveRequest(
   input: OpenMeteoArchiveRequest,
 ): ProviderRequestPlan {
+  return buildArchiveRequest(input, ARCHIVE_ENDPOINT);
+}
+
+// build one historical endpoint request
+function buildArchiveRequest(
+  input: OpenMeteoArchiveRequest,
+  endpoint: string,
+): ProviderRequestPlan {
   const location = validateLocation(input);
   validateDate(input.startDate, "startDate");
   validateDate(input.endDate, "endDate");
@@ -90,7 +117,7 @@ export function buildOpenMeteoArchiveRequest(
     throw new RangeError("archive startDate must not follow endDate");
   }
 
-  const url = new URL(ARCHIVE_ENDPOINT);
+  const url = new URL(endpoint);
   appendCommonParameters(url, location, "hourly", HOURLY_VARIABLES);
   url.searchParams.set("start_date", input.startDate);
   url.searchParams.set("end_date", input.endDate);
@@ -108,7 +135,16 @@ export async function fetchOpenMeteoCurrent(
   input: OpenMeteoLocation,
   options: ProviderFetchOptions = {},
 ): Promise<ProviderBatch> {
-  const plan = buildOpenMeteoCurrentRequest(input);
+  return fetchCurrent(input, options, CURRENT_ENDPOINT);
+}
+
+// execute one current endpoint
+async function fetchCurrent(
+  input: OpenMeteoLocation,
+  options: ProviderFetchOptions,
+  endpoint: string,
+): Promise<ProviderBatch> {
+  const plan = buildCurrentRequest(input, endpoint);
   const response = await fetchJsonWithRetry(plan.url, options);
   const receivedAt = (options.now ?? defaultNow)().toISOString();
   const record = normalizeCurrentPayload(
@@ -131,7 +167,16 @@ export async function fetchOpenMeteoArchive(
   input: OpenMeteoArchiveRequest,
   options: ProviderFetchOptions = {},
 ): Promise<ProviderBatch> {
-  const plan = buildOpenMeteoArchiveRequest(input);
+  return fetchHistorical(input, options, ARCHIVE_ENDPOINT);
+}
+
+// execute one historical endpoint
+async function fetchHistorical(
+  input: OpenMeteoArchiveRequest,
+  options: ProviderFetchOptions,
+  endpoint: string,
+): Promise<ProviderBatch> {
+  const plan = buildArchiveRequest(input, endpoint);
   const response = await fetchJsonWithRetry(plan.url, options);
   const receivedAt = (options.now ?? defaultNow)().toISOString();
   const records = normalizeArchivePayload(
@@ -147,6 +192,63 @@ export async function fetchOpenMeteoArchive(
     records,
     responseMetadata: responseMetadata(response.payload, response.status),
   };
+}
+
+// create an injected current operation
+export function createOpenMeteoCurrentOperation(
+  compatibilityOrigin?: string | null,
+): OpenMeteoCurrentOperation {
+  const origin = parseOpenMeteoCompatibilityOrigin(compatibilityOrigin);
+  const endpoint = origin === null
+    ? CURRENT_ENDPOINT
+    : new URL(CURRENT_PATH, `${origin}/`).toString();
+
+  return async (input, options = {}) => fetchCurrent(input, options, endpoint);
+}
+
+// create an injected historical operation
+export function createOpenMeteoHistoricalOperation(
+  compatibilityOrigin?: string | null,
+): OpenMeteoHistoricalOperation {
+  const origin = parseOpenMeteoCompatibilityOrigin(compatibilityOrigin);
+  const endpoint = origin === null
+    ? ARCHIVE_ENDPOINT
+    : new URL(ARCHIVE_PATH, `${origin}/`).toString();
+
+  return async (input, options = {}) => fetchHistorical(input, options, endpoint);
+}
+
+// validate an explicit compatibility origin
+export function parseOpenMeteoCompatibilityOrigin(
+  value?: string | null,
+): string | null {
+  // preserve official endpoints by default
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(value);
+
+    // require a credential-free origin only
+    if (
+      (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+      parsed.username.length > 0 ||
+      parsed.password.length > 0 ||
+      parsed.pathname !== "/" ||
+      parsed.search.length > 0 ||
+      parsed.hash.length > 0
+    ) {
+      throw new TypeError("invalid compatibility origin");
+    }
+
+    return parsed.origin;
+  } catch (error) {
+    throw new TypeError(
+      `${OPEN_METEO_COMPATIBILITY_ORIGIN_ENV} must be a credential-free HTTP origin`,
+      { cause: error },
+    );
+  }
 }
 
 // normalize the current response shape

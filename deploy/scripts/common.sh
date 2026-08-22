@@ -34,12 +34,49 @@ validate_release() {
   [[ "$release" != latest && "$release" != dev ]] || die "release must be immutable"
 }
 
+# require one digest-pinned image reference
+validate_image_reference() {
+  local image=$1
+  [[ "$image" =~ ^[^@[:space:]]+@sha256:[a-f0-9]{64}$ ]] ||
+    die "image must be a complete name@sha256 digest reference"
+}
+
+# read one validated release marker
+read_release_state() {
+  local path=$1
+  local mode
+  local -a lines
+  require_file "$path"
+  [[ ! -L "$path" ]] || die "release state must not be a symbolic link: $path"
+  mode=$(stat -c '%a' "$path")
+  (( (8#$mode & 077) == 0 )) || die "release state must be private: $path"
+  mapfile -t lines <"$path"
+  ((${#lines[@]} == 1)) || die "release state must contain exactly one line: $path"
+  validate_release "${lines[0]}"
+  printf '%s\n' "${lines[0]}"
+}
+
+# read absent state as empty
+read_optional_release_state() {
+  local path=$1
+
+  # distinguish absence from unsafe links
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return 0
+  fi
+
+  read_release_state "$path"
+}
+
 # select active or bootstrap configuration
 default_env_file() {
-  local active="$deploy_dir/state/active.env"
+  local current
+  current=$(read_optional_release_state "$deploy_dir/state/current-release")
 
-  # prefer active release state
-  if [[ -f "$active" ]]; then
+  # derive active configuration from committed state
+  if [[ -n "$current" ]]; then
+    local active="$deploy_dir/releases/$current.env"
+    require_file "$active"
     printf '%s\n' "$active"
   else
     printf '%s\n' "$deploy_dir/.env"
@@ -58,20 +95,48 @@ env_value() {
   local file=$1
   local name=$2
   local value
-  value=$(sed -n "s/^${name}=//p" "$file" | tail -n 1)
+  local -a matches
+  mapfile -t matches < <(grep -E "^${name}=" "$file" || true)
+  ((${#matches[@]} == 1)) || die "expected exactly one $name in $file"
+  value=${matches[0]#*=}
   [[ -n "$value" ]] || die "missing $name in $file"
   printf '%s\n' "$value"
 }
 
 # publish private state atomically
 write_private_state() {
+  (
   local path=$1
   local value=$2
   local temporary
   mkdir -p "$(dirname "$path")"
   umask 077
   temporary=$(mktemp "${path}.XXXXXX")
+
+  # remove interrupted state writes
+  trap 'rm -f "$temporary"' EXIT
   printf '%s\n' "$value" >"$temporary"
   chmod 600 "$temporary"
   mv "$temporary" "$path"
+  trap - EXIT
+  )
+}
+
+# publish one release symlink atomically
+write_active_symlink() {
+  (
+  local release=$1
+  local path="$deploy_dir/state/active.env"
+  local temporary_directory
+  validate_release "$release"
+  mkdir -p "$(dirname "$path")"
+  temporary_directory=$(mktemp -d "$deploy_dir/state/.active.env.XXXXXX")
+
+  # remove interrupted link writes
+  trap 'rm -rf "$temporary_directory"' EXIT
+  ln -s "../releases/$release.env" "$temporary_directory/active.env"
+  mv -Tf "$temporary_directory/active.env" "$path"
+  rmdir "$temporary_directory"
+  trap - EXIT
+  )
 }

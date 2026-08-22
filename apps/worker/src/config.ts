@@ -4,10 +4,15 @@ import {
   type DatabaseConfiguration,
   type SiteConfiguration,
 } from "@weather/database";
+import {
+  OPEN_METEO_COMPATIBILITY_ORIGIN_ENV,
+  parseOpenMeteoCompatibilityOrigin,
+} from "@weather/providers";
 
 export interface WorkerConfiguration {
   readonly database: DatabaseConfiguration;
   readonly instance: string;
+  readonly openMeteoCompatibilityOrigin: string | null;
   readonly site: SiteConfiguration;
   readonly siteConfigurationPath: string;
   readonly version: string;
@@ -27,6 +32,9 @@ export async function loadWorkerConfiguration(
     instance: boundedEnvironment(
       environment.WEATHER_WORKER_INSTANCE ?? "weather-worker",
       "WEATHER_WORKER_INSTANCE",
+    ),
+    openMeteoCompatibilityOrigin: parseOpenMeteoCompatibilityOrigin(
+      environment[OPEN_METEO_COMPATIBILITY_ORIGIN_ENV],
     ),
     site: await loadSiteConfiguration(siteConfigurationPath),
     siteConfigurationPath,

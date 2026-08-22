@@ -36,6 +36,13 @@ const baseMetadata = {
   upstreamTimezone: "America/Los_Angeles",
 };
 
+const baseLocation = {
+  latitude: 47.950429954185445,
+  longitude: -122.42797012608193,
+  siteKey: "ballydidean",
+  timezone: "America/Los_Angeles",
+};
+
 // verify closed provenance kinds
 test("U-DOM-01 parses all source kinds and rejects unknown kinds", () => {
   // inspect every allowed value
@@ -161,6 +168,7 @@ test("U-DOM-07 bounds metadata and source material serialization", () => {
 
   const first = serializeSourceMaterial({
     adapterConfig: { beta: 2, alpha: 1 },
+    location: baseLocation,
     providerKey: "grid-provider",
     sourceKey: "current-feed",
     sourceKind: "model_current",
@@ -169,6 +177,7 @@ test("U-DOM-07 bounds metadata and source material serialization", () => {
   });
   const second = serializeSourceMaterial({
     adapterConfig: { alpha: 1, beta: 2 },
+    location: baseLocation,
     providerKey: "grid-provider",
     sourceKey: "current-feed",
     sourceKind: "model_current",
@@ -177,9 +186,34 @@ test("U-DOM-07 bounds metadata and source material serialization", () => {
   });
 
   assert.equal(first, second);
+  assert.notEqual(
+    first,
+    serializeSourceMaterial({
+      adapterConfig: { alpha: 1, beta: 2 },
+      location: { ...baseLocation, latitude: 47.96 },
+      providerKey: "grid-provider",
+      sourceKey: "current-feed",
+      sourceKind: "model_current",
+      stationKey: "virtual-station",
+      version: 1,
+    }),
+  );
+  assert.throws(
+    () =>
+      serializeSourceMaterial({
+        adapterConfig: { alpha: 1 },
+        providerKey: "grid-provider",
+        sourceKey: "current-feed",
+        sourceKind: "model_current",
+        stationKey: "virtual-station",
+        version: 1,
+      }),
+    /location is required/u,
+  );
   assert.throws(
     () => serializeSourceMaterial({
       adapterConfig: { invalid: Number.NaN },
+      location: baseLocation,
       providerKey: "grid-provider",
       sourceKey: "current-feed",
       sourceKind: "model_current",

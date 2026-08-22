@@ -9,6 +9,7 @@ import {
   nextScheduledAt,
   parseBackfillArguments,
   planBackfillChunks,
+  workerHealth,
 } from "../dist/index.js";
 
 const sitePath = new URL("../../../config/sites/ballydidean.json", import.meta.url).pathname;
@@ -180,4 +181,78 @@ test("U-WRK-08 exact chunk identity changes with every durable component", () =>
     to: "2026-03-01",
   });
   assert.notEqual(base.key, changed.key);
+});
+
+// reject a mismatched CLI site without external calls
+test("backfill rejects site mismatch before repository or provider I/O", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  let calls = 0;
+  const forbidden = async () => {
+    calls += 1;
+    throw new Error("external call was not expected");
+  };
+
+  await assert.rejects(
+    () =>
+      executeBackfill(
+        {},
+        backfillArguments({ site: "wrong-site" }),
+        site,
+        source,
+        {
+          fetchArchive: forbidden,
+          repository: {
+            abandonExpiredRuns: forbidden,
+            acquireSourceSession: forbidden,
+            completeBackfillIngestion: forbidden,
+            failIngestionRun: forbidden,
+            hasSuccessfulBackfillChunk: forbidden,
+            startIngestionRun: forbidden,
+          },
+        },
+      ),
+    /requested site wrong-site does not match configured site ballydidean/u,
+  );
+  assert.equal(calls, 0);
+});
+
+// prove complete heartbeat freshness semantics
+test("worker health fails closed for missing invalid stale and future heartbeats", () => {
+  const now = new Date("2026-08-22T06:00:00.000Z");
+  const state = { lastSuccessAt: null, ready: true };
+  const fresh = workerHealth(now, {
+    ...state,
+    lastLoopAt: "2026-08-22T05:30:00.000Z",
+  });
+  const stale = workerHealth(now, {
+    ...state,
+    lastLoopAt: "2026-08-22T05:29:59.999Z",
+  });
+
+  assert.deepEqual(
+    { ready: fresh.ready, stale: fresh.stale },
+    { ready: true, stale: false },
+  );
+  assert.deepEqual(
+    { ready: stale.ready, stale: stale.stale },
+    { ready: false, stale: true },
+  );
+
+  // reject invalid temporal states
+  for (const lastLoopAt of [
+    null,
+    "not-an-instant",
+    "2026-08-22T06:00:00.001Z",
+  ]) {
+    const health = workerHealth(now, { ...state, lastLoopAt });
+    assert.equal(health.ready, false);
+    assert.equal(health.stale, true);
+  }
+
+  const independentSuccess = workerHealth(now, {
+    lastLoopAt: "2026-08-22T05:59:00.000Z",
+    lastSuccessAt: "2026-01-01T00:00:00.000Z",
+    ready: true,
+  });
+  assert.equal(independentSuccess.ready, true);
 });

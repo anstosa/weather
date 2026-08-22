@@ -28,6 +28,12 @@ export type JsonValue =
 
 export interface SourceMaterialConfiguration {
   readonly adapterConfig: JsonValue;
+  readonly location: {
+    readonly latitude: number;
+    readonly longitude: number;
+    readonly siteKey: string;
+    readonly timezone: string;
+  };
   readonly providerKey: string;
   readonly sourceKey: string;
   readonly sourceKind: SourceKind;
@@ -76,9 +82,36 @@ export function validateStableKey(value: string, fieldName: string): string {
 export function serializeSourceMaterial(
   configuration: SourceMaterialConfiguration,
 ): string {
+  // require location identity
+  if (configuration.location === undefined) {
+    throw new TypeError("source material location is required");
+  }
+
   validateStableKey(configuration.providerKey, "providerKey");
   validateStableKey(configuration.sourceKey, "sourceKey");
   validateStableKey(configuration.stationKey, "stationKey");
+  validateStableKey(configuration.location.siteKey, "location.siteKey");
+
+  // require bounded location coordinates
+  if (
+    !Number.isFinite(configuration.location.latitude) ||
+    configuration.location.latitude < -90 ||
+    configuration.location.latitude > 90 ||
+    !Number.isFinite(configuration.location.longitude) ||
+    configuration.location.longitude < -180 ||
+    configuration.location.longitude > 180
+  ) {
+    throw new RangeError("source material location coordinates are invalid");
+  }
+
+  // require timezone identity
+  if (
+    typeof configuration.location.timezone !== "string" ||
+    configuration.location.timezone.trim().length === 0 ||
+    configuration.location.timezone.length > 128
+  ) {
+    throw new RangeError("source material location timezone is invalid");
+  }
 
   // require versioned configuration
   if (!Number.isSafeInteger(configuration.version) || configuration.version < 1) {
