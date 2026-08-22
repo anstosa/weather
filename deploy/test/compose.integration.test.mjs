@@ -410,7 +410,7 @@ test(
         "--dbname",
         "weather_deploy_test",
         "--command",
-        "SELECT format('ALTER ROLE postgres WITH LOGIN PASSWORD %L', regexp_replace(pg_read_file('/run/secrets/weather_owner_password'), E'[\\r\\n]+$', ''))\n\\gexec",
+        "DO $$ BEGIN EXECUTE format('ALTER ROLE postgres WITH LOGIN PASSWORD %L', regexp_replace(pg_read_file('/run/secrets/weather_owner_password'), E'[\\r\\n]+$', '')); END $$;",
       );
       // restart without deleting data
       await compose(environment, override, "restart", "postgres");
