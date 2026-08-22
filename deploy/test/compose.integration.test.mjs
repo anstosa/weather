@@ -745,10 +745,8 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           "postgres",
           "--dbname",
           "weather_deploy_test",
-          "--set",
-          `known_checksum=${knownMigrationChecksum}`,
           "--command",
-          "UPDATE schema_migrations SET checksum = :'known_checksum' WHERE name = '0001_initial_weather.sql'",
+          `UPDATE schema_migrations SET checksum = '${knownMigrationChecksum}' WHERE name = '0001_initial_weather.sql'`,
         );
       }
 
