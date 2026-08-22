@@ -103,7 +103,9 @@ test("scheduled failure retains primary code and redacted finalization diagnosti
   const log = [];
   const repository = scheduledRepository(log);
   repository.failIngestionRun = async () => {
-    throw new Error(`password=scheduled-secret ${"x".repeat(700)}`);
+    throw new Error(
+      `password: scheduled-secret Bearer bearer-secret ${"x".repeat(700)}`,
+    );
   };
   const result = await runScheduledSource({}, currentDueSource(), {
     fetchCurrent: async () => {
@@ -122,6 +124,7 @@ test("scheduled failure retains primary code and redacted finalization diagnosti
   assert.equal(result.status, "failed");
   assert.match(result.secondaryError, /\[redacted\]/u);
   assert.doesNotMatch(result.secondaryError, /scheduled-secret/u);
+  assert.doesNotMatch(result.secondaryError, /bearer-secret/u);
   assert.ok(result.secondaryError.length <= 512);
 });
 
@@ -266,7 +269,9 @@ test("backfill failure retains primary code and redacted finalization diagnostic
   };
   const repository = backfillRepository([]);
   repository.failIngestionRun = async () => {
-    throw new Error(`token=backfill-secret ${"x".repeat(700)}`);
+    throw new Error(
+      `postgresql://worker:database-secret@database/weather token backfill-secret ${"x".repeat(700)}`,
+    );
   };
   const report = await executeBackfill(
     {},
@@ -304,5 +309,6 @@ test("backfill failure retains primary code and redacted finalization diagnostic
   assert.equal(report.chunks[0].errorCode, "archive_primary");
   assert.match(report.chunks[0].secondaryError, /\[redacted\]/u);
   assert.doesNotMatch(report.chunks[0].secondaryError, /backfill-secret/u);
+  assert.doesNotMatch(report.chunks[0].secondaryError, /database-secret/u);
   assert.ok(report.chunks[0].secondaryError.length <= 512);
 });
