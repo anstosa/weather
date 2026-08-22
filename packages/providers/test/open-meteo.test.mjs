@@ -14,6 +14,7 @@ import {
   normalizeCurrentPayload,
   openMeteoCapabilities,
   parseOpenMeteoCompatibilityOrigin,
+  providerRequestBudgetMilliseconds,
 } from "../dist/index.js";
 
 const location = {
@@ -138,6 +139,56 @@ test("U-OM-07 configured timeout aborts the provider request", async () => {
   assert.equal(aborted, true);
 });
 
+// prove the request deadline covers response consumption
+test("provider timeout cancels a stalled response body", async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    // retain an incomplete JSON body
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"partial":'));
+    },
+    // observe reader cancellation
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  await assert.rejects(
+    fetchJsonWithRetry(new URL("https://example.test/weather"), {
+      fetch: async () => new Response(body, { status: 200 }),
+      maxAttempts: 1,
+      timeoutMs: 5,
+    }),
+    (error) =>
+      error instanceof ProviderFailure &&
+      error.ingestionError.code === "provider_unavailable",
+  );
+  assert.equal(cancelled, true);
+});
+
+// prove response bodies cannot exceed the configured byte ceiling
+test("provider rejects oversized response bodies before parsing", async () => {
+  await assert.rejects(
+    fetchJsonWithRetry(new URL("https://example.test/weather"), {
+      fetch: async () => new Response('{"payload":"too-large"}', { status: 200 }),
+      maxAttempts: 1,
+      maxBodyBytes: 8,
+    }),
+    (error) =>
+      error instanceof ProviderFailure &&
+      error.ingestionError.classification === "invalid_payload" &&
+      error.ingestionError.code === "provider_response_too_large",
+  );
+});
+
+// prove the durable run budget covers every bounded retry phase
+test("provider request budget includes attempts and maximum retry delays", () => {
+  assert.equal(
+    providerRequestBudgetMilliseconds({ maxAttempts: 3, timeoutMs: 10_000 }),
+    90_000,
+  );
+});
+
 // prove bounded retry and no secret headers
 test("U-OM-08 429 retries once with deterministic delay", async () => {
   const delays = [];
@@ -187,6 +238,38 @@ test("U-OM-09 4xx and invalid JSON do not retry", async () => {
       error.ingestionError.classification === "permanent",
   );
   assert.equal(attempts, 1);
+});
+
+// prove persisted provider reasons never retain credential-shaped values
+test("provider response reasons are bounded and redacted", async () => {
+  const reason = [
+    "api_key=provider-secret",
+    "Authorization: Basic authorization-secret",
+    "Bearer bearer-secret",
+    "postgresql://worker:database-secret@database/weather",
+  ].join(" ");
+
+  await assert.rejects(
+    fetchJsonWithRetry(new URL("https://example.test/weather"), {
+      fetch: async () =>
+        new Response(JSON.stringify({ error: true, reason }), { status: 400 }),
+      maxAttempts: 1,
+    }),
+    (error) => {
+      // inspect the persistence-facing diagnosis
+      if (!(error instanceof ProviderFailure)) {
+        return false;
+      }
+
+      assert.match(error.ingestionError.message, /\[redacted\]/u);
+      assert.doesNotMatch(error.ingestionError.message, /provider-secret/u);
+      assert.doesNotMatch(error.ingestionError.message, /authorization-secret/u);
+      assert.doesNotMatch(error.ingestionError.message, /bearer-secret/u);
+      assert.doesNotMatch(error.ingestionError.message, /database-secret/u);
+      assert.ok(error.ingestionError.message.length <= 512);
+      return true;
+    },
+  );
 });
 
 // prove capability boundary stays narrow
