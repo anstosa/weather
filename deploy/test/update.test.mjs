@@ -75,7 +75,7 @@ rollback_release`,
   }
 });
 
-test("release environment validator rejects duplicate and unknown state", async () => {
+test("release environment validator requires exact current control metadata", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-release-env-"));
   const valid = join(directory, "valid.env");
   const digest = `sha256:${"a".repeat(64)}`;
@@ -95,20 +95,52 @@ test("release environment validator rejects duplicate and unknown state", async 
     await writeFile(valid, `${content}\n`, { mode: 0o600 });
     const accepted = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
     assert.equal(accepted.status, 0, accepted.stderr);
-    // strip current control metadata
+    // reject missing control metadata
     const legacyContent = content
       .split("\n")
       .filter((line) => !line.startsWith("WEATHER_CONTROL_PLANE_"))
       .join("\n");
     await writeFile(valid, `${legacyContent}\n`, { mode: 0o600 });
-    const acceptedLegacy = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
-    assert.equal(acceptedLegacy.status, 0, acceptedLegacy.stderr);
+    const rejectedLegacy = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
+    assert.notEqual(rejectedLegacy.status, 0);
     await writeFile(valid, `${content}\nWEATHER_RELEASE=2026.08.22-1\n`, { mode: 0o600 });
     const duplicate = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
     assert.notEqual(duplicate.status, 0);
     await writeFile(valid, `${content}\nUNKNOWN_STATE=value\n`, { mode: 0o600 });
     const unknown = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
     assert.notEqual(unknown.status, 0);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("deployment secret validation rejects equal administrator and owner credentials", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-secret-separation-"));
+  const secrets = join(directory, "secrets");
+
+  try {
+    await mkdir(secrets);
+    const values = {
+      cloudflare_tunnel_token: "tunnel",
+      weather_api_password: "api",
+      weather_migration_owner_password: "owner",
+      weather_postgres_admin_password: "owner",
+      weather_postgres_api_password: "api",
+      weather_postgres_ingest_password: "ingest",
+      weather_postgres_owner_password: "owner",
+      weather_worker_ingest_password: "ingest",
+    };
+
+    // provision every required source
+    await Promise.all(
+      Object.entries(values).map(([name, value]) => writeFile(join(secrets, name), `${value}\n`)),
+    );
+    const result = runBash(
+      'source "$1"; deploy_dir="$2"; require_secret_source() { :; }; require_deployment_secrets',
+      [directory],
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /administrator and owner passwords must differ/u);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
@@ -254,6 +286,109 @@ test("release operations reject incompatible deployment control-plane metadata",
       [release],
     );
     assert.notEqual(metadataRejected.status, 0);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("stage rejects an unchecked current release before compatibility migration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-stage-current-gate-"));
+  const releases = join(directory, "releases");
+  const state = join(directory, "state");
+  const sourceEnv = join(directory, "source.env");
+  const transcript = join(directory, "transcript");
+
+  try {
+    await mkdir(releases);
+    await mkdir(state);
+    await writeFile(sourceEnv, "source\n");
+    const result = runBash(
+      `source "$1"
+deploy_dir=$2
+releases_dir=$3
+state_dir=$4
+transcript=$5
+require_file() { :; }
+require_command() { :; }
+require_capacity_gate() { :; }
+env_value() {
+  case "$2" in
+    WEATHER_SERVER_IMAGE) printf 'registry.example/weather-server\n' ;;
+    WEATHER_WEB_IMAGE) printf 'registry.example/weather-web\n' ;;
+    POSTGRES_IMAGE) printf 'postgres\n' ;;
+    CLOUDFLARED_IMAGE) printf 'cloudflare/cloudflared\n' ;;
+  esac
+}
+resolve_arm64_image() { printf '%s@sha256:%064d\n' "${1%%:*}" 0; }
+write_release_env() { : >"$2"; }
+compose() {
+  printf 'compose:%s\n' "$*" >>"$transcript"
+  if [[ "$*" == 'config --images' ]]; then
+    printf '%s\n' \
+      'registry.example/weather-server@sha256:${"a".repeat(64)}' \
+      'registry.example/weather-web@sha256:${"b".repeat(64)}' \
+      'postgres@sha256:${"c".repeat(64)}' \
+      'cloudflare/cloudflared@sha256:${"d".repeat(64)}'
+  fi
+}
+read_optional_release_state() { printf '2026.08.22-1\n'; }
+release_env() { printf '%s/%s.env\n' "$releases_dir" "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() { printf 'gate:%s\n' "$1" >>"$transcript"; return 1; }
+require_deployment_secrets() { printf 'secrets\n' >>"$transcript"; }
+verify_previous_image_compatibility() { printf 'compatibility-migration\n' >>"$transcript"; }
+main stage 2026.08.22-2 --from "$6"`,
+      [directory, releases, state, transcript, sourceEnv],
+    );
+    assert.notEqual(result.status, 0);
+    const output = await readFile(transcript, "utf8");
+    assert.match(output, /gate:.*2026\.08\.22-1\.env/u);
+    assert.doesNotMatch(output, /compatibility-migration/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("activation never migrates or restores an unchecked current release", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-activate-current-gate-"));
+  const scripts = join(directory, "scripts");
+  const transcript = join(directory, "transcript");
+
+  try {
+    await mkdir(scripts);
+    await writeFile(
+      join(scripts, "backup.sh"),
+      '#!/usr/bin/env bash\nprintf \'backup\\n\' >>"$WEATHER_TEST_TRANSCRIPT"\n',
+    );
+    await chmod(join(scripts, "backup.sh"), 0o700);
+    const result = runBash(
+      `source "$1"
+deploy_dir=$2
+state_dir=$2/state
+transcript=$3
+export WEATHER_TEST_TRANSCRIPT=$transcript
+release_env() { printf '/releases/%s.env\n' "$1"; }
+validate_release_env() { :; }
+read_optional_release_state() { printf '2026.08.22-1\n'; }
+require_capacity_gate() { :; }
+require_deployment_secrets() { :; }
+require_control_plane_compatibility() {
+  printf 'gate:%s\n' "$1" >>"$transcript"
+  [[ "$1" != */2026.08.22-1.env ]]
+}
+compose() {
+  printf 'compose:%s\n' "$*" >>"$transcript"
+  [[ "$*" != 'up -d --remove-orphans --wait' ]]
+}
+restore_images() { printf 'restore:%s\n' "$1" >>"$transcript"; }
+record_release_success() { printf 'record:%s\n' "$1" >>"$transcript"; }
+start_release 2026.08.22-2`,
+      [directory, transcript],
+    );
+    assert.notEqual(result.status, 0);
+    const output = await readFile(transcript, "utf8");
+    assert.match(output, /gate:.*2026\.08\.22-2\.env[\s\S]*gate:.*2026\.08\.22-1\.env/u);
+    assert.doesNotMatch(output, /backup|compose:run --rm migration|restore:|record:/u);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
