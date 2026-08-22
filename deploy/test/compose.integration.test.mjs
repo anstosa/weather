@@ -238,6 +238,135 @@ test(
       await assertProbe(environment, override, "denied", "api", "http", "https://example.com/");
       await assertProbe(environment, override, "denied", "web", "http", "https://example.com/");
 
+      const compatibilityEnv = join(directory, "compatibility.env");
+      await writeFile(
+        compatibilityEnv,
+        (await readFile(envFile, "utf8")).replace(
+          /^WEATHER_SERVER_IMAGE=.*$/mu,
+          `WEATHER_SERVER_IMAGE=${projectName}-server:local`,
+        ),
+      );
+      await executeFile(
+        "bash",
+        [
+          "-c",
+          `source "$1"
+override=$2
+compose() {
+  local selected_env=\${WEATHER_ENV_FILE:-$3}
+  docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
+    --file "$4" --file "$5" --file "$override" "$@"
+}
+verify_previous_image_compatibility "$3" "$3"`,
+          "weather-compatibility-test",
+          join(deployRoot, "scripts/update.sh"),
+          override,
+          compatibilityEnv,
+          join(deployRoot, "compose.yaml"),
+          join(deployRoot, "compose.local.yaml"),
+        ],
+        { cwd: repoRoot, env: environment, timeout: 300_000 },
+      );
+
+      const migrationBefore = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT string_agg(name || ':' || checksum, ',' ORDER BY name) FROM schema_migrations",
+        )
+      ).stdout.trim();
+      const controlPlane = (
+        await executeFile(
+          "bash",
+          ["-c", 'source "$1"; control_plane_digest', "weather-control-test", join(deployRoot, "scripts/common.sh")],
+          { cwd: repoRoot, env: environment },
+        )
+      ).stdout.trim();
+      const releaseRoot = join(directory, "release-control");
+      const releases = join(releaseRoot, "releases");
+      const releaseState = join(releaseRoot, "state");
+      await executeFile("mkdir", ["-p", releases, releaseState]);
+      const digest = `sha256:${"a".repeat(64)}`;
+
+      // create two immutable rollback states
+      for (const release of ["2026.08.22-1", "2026.08.22-2"]) {
+        await writeFile(
+          join(releases, `${release}.env`),
+          [
+            `WEATHER_RELEASE=${release}`,
+            `WEATHER_SERVER_IMAGE=registry.example/weather-server@${digest}`,
+            `WEATHER_WEB_IMAGE=registry.example/weather-web@${digest}`,
+            `POSTGRES_IMAGE=postgres@${digest}`,
+            `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${digest}`,
+            "WEATHER_DATABASE_NAME=weather_deploy_test",
+            "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
+            `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
+            "",
+          ].join("\n"),
+          { mode: 0o600 },
+        );
+      }
+      await writeFile(join(releaseState, "current-release"), "2026.08.22-2\n", { mode: 0o600 });
+      await writeFile(join(releaseState, "previous-release"), "2026.08.22-1\n", { mode: 0o600 });
+      await executeFile(
+        "bash",
+        [
+          "-c",
+          `source "$1"
+releases_dir=$2
+state_dir=$3
+override=$4
+require_deployment_secrets() { :; }
+write_active_symlink() { ln -sfn "../releases/$1.env" "$state_dir/active.env"; }
+compose() {
+  local selected_env=\${WEATHER_ENV_FILE:-$5}
+  docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
+    --file "$6" --file "$7" --file "$override" "$@"
+}
+rollback_release`,
+          "weather-rollback-integration",
+          join(deployRoot, "scripts/update.sh"),
+          releases,
+          releaseState,
+          override,
+          envFile,
+          join(deployRoot, "compose.yaml"),
+          join(deployRoot, "compose.local.yaml"),
+        ],
+        { cwd: repoRoot, env: environment, timeout: 300_000 },
+      );
+      assert.equal(await readFile(join(releaseState, "current-release"), "utf8"), "2026.08.22-1\n");
+      const migrationAfter = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT string_agg(name || ':' || checksum, ',' ORDER BY name) FROM schema_migrations",
+        )
+      ).stdout.trim();
+      assert.equal(migrationAfter, migrationBefore);
+
       // prove consumer secret isolation
       await compose(
         environment,
