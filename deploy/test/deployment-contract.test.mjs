@@ -596,6 +596,19 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.doesNotMatch(restore, /ALTER DATABASE[\s\S]*(?:RENAME|OWNER)|mv[\s\S]*postgres/u);
 });
 
+// verify trap-only cleanup portability
+test("trap-only cleanup functions suppress supported ShellCheck diagnostics", () => {
+  const update = read("deploy/scripts/update.sh");
+  assert.match(
+    update,
+    /  # shellcheck disable=SC2317,SC2329\n  cleanup_compatibility\(\) \{/u,
+  );
+  assert.match(
+    update,
+    /  # shellcheck disable=SC2317,SC2329\n  cleanup_initial_activation\(\) \{/u,
+  );
+});
+
 // verify release-state safety
 test("release operations stage, compatibility-check, activate, rollback, and recover Weather only", () => {
   const update = read("deploy/scripts/update.sh");

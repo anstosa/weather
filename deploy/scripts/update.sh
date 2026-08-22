@@ -341,7 +341,7 @@ verify_previous_image_compatibility() (
   provider_network="${WEATHER_COMPOSE_PROJECT_NAME:-weather}_provider_egress"
 
   # clean every disposable compatibility resource
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   cleanup_compatibility() {
     local status=$?
 
@@ -533,7 +533,7 @@ start_release() (
   local initial_started=false
 
   # clean a partially started first activation
-  # shellcheck disable=SC2329
+  # shellcheck disable=SC2317,SC2329
   cleanup_initial_activation() {
     local status=$?
 
