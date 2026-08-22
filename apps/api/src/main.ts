@@ -2,6 +2,7 @@ import {
   createDatabasePool,
   loadDatabaseConfiguration,
 } from "@weather/database";
+import { resolve } from "node:path";
 
 import {
   createDatabaseWeatherReadStore,
@@ -15,8 +16,14 @@ const configuration = await loadDatabaseConfiguration({
     process.env.WEATHER_DATABASE_APPLICATION_NAME ?? "weather-api",
 });
 const pool = createDatabasePool(configuration);
-const store = createDatabaseWeatherReadStore(pool);
-const handler = createWeatherApi(store);
+const store = createDatabaseWeatherReadStore(pool, {
+  migrationDirectory: resolve(
+    process.env.WEATHER_MIGRATION_DIRECTORY ?? "packages/database/migrations",
+  ),
+});
+const handler = createWeatherApi(store, {
+  version: process.env.WEATHER_VERSION ?? "development",
+});
 const server = createWeatherApiServer(handler);
 const port = parsePort(process.env.WEATHER_API_PORT ?? "8080");
 
