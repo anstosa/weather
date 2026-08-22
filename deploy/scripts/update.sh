@@ -365,6 +365,8 @@ rollback_release() {
   printf 'Release %s is active after migration-free rollback.\n' "$previous"
 }
 
+# dispatch one operator action
+main() {
 (($# >= 1)) || { usage >&2; exit 2; }
 action=$1
 shift
@@ -458,3 +460,9 @@ case "$action" in
     ;;
   *) die "unknown action: $action" ;;
 esac
+}
+
+# run only from the release entrypoint
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
