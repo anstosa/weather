@@ -88,7 +88,7 @@ export async function verifyMigrationReadiness(
   migrationDirectory: string,
 ): Promise<MigrationReadiness> {
   const migrations = await loadMigrationFiles(migrationDirectory);
-  const appliedCount = await validateMigrationHistory(pool, migrations);
+  const appliedCount = await validateMigrationHistory(pool, migrations, true);
 
   // require every shipped artifact
   if (appliedCount !== migrations.length) {
@@ -175,6 +175,7 @@ async function loadMigrationFiles(
 async function validateMigrationHistory(
   client: Pick<Pool | PoolClient, "query">,
   migrations: readonly MigrationFile[],
+  allowTrailingApplied = false,
 ): Promise<number> {
   const result = await client.query<{ checksum: string; name: string }>(
     "SELECT name, checksum FROM schema_migrations ORDER BY name",
@@ -183,6 +184,11 @@ async function validateMigrationHistory(
   // require applied history to remain an exact prefix
   for (const [index, applied] of result.rows.entries()) {
     const artifact = migrations[index];
+
+    // allow newer migrations during old-binary readiness
+    if (artifact === undefined && allowTrailingApplied) {
+      continue;
+    }
 
     // reject deleted or retroactively inserted files
     if (artifact === undefined || artifact.name !== applied.name) {
@@ -195,5 +201,5 @@ async function validateMigrationHistory(
     }
   }
 
-  return result.rows.length;
+  return Math.min(result.rows.length, migrations.length);
 }

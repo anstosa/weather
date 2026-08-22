@@ -130,8 +130,21 @@ export interface ApiWeatherRecord {
 }
 
 export interface ApiOptions {
+  readonly logDiagnostic?: (diagnostic: ApiDiagnostic) => void;
   readonly now?: () => Date;
   readonly version?: string;
+}
+
+export interface ApiDiagnostic {
+  readonly errorCode: string | null;
+  readonly errorName: string;
+  readonly event: "api_request_failed";
+  readonly method: string;
+  readonly status: number;
+}
+
+export interface ApiServerOptions {
+  readonly logDiagnostic?: (diagnostic: ApiDiagnostic) => void;
 }
 
 export interface DatabaseStoreOptions {
@@ -175,6 +188,7 @@ type Route =
 const HISTORY_DEFAULT_LIMIT = 100;
 const HISTORY_MAX_LIMIT = 250;
 const WORKER_FRESH_SECONDS = 1_800;
+const DIAGNOSTIC_TOKEN = /^[a-zA-Z0-9_:-]{1,64}$/u;
 const JSON_HEADERS = {
   "cache-control": "no-store",
   "content-type": "application/json; charset=utf-8",
@@ -192,6 +206,25 @@ class HttpError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+// read the production release contract
+export function readApiRelease(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): string {
+  const release = environment.WEATHER_RELEASE ?? "development";
+
+  // reject unsafe public release labels
+  if (release.trim().length === 0 || release.length > 128) {
+    throw new RangeError("WEATHER_RELEASE must be non-empty and bounded");
+  }
+
+  return release;
+}
+
+// write one redacted diagnostic event
+export function writeApiDiagnostic(diagnostic: ApiDiagnostic): void {
+  process.stderr.write(`${JSON.stringify(diagnostic)}\n`);
 }
 
 // bind the API to frozen database reads
@@ -252,6 +285,7 @@ export function createWeatherApi(
   store: WeatherReadStore,
   options: ApiOptions = {},
 ): (request: Request) => Promise<Response> {
+  const logDiagnostic = options.logDiagnostic;
   const now = options.now ?? currentDate;
   const version = options.version ?? "development";
 
@@ -275,6 +309,14 @@ export function createWeatherApi(
       }
     } catch (error) {
       response = errorResponse(error);
+
+      // record only non-public failure details
+      if (!(error instanceof HttpError) && logDiagnostic !== undefined) {
+        emitApiDiagnostic(
+          logDiagnostic,
+          createApiDiagnostic(error, request.method, response.status),
+        );
+      }
     }
 
     return request.method === "HEAD" ? withoutBody(response) : response;
@@ -289,6 +331,7 @@ function currentDate(): Date {
 // adapt the fetch handler to a Node HTTP server
 export function createWeatherApiServer(
   handler: (request: Request) => Promise<Response>,
+  options: ApiServerOptions = {},
 ): Server {
   // bridge one Node request
   return createServer(async (incoming, outgoing) => {
@@ -310,7 +353,15 @@ export function createWeatherApiServer(
       });
 
       outgoing.end(Buffer.from(await response.arrayBuffer()));
-    } catch {
+    } catch (error) {
+      // record only bounded server boundary fields
+      if (options.logDiagnostic !== undefined) {
+        emitApiDiagnostic(
+          options.logDiagnostic,
+          createApiDiagnostic(error, incoming.method ?? "GET", 500),
+        );
+      }
+
       outgoing.statusCode = 500;
       outgoing.setHeader("content-type", JSON_HEADERS["content-type"]);
       outgoing.end(
@@ -1071,7 +1122,7 @@ function errorResponse(error: unknown): Response {
   // expose safe validation feedback
   if (error instanceof RangeError || error instanceof TypeError) {
     return jsonResponse(
-      { error: { code: "invalid_query", message: error.message } },
+      { error: { code: "invalid_query", message: "Request query is invalid" } },
       400,
     );
   }
@@ -1080,6 +1131,46 @@ function errorResponse(error: unknown): Response {
     { error: { code: "internal_error", message: "Unexpected server error" } },
     500,
   );
+}
+
+// build one allowlisted diagnostic event
+function createApiDiagnostic(
+  error: unknown,
+  method: string,
+  status: number,
+): ApiDiagnostic {
+  const errorName =
+    error instanceof Error && DIAGNOSTIC_TOKEN.test(error.name)
+      ? error.name
+      : "UnknownError";
+  const candidateCode =
+    typeof error === "object" && error !== null && "code" in error
+      ? error.code
+      : undefined;
+  const errorCode =
+    typeof candidateCode === "string" && DIAGNOSTIC_TOKEN.test(candidateCode)
+      ? candidateCode
+      : null;
+  const safeMethod = /^[A-Z]{1,16}$/u.test(method) ? method : "UNKNOWN";
+  return {
+    errorCode,
+    errorName,
+    event: "api_request_failed",
+    method: safeMethod,
+    status,
+  };
+}
+
+// isolate diagnostic sink failures
+function emitApiDiagnostic(
+  sink: (diagnostic: ApiDiagnostic) => void,
+  diagnostic: ApiDiagnostic,
+): void {
+  try {
+    sink(diagnostic);
+  } catch {
+    // preserve the public response boundary
+  }
 }
 
 // convert Node request headers to Fetch headers

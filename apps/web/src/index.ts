@@ -632,6 +632,7 @@ function renderHistory(state: DashboardState): string {
 function renderHistoryFilters(state: DashboardState): string {
   let stationOptions = `<option value="">All stations</option>`;
   let sourceOptions = `<option value="">All sources</option>`;
+  const timezone = state.selectedSite?.timezone ?? "UTC";
 
   // collect the selected site's sources
   for (const station of state.selectedSite?.stations ?? []) {
@@ -654,8 +655,8 @@ function renderHistoryFilters(state: DashboardState): string {
         <option value="model_current"${state.filters.sourceKind === "model_current" ? " selected" : ""}>Model current</option>
         <option value="reanalysis"${state.filters.sourceKind === "reanalysis" ? " selected" : ""}>Historical reanalysis</option>
       </select></label>
-      <label><span>From</span><input name="from" type="datetime-local" value="${escapeHtml(toLocalInput(state.filters.from))}"></label>
-      <label><span>To</span><input name="to" type="datetime-local" value="${escapeHtml(toLocalInput(state.filters.to))}"></label>
+      <label><span>From</span><input name="from" type="datetime-local" value="${escapeHtml(toLocalInput(state.filters.from, timezone))}"></label>
+      <label><span>To</span><input name="to" type="datetime-local" value="${escapeHtml(toLocalInput(state.filters.to, timezone))}"></label>
       <button type="submit"${state.loading ? " disabled" : ""}>Apply filters</button>
     </form>
   `;
@@ -710,15 +711,16 @@ function bindDashboardControls(
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(form);
+      const timezone = controller.state.selectedSite?.timezone ?? "UTC";
       void controller.setFilters({
-        ...optionalFilter("from", toInstant(data.get("from"))),
+        ...optionalFilter("from", toInstant(data.get("from"), timezone)),
         ...optionalFilter("sourceId", readFormValue(data.get("sourceId"))),
         ...optionalFilter(
           "sourceKind",
           readFormValue(data.get("sourceKind")) as SiteSource["kind"] | undefined,
         ),
         ...optionalFilter("stationSlug", readFormValue(data.get("stationSlug"))),
-        ...optionalFilter("to", toInstant(data.get("to"))),
+        ...optionalFilter("to", toInstant(data.get("to"), timezone)),
       });
     });
   }
@@ -767,8 +769,11 @@ function readFormValue(value: FormDataEntryValue | null): string | undefined {
   return value;
 }
 
-// convert a local browser input to UTC
-function toInstant(value: FormDataEntryValue | null): string | undefined {
+// convert a site wall clock input to UTC
+function toInstant(
+  value: FormDataEntryValue | null,
+  timezone: string,
+): string | undefined {
   const text = readFormValue(value);
 
   // preserve an empty input
@@ -776,7 +781,7 @@ function toInstant(value: FormDataEntryValue | null): string | undefined {
     return undefined;
   }
 
-  return new Date(text).toISOString();
+  return fromSiteWallClock(text, timezone);
 }
 
 // format a value and unit for table cells
@@ -803,16 +808,169 @@ function formatInstant(value: string, timezone?: string): string {
   }).format(new Date(value));
 }
 
-// render an ISO value for a local input
-function toLocalInput(value?: string): string {
+// render an ISO value for a site input
+function toLocalInput(value: string | undefined, timezone: string): string {
   // preserve an empty filter
   if (value === undefined) {
     return "";
   }
 
-  const date = new Date(value);
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  return toSiteWallClock(value, timezone);
+}
+
+interface WallClockParts {
+  readonly day: number;
+  readonly hour: number;
+  readonly minute: number;
+  readonly month: number;
+  readonly year: number;
+}
+
+// convert one site wall clock to UTC
+export function fromSiteWallClock(value: string, timezone: string): string {
+  const requested = parseWallClock(value);
+  const requestedEpoch = wallClockEpoch(requested);
+  let candidateEpoch = requestedEpoch;
+
+  // converge on the site offset
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const represented = formatWallClockParts(
+      new Date(candidateEpoch),
+      timezone,
+    );
+    const correction = requestedEpoch - wallClockEpoch(represented);
+
+    // stop after an exact wall clock match
+    if (correction === 0) {
+      break;
+    }
+
+    candidateEpoch += correction;
+  }
+
+  const candidate = new Date(candidateEpoch);
+
+  // reject invalid or nonexistent local times
+  if (
+    !Number.isFinite(candidateEpoch) ||
+    formatWallClock(formatWallClockParts(candidate, timezone)) !==
+      formatWallClock(requested)
+  ) {
+    throw new RangeError("history wall clock is not valid in the site timezone");
+  }
+
+  return candidate.toISOString();
+}
+
+// convert one UTC instant to a site wall clock
+export function toSiteWallClock(value: string, timezone: string): string {
+  const instant = new Date(value);
+
+  // reject invalid stored instants
+  if (!Number.isFinite(instant.getTime())) {
+    throw new RangeError("history instant must be valid");
+  }
+
+  return formatWallClock(formatWallClockParts(instant, timezone));
+}
+
+// parse one minute-precision wall clock
+function parseWallClock(value: string): WallClockParts {
+  const match =
+    /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2})$/u.exec(
+      value,
+    );
+
+  // require the browser datetime shape
+  if (match?.groups === undefined) {
+    throw new RangeError("history wall clock must use YYYY-MM-DDTHH:mm");
+  }
+
+  const parts = {
+    day: Number(match.groups.day),
+    hour: Number(match.groups.hour),
+    minute: Number(match.groups.minute),
+    month: Number(match.groups.month),
+    year: Number(match.groups.year),
+  };
+  const normalized = new Date(wallClockEpoch(parts));
+
+  // reject normalized calendar overflow
+  if (
+    normalized.getUTCFullYear() !== parts.year ||
+    normalized.getUTCMonth() + 1 !== parts.month ||
+    normalized.getUTCDate() !== parts.day ||
+    normalized.getUTCHours() !== parts.hour ||
+    normalized.getUTCMinutes() !== parts.minute
+  ) {
+    throw new RangeError("history wall clock must be a valid calendar value");
+  }
+
+  return parts;
+}
+
+// format one instant in a site timezone
+function formatWallClockParts(
+  instant: Date,
+  timezone: string,
+): WallClockParts {
+  const values = new Map<string, string>();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    timeZone: timezone,
+    year: "numeric",
+  });
+
+  // collect named calendar parts
+  for (const part of formatter.formatToParts(instant)) {
+    // ignore locale punctuation
+    if (part.type !== "literal") {
+      values.set(part.type, part.value);
+    }
+  }
+
+  return {
+    day: requireWallClockPart(values, "day"),
+    hour: requireWallClockPart(values, "hour"),
+    minute: requireWallClockPart(values, "minute"),
+    month: requireWallClockPart(values, "month"),
+    year: requireWallClockPart(values, "year"),
+  };
+}
+
+// require one formatted calendar part
+function requireWallClockPart(
+  values: ReadonlyMap<string, string>,
+  name: string,
+): number {
+  const value = values.get(name);
+
+  // fail closed on incomplete formatting
+  if (value === undefined) {
+    throw new RangeError(`site timezone omitted ${name}`);
+  }
+
+  return Number(value);
+}
+
+// compare one minute-precision wall clock
+function formatWallClock(parts: WallClockParts): string {
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}T${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
+}
+
+// project wall clock fields onto a UTC epoch
+function wallClockEpoch(parts: WallClockParts): number {
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+  );
 }
 
 // escape untrusted text for HTML contexts

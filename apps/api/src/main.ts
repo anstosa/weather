@@ -8,6 +8,8 @@ import {
   createDatabaseWeatherReadStore,
   createWeatherApi,
   createWeatherApiServer,
+  readApiRelease,
+  writeApiDiagnostic,
 } from "./index.js";
 
 const configuration = await loadDatabaseConfiguration({
@@ -22,9 +24,12 @@ const store = createDatabaseWeatherReadStore(pool, {
   ),
 });
 const handler = createWeatherApi(store, {
-  version: process.env.WEATHER_RELEASE ?? "development",
+  logDiagnostic: writeApiDiagnostic,
+  version: readApiRelease(process.env),
 });
-const server = createWeatherApiServer(handler);
+const server = createWeatherApiServer(handler, {
+  logDiagnostic: writeApiDiagnostic,
+});
 const port = parsePort(process.env.WEATHER_API_PORT ?? "8080");
 
 server.listen(port, "0.0.0.0");
