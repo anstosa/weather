@@ -6,6 +6,7 @@ import {
   listActiveSites,
   listWeatherHistory,
   verifyMigrationReadiness,
+  type ActiveSiteRow,
   type CurrentQuery,
   type HistoryQuery,
   type WeatherRecordRow,
@@ -21,24 +22,6 @@ import {
 } from "@weather/domain";
 
 type DatabasePool = Parameters<typeof listActiveSites>[0];
-
-export interface ActiveSiteRow {
-  readonly attributionLabel: string;
-  readonly attributionUrl: string;
-  readonly latitude: number;
-  readonly longitude: number;
-  readonly providerKey: string;
-  readonly providerName: string;
-  readonly siteName: string;
-  readonly siteSlug: string;
-  readonly sourceId: string;
-  readonly sourceKey: string;
-  readonly sourceKind: SourceKind;
-  readonly stationKind: StationKind;
-  readonly stationName: string;
-  readonly stationSlug: string;
-  readonly timezone: string;
-}
 
 export interface HealthSnapshot {
   readonly database: "ready" | "unavailable";
@@ -185,7 +168,8 @@ interface SourceDetails {
 type Route =
   | Readonly<{ kind: "health" }>
   | Readonly<{ kind: "sites" }>
-  | Readonly<{ kind: "current" | "history"; siteSlug: string }>;
+  | Readonly<{ kind: "current"; siteSlug: string }>
+  | Readonly<{ kind: "history"; siteSlug: string }>;
 
 const HISTORY_DEFAULT_LIMIT = 100;
 const HISTORY_MAX_LIMIT = 250;
@@ -257,7 +241,7 @@ export function createDatabaseWeatherReadStore(
     },
     // read active metadata
     async listSites() {
-      return (await listActiveSites(pool)) as readonly ActiveSiteRow[];
+      return await listActiveSites(pool);
     },
   };
 }
@@ -442,10 +426,15 @@ function describeWorkerFreshness(
     return "unknown";
   }
 
-  const ageSeconds = Math.max(
-    0,
-    Math.floor((Date.parse(generatedAt) - Date.parse(lastLoopAt)) / 1_000),
+  const ageSeconds = Math.floor(
+    (Date.parse(generatedAt) - Date.parse(lastLoopAt)) / 1_000,
   );
+
+  // fail closed on invalid or future heartbeats
+  if (!Number.isFinite(ageSeconds) || ageSeconds < 0) {
+    return "stale";
+  }
+
   return ageSeconds <= WORKER_FRESH_SECONDS ? "fresh" : "stale";
 }
 
@@ -473,7 +462,15 @@ function matchRoute(pathname: string): Route {
     segments[1] === "v1" &&
     segments[2] === "sites"
   ) {
-    const siteSlug = validateStableKey(segments[3] ?? "", "siteSlug");
+    let siteSlug: string;
+
+    try {
+      siteSlug = validateStableKey(segments[3] ?? "", "siteSlug");
+    } catch {
+      // keep invalid path segments outside the public surface
+      throw new HttpError(404, "not_found", "Endpoint not found");
+    }
+
     const resource = segments[4];
 
     // match current rows

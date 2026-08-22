@@ -120,20 +120,26 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     });
 
     await context.test("history filters and cursor pages are stable and complete", async () => {
-      const firstResponse = await fetch(
-        `${origin}/api/v1/sites/ballydidean/history?limit=1`,
-      );
-      const first = await firstResponse.json();
-      assert.equal(firstResponse.status, 200);
-      assert.equal(first.data.length, 1);
-      assert.equal(typeof first.page.nextCursor, "string");
-      const secondResponse = await fetch(
-        `${origin}/api/v1/sites/ballydidean/history?limit=1&cursor=${encodeURIComponent(first.page.nextCursor)}`,
-      );
-      const second = await secondResponse.json();
-      assert.equal(secondResponse.status, 200);
-      assert.equal(second.data.length, 1);
-      assert.notEqual(second.data[0].id, first.data[0].id);
+      const pagedIds = [];
+      let cursor;
+
+      // traverse the complete stable cursor sequence
+      do {
+        const cursorQuery = cursor === undefined
+          ? ""
+          : `&cursor=${encodeURIComponent(cursor)}`;
+        const response = await fetch(
+          `${origin}/api/v1/sites/ballydidean/history?limit=1${cursorQuery}`,
+        );
+        const page = await response.json();
+        assert.equal(response.status, 200);
+        assert.equal(page.data.length, 1);
+        pagedIds.push(page.data[0].id);
+        cursor = page.page.nextCursor ?? undefined;
+      } while (cursor !== undefined);
+
+      assert.equal(pagedIds.length, 3);
+      assert.equal(new Set(pagedIds).size, 3);
 
       const filteredResponse = await fetch(
         `${origin}/api/v1/sites/ballydidean/history?station=open-meteo-virtual&source=${String(historySource.id)}&sourceKind=reanalysis&from=2026-08-22T04%3A00%3A00Z&to=2026-08-22T05%3A00%3A00Z`,

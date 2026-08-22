@@ -221,6 +221,7 @@ export class WeatherDashboardController {
       ...this.#state,
       current: [],
       error: null,
+      filters: {},
       history: [],
       selectedSite: site,
     };
@@ -243,10 +244,18 @@ export class WeatherDashboardController {
       return;
     }
 
+    const previousPage = this.#state.page;
     this.#cursors.push(this.#state.nextCursor);
-    this.#state = { ...this.#state, page: this.#state.page + 1 };
+    this.#state = { ...this.#state, page: previousPage + 1 };
     this.emit();
     await this.loadHistory();
+
+    // restore last-good pagination after failure
+    if (this.#state.error !== null) {
+      this.#cursors.pop();
+      this.#state = { ...this.#state, page: previousPage };
+      this.emit();
+    }
   }
 
   // return to the preceding cursor page
@@ -256,10 +265,18 @@ export class WeatherDashboardController {
       return;
     }
 
-    this.#cursors.pop();
-    this.#state = { ...this.#state, page: this.#state.page - 1 };
+    const previousPage = this.#state.page;
+    const removedCursor = this.#cursors.pop();
+    this.#state = { ...this.#state, page: previousPage - 1 };
     this.emit();
     await this.loadHistory();
+
+    // restore last-good pagination after failure
+    if (this.#state.error !== null) {
+      this.#cursors.push(removedCursor);
+      this.#state = { ...this.#state, page: previousPage };
+      this.emit();
+    }
   }
 
   // load current and history panels together

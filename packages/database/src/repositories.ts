@@ -13,6 +13,7 @@ import {
   type JsonValue,
   type NormalizedWeatherRecord,
   type SourceKind,
+  type StationKind,
 } from "@weather/domain";
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 
@@ -29,6 +30,24 @@ export interface DueSource extends QueryResultRow {
   readonly sourceConfigFingerprint: string;
   readonly sourceKey: string;
   readonly sourceKind: SourceKind;
+  readonly stationSlug: string;
+  readonly timezone: string;
+}
+
+export interface ActiveSiteRow extends QueryResultRow {
+  readonly attributionLabel: string;
+  readonly attributionUrl: string;
+  readonly latitude: number;
+  readonly longitude: number;
+  readonly providerKey: string;
+  readonly providerName: string;
+  readonly siteName: string;
+  readonly siteSlug: string;
+  readonly sourceId: string;
+  readonly sourceKey: string;
+  readonly sourceKind: SourceKind;
+  readonly stationKind: StationKind;
+  readonly stationName: string;
   readonly stationSlug: string;
   readonly timezone: string;
 }
@@ -757,8 +776,8 @@ export async function updateWorkerHeartbeat(
 }
 
 // list active site and source metadata
-export async function listActiveSites(pool: Pool): Promise<readonly QueryResultRow[]> {
-  const result = await pool.query(
+export async function listActiveSites(pool: Pool): Promise<readonly ActiveSiteRow[]> {
+  const result = await pool.query<ActiveSiteRow>(
     `
       SELECT
         si.slug AS "siteSlug",
