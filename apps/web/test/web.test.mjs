@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildCurrentUrl,
   buildHistoryUrl,
   renderWeatherDashboard,
   WeatherDashboardController,
@@ -30,6 +31,18 @@ const site = {
           providerName: "Open-Meteo",
           provenanceLabel: "model-derived current conditions",
         },
+        {
+          attribution: {
+            label: "Weather data by Open-Meteo",
+            url: "https://open-meteo.com/",
+          },
+          id: "11",
+          key: "open-meteo-reanalysis-v1",
+          kind: "reanalysis",
+          providerKey: "open-meteo",
+          providerName: "Open-Meteo",
+          provenanceLabel: "historical reanalysis",
+        },
       ],
     },
   ],
@@ -43,6 +56,15 @@ const record = {
     status: "fresh",
   },
   id: "101",
+  metadata: {
+    device: { model: "virtual-grid", serial: null, vendor: "Open-Meteo" },
+    provider: { dataset: "best_match", elevationM: 17, gridCell: null },
+    quality: null,
+    upstream: {
+      model: "best_match",
+      timezone: "America/Los_Angeles",
+    },
+  },
   metrics: {
     apparentTemperatureC: 15.5,
     cloudCoverPercent: 42,
@@ -72,11 +94,14 @@ const record = {
   validAt: "2026-08-22T04:50:00.000Z",
 };
 
-test("dashboard renders accessible current, filters, pagination, and attribution", () => {
+test("dashboard renders station/source controls, units, metadata, and persistent attribution", () => {
   const html = renderWeatherDashboard({
     current: [record],
-    error: null,
-    filters: {},
+    error: "The latest refresh failed",
+    filters: {
+      sourceId: "10",
+      stationSlug: "open-meteo-virtual",
+    },
     history: [record],
     loading: false,
     nextCursor: "next-page",
@@ -87,37 +112,53 @@ test("dashboard renders accessible current, filters, pagination, and attribution
 
   assert.match(html, /Ballydidean weather/u);
   assert.match(html, /aria-label="Weather location"/u);
+  assert.match(html, /name="stationSlug"/u);
+  assert.match(html, /name="sourceId"/u);
+  assert.match(html, /name="sourceKind"/u);
   assert.match(html, /Nearby model value/u);
   assert.match(html, /not an on-site sensor reading/u);
-  assert.match(html, /Weather data by Open-Meteo/u);
-  assert.match(html, /data-history-filters/u);
-  assert.match(html, /<table>/u);
+  assert.match(html, /best_match/u);
+  assert.match(html, /<th scope="col">Temperature \(°C\)<\/th>/u);
+  assert.match(html, /<th scope="col">Source and provenance<\/th>/u);
   assert.match(html, /aria-label="History pages"/u);
+  assert.match(html, /https:\/\/open-meteo\.com\//u);
+  assert.match(html, /https:\/\/creativecommons\.org\/licenses\/by\/4\.0\//u);
+  assert.match(html, /CC BY 4\.0/u);
+  assert.match(html, /The latest refresh failed/u);
+  assert.match(html, /16\.2/u);
 });
 
-test("history URLs preserve filters and opaque cursors", () => {
-  const url = new URL(
-    buildHistoryUrl(
-      "/api/",
-      "ballydidean",
-      {
-        from: "2026-08-01T00:00:00.000Z",
-        sourceId: "11",
-        sourceKind: "reanalysis",
-        to: "2026-08-22T00:00:00.000Z",
-      },
-      "opaque cursor",
-    ),
+test("current and history URLs use the versioned API and frozen filter names", () => {
+  const filters = {
+    from: "2026-08-01T00:00:00.000Z",
+    sourceId: "11",
+    sourceKind: "reanalysis",
+    stationSlug: "open-meteo-virtual",
+    to: "2026-08-22T00:00:00.000Z",
+  };
+  const current = new URL(
+    buildCurrentUrl("/api/v1/", "ballydidean", filters),
+    "http://weather.test",
+  );
+  const history = new URL(
+    buildHistoryUrl("/api/v1/", "ballydidean", filters, "opaque cursor"),
     "http://weather.test",
   );
 
-  assert.equal(url.pathname, "/api/sites/ballydidean/history");
-  assert.equal(url.searchParams.get("source"), "11");
-  assert.equal(url.searchParams.get("kind"), "reanalysis");
-  assert.equal(url.searchParams.get("cursor"), "opaque cursor");
+  assert.equal(current.pathname, "/api/v1/sites/ballydidean/current");
+  assert.equal(current.searchParams.get("station"), "open-meteo-virtual");
+  assert.equal(current.searchParams.get("source"), "11");
+  assert.equal(current.searchParams.has("from"), false);
+  assert.equal(history.pathname, "/api/v1/sites/ballydidean/history");
+  assert.equal(history.searchParams.get("station"), "open-meteo-virtual");
+  assert.equal(history.searchParams.get("source"), "11");
+  assert.equal(history.searchParams.get("sourceKind"), "reanalysis");
+  assert.equal(history.searchParams.has("kind"), false);
+  assert.equal(history.searchParams.get("cursor"), "opaque cursor");
+  assert.equal(history.searchParams.get("limit"), "100");
 });
 
-test("controller defaults to Ballydidean and follows cursor pagination", async () => {
+test("controller filters both current and history and follows cursor pagination", async () => {
   const requested = [];
 
   // serve deterministic browser contracts
@@ -126,36 +167,98 @@ test("controller defaults to Ballydidean and follows cursor pagination", async (
     requested.push(url);
 
     // return site metadata
-    if (url.endsWith("/sites")) {
+    if (url.endsWith("/api/v1/sites")) {
       return Response.json({ data: [site] });
     }
 
     // return current conditions
-    if (url.endsWith("/current")) {
+    if (url.includes("/current")) {
       return Response.json({ data: [record], site });
     }
 
     const nextCursor = url.includes("cursor=") ? null : "page-two";
     return Response.json({
       data: [record],
-      page: { limit: 25, nextCursor },
+      page: { limit: 100, nextCursor },
       site,
     });
   }
 
   const controller = new WeatherDashboardController({
-    apiBaseUrl: "http://weather.test",
     fetcher,
   });
   await controller.initialize();
+  await controller.setFilters({
+    sourceId: "11",
+    sourceKind: "reanalysis",
+    stationSlug: "open-meteo-virtual",
+  });
+  await controller.nextPage();
 
   assert.equal(controller.state.selectedSite?.slug, "ballydidean");
   assert.equal(controller.state.current.length, 1);
-  assert.equal(controller.state.nextCursor, "page-two");
-
-  await controller.nextPage();
-
   assert.equal(controller.state.page, 1);
   assert.equal(controller.state.nextCursor, null);
-  assert.ok(requested.some((url) => url.includes("cursor=page-two")));
+  assert.ok(
+    requested.some(
+      // require current selection filters
+      (url) =>
+        url.includes("/api/v1/sites/ballydidean/current") &&
+        url.includes("station=open-meteo-virtual") &&
+        url.includes("source=11"),
+    ),
+  );
+  assert.ok(
+    requested.some(
+      // require history selection filters
+      (url) =>
+        url.includes("sourceKind=reanalysis") &&
+        url.includes("cursor=page-two"),
+    ),
+  );
+});
+
+test("controller retains last-good data through failure and clears the error on recovery", async () => {
+  let failReads = false;
+
+  // toggle deterministic API failure
+  async function fetcher(input) {
+    const url = String(input);
+
+    // retain site discovery
+    if (url.endsWith("/api/v1/sites")) {
+      return Response.json({ data: [site] });
+    }
+
+    // fail one refresh cycle
+    if (failReads) {
+      return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+    }
+
+    // return current data
+    if (url.includes("/current")) {
+      return Response.json({ data: [record], site });
+    }
+
+    return Response.json({
+      data: [record],
+      page: { limit: 100, nextCursor: null },
+      site,
+    });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher });
+  await controller.initialize();
+  failReads = true;
+  await controller.loadSelectedSite();
+
+  assert.equal(controller.state.current[0]?.id, "101");
+  assert.equal(controller.state.history[0]?.id, "101");
+  assert.match(controller.state.error ?? "", /status 503/u);
+
+  failReads = false;
+  await controller.loadSelectedSite();
+
+  assert.equal(controller.state.error, null);
+  assert.equal(controller.state.current[0]?.id, "101");
 });
