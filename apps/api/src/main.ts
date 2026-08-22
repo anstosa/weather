@@ -22,7 +22,7 @@ const store = createDatabaseWeatherReadStore(pool, {
   ),
 });
 const handler = createWeatherApi(store, {
-  version: process.env.WEATHER_VERSION ?? "development",
+  version: process.env.WEATHER_RELEASE ?? "development",
 });
 const server = createWeatherApiServer(handler);
 const port = parsePort(process.env.WEATHER_API_PORT ?? "8080");

@@ -172,6 +172,7 @@ test("only exact versioned GET and HEAD routes are public", async () => {
     "/api/v1/sites/",
     "/api/v1/sites/ballydidean",
     "/api/v1/sites/ballydidean/current/extra",
+    "/api/v1/sites/Bad/current",
     "/api/v2/sites",
   ];
 
@@ -192,7 +193,7 @@ test("mutation methods fail on every documented route without store writes", asy
   ];
 
   // verify the complete mutation matrix
-  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+  for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
     // verify every documented route
     for (const path of paths) {
       const response = await handler(
@@ -281,6 +282,8 @@ test("history uses frozen filter names, defaults, maximum, and opaque cursor", a
   assert.equal(historyQueries[1].sourceKind, "reanalysis");
   assert.equal(historyQueries[1].stationSlug, "open-meteo-virtual");
   assert.equal(historyQueries[1].sourceId, "11");
+  assert.equal(historyQueries[1].from, "2026-08-01T00:00:00.000Z");
+  assert.equal(historyQueries[1].to, "2026-08-22T00:00:00.000Z");
   assert.equal(historyQueries[1].limit, 3);
 
   const maximum = await handler(
@@ -381,6 +384,27 @@ test("health failures stay live, fail readiness, and redact raw database errors"
     worker: { freshness: "unknown" },
   });
   assert.doesNotMatch(JSON.stringify(body), /password|postgres|host|stack|error/u);
+});
+
+test("future worker heartbeats are stale without changing database readiness", async () => {
+  const { handler } = createFixture({
+    // simulate clock skew beyond the health allowance
+    async getHealth() {
+      return {
+        database: "ready",
+        migration: { status: "current", version: "0001_initial_weather.sql" },
+        workerLastLoopAt: "2026-08-22T05:30:01.000Z",
+      };
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data.ready, true);
+  assert.equal(body.data.worker.freshness, "stale");
 });
 
 test("Node server exposes the versioned handler end to end", async (context) => {

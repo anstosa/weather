@@ -7,6 +7,7 @@ import test from "node:test";
 
 import {
   getCurrentWeather,
+  listActiveSites,
   listWeatherHistory,
   verifyMigrationReadiness,
 } from "@weather/database";
@@ -50,6 +51,17 @@ test("current SQL enforces active joins and parameterized station/source filters
   assert.match(queries[0].text, /wr\.provider_metadata AS "providerMetadata"/u);
 });
 
+test("site discovery requires every public entity to remain active", async () => {
+  const { pool, queries } = createCapturingPool();
+  await listActiveSites(pool);
+
+  assert.equal(queries.length, 1);
+  assert.match(queries[0].text, /WHERE si\.active/u);
+  assert.match(queries[0].text, /JOIN stations st ON st\.site_id = si\.id AND st\.active/u);
+  assert.match(queries[0].text, /JOIN sources s ON s\.station_id = st\.id AND s\.active/u);
+  assert.match(queries[0].text, /JOIN providers p ON p\.id = s\.provider_id AND p\.active/u);
+});
+
 test("history SQL enforces active predicates, frozen filters, order, and bounded lookahead", async () => {
   const { pool, queries } = createCapturingPool();
   await listWeatherHistory(pool, {
@@ -79,6 +91,12 @@ test("history SQL enforces active predicates, frozen filters, order, and bounded
   assert.match(queries[0].text, /st\.active/u);
   assert.match(queries[0].text, /s\.active/u);
   assert.match(queries[0].text, /p\.active/u);
+  assert.match(queries[0].text, /st\.slug = \$2/u);
+  assert.match(queries[0].text, /wr\.source_id = \$3/u);
+  assert.match(queries[0].text, /wr\.source_kind = \$4/u);
+  assert.match(queries[0].text, /wr\.valid_at >= \$5/u);
+  assert.match(queries[0].text, /wr\.valid_at < \$6/u);
+  assert.match(queries[0].text, /\(wr\.valid_at, wr\.id\) < \(\$7::timestamptz, \$8::bigint\)/u);
   assert.match(queries[0].text, /ORDER BY wr\.valid_at DESC, wr\.id DESC/u);
   assert.match(queries[0].text, /LIMIT \$9/u);
 

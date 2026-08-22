@@ -49,6 +49,25 @@ const site = {
   timezone: "America/Los_Angeles",
 };
 
+// represent an incompatible site selection
+const secondSite = {
+  ...site,
+  name: "Coupeville",
+  slug: "coupeville",
+  stations: [
+    {
+      ...site.stations[0],
+      slug: "coupeville-virtual",
+      sources: [
+        {
+          ...site.stations[0].sources[0],
+          id: "20",
+        },
+      ],
+    },
+  ],
+};
+
 const record = {
   freshness: {
     ageSeconds: 600,
@@ -261,4 +280,95 @@ test("controller retains last-good data through failure and clears the error on 
 
   assert.equal(controller.state.error, null);
   assert.equal(controller.state.current[0]?.id, "101");
+});
+
+test("controller clears site-scoped filters before loading another site", async () => {
+  const requested = [];
+
+  // serve two incompatible site selections
+  async function fetcher(input) {
+    const url = String(input);
+    requested.push(url);
+
+    // return both active sites
+    if (url.endsWith("/api/v1/sites")) {
+      return Response.json({ data: [site, secondSite] });
+    }
+
+    const selectedSite = url.includes("/coupeville/") ? secondSite : site;
+
+    // return one current row
+    if (url.includes("/current")) {
+      return Response.json({ data: [record], site: selectedSite });
+    }
+
+    return Response.json({
+      data: [record],
+      page: { limit: 100, nextCursor: null },
+      site: selectedSite,
+    });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher });
+  await controller.initialize();
+  await controller.setFilters({
+    sourceId: "10",
+    stationSlug: "open-meteo-virtual",
+  });
+  await controller.selectSite("coupeville");
+
+  assert.deepEqual(controller.state.filters, {});
+  assert.equal(controller.state.page, 0);
+  assert.ok(
+    requested.some(
+      // require unfiltered reads for the new site
+      (url) => url.endsWith("/api/v1/sites/coupeville/current"),
+    ),
+  );
+  assert.ok(
+    requested.some(
+      // require unfiltered history for the new site
+      (url) => url === "/api/v1/sites/coupeville/history?limit=100",
+    ),
+  );
+});
+
+test("failed next-page reads keep the prior page label and cursor", async () => {
+  let failReads = false;
+
+  // serve one successful page then fail pagination
+  async function fetcher(input) {
+    const url = String(input);
+
+    // return site metadata
+    if (url.endsWith("/api/v1/sites")) {
+      return Response.json({ data: [site] });
+    }
+
+    // preserve current reads
+    if (url.includes("/current")) {
+      return Response.json({ data: [record], site });
+    }
+
+    // fail the attempted next page
+    if (failReads) {
+      return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+    }
+
+    return Response.json({
+      data: [record],
+      page: { limit: 100, nextCursor: "page-two" },
+      site,
+    });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher });
+  await controller.initialize();
+  failReads = true;
+  await controller.nextPage();
+
+  assert.equal(controller.state.page, 0);
+  assert.equal(controller.state.nextCursor, "page-two");
+  assert.equal(controller.state.history[0]?.id, "101");
+  assert.match(controller.state.error ?? "", /status 503/u);
 });
