@@ -872,7 +872,35 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
 
       // prove named-volume persistence across recreation
       await compose(environment, override, "down", "--remove-orphans");
-      await compose(environment, override, "up", "--detach", "--build", "--wait");
+      const recoveredEnvironment = {
+        ...environment,
+        WEATHER_LOCAL_CLOUDFLARED_IMAGE: previousCloudflaredImage,
+        WEATHER_LOCAL_POSTGRES_IMAGE: previousPostgresImage,
+        WEATHER_LOCAL_SERVER_IMAGE: previousServerImage,
+        WEATHER_LOCAL_WEB_IMAGE: previousWebImage,
+      };
+      await compose(
+        recoveredEnvironment,
+        override,
+        "up",
+        "--detach",
+        "--no-deps",
+        "--force-recreate",
+        "--wait",
+        "postgres",
+      );
+      await compose(
+        recoveredEnvironment,
+        override,
+        "up",
+        "--detach",
+        "--no-deps",
+        "--wait",
+        "api",
+        "worker",
+        "web",
+        "cloudflared",
+      );
       const secondSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(secondSites.status, 200);
       assert.equal(await secondSites.text(), firstBody);
