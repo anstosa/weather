@@ -261,7 +261,9 @@ test(
     const targetPostgresImage = `${projectName}-postgres:2026.08.22-2`;
     const previousCloudflaredImage = `${projectName}-cloudflared:2026.08.22-1`;
     const targetCloudflaredImage = `${projectName}-cloudflared:2026.08.22-2`;
-    const releaseImages = [
+    const disposableImages = [
+      environment.WEATHER_LOCAL_SERVER_IMAGE,
+      environment.WEATHER_LOCAL_WEB_IMAGE,
       previousServerImage,
       targetServerImage,
       previousWebImage,
@@ -1011,8 +1013,8 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
       await compose(environment, override, "down", "--volumes", "--remove-orphans").catch(
         () => undefined,
       );
-      // remove every disposable release image
-      for (const image of releaseImages) {
+      // remove every disposable application image
+      for (const image of disposableImages) {
         await executeFile("docker", ["image", "rm", "--force", image]).catch(() => undefined);
       }
       await rm(directory, { force: true, recursive: true });
