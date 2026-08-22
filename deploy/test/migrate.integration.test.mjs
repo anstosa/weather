@@ -102,6 +102,7 @@ test(
     let server;
     let pool;
     let ingestPool;
+    let migrationLockClient;
 
     try {
       server = await startPostgres(17, "migrate-entrypoint");
@@ -186,6 +187,37 @@ test(
         { id: firstEvent.bootstrap.stationId, slug: "open-meteo-virtual" },
       ]);
 
+      // hold the production migration lock
+      migrationLockClient = await pool.connect();
+      await migrationLockClient.query("SELECT pg_advisory_lock($1::bigint)", [
+        8_032_416_683_782_917,
+      ]);
+      const contentionStartedAt = performance.now();
+      await assert.rejects(
+        executeFile(process.execPath, ["deploy/scripts/migrate.mjs"], {
+          cwd: repoRoot,
+          env: {
+            ...environment,
+            WEATHER_DATABASE_LOCK_TIMEOUT_MS: "250",
+            WEATHER_DATABASE_STATEMENT_TIMEOUT_MS: "5000",
+          },
+          timeout: 5_000,
+        }),
+        // require the database lock timeout
+        (error) => {
+          assert.match(error.stderr, /canceling statement due to lock timeout/u);
+          return true;
+        },
+      );
+      const contentionElapsedMs = performance.now() - contentionStartedAt;
+      assert.equal(contentionElapsedMs >= 200, true);
+      assert.equal(contentionElapsedMs < 2_500, true);
+      await migrationLockClient.query("SELECT pg_advisory_unlock($1::bigint)", [
+        8_032_416_683_782_917,
+      ]);
+      migrationLockClient.release();
+      migrationLockClient = undefined;
+
       await executeFile(
         "psql",
         [
@@ -231,6 +263,7 @@ test(
       );
     } finally {
       // clean disposable resources
+      migrationLockClient?.release();
       await ingestPool?.end();
       await pool?.end();
       // stop only a started container
