@@ -97,17 +97,23 @@ drops only a unique compatibility database, applies the candidate's trailing
 migrations, runs the previous API image's `/api/v1/health`, `/api/v1/sites`,
 `/current`, and `/history` reads, and runs one previous worker loop against a
 credential-free deterministic provider stub. The existing release must match
-the installed control plane before these checks. Only after every real previous-
-image check passes, staging records a private authorization bound to that
+the installed control plane before these checks. The same previous API and
+worker images must first reject the candidate ledger without the exact
+authorization, so a binary that ignores the authorization contract cannot be
+staged for rollback. Only after every rejection and real previous-image check
+passes, staging publishes a no-replace private authorization bound to that
 previous release and the exact ordered candidate migration ledger. The first
 release records compatibility as not applicable.
 
 Activate requires the pre-provisioned Weather connector token, creates an
 encrypted pre-migration backup, runs forward-only checked migrations, starts
 the project with Compose health gates, and records the release last. It validates
-the existing release against the installed control plane before backup,
-migration, or any failure restoration. The public hostname route remains a
-separate, leader-authorized post-activation operation.
+the existing release against the installed control plane and validates its
+rollback authorization before backup or migration. Activation records the
+target schema release before the first migration, so a partial migration fails
+closed into authorized recovery or operator restore of the encrypted backup.
+The public hostname route remains a separate, leader-authorized post-activation
+operation.
 
 After a 15-minute ingestion soak, require at least 512 MiB available memory,
 load no greater than `0.75 * CPUs`, no OOM/restart/limit breach, swap no greater

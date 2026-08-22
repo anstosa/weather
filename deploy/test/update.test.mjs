@@ -40,9 +40,12 @@ restore_images /releases/current.env`,
   }
 });
 
+// verify private immutable authorization state
 test("migration authorization is private exact and release-bound", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-migration-authorization-"));
   const releases = join(directory, "releases");
+  const stagedAuthorization = join(releases, ".2026.08.22-2.authorization.partial");
+  const replacementAuthorization = join(releases, ".2026.08.22-2.replacement.partial");
   const authorization = join(releases, "2026.08.22-2.migration-authorization");
 
   try {
@@ -51,8 +54,9 @@ test("migration authorization is private exact and release-bound", async () => {
       `source "$1"
 releases_dir=$2
 write_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2" "${"a".repeat(64)}"
-validate_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2"`,
-      [releases, authorization],
+publish_migration_authorization "$3" "$4"
+validate_migration_authorization "$4" "2026.08.22-1" "2026.08.22-2"`,
+      [releases, stagedAuthorization, authorization],
     );
     assert.equal(result.status, 0, result.stderr);
     assert.equal((await stat(authorization)).mode & 0o777, 0o600);
@@ -62,6 +66,20 @@ validate_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2"`,
         `WEATHER_MIGRATION_AUTHORIZATION_RELEASE=2026.08.22-1\n` +
         `WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE=2026.08.22-2\n` +
         `WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=${"a".repeat(64)}\n`,
+    );
+    const replacement = runBash(
+      `source "$1"
+releases_dir=$2
+write_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2" "${"b".repeat(64)}"
+publish_migration_authorization "$3" "$4"`,
+      [releases, replacementAuthorization, authorization],
+    );
+    assert.notEqual(replacement.status, 0);
+    assert.match(replacement.stderr, /migration authorization already exists/u);
+    assert.match(await readFile(authorization, "utf8"), new RegExp(`${"a".repeat(64)}\\n$`, "u"));
+    assert.match(
+      await readFile(replacementAuthorization, "utf8"),
+      new RegExp(`${"b".repeat(64)}\\n$`, "u"),
     );
     await writeFile(authorization, `${await readFile(authorization, "utf8")}UNKNOWN=value\n`, {
       mode: 0o600,
@@ -202,14 +220,13 @@ start_release 2026.08.22-2`,
     );
     assert.notEqual(result.status, 0);
     const output = await readFile(transcript, "utf8");
-    assert.match(output, /compose:run --rm migration/u);
     assert.match(
       output,
-      /state:.*schema-release:2026\.08\.22-2[\s\S]*start-exact:.*2026\.08\.22-2\.env/u,
+      /validate-auth:.*2026\.08\.22-2\.migration-authorization:2026\.08\.22-1:2026\.08\.22-2[\s\S]*state:.*schema-release:2026\.08\.22-2[\s\S]*compose:run --rm migration/u,
     );
     assert.match(
       output,
-      /validate-auth:.*2026\.08\.22-2\.migration-authorization:2026\.08\.22-1:2026\.08\.22-2[\s\S]*restore:.*2026\.08\.22-1\.env:2026\.08\.22-1:2026\.08\.22-2/u,
+      /compose:run --rm migration[\s\S]*start-exact:.*2026\.08\.22-2\.env[\s\S]*validate-auth:.*2026\.08\.22-2\.migration-authorization:2026\.08\.22-1:2026\.08\.22-2[\s\S]*restore:.*2026\.08\.22-1\.env:2026\.08\.22-1:2026\.08\.22-2/u,
     );
   } finally {
     await rm(directory, { force: true, recursive: true });
@@ -253,12 +270,20 @@ test("persistent authorization is written only after API and worker compatibilit
   const compatibility = update
     .split("verify_previous_image_compatibility() (")[1]
     .split("\n)\n\n# reconcile retained PostgreSQL")[0];
+  const workerRejection = compatibility.indexOf(
+    "previous worker accepted unproven migration history",
+  );
   const workerGate = compatibility.indexOf("previous worker compatibility failed");
+  const apiRejection = compatibility.indexOf(
+    "previous API accepted invalid migration authorization",
+  );
   const apiGate = compatibility.indexOf("previous API compatibility failed");
   const publication = compatibility.lastIndexOf("write_migration_authorization");
 
-  assert.equal(workerGate >= 0, true);
-  assert.equal(apiGate > workerGate, true);
+  assert.equal(workerRejection >= 0, true);
+  assert.equal(workerGate > workerRejection, true);
+  assert.equal(apiRejection > workerGate, true);
+  assert.equal(apiGate > apiRejection, true);
   assert.equal(publication > apiGate, true);
 });
 

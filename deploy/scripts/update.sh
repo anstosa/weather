@@ -95,6 +95,26 @@ write_migration_authorization() {
   validate_migration_authorization "$path" "$runtime_release" "$schema_release"
 }
 
+# publish one authorization without replacement
+publish_migration_authorization() {
+  local source=$1
+  local target=$2
+  local runtime_release schema_release
+  require_canonical_descendant "$source" "$releases_dir" "migration authorization"
+  require_canonical_descendant "$target" "$releases_dir" "migration authorization"
+  require_file "$source"
+  runtime_release=$(env_value "$source" WEATHER_MIGRATION_AUTHORIZATION_RELEASE)
+  schema_release=$(env_value "$source" WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE)
+  validate_migration_authorization "$source" "$runtime_release" "$schema_release"
+
+  # reject preexisting or raced publication
+  [[ ! -e "$target" && ! -L "$target" ]] ||
+    die "migration authorization already exists"
+  ln "$source" "$target" || die "migration authorization already exists or could not be published"
+  rm -f "$source"
+  validate_migration_authorization "$target" "$runtime_release" "$schema_release"
+}
+
 # hash one exact ordered migration ledger
 migration_history_sha256() {
   local env_file=$1
@@ -300,19 +320,23 @@ verify_previous_image_compatibility() (
   local target_env=$1
   local previous_env=$2
   local authorization_path=$3
-  local candidate api_container provider_container provider_image active_database provider_network
-  local previous_release target_release history_sha256
+  local candidate api_container unproven_api_container provider_container provider_image
+  local active_database provider_network previous_release target_release history_sha256
+  local invalid_history_sha256 unproven_status
   local candidate_created=false
   local api_started=false
+  local unproven_api_started=false
   local provider_started=false
   local before_successes after_successes
   candidate="weather_compat_$(date -u +%Y%m%d%H%M%S)_$$"
   api_container="${candidate}_api"
+  unproven_api_container="${candidate}_api_unproven"
   provider_container="${candidate}_provider"
   provider_image=$(env_value "$target_env" WEATHER_SERVER_IMAGE)
   active_database=$(env_value "$previous_env" WEATHER_DATABASE_NAME)
   previous_release=$(env_value "$previous_env" WEATHER_RELEASE)
   target_release=$(env_value "$target_env" WEATHER_RELEASE)
+  invalid_history_sha256=$(printf '%064d' 0)
   provider_network="${WEATHER_COMPOSE_PROJECT_NAME:-weather}_provider_egress"
 
   # clean every disposable compatibility resource
@@ -323,6 +347,11 @@ verify_previous_image_compatibility() (
     # remove a started API probe
     if [[ "$api_started" == true ]]; then
       docker rm --force "$api_container" >/dev/null 2>&1 || status=1
+    fi
+
+    # remove a started rejection probe
+    if [[ "$unproven_api_started" == true ]]; then
+      docker rm --force "$unproven_api_container" >/dev/null 2>&1 || status=1
     fi
 
     # remove a started provider stub
@@ -382,6 +411,14 @@ verify_previous_image_compatibility() (
   before_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
+
+  # prove the previous worker rejects missing authorization
+  if WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
+    --env WEATHER_DATABASE_NAME="$candidate" \
+    worker node apps/worker/dist/health.js >/dev/null 2>&1; then
+    die "previous worker accepted unproven migration history"
+  fi
+
   WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
     --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
@@ -392,6 +429,29 @@ verify_previous_image_compatibility() (
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
   (( after_successes > before_successes )) || die "previous worker compatibility failed"
+
+  WEATHER_ENV_FILE=$previous_env compose run --detach \
+    --name "$unproven_api_container" --no-deps \
+    --env WEATHER_DATABASE_NAME="$candidate" \
+    --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
+    --env WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256="$invalid_history_sha256" \
+    api node apps/api/dist/main.js >/dev/null
+  unproven_api_started=true
+
+  # require the previous API to reject a wrong digest
+  for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
+    # inspect the first reachable health response
+    if unproven_status=$(docker exec "$unproven_api_container" node -e \
+      "fetch('http://127.0.0.1:3001/api/v1/health').then(r=>console.log(r.status)).catch(()=>process.exit(1))" 2>/dev/null); then
+      [[ "$unproven_status" == 503 ]] ||
+        die "previous API accepted invalid migration authorization"
+      break
+    fi
+    sleep 1
+  done
+  ((_attempt < 30)) || die "previous API did not reject invalid migration authorization"
+  docker rm --force "$unproven_api_container" >/dev/null
+  unproven_api_started=false
 
   WEATHER_ENV_FILE=$previous_env compose run --detach --name "$api_container" --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
@@ -493,6 +553,12 @@ start_release() (
     validate_release_env "$current_env" "$current"
     require_control_plane_compatibility "$current_env"
     backup_env=$current_env
+
+    # require rollback proof before migration
+    if [[ "$current" != "$target" ]]; then
+      authorization_path=$(migration_authorization "$target")
+      validate_migration_authorization "$authorization_path" "$current" "$target"
+    fi
   else
     backup_env=$activation_env
     initial_started=true
@@ -504,9 +570,10 @@ start_release() (
   "$deploy_dir/scripts/backup.sh" --env-file "$backup_env" ||
     die "pre-migration backup failed"
 
+  # record schema intent before the first migration
+  write_private_state "$state_dir/schema-release" "$target"
   printf 'Applying candidate migrations...\n'
   WEATHER_ENV_FILE=$activation_env compose run --rm migration
-  write_private_state "$state_dir/schema-release" "$target"
 
   printf 'Starting release %s...\n' "$target"
   if ! start_exact_release "$activation_env"; then
@@ -634,7 +701,7 @@ case "$action" in
 
     # publish authorization before the release commit marker
     if [[ -n "$temporary_authorization" ]]; then
-      mv "$temporary_authorization" "$authorization"
+      publish_migration_authorization "$temporary_authorization" "$authorization"
       temporary_authorization=
     fi
 
