@@ -66,14 +66,6 @@ export interface SiteConfiguration {
   readonly version: number;
 }
 
-interface RawSiteConfiguration {
-  readonly provider?: Record<string, unknown>;
-  readonly site?: Record<string, unknown>;
-  readonly sources?: readonly Record<string, unknown>[];
-  readonly station?: Record<string, unknown>;
-  readonly version?: unknown;
-}
-
 // load database settings without logging secrets
 export async function loadDatabaseConfiguration(
   environment: NodeJS.ProcessEnv = process.env,
@@ -139,26 +131,33 @@ export function toPoolConfiguration(
 export async function loadSiteConfiguration(
   configurationPath: string,
 ): Promise<SiteConfiguration> {
-  const raw = JSON.parse(
-    await readFile(configurationPath, "utf8"),
-  ) as RawSiteConfiguration;
+  const raw: unknown = JSON.parse(await readFile(configurationPath, "utf8"));
 
   return parseSiteConfiguration(raw);
 }
 
 // parse configuration at the trust boundary
-export function parseSiteConfiguration(raw: RawSiteConfiguration): SiteConfiguration {
+export function parseSiteConfiguration(raw: unknown): SiteConfiguration {
+  const root = requireObject(raw, "site configuration");
+
   // require the initial version
-  if (raw.version !== 1) {
+  if (root.version !== 1) {
     throw new RangeError("site configuration version must be 1");
   }
 
-  const site = requireObject(raw.site, "site");
-  const station = requireObject(raw.station, "station");
-  const provider = requireObject(raw.provider, "provider");
+  const site = requireObject(root.site, "site");
+  const station = requireObject(root.station, "station");
+  const provider = requireObject(root.provider, "provider");
   const coordinates = validateCoordinates(
     requireNumber(site.latitude, "site.latitude"),
     requireNumber(site.longitude, "site.longitude"),
+  );
+  const siteKey = validateStableKey(
+    requireString(site.key, "site.key"),
+    "site.key",
+  );
+  const siteTimezone = validateTimeZone(
+    requireString(site.timezone, "site.timezone"),
   );
   const stationKind = requireString(station.kind, "station.kind");
 
@@ -168,7 +167,7 @@ export function parseSiteConfiguration(raw: RawSiteConfiguration): SiteConfigura
   }
 
   // require at least one source
-  if (!Array.isArray(raw.sources) || raw.sources.length === 0) {
+  if (!Array.isArray(root.sources) || root.sources.length === 0) {
     throw new RangeError("site configuration requires at least one source");
   }
 
@@ -180,13 +179,19 @@ export function parseSiteConfiguration(raw: RawSiteConfiguration): SiteConfigura
     requireString(station.key, "station.key"),
     "station.key",
   );
-  const sources = raw.sources.map((source, index) =>
+  const sources = root.sources.map((source, index) =>
     parseSourceConfiguration(
-      source,
+      requireObject(source, `sources[${index}]`),
       index,
-      raw.version as number,
+      root.version,
       providerKey,
       stationKey,
+      {
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        siteKey,
+        timezone: siteTimezone,
+      },
     ),
   );
 
@@ -221,15 +226,10 @@ export function parseSiteConfiguration(raw: RawSiteConfiguration): SiteConfigura
         "site.displayName",
         160,
       ),
-      key: validateStableKey(
-        requireString(site.key, "site.key"),
-        "site.key",
-      ),
+      key: siteKey,
       latitude: coordinates.latitude,
       longitude: coordinates.longitude,
-      timezone: validateTimeZone(
-        requireString(site.timezone, "site.timezone"),
-      ),
+      timezone: siteTimezone,
     },
     sources,
     station: {
@@ -245,7 +245,7 @@ export function parseSiteConfiguration(raw: RawSiteConfiguration): SiteConfigura
       serial: optionalBoundedString(station.serial, "station.serial", 128),
       vendor: optionalBoundedString(station.vendor, "station.vendor", 128),
     },
-    version: raw.version,
+    version: root.version,
   };
 }
 
@@ -256,6 +256,12 @@ function parseSourceConfiguration(
   version: number,
   providerKey: string,
   stationKey: string,
+  location: Readonly<{
+    latitude: number;
+    longitude: number;
+    siteKey: string;
+    timezone: string;
+  }>,
 ): SiteConfigurationSource {
   const field = `sources[${index}]`;
   const key = validateStableKey(
@@ -275,6 +281,7 @@ function parseSourceConfiguration(
   );
   const material = serializeSourceMaterial({
     adapterConfig,
+    location,
     providerKey,
     sourceKey: key,
     sourceKind,
@@ -350,15 +357,15 @@ function parseBoolean(value: string): boolean {
 
 // require objects
 function requireObject(
-  value: Record<string, unknown> | undefined,
+  value: unknown,
   fieldName: string,
 ): Record<string, unknown> {
-  // reject missing objects
-  if (value === undefined || Array.isArray(value)) {
+  // reject non-object values
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${fieldName} must be an object`);
   }
 
-  return value;
+  return value as Record<string, unknown>;
 }
 
 // require strings
@@ -459,13 +466,10 @@ function requireCapabilities(
 
 // require JSON-compatible configuration
 function requireJsonValue(value: unknown, fieldName: string): JsonValue {
-  // reject missing configuration
-  if (value === undefined) {
-    throw new TypeError(`${fieldName} is required`);
-  }
+  const object = requireObject(value, fieldName);
 
   try {
-    const serialized = JSON.stringify(value);
+    const serialized = JSON.stringify(object);
 
     // reject non-json values
     if (serialized === undefined || serialized.length > 16_384) {

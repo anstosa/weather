@@ -1,3 +1,15 @@
+import { pathToFileURL } from "node:url";
+
+import {
+  assertSupportedPostgres,
+  createDatabasePool,
+} from "@weather/database";
+
+import { loadWorkerConfiguration } from "./config.js";
+import { boundedWorkerError } from "./errors.js";
+
+type DatabasePool = ReturnType<typeof createDatabasePool>;
+
 export interface WorkerHealth {
   readonly lastLoopAt: string | null;
   readonly lastSuccessAt: string | null;
@@ -17,10 +29,11 @@ export function workerHealth(
   staleAfterMs = 30 * 60 * 1_000,
 ): WorkerHealth {
   const lastLoop = state.lastLoopAt === null ? null : Date.parse(state.lastLoopAt);
+  const heartbeatAge = lastLoop === null ? Number.NaN : now.getTime() - lastLoop;
   const stale =
-    lastLoop === null ||
-    !Number.isFinite(lastLoop) ||
-    now.getTime() - lastLoop > staleAfterMs;
+    !Number.isFinite(heartbeatAge) ||
+    heartbeatAge < 0 ||
+    heartbeatAge > staleAfterMs;
 
   return {
     lastLoopAt: state.lastLoopAt,
@@ -72,14 +85,6 @@ export async function runWorkerHealthCheck(): Promise<0 | 1> {
   }
 }
 
-// bound one-shot health failures
-function healthError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
-    .replace(/(?:password|token|authorization)=?[^\s&]*/giu, "[redacted]")
-    .slice(0, 512);
-}
-
 // run only from the built health entrypoint
 if (
   process.argv[1] !== undefined &&
@@ -90,17 +95,7 @@ if (
       process.exitCode = exitCode;
     })
     .catch((error: unknown) => {
-      process.stderr.write(`${healthError(error)}\n`);
+      process.stderr.write(`${boundedWorkerError(error)}\n`);
       process.exitCode = 1;
     });
 }
-import { pathToFileURL } from "node:url";
-
-import {
-  assertSupportedPostgres,
-  createDatabasePool,
-} from "@weather/database";
-
-import { loadWorkerConfiguration } from "./config.js";
-
-type DatabasePool = ReturnType<typeof createDatabasePool>;

@@ -24,11 +24,14 @@ import {
   OPEN_METEO_ARCHIVE_ADAPTER_VERSION,
   OPEN_METEO_ARCHIVE_CHUNK_PLAN_VERSION,
   asProviderFailure,
+  createOpenMeteoHistoricalOperation,
   fetchOpenMeteoArchive,
+  type OpenMeteoHistoricalOperation,
   type ProviderFetchOptions,
 } from "@weather/providers";
 
 import { loadWorkerConfiguration } from "./config.js";
+import { boundedWorkerError } from "./errors.js";
 
 type DatabasePool = ReturnType<typeof createDatabasePool>;
 
@@ -53,6 +56,7 @@ export interface PlannedBackfillChunk {
 export interface BackfillChunkReport {
   readonly errorCode: string | null;
   readonly identity: BackfillChunkIdentity;
+  readonly secondaryError: string | null;
   readonly status:
     | "abandoned"
     | "completed"
@@ -91,7 +95,7 @@ interface BackfillRepository {
 }
 
 interface BackfillExecutionOptions {
-  readonly fetchArchive?: typeof fetchOpenMeteoArchive;
+  readonly fetchArchive?: OpenMeteoHistoricalOperation;
   readonly fetchOptions?: ProviderFetchOptions;
   readonly now?: () => Date;
   readonly repository?: BackfillRepository;
@@ -237,6 +241,7 @@ export async function executeBackfill(
   source: BackfillSource,
   options: BackfillExecutionOptions = {},
 ): Promise<BackfillReport> {
+  assertBackfillSite(arguments_.site, site.site.key);
   const repository = options.repository ?? databaseRepository;
   const fetchArchive = options.fetchArchive ?? fetchOpenMeteoArchive;
   const now = options.now ?? defaultNow;
@@ -278,13 +283,23 @@ export async function executeBackfill(
       arguments_.resume &&
       await repository.hasSuccessfulBackfillChunk(pool, chunk.identity)
     ) {
-      reports.push({ errorCode: null, identity: chunk.identity, status: "skipped" });
+      reports.push({
+        errorCode: null,
+        identity: chunk.identity,
+        secondaryError: null,
+        status: "skipped",
+      });
       continue;
     }
 
     // prove dry-run has no provider or write side effects
     if (arguments_.dryRun) {
-      reports.push({ errorCode: null, identity: chunk.identity, status: "planned" });
+      reports.push({
+        errorCode: null,
+        identity: chunk.identity,
+        secondaryError: null,
+        status: "planned",
+      });
       continue;
     }
 
@@ -295,6 +310,7 @@ export async function executeBackfill(
       reports.push({
         errorCode: "source_locked",
         identity: chunk.identity,
+        secondaryError: null,
         status: "abandoned",
       });
       appendRemaining(reports, chunks, index + 1);
@@ -326,7 +342,7 @@ export async function executeBackfill(
 async function executeBackfillChunk(
   session: SourceSession,
   repository: BackfillRepository,
-  fetchArchive: typeof fetchOpenMeteoArchive,
+  fetchArchive: OpenMeteoHistoricalOperation,
   chunk: PlannedBackfillChunk,
   source: BackfillSource,
   now: () => Date,
@@ -376,10 +392,16 @@ async function executeBackfillChunk(
     });
     return {
       ok: true,
-      report: { errorCode: null, identity: chunk.identity, status: "completed" },
+      report: {
+        errorCode: null,
+        identity: chunk.identity,
+        secondaryError: null,
+        status: "completed",
+      },
     };
   } catch (error) {
     const failure = asProviderFailure(error, Math.max(1, attempts));
+    let secondaryError: string | null = null;
 
     // record failed exact identity after committed start
     if (runId !== null) {
@@ -390,8 +412,9 @@ async function executeBackfillChunk(
           error: failure.ingestionError,
           runId,
         });
-      } catch {
-        // retain the provider failure for reporting
+      } catch (finalizationError) {
+        // retain bounded secondary diagnostics
+        secondaryError = boundedWorkerError(finalizationError);
       }
     }
 
@@ -400,6 +423,7 @@ async function executeBackfillChunk(
       report: {
         errorCode: failure.ingestionError.code,
         identity: chunk.identity,
+        secondaryError,
         status: "failed",
       },
     };
@@ -438,7 +462,12 @@ function appendRemaining(
 ): void {
   // retain every unattempted exact identity
   for (const chunk of chunks.slice(startIndex)) {
-    reports.push({ errorCode: null, identity: chunk.identity, status: "remaining" });
+    reports.push({
+      errorCode: null,
+      identity: chunk.identity,
+      secondaryError: null,
+      status: "remaining",
+    });
   }
 }
 
@@ -505,7 +534,11 @@ export async function runBackfillCli(
 ): Promise<0 | 1> {
   const parsed = parseBackfillArguments(arguments_);
   const configuration = await loadWorkerConfiguration();
+  assertBackfillSite(parsed.site, configuration.site.site.key);
   const pool = createDatabasePool(configuration.database);
+  const fetchArchive = createOpenMeteoHistoricalOperation(
+    configuration.openMeteoCompatibilityOrigin,
+  );
 
   try {
     await assertSupportedPostgres(pool);
@@ -519,6 +552,7 @@ export async function runBackfillCli(
       parsed,
       configuration.site,
       source,
+      { fetchArchive },
     );
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
 
@@ -531,6 +565,16 @@ export async function runBackfillCli(
     return report.exitCode;
   } finally {
     await pool.end();
+  }
+}
+
+// require CLI and configured site equality
+function assertBackfillSite(requested: string, configured: string): void {
+  // reject cross-site execution
+  if (requested !== configured) {
+    throw new Error(
+      `requested site ${requested} does not match configured site ${configured}`,
+    );
   }
 }
 
@@ -619,14 +663,6 @@ function defaultNow(): Date {
   return new Date();
 }
 
-// bound CLI failures without secrets
-function cliError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message
-    .replace(/(?:password|token|authorization)=?[^\s&]*/giu, "[redacted]")
-    .slice(0, 512);
-}
-
 // run only from the built CLI entrypoint
 if (
   process.argv[1] !== undefined &&
@@ -637,7 +673,7 @@ if (
       process.exitCode = exitCode;
     })
     .catch((error: unknown) => {
-      process.stderr.write(`${cliError(error)}\n`);
+      process.stderr.write(`${boundedWorkerError(error)}\n`);
       process.exitCode = 1;
     });
 }

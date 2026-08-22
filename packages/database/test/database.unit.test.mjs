@@ -99,6 +99,25 @@ test("site configuration rejects null primitive and array roots", () => {
   }
 });
 
+// reject non-object adapter configuration
+test("site configuration requires object adapter material", async () => {
+  const raw = JSON.parse(await readFile(ballydideanPath, "utf8"));
+
+  // exercise every non-object JSON category
+  for (const value of [null, true, 1, "invalid", []]) {
+    assert.throws(
+      () =>
+        parseSiteConfiguration({
+          ...raw,
+          sources: raw.sources.map((source, index) =>
+            index === 0 ? { ...source, adapterConfig: value } : source,
+          ),
+        }),
+      /sources\[0\]\.adapterConfig must be an object/u,
+    );
+  }
+});
+
 // verify secret-file configuration
 test("database configuration reads mounted passwords without embedding them", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-config-"));
