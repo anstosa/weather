@@ -19,6 +19,9 @@
     "clean": "node scripts/clean.mjs",
     "lint": "node scripts/lint.mjs .editorconfig .gitignore .github .npmrc .nvmrc README.md package.json package-lock.json tsconfig.base.json scripts apps packages",
     "test": "npm run test --workspaces",
+    "test:deploy": "bash deploy/scripts/verify-static.sh",
+    "test:e2e": "npm run test:e2e --workspace @weather/web",
+    "test:integration": "npm run test:integration --workspace @weather/database && npm run test:integration --workspace @weather/worker && npm run test:integration --workspace @weather/api",
     "typecheck": "npm run typecheck --workspaces",
     "weather:backfill": "npm run weather:backfill --workspace @weather/worker --"
   },
