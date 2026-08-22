@@ -36,6 +36,7 @@ if [[ "$current" != none ]]; then
   compose exec -T postgres psql --username postgres --dbname "$database_name" \
     --tuples-only --no-align --command \
     "SELECT json_build_object(
+      'connector', json_build_object('service', 'cloudflared'),
       'server_version_num', current_setting('server_version_num'),
       'migration', (SELECT max(name) FROM schema_migrations),
       'worker_last_loop_at', (SELECT max(last_loop_at) FROM worker_heartbeats),
