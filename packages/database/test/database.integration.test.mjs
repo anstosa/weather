@@ -1073,12 +1073,14 @@ function hasDatabaseCode(code) {
 // execute the real first-init role boundary
 async function runRuntimeRoleBootstrap(server) {
   const directory = await mkdtemp(join(tmpdir(), "weather-role-secrets-"));
+  const adminPath = join(directory, "admin");
   const ownerPath = join(directory, "owner");
   const apiPath = join(directory, "api");
   const ingestPath = join(directory, "ingest");
 
   try {
     await Promise.all([
+      writeFile(adminPath, "admin-test\n", { mode: 0o600 }),
       writeFile(ownerPath, "owner-test\n", { mode: 0o600 }),
       writeFile(apiPath, "api-test\n", { mode: 0o600 }),
       writeFile(ingestPath, "ingest-test\n", { mode: 0o600 }),
@@ -1094,6 +1096,7 @@ async function runRuntimeRoleBootstrap(server) {
           PGPORT: String(server.port),
           POSTGRES_DB: "weather_test",
           POSTGRES_USER: server.user,
+          WEATHER_ADMIN_PASSWORD_FILE: adminPath,
           WEATHER_API_PASSWORD_FILE: apiPath,
           WEATHER_INGEST_PASSWORD_FILE: ingestPath,
           WEATHER_OWNER_PASSWORD_FILE: ownerPath,
