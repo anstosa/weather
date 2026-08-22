@@ -16,7 +16,7 @@ EOF
 }
 
 recipient=${AGE_RECIPIENT:-}
-output_dir="$deploy_dir/backups"
+output_dir=/var/lib/weather/backups
 WEATHER_ENV_FILE=${WEATHER_ENV_FILE:-$(default_env_file)}
 
 # parse backup options
@@ -58,6 +58,7 @@ fi
 require_command age
 require_command docker
 require_command sha256sum
+require_command sync
 require_file "$WEATHER_ENV_FILE"
 
 umask 077
@@ -68,10 +69,16 @@ nonce=$(basename "$temporary" | sed -E 's/^\.weather-[^.]+\.([^.]+)\.dump\.age\.
 archive="$output_dir/weather-${timestamp}-${nonce}.dump.age"
 checksum="$archive.sha256"
 checksum_temporary="$checksum.partial"
+publication_complete=false
 
 # remove interrupted publications
 cleanup() {
   rm -f "$temporary" "$checksum_temporary"
+
+  # remove an incomplete published pair
+  if [[ "$publication_complete" != true ]]; then
+    rm -f "$archive" "$checksum"
+  fi
 }
 trap cleanup EXIT
 
@@ -83,8 +90,11 @@ WEATHER_ENV_FILE=$WEATHER_ENV_FILE compose exec -T postgres \
 
 digest=$(sha256sum "$temporary" | awk '{print $1}')
 printf '%s  %s\n' "$digest" "$(basename "$archive")" >"$checksum_temporary"
+chmod 600 "$temporary" "$checksum_temporary"
+sync -f "$temporary" "$checksum_temporary"
 mv "$temporary" "$archive"
 mv "$checksum_temporary" "$checksum"
-chmod 600 "$archive" "$checksum"
+sync -f "$output_dir"
+publication_complete=true
 trap - EXIT
 printf 'Backup complete: %s\nChecksum: %s\n' "$archive" "$checksum"
