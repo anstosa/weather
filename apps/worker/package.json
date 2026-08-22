@@ -9,13 +9,14 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:dependencies && tsc -p tsconfig.json",
+    "build:dependencies": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers",
     "health": "node dist/health.js",
-    "start": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node dist/worker.js",
-    "test": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node --test test/*.test.mjs",
-    "test:integration": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node --test --test-concurrency=1 test/*.integration.test.mjs",
-    "weather:backfill": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node dist/backfill-cli.js",
-    "typecheck": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && tsc -p tsconfig.json --noEmit"
+    "start": "npm run build && node dist/worker.js",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:integration": "npm run build && node --test --test-concurrency=1 test/*.integration.test.mjs",
+    "weather:backfill": "npm run build && node dist/backfill-cli.js",
+    "typecheck": "npm run build:dependencies && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@weather/database": "0.0.0",
