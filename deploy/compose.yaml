@@ -116,7 +116,7 @@ services:
       WEATHER_DATABASE_APPLICATION_NAME: weather-api
       WEATHER_DATABASE_USER: weather_api
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_api_password
-      WEATHER_VERSION: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
+      WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
     secrets:
       - source: weather_api_password
         target: weather_api_password

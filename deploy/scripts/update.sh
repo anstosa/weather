@@ -62,13 +62,13 @@ resolve_arm64_image() {
 validate_release_env() {
   local path=$1
   local expected_release=${2:-}
-  local release database_name postgres_dir
+  local release database_name postgres_dir control_plane
   local meaningful_lines
   require_file "$path"
   [[ ! -L "$path" ]] || die "release environment must not be a symbolic link: $path"
   meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
-  [[ "$meaningful_lines" -eq 7 ]] || die "release environment must contain exactly seven values"
-  grep -qEv '^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR)=' "$path" &&
+  [[ "$meaningful_lines" -eq 8 ]] || die "release environment must contain exactly eight values"
+  grep -qEv '^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_CONTROL_PLANE_SHA256)=' "$path" &&
     die "release environment contains an unknown or malformed value"
   release=$(env_value "$path" WEATHER_RELEASE)
   validate_release "$release"
@@ -84,9 +84,19 @@ validate_release_env() {
   validate_image_reference "$(env_value "$path" CLOUDFLARED_IMAGE)"
   database_name=$(env_value "$path" WEATHER_DATABASE_NAME)
   postgres_dir=$(env_value "$path" WEATHER_POSTGRES_DIR)
-  [[ "$database_name" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "invalid database name"
-  [[ "$postgres_dir" == /var/lib/weather/* && "$postgres_dir" != *$'\n'* ]] ||
-    die "invalid Weather PostgreSQL directory"
+  control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
+  validate_database_name "$database_name"
+  require_canonical_descendant "$postgres_dir" /var/lib/weather "PostgreSQL directory"
+  [[ "$control_plane" =~ ^[a-f0-9]{64}$ ]] || die "invalid deployment control-plane digest"
+}
+
+# require the installed deployment contract
+require_control_plane_compatibility() {
+  local env_file=$1
+  local expected actual
+  expected=$(env_value "$env_file" WEATHER_CONTROL_PLANE_SHA256)
+  actual=$(control_plane_digest)
+  [[ "$actual" == "$expected" ]] || die "deployment control plane does not match release state"
 }
 
 # write one deterministic release environment
@@ -98,9 +108,10 @@ write_release_env() {
   local web_image=$5
   local postgres_image=$6
   local cloudflared_image=$7
-  local database_name postgres_dir
+  local database_name postgres_dir control_plane
   database_name=$(env_value "$source_env" WEATHER_DATABASE_NAME)
   postgres_dir=$(env_value "$source_env" WEATHER_POSTGRES_DIR)
+  control_plane=$(control_plane_digest)
   umask 077
   printf '%s\n' \
     "WEATHER_RELEASE=$release" \
@@ -109,7 +120,8 @@ write_release_env() {
     "POSTGRES_IMAGE=$postgres_image" \
     "CLOUDFLARED_IMAGE=$cloudflared_image" \
     "WEATHER_DATABASE_NAME=$database_name" \
-    "WEATHER_POSTGRES_DIR=$postgres_dir" >"$target"
+    "WEATHER_POSTGRES_DIR=$postgres_dir" \
+    "WEATHER_CONTROL_PLANE_SHA256=$control_plane" >"$target"
   chmod 600 "$target"
   validate_release_env "$target" "$release"
 }
@@ -146,6 +158,7 @@ require_secret_source() {
   local expected_uid=$2
   local expected_gid=$3
   local metadata uid gid mode
+  require_canonical_descendant "$path" "$deploy_dir/secrets" "secret source"
   require_file "$path"
   metadata=$(stat -c '%u %g %a' "$path")
   read -r uid gid mode <<<"$metadata"
@@ -192,7 +205,8 @@ record_release_success() {
 verify_previous_image_compatibility() (
   local target_env=$1
   local previous_env=$2
-  local candidate api_container provider_container provider_image active_database
+  local candidate api_container provider_container provider_image active_database provider_network
+  local previous_release
   local candidate_created=false
   local api_started=false
   local provider_started=false
@@ -202,6 +216,8 @@ verify_previous_image_compatibility() (
   provider_container="${candidate}_provider"
   provider_image=$(env_value "$target_env" WEATHER_SERVER_IMAGE)
   active_database=$(env_value "$previous_env" WEATHER_DATABASE_NAME)
+  previous_release=$(env_value "$previous_env" WEATHER_RELEASE)
+  provider_network="${WEATHER_COMPOSE_PROJECT_NAME:-weather}_provider_egress"
 
   # clean every disposable compatibility resource
   # shellcheck disable=SC2329
@@ -237,16 +253,21 @@ verify_previous_image_compatibility() (
 
   WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     pg_dump --username weather_owner --dbname "$active_database" \
-      --format=custom --no-owner --no-acl |
+      --format=custom --no-owner |
     WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
       pg_restore --username postgres --dbname "$candidate" \
         --no-owner --role weather_owner --exit-on-error
 
   WEATHER_ENV_FILE=$target_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" migration
+  apply_runtime_database_acl "$previous_env" "$candidate"
+  verify_runtime_database_acl "$previous_env" "$candidate"
+  WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
+      --command "UPDATE ingestion_checkpoints SET last_committed_at = TIMESTAMPTZ '1970-01-01 00:00:00+00'; UPDATE sources SET cadence_seconds = 60 WHERE active"
 
   docker run --detach --rm --name "$provider_container" \
-    --network weather_provider_egress --network-alias "$provider_container" \
+    --network "$provider_network" --network-alias "$provider_container" \
     "$provider_image" node deploy/scripts/compatibility-provider.mjs >/dev/null
   provider_started=true
 
@@ -263,14 +284,14 @@ verify_previous_image_compatibility() (
 
   before_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
-      --command "SELECT count(*) FROM ingestion_runs WHERE state='success'")
+      --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
   WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
     --env WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN="http://$provider_container:3002" \
     worker node apps/worker/dist/worker.js --once
   after_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
-      --command "SELECT count(*) FROM ingestion_runs WHERE state='success'")
+      --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
   (( after_successes > before_successes )) || die "previous worker compatibility failed"
 
   WEATHER_ENV_FILE=$previous_env compose run --detach --name "$api_container" --no-deps \
@@ -281,7 +302,7 @@ verify_previous_image_compatibility() (
   for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
     # accept only health and read success together
     if docker exec "$api_container" node -e \
-      "Promise.all(['/api/v1/health','/api/v1/sites'].map(path=>fetch('http://127.0.0.1:3001'+path))).then(rs=>{if(rs.some(r=>!r.ok))process.exit(1)}).catch(()=>process.exit(1))"; then
+      "Promise.all(['/api/v1/health','/api/v1/sites'].map(path=>fetch('http://127.0.0.1:3001'+path))).then(async([health,sites])=>{if(!health.ok||!sites.ok)process.exit(1);const healthBody=await health.json();const sitesBody=await sites.json();if(healthBody.data?.ready!==true||healthBody.data?.version!=='$previous_release'||!Array.isArray(sitesBody.data))process.exit(1)}).catch(()=>process.exit(1))"; then
       exit 0
     fi
     sleep 1
@@ -298,11 +319,27 @@ restore_images() {
 }
 
 # activate one forward release
-start_release() {
+start_release() (
   local target=$1
   local target_env current current_env backup_env
+  local initial_started=false
+
+  # clean a partially started first activation
+  cleanup_initial_activation() {
+    local status=$?
+
+    # stop only this Weather project
+    if [[ "$initial_started" == true ]]; then
+      WEATHER_ENV_FILE=$target_env compose down --remove-orphans >/dev/null 2>&1 || status=1
+    fi
+
+    trap - EXIT
+    exit "$status"
+  }
+  trap cleanup_initial_activation EXIT
   target_env=$(release_env "$target")
   validate_release_env "$target_env" "$target"
+  require_control_plane_compatibility "$target_env"
   current=$(read_optional_release_state "$state_dir/current-release")
   require_capacity_gate
   require_deployment_secrets
@@ -314,6 +351,7 @@ start_release() {
     backup_env=$current_env
   else
     backup_env=$target_env
+    initial_started=true
     WEATHER_ENV_FILE=$target_env compose up -d postgres --wait
   fi
 
@@ -331,17 +369,16 @@ start_release() {
       printf 'Activation failed; restoring Weather release %s...\n' "$current" >&2
       restore_images "$current_env" ||
         die "activation and Weather image rollback both failed"
-    else
-      printf 'Initial activation failed; stopping only the Weather project...\n' >&2
-      WEATHER_ENV_FILE=$target_env compose down --remove-orphans || true
     fi
     die "release $target failed health checks"
   fi
 
   # record success only after every health gate
   record_release_success "$target" "$current"
+  initial_started=false
+  trap - EXIT
   printf 'Release %s is active.\n' "$target"
-}
+)
 
 # roll back images without migration
 rollback_release() {
@@ -353,6 +390,8 @@ rollback_release() {
   previous_env=$(release_env "$previous")
   validate_release_env "$current_env" "$current"
   validate_release_env "$previous_env" "$previous"
+  require_control_plane_compatibility "$current_env"
+  require_control_plane_compatibility "$previous_env"
   require_deployment_secrets
 
   # switch only immutable runtime images
@@ -419,6 +458,7 @@ case "$action" in
     if [[ -n "$current" ]]; then
       previous_env=$(release_env "$current")
       validate_release_env "$previous_env" "$current"
+      require_control_plane_compatibility "$previous_env"
       require_deployment_secrets
       verify_previous_image_compatibility "$temporary" "$previous_env"
     else
@@ -446,6 +486,7 @@ case "$action" in
     current=$(read_release_state "$state_dir/current-release")
     current_env=$(release_env "$current")
     validate_release_env "$current_env" "$current"
+    require_control_plane_compatibility "$current_env"
     require_command docker
     require_deployment_secrets
     restore_images "$current_env"

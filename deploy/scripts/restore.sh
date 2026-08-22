@@ -63,6 +63,8 @@ require_file "$WEATHER_ENV_FILE"
 require_command age
 require_command docker
 require_command sha256sum
+database_name=$(env_value "$WEATHER_ENV_FILE" WEATHER_DATABASE_NAME)
+validate_database_name "$database_name"
 
 # verify the published ciphertext
 (
@@ -70,7 +72,7 @@ require_command sha256sum
   sha256sum --check "$(basename "$archive").sha256"
 )
 
-candidate="weather_verify_$(date -u +%Y%m%d%H%M%S)_$$"
+candidate="${database_name:0:32}_verify_$(date -u +%Y%m%d%H%M%S)_$$"
 candidate_created=false
 
 # remove disposable verification state
@@ -93,6 +95,8 @@ age --decrypt --identity "$identity" "$archive" |
   WEATHER_ENV_FILE=$WEATHER_ENV_FILE compose exec -T postgres \
     pg_restore --username postgres --dbname "$candidate" --no-owner \
       --role weather_owner --exit-on-error
+apply_runtime_database_acl "$WEATHER_ENV_FILE" "$candidate"
+verify_runtime_database_acl "$WEATHER_ENV_FILE" "$candidate"
 
 server_version=$(WEATHER_ENV_FILE=$WEATHER_ENV_FILE compose exec -T postgres \
   psql --username postgres --dbname "$candidate" --tuples-only --no-align \

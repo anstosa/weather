@@ -58,6 +58,8 @@ require_command docker
 require_command sha256sum
 require_command sync
 require_file "$WEATHER_ENV_FILE"
+database_name=$(env_value "$WEATHER_ENV_FILE" WEATHER_DATABASE_NAME)
+validate_database_name "$database_name"
 
 umask 077
 mkdir -p "$output_dir"
@@ -82,7 +84,7 @@ trap cleanup EXIT
 
 printf 'Creating encrypted PostgreSQL backup %s\n' "$archive"
 WEATHER_ENV_FILE=$WEATHER_ENV_FILE compose exec -T postgres \
-  pg_dump --username weather_owner --dbname weather --format=custom --no-owner --no-acl |
+  pg_dump --username weather_owner --dbname "$database_name" --format=custom --no-owner |
   age --recipient "$recipient" --output "$temporary"
 [[ -s "$temporary" ]] || die "encrypted backup is empty"
 
