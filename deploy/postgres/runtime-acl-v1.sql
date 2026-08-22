@@ -1,8 +1,9 @@
 \set ON_ERROR_STOP on
 
-SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
-\gexec
-SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database())
+SELECT format(
+  'REVOKE ALL PRIVILEGES ON DATABASE %I FROM PUBLIC, weather_api, weather_ingest',
+  current_database()
+)
 \gexec
 SELECT format(
   'GRANT CONNECT ON DATABASE %I TO weather_owner, weather_api, weather_ingest',
@@ -12,6 +13,9 @@ SELECT format(
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM weather_api, weather_ingest;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM weather_api, weather_ingest;
+REVOKE ALL ON SCHEMA public FROM weather_api, weather_ingest;
 
 GRANT USAGE ON SCHEMA public TO weather_api, weather_ingest;
 GRANT SELECT ON sites, stations, providers, weather_records, worker_heartbeats, schema_migrations TO weather_api;
@@ -54,5 +58,5 @@ GRANT UPDATE (
 ) ON weather_records TO weather_ingest;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO weather_ingest;
 
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;

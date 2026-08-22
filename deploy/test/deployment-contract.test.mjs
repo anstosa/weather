@@ -440,6 +440,9 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(restore, /rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication/u);
   assert.match(restore, /dropdb[\s\S]*--if-exists/u);
   assert.match(restore, /verify_runtime_database_acl/u);
+  const runtimeAcl = read("deploy/postgres/runtime-acl-v1.sql");
+  assert.match(runtimeAcl, /REVOKE ALL ON ALL TABLES[^;]*weather_api, weather_ingest/u);
+  assert.match(runtimeAcl, /ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner/u);
   assert.doesNotMatch(restore, /ALTER DATABASE[\s\S]*(?:RENAME|OWNER)|mv[\s\S]*postgres/u);
 });
 

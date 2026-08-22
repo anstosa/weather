@@ -88,12 +88,21 @@ test("release environment validator rejects duplicate and unknown state", async 
     "WEATHER_DATABASE_NAME=weather",
     "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
     `WEATHER_CONTROL_PLANE_SHA256=${"b".repeat(64)}`,
+    "WEATHER_CONTROL_PLANE_VERSION=1",
   ].join("\n");
 
   try {
     await writeFile(valid, `${content}\n`, { mode: 0o600 });
     const accepted = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
     assert.equal(accepted.status, 0, accepted.stderr);
+    // strip current control metadata
+    const legacyContent = content
+      .split("\n")
+      .filter((line) => !line.startsWith("WEATHER_CONTROL_PLANE_"))
+      .join("\n");
+    await writeFile(valid, `${legacyContent}\n`, { mode: 0o600 });
+    const acceptedLegacy = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
+    assert.equal(acceptedLegacy.status, 0, acceptedLegacy.stderr);
     await writeFile(valid, `${content}\nWEATHER_RELEASE=2026.08.22-1\n`, { mode: 0o600 });
     const duplicate = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
     assert.notEqual(duplicate.status, 0);
@@ -128,6 +137,7 @@ test("release environment validator rejects non-canonical PostgreSQL paths", asy
         "WEATHER_DATABASE_NAME=weather",
         `WEATHER_POSTGRES_DIR=${postgresDirectory}`,
         `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
+        "WEATHER_CONTROL_PLANE_VERSION=1",
       ].join("\n");
       await writeFile(candidate, `${content}\n`, { mode: 0o600 });
       const result = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [candidate]);
@@ -193,17 +203,15 @@ start_release 2026.08.22-1`,
   }
 });
 
-test("release operations reject a mismatched deployment control plane", async () => {
+test("release operations reject an incompatible deployment control-plane version", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
   const release = join(directory, "release.env");
 
   try {
-    const digestResult = runBash('source "$1"; control_plane_digest');
-    assert.equal(digestResult.status, 0, digestResult.stderr);
-    await writeFile(release, `WEATHER_CONTROL_PLANE_SHA256=${digestResult.stdout.trim()}\n`);
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=1\n");
     const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
     assert.equal(accepted.status, 0, accepted.stderr);
-    await writeFile(release, `WEATHER_CONTROL_PLANE_SHA256=${"0".repeat(64)}\n`);
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=2\n");
     const rejected = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
     assert.notEqual(rejected.status, 0);
   } finally {
