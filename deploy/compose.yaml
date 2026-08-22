@@ -41,6 +41,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    command: [node, deploy/scripts/web-server.mjs]
     tmpfs:
       - /tmp:size=64m,mode=1777
       - /var/run/postgresql:size=16m,mode=0755,uid=999,gid=999
@@ -120,11 +121,10 @@ services:
   api:
     <<: *application
     restart: unless-stopped
-    command: [node, apps/api/dist/index.js]
+    command: [node, apps/api/dist/main.js]
     environment:
       <<: *database-environment
-      HOST: 0.0.0.0
-      PORT: "3001"
+      WEATHER_API_PORT: "3001"
       WEATHER_DATABASE_APPLICATION_NAME: weather-api
       WEATHER_DATABASE_USER: weather_api
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_api_password
@@ -163,15 +163,15 @@ services:
   worker:
     <<: *application
     restart: unless-stopped
-    command: [node, apps/worker/dist/index.js, schedule]
+    command: [node, apps/worker/dist/worker.js]
     environment:
       <<: *database-environment
       WEATHER_DATABASE_APPLICATION_NAME: weather-worker
       WEATHER_DATABASE_USER: weather_ingest
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_ingest_password
-      WEATHER_SITE_CONFIG: /opt/weather/config/sites/ballydidean.json
-      WEATHER_SCHEDULE_INTERVAL_SECONDS: ${WEATHER_SCHEDULE_INTERVAL_SECONDS:-900}
-      WEATHER_VERSION: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
+      WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
+      WEATHER_WORKER_INSTANCE: weather-worker
+      WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
     secrets:
       - source: weather_ingest_password
         target: weather_ingest_password

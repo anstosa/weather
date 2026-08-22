@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import test from "node:test";
 
@@ -46,6 +50,42 @@ function read(path) {
 // list secret sources
 function secretSources(service) {
   return (service.secrets ?? []).map((secret) => secret.source).sort();
+}
+
+// reserve one loopback port
+async function reservePort() {
+  const listener = createServer();
+  listener.listen(0, "127.0.0.1");
+  await once(listener, "listening");
+  const address = listener.address();
+
+  // require a TCP listener address
+  if (address === null || typeof address === "string") {
+    throw new Error("failed to reserve a TCP port");
+  }
+
+  listener.close();
+  await once(listener, "close");
+  return address.port;
+}
+
+// wait for a bounded local startup
+async function waitForServer(url) {
+  // retry only the disposable local server
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const response = await fetch(url);
+
+      // accept any completed HTTP response
+      if (response.status > 0) {
+        return;
+      }
+    } catch {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+  }
+
+  throw new Error(`server did not start: ${url}`);
 }
 
 // verify the production topology
@@ -182,6 +222,81 @@ test("PostgreSQL and cloudflared are patch-pinned for ARM64 production", () => {
   assert.equal(postgresData.type, "volume");
   assert.match(postgresData.source, /weather_verify_postgres/u);
   assert.match(read("deploy/compose.yaml"), /\/var\/lib\/weather\/postgres/u);
+});
+
+// verify cross-lane runtime commands
+test("container commands match the API, worker, and web runtime contracts", () => {
+  const compose = renderCompose(["compose.verify.yaml"]);
+  assert.deepEqual(compose.services.api.command, ["node", "apps/api/dist/main.js"]);
+  assert.deepEqual(compose.services.worker.command, ["node", "apps/worker/dist/worker.js"]);
+  assert.deepEqual(compose.services.web.command, ["node", "deploy/scripts/web-server.mjs"]);
+  assert.equal(compose.services.api.environment.WEATHER_API_PORT, "3001");
+  assert.equal(
+    compose.services.worker.environment.WEATHER_SITE_CONFIG_PATH,
+    "/opt/weather/config/sites/ballydidean.json",
+  );
+  const dockerfile = read("Dockerfile");
+  assert.match(dockerfile, /apps\/web\/public apps\/web\/public/u);
+  assert.match(dockerfile, /deploy\/scripts\/web-server\.mjs/u);
+});
+
+// exercise the static edge and same-origin proxy
+test("web edge serves allowlisted assets and a bounded read-only API proxy", async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "weather-web-edge-"));
+  const apiPort = await reservePort();
+  const webPort = await reservePort();
+  await mkdir(join(fixtureRoot, "apps/web/public"), { recursive: true });
+  await mkdir(join(fixtureRoot, "apps/web/dist"), { recursive: true });
+  await writeFile(join(fixtureRoot, "apps/web/public/index.html"), "<!doctype html><title>Weather</title>\n");
+  await writeFile(join(fixtureRoot, "apps/web/public/styles.css"), "body { color: #123; }\n");
+  await writeFile(join(fixtureRoot, "apps/web/dist/client.js"), "export const ready = true;\n");
+
+  // provide one bounded fake API
+  const api = createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify({ method: request.method, path: request.url }));
+  });
+  api.listen(apiPort, "127.0.0.1");
+  await once(api, "listening");
+
+  const edge = spawn(process.execPath, [join(scriptsRoot, "web-server.mjs")], {
+    cwd: fixtureRoot,
+    env: {
+      ...process.env,
+      PORT: String(webPort),
+      WEATHER_API_ORIGIN: `http://127.0.0.1:${apiPort}`,
+    },
+    stdio: "ignore",
+  });
+
+  try {
+    await waitForServer(`http://127.0.0.1:${webPort}/`);
+    const home = await fetch(`http://127.0.0.1:${webPort}/`);
+    const client = await fetch(`http://127.0.0.1:${webPort}/client.js`);
+    const proxied = await fetch(`http://127.0.0.1:${webPort}/api/v1/health?check=1`);
+    const mutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "POST" });
+    const unknown = await fetch(`http://127.0.0.1:${webPort}/secrets/weather_owner_password`);
+    assert.equal(home.status, 200);
+    assert.match(await home.text(), /<title>Weather<\/title>/u);
+    assert.equal(client.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.deepEqual(await proxied.json(), {
+      method: "GET",
+      path: "/api/v1/health?check=1",
+    });
+    assert.equal(mutation.status, 405);
+    assert.equal(unknown.status, 404);
+    assert.match(home.headers.get("content-security-policy"), /default-src 'self'/u);
+  } finally {
+    // stop only disposable test processes
+    edge.kill("SIGTERM");
+    await Promise.race([
+      once(edge, "exit"),
+      new Promise((resolveWait) => setTimeout(resolveWait, 2_000)),
+    ]);
+    api.close();
+    await once(api, "close");
+    await rm(fixtureRoot, { force: true, recursive: true });
+  }
 });
 
 // verify the local-only override

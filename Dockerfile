@@ -46,10 +46,12 @@ COPY --chown=10002:10002 packages/database/migrations packages/database/migratio
 COPY --chown=10002:10002 config config
 COPY --chown=10002:10002 deploy/scripts/*.mjs deploy/scripts/
 USER 10002:10002
-CMD ["node", "apps/api/dist/index.js"]
+CMD ["node", "apps/api/dist/main.js"]
 
 FROM runtime AS web
 COPY --from=build --chown=10002:10002 /opt/weather/apps/web/dist apps/web/dist
 COPY --chown=10002:10002 apps/web/package.json apps/web/package.json
+COPY --chown=10002:10002 apps/web/public apps/web/public
+COPY --chown=10002:10002 deploy/scripts/web-server.mjs deploy/scripts/web-server.mjs
 USER 10002:10002
-CMD ["node", "apps/web/dist/index.js"]
+CMD ["node", "deploy/scripts/web-server.mjs"]
