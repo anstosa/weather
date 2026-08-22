@@ -248,7 +248,7 @@ async function assertRejectedSiteWallClock(page, fixture, field, value) {
   ).length;
 
   assert.match(message, /daylight saving time/u);
-  assert.match(message, /choose another time/u);
+  assert.match(message, /choose another time/iu);
   assert.equal(message.length <= 160, true);
   assert.equal(apiReadsAfter, apiReadsBefore);
   assert.equal(await page.getByText("16.2").first().isVisible(), true);

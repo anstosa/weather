@@ -889,7 +889,7 @@ export function fromSiteWallClock(value: string, timezone: string): string {
     throw new RangeError("history wall clock is not valid in the site timezone");
   }
 
-  const [candidateEpoch] = matches;
+  const candidateEpoch = [...matches][0]!;
   return new Date(candidateEpoch).toISOString();
 }
 
