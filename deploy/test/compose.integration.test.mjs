@@ -90,6 +90,7 @@ async function provisionSecrets(directory) {
 
 // write one isolated integration override
 async function writeOverride(path, secretsRoot) {
+  // render one secret override
   const secret = (name) => `${name}:\n    file: ${join(secretsRoot, name)}\n`;
   await writeFile(
     path,
