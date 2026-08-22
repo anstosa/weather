@@ -227,10 +227,17 @@ test("PostgreSQL and cloudflared are patch-pinned for ARM64 production", () => {
 // verify cross-lane runtime commands
 test("container commands match the API, worker, and web runtime contracts", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
+  assert.deepEqual(compose.services.migration.command, ["node", "deploy/scripts/migrate.mjs"]);
   assert.deepEqual(compose.services.api.command, ["node", "apps/api/dist/main.js"]);
   assert.deepEqual(compose.services.worker.command, ["node", "apps/worker/dist/worker.js"]);
   assert.deepEqual(compose.services.web.command, ["node", "deploy/scripts/web-server.mjs"]);
+  assert.equal(compose.services.migration.environment.WEATHER_DATABASE_USER, "weather_owner");
+  assert.equal(
+    compose.services.migration.environment.WEATHER_SITE_CONFIG_PATH,
+    "/opt/weather/config/sites/ballydidean.json",
+  );
   assert.equal(compose.services.api.environment.WEATHER_API_PORT, "3001");
+  assert.equal(compose.services.worker.environment.WEATHER_DATABASE_USER, "weather_ingest");
   assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/sites/u);
   assert.deepEqual(compose.services.worker.healthcheck.test, [
     "CMD",
@@ -241,7 +248,9 @@ test("container commands match the API, worker, and web runtime contracts", () =
     compose.services.worker.environment.WEATHER_SITE_CONFIG_PATH,
     "/opt/weather/config/sites/ballydidean.json",
   );
+  assert.equal(compose.services.migration.volumes, undefined);
   const dockerfile = read("Dockerfile");
+  assert.match(dockerfile, /COPY --chown=10002:10002 config config/u);
   assert.match(dockerfile, /apps\/web\/public apps\/web\/public/u);
   assert.match(dockerfile, /deploy\/scripts\/web-server\.mjs/u);
 });
