@@ -65,7 +65,6 @@ export interface WorkerIterationOptions {
   readonly instance: string;
   readonly lastSuccessAt: string | null;
   readonly now?: () => Date;
-  readonly onDurableSuccess?: (lastSuccessAt: string) => void;
   readonly repository?: WorkerRepository;
   readonly site: SiteConfiguration;
   readonly version: string;
@@ -87,6 +86,10 @@ export interface WorkerIterationResult {
   readonly sources: readonly SourceRunResult[];
 }
 
+interface WorkerSuccessState {
+  lastSuccessAt: string | null;
+}
+
 const databaseRepository: WorkerRepository = {
   abandonExpiredRuns,
   acquireSourceSession,
@@ -98,10 +101,34 @@ const databaseRepository: WorkerRepository = {
   updateWorkerHeartbeat,
 };
 
-// execute one failure-isolated worker iteration
+// create one runner with retained success state
+export function createWorkerIterationRunner(
+  pool: DatabasePool,
+  options: WorkerIterationOptions,
+): () => Promise<WorkerIterationResult> {
+  const successState: WorkerSuccessState = {
+    lastSuccessAt: options.lastSuccessAt,
+  };
+
+  // preserve committed success across iteration failures
+  return async () => await runWorkerIterationWithState(pool, options, successState);
+}
+
+// execute one standalone worker iteration
 export async function runWorkerIteration(
   pool: DatabasePool,
   options: WorkerIterationOptions,
+): Promise<WorkerIterationResult> {
+  return await runWorkerIterationWithState(pool, options, {
+    lastSuccessAt: options.lastSuccessAt,
+  });
+}
+
+// execute one iteration against retained success state
+async function runWorkerIterationWithState(
+  pool: DatabasePool,
+  options: WorkerIterationOptions,
+  successState: WorkerSuccessState,
 ): Promise<WorkerIterationResult> {
   const repository = options.repository ?? databaseRepository;
   const now = options.now ?? defaultNow;
@@ -110,7 +137,6 @@ export async function runWorkerIteration(
   const loopAt = now().toISOString();
   const dueSources = await repository.discoverDueSources(pool, loopAt);
   const results: SourceRunResult[] = [];
-  let lastSuccessAt = options.lastSuccessAt;
 
   // isolate every due source
   for (const source of dueSources) {
@@ -141,8 +167,7 @@ export async function runWorkerIteration(
 
       // track ingestion success separately from loop liveness
       if (result.status === "succeeded") {
-        lastSuccessAt = now().toISOString();
-        options.onDurableSuccess?.(lastSuccessAt);
+        successState.lastSuccessAt = now().toISOString();
       }
     } catch (error) {
       const result: SourceRunResult = {
@@ -176,7 +201,7 @@ export async function runWorkerIteration(
       : null,
     instance: options.instance,
     lastLoopAt: completedAt,
-    lastSuccessAt,
+    lastSuccessAt: successState.lastSuccessAt,
     version: options.version,
   });
   diagnosticWriter(
@@ -193,7 +218,11 @@ export async function runWorkerIteration(
     }),
   );
 
-  return { completedAt, lastSuccessAt, sources: results };
+  return {
+    completedAt,
+    lastSuccessAt: successState.lastSuccessAt,
+    sources: results,
+  };
 }
 
 // execute one committed scheduled run
@@ -453,7 +482,13 @@ export async function startWorkerProcess(
     configuration.migrationDirectory,
   );
   const durableHealth = await readWorkerHealth(pool, configuration.instance);
-  let lastSuccessAt = durableHealth.lastSuccessAt;
+  const runIteration = createWorkerIterationRunner(pool, {
+    fetchCurrent,
+    instance: configuration.instance,
+    lastSuccessAt: durableHealth.lastSuccessAt,
+    site: configuration.site,
+    version: configuration.version,
+  });
   const scheduler = createNonOverlappingScheduler({
     cadenceMs: WORKER_CADENCE_MS,
     key: configuration.instance,
@@ -472,18 +507,7 @@ export async function startWorkerProcess(
       );
     },
     run: async () => {
-      const result = await runWorkerIteration(pool, {
-        fetchCurrent,
-        instance: configuration.instance,
-        lastSuccessAt,
-        // retain committed success before heartbeat persistence
-        onDurableSuccess: (candidate) => {
-          lastSuccessAt = candidate;
-        },
-        site: configuration.site,
-        version: configuration.version,
-      });
-      lastSuccessAt = result.lastSuccessAt;
+      await runIteration();
     },
   });
 

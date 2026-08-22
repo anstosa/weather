@@ -21,6 +21,7 @@ import {
   runMigrations,
   startIngestionRun,
   updateWorkerHeartbeat,
+  verifyMigrationReadiness,
 } from "../dist/index.js";
 import {
   createRuntimeRoles,
@@ -64,10 +65,16 @@ test(
           "SELECT name, checksum FROM schema_migrations ORDER BY name",
         );
 
-        assert.deepEqual(result.applied, ["0001_initial_weather.sql"]);
+        assert.deepEqual(result.applied, [
+          "0001_initial_weather.sql",
+          "0002_worker_migration_readiness.sql",
+        ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 1);
-        assert.match(ledger.rows[0].checksum, /^[a-f0-9]{64}$/u);
+        assert.equal(ledger.rowCount, 2);
+        // require every migration checksum
+        for (const row of ledger.rows) {
+          assert.match(row.checksum, /^[a-f0-9]{64}$/u);
+        }
       });
 
       // verify rerun and changed-checksum failure
@@ -84,7 +91,10 @@ test(
             join(directory, "0001_initial_weather.sql"),
             `${source}\n-- tampered copy\n`,
           );
-          assert.deepEqual(rerun.current, ["0001_initial_weather.sql"]);
+          assert.deepEqual(rerun.current, [
+            "0001_initial_weather.sql",
+            "0002_worker_migration_readiness.sql",
+          ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
             /migration checksum mismatch/u,
@@ -115,8 +125,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 1);
-          assert.equal(first.current.length + second.current.length, 1);
+          assert.equal(first.applied.length + second.applied.length, 2);
+          assert.equal(first.current.length + second.current.length, 2);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -256,6 +266,10 @@ test(
         );
 
         try {
+          assert.deepEqual(
+            await verifyMigrationReadiness(ingestPool, migrationDirectory),
+            { version: "0002_worker_migration_readiness.sql" },
+          );
           await ingestPool.query(
             `
               INSERT INTO worker_heartbeats (
