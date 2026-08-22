@@ -6,9 +6,11 @@ import {
   type ProviderFetchOptions,
 } from "./contract.js";
 
-const DEFAULT_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_ATTEMPTS = 3;
-const MAX_RETRY_DELAY_MS = 30_000;
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
+export const DEFAULT_PROVIDER_MAX_ATTEMPTS = 3;
+export const DEFAULT_PROVIDER_MAX_BODY_BYTES = 2_000_000;
+export const MAX_PROVIDER_RETRY_DELAY_MS = 30_000;
+const MAX_PROVIDER_BODY_BYTES = 10_000_000;
 
 export interface JsonResponse {
   readonly attempts: number;
@@ -23,27 +25,32 @@ export async function fetchJsonWithRetry(
   options: ProviderFetchOptions = {},
 ): Promise<JsonResponse> {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
-  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxAttempts = options.maxAttempts ?? DEFAULT_PROVIDER_MAX_ATTEMPTS;
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_PROVIDER_MAX_BODY_BYTES;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
   const sleep = options.sleep ?? defaultSleep;
   const random = options.random ?? Math.random;
+  const clock = options.clock ?? Date.now;
+  const deadline = parseDeadline(options.deadlineAt);
   let lastFailure: ProviderFailure | null = null;
 
-  validateHttpControls(timeoutMs, maxAttempts);
+  validateHttpControls(timeoutMs, maxAttempts, maxBodyBytes);
 
   // attempt only the bounded request budget
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const response = await fetchWithTimeout(
+      const attemptTimeoutMs = boundedAttemptTimeout(timeoutMs, deadline, clock);
+      const { body, response } = await fetchAttempt(
         fetchImplementation,
         url,
-        timeoutMs,
+        attemptTimeoutMs,
+        maxBodyBytes,
+        attempt,
       );
-      const body = await response.text();
 
       // classify non-success responses before parsing
       if (!response.ok) {
-        throw classifyHttpFailure(response, body, attempt);
+        throw classifyHttpFailure(response, body, attempt, clock);
       }
 
       let payload: unknown;
@@ -68,23 +75,54 @@ export async function fetchJsonWithRetry(
         status: response.status,
       };
     } catch (error) {
-      const failure = classifyThrownFailure(error, attempt);
+      const failure = deadlineExpired(deadline, clock)
+        ? deadlineFailure(attempt)
+        : classifyThrownFailure(error, attempt);
       lastFailure = failure;
 
       // stop on permanent failures or exhausted attempts
-      if (!isRetryable(failure) || attempt === maxAttempts) {
+      if (
+        !isRetryable(failure) ||
+        attempt === maxAttempts ||
+        failure.ingestionError.code === "provider_deadline_exceeded"
+      ) {
         throw failure;
       }
 
-      await sleep(retryDelayMilliseconds(failure, attempt, random));
+      await sleepWithinDeadline(
+        retryDelayMilliseconds(failure, attempt, random),
+        sleep,
+        deadline,
+        clock,
+        attempt,
+      );
     }
   }
 
   throw lastFailure ?? new Error("provider retry loop ended unexpectedly");
 }
 
+// calculate the maximum complete retry duration
+export function providerRequestBudgetMilliseconds(
+  options: ProviderFetchOptions = {},
+): number {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_PROVIDER_MAX_ATTEMPTS;
+  const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_PROVIDER_MAX_BODY_BYTES;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+  validateHttpControls(timeoutMs, maxAttempts, maxBodyBytes);
+
+  return (
+    maxAttempts * timeoutMs +
+    Math.max(0, maxAttempts - 1) * MAX_PROVIDER_RETRY_DELAY_MS
+  );
+}
+
 // enforce bounded HTTP settings
-function validateHttpControls(timeoutMs: number, maxAttempts: number): void {
+function validateHttpControls(
+  timeoutMs: number,
+  maxAttempts: number,
+  maxBodyBytes: number,
+): void {
   // reject unbounded timeouts
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) {
     throw new RangeError("provider timeout must be between 1 and 60000ms");
@@ -94,14 +132,25 @@ function validateHttpControls(timeoutMs: number, maxAttempts: number): void {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3) {
     throw new RangeError("provider attempts must be between 1 and 3");
   }
+
+  // reject unbounded response bodies
+  if (
+    !Number.isSafeInteger(maxBodyBytes) ||
+    maxBodyBytes < 1 ||
+    maxBodyBytes > MAX_PROVIDER_BODY_BYTES
+  ) {
+    throw new RangeError("provider body limit must be between 1 and 10000000 bytes");
+  }
 }
 
-// race fetch against an aborting timeout
-async function fetchWithTimeout(
+// retain one aborting timeout through response consumption
+async function fetchAttempt(
   fetchImplementation: typeof fetch,
   url: URL,
   timeoutMs: number,
-): Promise<Response> {
+  maxBodyBytes: number,
+  attempt: number,
+): Promise<Readonly<{ body: string; response: Response }>> {
   const controller = new AbortController();
   let timeout: NodeJS.Timeout | undefined;
   const timeoutFailure = new Promise<never>((_resolve, reject) => {
@@ -113,15 +162,195 @@ async function fetchWithTimeout(
   });
 
   try {
-    return await Promise.race([
+    const response = await Promise.race([
       fetchImplementation(url, {
         headers: { accept: "application/json" },
         signal: controller.signal,
       }),
       timeoutFailure,
     ]);
+    const body = await readBoundedResponseBody(
+      response,
+      maxBodyBytes,
+      timeoutFailure,
+      attempt,
+    );
+    return { body, response };
   } finally {
     // clear the live deadline
+    if (timeout !== undefined) {
+      clearTimeout(timeout);
+    }
+  }
+}
+
+// consume a response without crossing its byte ceiling
+async function readBoundedResponseBody(
+  response: Response,
+  maxBodyBytes: number,
+  timeoutFailure: Promise<never>,
+  attempt: number,
+): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+
+  // reject an honest oversized length before allocation
+  if (
+    contentLength !== null &&
+    Number.isFinite(Number(contentLength)) &&
+    Number(contentLength) > maxBodyBytes
+  ) {
+    throw responseTooLargeFailure(attempt, response.status);
+  }
+
+  // preserve empty response semantics
+  if (response.body === null) {
+    return "";
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  let bytes = 0;
+
+  try {
+    // enforce the limit against every streamed chunk
+    for (;;) {
+      const chunk = await Promise.race([reader.read(), timeoutFailure]);
+
+      // finish the UTF-8 stream
+      if (chunk.done) {
+        return body + decoder.decode();
+      }
+
+      bytes += chunk.value.byteLength;
+
+      // reject dishonest or absent lengths at the actual boundary
+      if (bytes > maxBodyBytes) {
+        throw responseTooLargeFailure(attempt, response.status);
+      }
+
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+  } catch (error) {
+    // cancel stalled or rejected streams
+    try {
+      await reader.cancel(error);
+    } catch {
+      // preserve the primary body failure
+    }
+
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// classify an oversized provider response
+function responseTooLargeFailure(
+  attempts: number,
+  status: number,
+): ProviderFailure {
+  return new ProviderFailure(
+    {
+      classification: "invalid_payload",
+      code: "provider_response_too_large",
+      message: "provider response exceeded the byte limit",
+    },
+    { attempts, status },
+  );
+}
+
+// parse an optional absolute run deadline
+function parseDeadline(value: string | undefined): number | null {
+  // retain standalone provider behavior
+  if (value === undefined) {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+
+  // reject invalid absolute deadlines
+  if (!Number.isFinite(parsed)) {
+    throw new RangeError("provider deadlineAt must be a valid instant");
+  }
+
+  return parsed;
+}
+
+// bound one attempt by both request and run deadlines
+function boundedAttemptTimeout(
+  timeoutMs: number,
+  deadline: number | null,
+  clock: () => number,
+): number {
+  // retain the request timeout without a run deadline
+  if (deadline === null) {
+    return timeoutMs;
+  }
+
+  const remaining = deadline - clock();
+
+  // fail before starting work past the run deadline
+  if (remaining <= 0) {
+    throw deadlineFailure(1);
+  }
+
+  return Math.min(timeoutMs, remaining);
+}
+
+// detect an exhausted absolute deadline
+function deadlineExpired(
+  deadline: number | null,
+  clock: () => number,
+): boolean {
+  return deadline !== null && clock() >= deadline;
+}
+
+// classify one exhausted run deadline
+function deadlineFailure(attempts: number): ProviderFailure {
+  return new ProviderFailure(
+    {
+      classification: "retryable",
+      code: "provider_deadline_exceeded",
+      message: "provider run deadline exceeded",
+    },
+    { attempts },
+  );
+}
+
+// keep retry sleeps inside the absolute deadline
+async function sleepWithinDeadline(
+  milliseconds: number,
+  sleep: (milliseconds: number) => Promise<void>,
+  deadline: number | null,
+  clock: () => number,
+  attempts: number,
+): Promise<void> {
+  // retain bounded default retry behavior
+  if (deadline === null) {
+    await sleep(milliseconds);
+    return;
+  }
+
+  const remaining = deadline - clock();
+
+  // reject a delay that cannot complete in budget
+  if (remaining <= 0 || milliseconds > remaining) {
+    throw deadlineFailure(attempts);
+  }
+
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutFailure = new Promise<never>((_resolve, reject) => {
+    // reject an injected sleep that stalls
+    timeout = setTimeout(() => {
+      reject(deadlineFailure(attempts));
+    }, remaining);
+  });
+
+  try {
+    await Promise.race([sleep(milliseconds), timeoutFailure]);
+  } finally {
+    // clear the live sleep deadline
     if (timeout !== undefined) {
       clearTimeout(timeout);
     }
@@ -133,6 +362,7 @@ function classifyHttpFailure(
   response: Response,
   body: string,
   attempts: number,
+  clock: () => number,
 ): ProviderFailure {
   const status = response.status;
   const detail = extractProviderReason(body);
@@ -144,7 +374,7 @@ function classifyHttpFailure(
         classification: "rate_limited",
         code: "provider_rate_limited",
         message: detail ?? "provider rate limit exceeded",
-        metadata: retryMetadata(response),
+        metadata: retryMetadata(response, clock),
       },
       { attempts, status },
     );
@@ -207,15 +437,24 @@ function retryDelayMilliseconds(
 
   // honor a bounded retry-after response
   if (typeof retryAfter === "number" && Number.isFinite(retryAfter)) {
-    return Math.min(MAX_RETRY_DELAY_MS, Math.max(0, Math.round(retryAfter)));
+    return Math.min(
+      MAX_PROVIDER_RETRY_DELAY_MS,
+      Math.max(0, Math.round(retryAfter)),
+    );
   }
 
   const jitter = Math.floor(Math.max(0, Math.min(1, random())) * 100);
-  return Math.min(MAX_RETRY_DELAY_MS, 250 * 2 ** (attempt - 1) + jitter);
+  return Math.min(
+    MAX_PROVIDER_RETRY_DELAY_MS,
+    250 * 2 ** (attempt - 1) + jitter,
+  );
 }
 
 // serialize retry timing metadata
-function retryMetadata(response: Response): Readonly<Record<string, number>> {
+function retryMetadata(
+  response: Response,
+  clock: () => number,
+): Readonly<Record<string, number>> {
   const retryAfter = response.headers.get("retry-after");
 
   // omit absent hints
@@ -227,7 +466,12 @@ function retryMetadata(response: Response): Readonly<Record<string, number>> {
 
   // parse seconds-form hints
   if (Number.isFinite(seconds) && seconds >= 0) {
-    return { retry_after_ms: Math.min(MAX_RETRY_DELAY_MS, seconds * 1_000) };
+    return {
+      retry_after_ms: Math.min(
+        MAX_PROVIDER_RETRY_DELAY_MS,
+        seconds * 1_000,
+      ),
+    };
   }
 
   const absolute = Date.parse(retryAfter);
@@ -236,8 +480,8 @@ function retryMetadata(response: Response): Readonly<Record<string, number>> {
   if (Number.isFinite(absolute)) {
     return {
       retry_after_ms: Math.min(
-        MAX_RETRY_DELAY_MS,
-        Math.max(0, absolute - Date.now()),
+        MAX_PROVIDER_RETRY_DELAY_MS,
+        Math.max(0, absolute - clock()),
       ),
     };
   }
@@ -252,7 +496,7 @@ function extractProviderReason(body: string): string | null {
 
     // accept provider reason strings only
     if (typeof parsed.reason === "string" && parsed.reason.trim().length > 0) {
-      return parsed.reason.trim().slice(0, 512);
+      return boundedProviderMessage(parsed.reason);
     }
   } catch {
     return null;

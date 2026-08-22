@@ -29,7 +29,10 @@ export interface ProviderBatch {
 }
 
 export interface ProviderFetchOptions {
+  readonly clock?: () => number;
+  readonly deadlineAt?: string;
   readonly fetch?: typeof fetch;
+  readonly maxBodyBytes?: number;
   readonly maxAttempts?: number;
   readonly now?: () => Date;
   readonly random?: () => number;
@@ -90,8 +93,16 @@ export function asProviderFailure(error: unknown, attempts = 1): ProviderFailure
 export function boundedProviderMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   const redacted = raw
-    .replace(/(?:api[_-]?key|authorization|password|token)=?[^\s&]*/giu, "[redacted]")
-    .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
+    .replace(
+      /["']?authorization["']?\s*(?:=|:)?\s*["']?(?:basic|bearer)?\s*[^\s&,;"'}]+["']?/giu,
+      "[redacted]",
+    )
+    .replace(
+      /["']?(?:api[_-]?key|password|token)["']?\s*(?:=|:)?\s*["']?[^\s&,;"'}]+["']?/giu,
+      "[redacted]",
+    )
+    .replace(/Bearer\s+[^\s&,;"'}]+/giu, "Bearer [redacted]")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/giu, "$1[redacted]@")
     .trim();
 
   return (redacted.length === 0 ? "provider request failed" : redacted).slice(0, 512);
