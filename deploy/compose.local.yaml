@@ -50,12 +50,5 @@ services:
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
 
-# allow loopback-published local ports
-networks:
-  edge:
-    internal: false
-  data:
-    internal: false
-
 volumes:
   weather_local_postgres:
