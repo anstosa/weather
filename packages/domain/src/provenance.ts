@@ -95,6 +95,11 @@ export function canonicalizeJson(value: JsonValue): string {
     return "null";
   }
 
+  // reject non-json numbers
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new TypeError("JSON numbers must be finite");
+  }
+
   // render primitives directly
   if (typeof value !== "object") {
     const serialized = JSON.stringify(value);
@@ -113,7 +118,7 @@ export function canonicalizeJson(value: JsonValue): string {
   }
 
   const entries = Object.entries(value).sort(([left], [right]) =>
-    left.localeCompare(right),
+    compareJsonKeys(left, right),
   );
 
   return `{${entries
@@ -122,4 +127,19 @@ export function canonicalizeJson(value: JsonValue): string {
         `${JSON.stringify(key)}:${canonicalizeJson(entry as JsonValue)}`,
     )
     .join(",")}}`;
+}
+
+// compare keys without locale drift
+function compareJsonKeys(left: string, right: string): number {
+  // order lower code units first
+  if (left < right) {
+    return -1;
+  }
+
+  // order higher code units last
+  if (left > right) {
+    return 1;
+  }
+
+  return 0;
 }

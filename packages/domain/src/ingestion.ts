@@ -97,6 +97,11 @@ export function createBackfillChunkIdentity(
   validateDate(identity.requestedFromDate, "requestedFromDate");
   validateDate(identity.requestedToDate, "requestedToDate");
 
+  // require bounded source identity
+  if (identity.sourceId.trim().length === 0 || identity.sourceId.length > 128) {
+    throw new RangeError("backfill sourceId must be non-empty and bounded");
+  }
+
   // require ordered local dates
   if (identity.requestedFromDate > identity.requestedToDate) {
     throw new RangeError("requested local date range must be ordered");

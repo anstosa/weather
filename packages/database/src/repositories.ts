@@ -468,7 +468,7 @@ export async function startIngestionRun(
       input.chunkPlanVersion ?? null,
       deadlineAt,
       input.attempts ?? 0,
-      JSON.stringify(input.requestMetadata ?? null),
+      serializeNullableJson(input.requestMetadata ?? null),
     ],
   );
 
@@ -530,6 +530,7 @@ export async function failIngestionRun(
   input: FailIngestionRunInput,
 ): Promise<void> {
   const error = validateIngestionError(input.error);
+  validateCompletionCounts(input.attempts, 0);
 
   await withTransaction(session.client, async () => {
     // record an eligible failed chunk
@@ -569,7 +570,7 @@ export async function failIngestionRun(
         input.runId,
         session.sourceId,
         input.attempts,
-        JSON.stringify(input.responseMetadata ?? null),
+        serializeNullableJson(input.responseMetadata ?? null),
         error.classification,
         error.code,
         error.message,
@@ -722,10 +723,18 @@ export async function listWeatherHistory(
   query: HistoryQuery,
 ): Promise<readonly WeatherRecordRow[]> {
   const limit = query.limit ?? 100;
+  const from =
+    query.from === undefined ? undefined : validateUtcInstant(query.from, "from");
+  const to = query.to === undefined ? undefined : validateUtcInstant(query.to, "to");
 
   // enforce the API bound at the repository edge
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
     throw new RangeError("history limit must be between 1 and 250");
+  }
+
+  // reject reversed query ranges
+  if (from !== undefined && to !== undefined && from >= to) {
+    throw new RangeError("history from must be earlier than to");
   }
 
   const conditions = ["si.slug = $1"];
@@ -750,14 +759,14 @@ export async function listWeatherHistory(
   }
 
   // add lower time bound
-  if (query.from !== undefined) {
-    values.push(validateUtcInstant(query.from, "from"));
+  if (from !== undefined) {
+    values.push(from);
     conditions.push(`wr.valid_at >= $${values.length}`);
   }
 
   // add upper time bound
-  if (query.to !== undefined) {
-    values.push(validateUtcInstant(query.to, "to"));
+  if (to !== undefined) {
+    values.push(to);
     conditions.push(`wr.valid_at < $${values.length}`);
   }
 
@@ -876,8 +885,8 @@ async function upsertWeatherRecords(
         record.metadata.device?.vendor ?? null,
         record.metadata.device?.model ?? null,
         record.metadata.device?.serial ?? null,
-        JSON.stringify(record.metadata.quality),
-        JSON.stringify(record.metadata.provider),
+        serializeNullableJson(record.metadata.quality),
+        serializeNullableJson(record.metadata.provider),
         record.metrics.temperatureC,
         record.metrics.apparentTemperatureC,
         record.metrics.precipitationMm,
@@ -924,7 +933,7 @@ async function advanceScheduledCheckpoint(
         lastValidAt,
         windowStart,
         windowEndExclusive,
-        JSON.stringify(input.providerCursor),
+        serializeNullableJson(input.providerCursor),
       ],
     );
     requireGuardedUpdate(result.rowCount, "initial checkpoint insert");
@@ -950,7 +959,7 @@ async function advanceScheduledCheckpoint(
       lastValidAt,
       windowStart,
       windowEndExclusive,
-      JSON.stringify(input.providerCursor),
+      serializeNullableJson(input.providerCursor),
     ],
   );
   requireGuardedUpdate(result.rowCount, "checkpoint compare-and-set");
@@ -994,6 +1003,10 @@ async function upsertBackfillOutcome(
         outcome = EXCLUDED.outcome,
         error_code = EXCLUDED.error_code,
         completed_at = clock_timestamp()
+      WHERE NOT (
+        backfill_chunk_outcomes.outcome = 'succeeded'
+        AND EXCLUDED.outcome = 'failed'
+      )
     `,
     [
       session.sourceId,
@@ -1047,7 +1060,7 @@ async function finalizeSuccessfulRun(
       session.sourceId,
       attempts,
       recordCount,
-      JSON.stringify(responseMetadata),
+      serializeNullableJson(responseMetadata),
       upstreamResponseChecksum,
     ],
   );
@@ -1113,4 +1126,14 @@ function weatherRecordSelection(): string {
     si.slug AS "siteSlug",
     p.provider_key AS "providerKey"
   `;
+}
+
+// preserve SQL null for absent JSON
+function serializeNullableJson(value: JsonValue | undefined): string | null {
+  // retain absent metadata as SQL null
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return JSON.stringify(value);
 }

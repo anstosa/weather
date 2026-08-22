@@ -89,8 +89,10 @@ async function configureTimeouts(
   if (
     !Number.isSafeInteger(lockTimeoutMs) ||
     lockTimeoutMs < 100 ||
+    lockTimeoutMs > 60_000 ||
     !Number.isSafeInteger(statementTimeoutMs) ||
-    statementTimeoutMs < 100
+    statementTimeoutMs < 100 ||
+    statementTimeoutMs > 300_000
   ) {
     throw new RangeError("migration timeouts must be positive bounded integers");
   }
@@ -124,6 +126,11 @@ async function loadMigrationFiles(
     .filter((name) => /^\d{4}_[a-z0-9_]+\.sql$/u.test(name))
     .sort((left, right) => left.localeCompare(right));
   const migrations: MigrationFile[] = [];
+
+  // fail closed on an empty migration directory
+  if (names.length === 0) {
+    throw new Error("migration directory contains no ordered SQL files");
+  }
 
   // checksum exact file bytes
   for (const name of names) {

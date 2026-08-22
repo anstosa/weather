@@ -177,6 +177,29 @@ test("U-DOM-07 bounds metadata and source material serialization", () => {
   });
 
   assert.equal(first, second);
+  assert.throws(
+    () => serializeSourceMaterial({
+      adapterConfig: { invalid: Number.NaN },
+      providerKey: "grid-provider",
+      sourceKey: "current-feed",
+      sourceKind: "model_current",
+      stationKey: "virtual-station",
+      version: 1,
+    }),
+    /JSON numbers must be finite/u,
+  );
+  assert.throws(
+    () =>
+      createNormalizedWeatherRecord({
+        metadata: baseMetadata,
+        metrics: { ...baseMetrics, inventedMetric: 1 },
+        receivedAt: "2026-08-22T04:00:01.000Z",
+        sourceId: "source-a",
+        sourceKind: "model_current",
+        validAt: "2026-08-22T04:00:00.000Z",
+      }),
+    /complete canonical metric set/u,
+  );
 });
 
 // verify exact chunk identity

@@ -17,6 +17,37 @@ AS $$
   );
 $$;
 
+CREATE FUNCTION weather_json_object_keys_allowed(value jsonb, allowed text[])
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT value IS NULL OR (
+    jsonb_typeof(value) = 'object'
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_object_keys(value) AS key
+      WHERE NOT (key = ANY (allowed))
+    )
+  );
+$$;
+
+CREATE FUNCTION weather_json_array_values_allowed(value jsonb, allowed text[])
+RETURNS boolean
+LANGUAGE sql
+IMMUTABLE
+PARALLEL SAFE
+AS $$
+  SELECT jsonb_typeof(value) = 'array'
+    AND jsonb_array_length(value) > 0
+    AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements_text(value) AS entry
+      WHERE NOT (entry = ANY (allowed))
+    );
+$$;
+
 CREATE TABLE sites (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   slug varchar(80) NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'),
@@ -63,7 +94,12 @@ CREATE TABLE sources (
   source_kind varchar(32) NOT NULL CHECK (source_kind IN ('physical_sensor', 'model_current', 'reanalysis', 'forecast')),
   material_provider_config jsonb NOT NULL CHECK (jsonb_typeof(material_provider_config) = 'object'),
   source_config_fingerprint char(64) NOT NULL CHECK (source_config_fingerprint ~ '^[a-f0-9]{64}$'),
-  capabilities jsonb NOT NULL CHECK (jsonb_typeof(capabilities) = 'array' AND jsonb_array_length(capabilities) > 0),
+  capabilities jsonb NOT NULL CHECK (
+    weather_json_array_values_allowed(
+      capabilities,
+      ARRAY['current', 'historical', 'forecast', 'stream']
+    )
+  ),
   cadence_seconds integer CHECK (cadence_seconds IS NULL OR cadence_seconds BETWEEN 60 AND 31536000),
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -258,6 +294,18 @@ CREATE TABLE weather_records (
     (quality_metadata IS NULL OR octet_length(quality_metadata::text) <= 2048)
     AND (provider_metadata IS NULL OR octet_length(provider_metadata::text) <= 2048)
   ),
+  CONSTRAINT weather_records_quality_keys_check CHECK (
+    weather_json_object_keys_allowed(
+      quality_metadata,
+      ARRAY['confidence_percent', 'flags', 'interpolation', 'status']
+    )
+  ),
+  CONSTRAINT weather_records_provider_keys_check CHECK (
+    weather_json_object_keys_allowed(
+      provider_metadata,
+      ARRAY['dataset', 'elevation_m', 'grid_cell', 'request_id']
+    )
+  ),
   CONSTRAINT weather_records_identity_key
     UNIQUE NULLS NOT DISTINCT (source_id, source_kind, valid_at, product_run_at)
 );
@@ -285,7 +333,18 @@ REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
 
 GRANT USAGE ON SCHEMA public TO weather_api, weather_ingest;
-GRANT SELECT ON sites, stations, providers, sources, weather_records, worker_heartbeats, schema_migrations TO weather_api;
+GRANT SELECT ON sites, stations, providers, weather_records, worker_heartbeats, schema_migrations TO weather_api;
+GRANT SELECT (
+  id,
+  station_id,
+  provider_id,
+  source_key,
+  source_kind,
+  cadence_seconds,
+  active,
+  created_at,
+  updated_at
+) ON sources TO weather_api;
 
 GRANT SELECT ON sites, stations, providers, sources TO weather_ingest;
 GRANT SELECT, INSERT, UPDATE ON ingestion_runs, ingestion_checkpoints, backfill_chunk_outcomes, weather_records, worker_heartbeats TO weather_ingest;

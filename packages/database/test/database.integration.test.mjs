@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { promisify } from "node:util";
 
 import { createNormalizedWeatherRecord } from "@weather/domain";
 
@@ -29,6 +31,7 @@ import {
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const migrationDirectory = join(repositoryRoot, "packages/database/migrations");
 const siteConfigurationPath = join(repositoryRoot, "config/sites/ballydidean.json");
+const executeFile = promisify(execFile);
 
 // exercise the complete Phase 2 PostgreSQL contract
 test(
@@ -36,7 +39,14 @@ test(
   { timeout: 600_000 },
   async (context) => {
     const server = await startPostgres(17, "main");
-    const pool = createTestPool(server);
+    const adminPool = createTestPool(server);
+    await runRuntimeRoleBootstrap(server);
+    const pool = createTestPool(
+      server,
+      "weather_test",
+      "weather_owner",
+      "owner-test",
+    );
     let configuration;
     let bootstrap;
     let currentSource;
@@ -46,8 +56,6 @@ test(
     let successfulBackfillIdentity;
 
     try {
-      await createRuntimeRoles(pool);
-
       // verify initial migration and checksum ledger
       await context.test("I-DB-01 empty database migrates with checksums", async () => {
         const result = await runMigrations(pool, migrationDirectory);
@@ -88,7 +96,7 @@ test(
       // verify concurrent first migration serialization
       await context.test("I-DB-03 concurrent migrators serialize", async () => {
         const database = `weather_concurrent_${process.pid}`;
-        await pool.query(`CREATE DATABASE ${database}`);
+        await adminPool.query(`CREATE DATABASE ${database} OWNER weather_owner`);
         const left = createTestPool(server, database);
         const right = createTestPool(server, database);
 
@@ -101,7 +109,7 @@ test(
           assert.equal(first.current.length + second.current.length, 1);
         } finally {
           await Promise.all([left.end(), right.end()]);
-          await pool.query(`DROP DATABASE ${database}`);
+          await adminPool.query(`DROP DATABASE ${database}`);
         }
       });
 
@@ -144,6 +152,25 @@ test(
           () =>
             pool.query(
               "INSERT INTO sites (slug, display_name, latitude, longitude, timezone) VALUES ('invalid-lat', 'invalid', 91, 0, 'UTC')",
+            ),
+          hasDatabaseCode("23514"),
+        );
+        await assert.rejects(
+          () =>
+            pool.query(
+              `
+                INSERT INTO sources (
+                  station_id,
+                  provider_id,
+                  source_key,
+                  source_kind,
+                  material_provider_config,
+                  source_config_fingerprint,
+                  capabilities
+                )
+                VALUES ($1, $2, 'invalid-capability', 'model_current', '{}'::jsonb, $3, '["invented"]'::jsonb)
+              `,
+              [bootstrap.stationId, bootstrap.providerId, "e".repeat(64)],
             ),
           hasDatabaseCode("23514"),
         );
@@ -194,6 +221,10 @@ test(
           );
           await assert.rejects(
             () => apiPool.query("CREATE TABLE api_escape (id integer)"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () => apiPool.query("SELECT material_provider_config FROM sources"),
             hasDatabaseCode("42501"),
           );
         } finally {
@@ -352,6 +383,18 @@ test(
               [currentSource.id, reanalysisSource.source_config_fingerprint],
             ),
           hasDatabaseCode("23503"),
+        );
+        await assert.rejects(
+          () =>
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              providerMetadata: { unrecognized: true },
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              validAt: "2026-08-20T04:00:00.000Z",
+            }),
+          hasDatabaseCode("23514"),
         );
       });
 
@@ -735,6 +778,28 @@ test(
         } finally {
           await failedSession.release();
         }
+
+        const preservedSession = await requireSession(pool, reanalysisSource.id);
+
+        try {
+          const run = await createRun(
+            preservedSession,
+            reanalysisSource,
+            "backfill",
+          );
+          await failIngestionRun(preservedSession, {
+            attempts: 1,
+            backfillIdentity: successfulBackfillIdentity,
+            error: testError("later_retry_failed"),
+            runId: run.id,
+          });
+          assert.equal(
+            await hasSuccessfulBackfillChunk(pool, successfulBackfillIdentity),
+            true,
+          );
+        } finally {
+          await preservedSession.release();
+        }
       });
 
       // verify checkpoint compare-and-set conflict protection
@@ -826,7 +891,7 @@ test(
         assert.equal(heartbeat.rows[0].current_activity, "idle");
       });
     } finally {
-      await pool.end();
+      await Promise.all([pool.end(), adminPool.end()]);
       await stopPostgres(server);
     }
   },
@@ -836,6 +901,42 @@ test(
 function hasDatabaseCode(code) {
   // inspect structured database errors
   return (error) => error?.code === code;
+}
+
+// execute the real first-init role boundary
+async function runRuntimeRoleBootstrap(server) {
+  const directory = await mkdtemp(join(tmpdir(), "weather-role-secrets-"));
+  const ownerPath = join(directory, "owner");
+  const apiPath = join(directory, "api");
+  const ingestPath = join(directory, "ingest");
+
+  try {
+    await Promise.all([
+      writeFile(ownerPath, "owner-test\n", { mode: 0o600 }),
+      writeFile(apiPath, "api-test\n", { mode: 0o600 }),
+      writeFile(ingestPath, "ingest-test\n", { mode: 0o600 }),
+    ]);
+    await executeFile(
+      join(repositoryRoot, "deploy/postgres/010-create-runtime-roles.sh"),
+      [],
+      {
+        env: {
+          ...process.env,
+          PGHOST: server.host,
+          PGPASSWORD: server.password,
+          PGPORT: String(server.port),
+          POSTGRES_DB: "weather_test",
+          POSTGRES_USER: server.user,
+          WEATHER_API_PASSWORD_FILE: apiPath,
+          WEATHER_INGEST_PASSWORD_FILE: ingestPath,
+          WEATHER_OWNER_PASSWORD_FILE: ownerPath,
+        },
+        timeout: 30_000,
+      },
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 }
 
 // require a retained source session
@@ -929,9 +1030,10 @@ async function insertRawRecord(pool, input) {
         first_received_at,
         last_received_at,
         upstream_timezone,
+        provider_metadata,
         content_hash
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $3, $3, 'UTC', $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $3, $3, 'UTC', $7::jsonb, $8)
     `,
     [
       input.sourceId,
@@ -940,6 +1042,9 @@ async function insertRawRecord(pool, input) {
       input.productRunAt ?? null,
       input.firstRunId,
       input.lastRunId,
+      input.providerMetadata === undefined
+        ? null
+        : JSON.stringify(input.providerMetadata),
       "c".repeat(64),
     ],
   );

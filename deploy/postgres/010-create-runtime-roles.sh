@@ -40,14 +40,6 @@ ingest_literal="$(sql_literal "$ingest_password")"
 # create roles without exposing credentials in arguments or output
 psql --set=ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}" --dbname "${POSTGRES_DB:-postgres}" <<SQL
 SELECT format(
-  'CREATE ROLE weather_owner LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
-  $owner_literal
-)
-WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'weather_owner')
-\gexec
-ALTER ROLE weather_owner WITH LOGIN PASSWORD $owner_literal NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
-
-SELECT format(
   'CREATE ROLE weather_api LOGIN PASSWORD %L NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
   $api_literal
 )
@@ -62,6 +54,25 @@ SELECT format(
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'weather_ingest')
 \gexec
 ALTER ROLE weather_ingest WITH LOGIN PASSWORD $ingest_literal NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+
+SELECT format(
+  'CREATE ROLE weather_owner LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
+  $owner_literal
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'weather_owner')
+\gexec
+
+SELECT format('ALTER DATABASE %I OWNER TO weather_owner', current_database())
+\gexec
+ALTER SCHEMA public OWNER TO weather_owner;
+SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
+\gexec
+SELECT format(
+  'GRANT CONNECT ON DATABASE %I TO weather_owner, weather_api, weather_ingest',
+  current_database()
+)
+\gexec
+ALTER ROLE weather_owner WITH LOGIN PASSWORD $owner_literal NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 SQL
 
 unset owner_password api_password ingest_password owner_literal api_literal ingest_literal

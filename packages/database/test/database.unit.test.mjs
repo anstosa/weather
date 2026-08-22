@@ -10,6 +10,7 @@ import {
   assertSupportedPostgres,
   loadDatabaseConfiguration,
   loadSiteConfiguration,
+  listWeatherHistory,
   parseSiteConfiguration,
   toPoolConfiguration,
 } from "../dist/index.js";
@@ -131,4 +132,24 @@ test("runtime role bootstrap is valid shell without secret logging", async () =>
   assert.match(script, /WEATHER_API_PASSWORD_FILE/u);
   assert.match(script, /WEATHER_INGEST_PASSWORD_FILE/u);
   assert.match(script, /WEATHER_OWNER_PASSWORD_FILE/u);
+});
+
+// verify repository range validation precedes SQL
+test("history rejects reversed ranges before querying PostgreSQL", async () => {
+  const rejectingPool = {
+    // expose unexpected query execution
+    async query() {
+      throw new Error("query should not execute");
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      listWeatherHistory(rejectingPool, {
+        from: "2026-08-22T01:00:00.000Z",
+        siteSlug: "ballydidean",
+        to: "2026-08-22T00:00:00.000Z",
+      }),
+    /history from must be earlier/u,
+  );
 });

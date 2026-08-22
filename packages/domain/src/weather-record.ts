@@ -1,5 +1,6 @@
 import {
   canonicalizeJson,
+  parseSourceKind,
   type JsonValue,
   type SourceKind,
 } from "./provenance.js";
@@ -89,6 +90,15 @@ const PROVIDER_KEYS = new Set([
   "grid_cell",
   "request_id",
 ]);
+const METRIC_NAMES = Object.keys(CANONICAL_UNITS) as MetricName[];
+const METADATA_KEYS = new Set([
+  "device",
+  "model",
+  "provider",
+  "quality",
+  "upstreamTimezone",
+]);
+const DEVICE_KEYS = new Set(["model", "serial", "vendor"]);
 
 // normalize a provider metric
 export function normalizeMetricValue(
@@ -115,6 +125,7 @@ export function normalizeMetricValue(
 export function createNormalizedWeatherRecord(
   input: NormalizedWeatherRecordInput,
 ): NormalizedWeatherRecord {
+  const sourceKind = parseSourceKind(input.sourceKind);
   const validAt = validateUtcInstant(input.validAt, "validAt");
   const receivedAt = validateUtcInstant(input.receivedAt, "receivedAt");
   const productRunAt =
@@ -123,8 +134,19 @@ export function createNormalizedWeatherRecord(
       : validateUtcInstant(input.productRunAt, "productRunAt");
 
   // require forecast product identity
-  if (input.sourceKind === "forecast" && productRunAt === null) {
+  if (sourceKind === "forecast" && productRunAt === null) {
     throw new RangeError("forecast records require productRunAt");
+  }
+
+  const metricKeys = Object.keys(input.metrics);
+
+  // require the exact canonical metric set
+  if (
+    metricKeys.length !== METRIC_NAMES.length ||
+    METRIC_NAMES.some((metric) => !(metric in input.metrics)) ||
+    metricKeys.some((metric) => !METRIC_NAMES.includes(metric as MetricName))
+  ) {
+    throw new RangeError("record metrics must use the complete canonical metric set");
   }
 
   // validate every metric
@@ -148,7 +170,7 @@ export function createNormalizedWeatherRecord(
     productRunAt,
     receivedAt,
     sourceId: input.sourceId,
-    sourceKind: input.sourceKind,
+    sourceKind,
     validAt,
   };
 }
@@ -363,6 +385,11 @@ function metricRange(
 function validateWeatherRecordMetadata(
   metadata: WeatherRecordMetadata,
 ): WeatherRecordMetadata {
+  // reject unknown metadata fields
+  if (Object.keys(metadata).some((key) => !METADATA_KEYS.has(key))) {
+    throw new RangeError("record metadata contains an unrecognized field");
+  }
+
   const model = validateOptionalMetadataString(metadata.model, "model");
   const device = validateDeviceMetadata(metadata.device);
   const quality = validateMetadataFragment(
@@ -392,6 +419,11 @@ function validateDeviceMetadata(
   // preserve absent devices
   if (device === null) {
     return null;
+  }
+
+  // reject unknown device fields
+  if (Object.keys(device).some((key) => !DEVICE_KEYS.has(key))) {
+    throw new RangeError("device metadata contains an unrecognized field");
   }
 
   const normalized: DeviceMetadata = {
