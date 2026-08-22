@@ -597,6 +597,18 @@ test(
         );
       }
 
+      // capture the previous-release schema
+      await executeFile("age-keygen", ["--output", identity]);
+      const recipient = (await executeFile("age-keygen", ["-y", identity])).stdout.trim();
+      await executeFile(
+        join(deployRoot, "scripts/backup.sh"),
+        ["--recipient", recipient, "--output-dir", backups, "--env-file", envFile],
+        { cwd: repoRoot, env: environment, timeout: 120_000 },
+      );
+      const archive = (await executeFile("bash", ["-c", 'printf "%s\\n" "$1"/*.dump.age', "weather-backup", backups])).stdout.trim();
+      assert.match(archive, /\.dump\.age$/u);
+      assert.equal((await readFile(`${archive}.sha256`, "utf8")).includes("weather-"), true);
+
       const compatibilityEnv = join(directory, "compatibility.env");
       const previousCompatibilityEnv = join(directory, "previous-compatibility.env");
       await writeFile(
@@ -905,16 +917,7 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
       assert.equal(secondSites.status, 200);
       assert.equal(await secondSites.text(), firstBody);
 
-      await executeFile("age-keygen", ["--output", identity]);
-      const recipient = (await executeFile("age-keygen", ["-y", identity])).stdout.trim();
-      await executeFile(
-        join(deployRoot, "scripts/backup.sh"),
-        ["--recipient", recipient, "--output-dir", backups, "--env-file", envFile],
-        { cwd: repoRoot, env: environment, timeout: 120_000 },
-      );
-      const archive = (await executeFile("bash", ["-c", 'printf "%s\\n" "$1"/*.dump.age', "weather-backup", backups])).stdout.trim();
-      assert.match(archive, /\.dump\.age$/u);
-      assert.equal((await readFile(`${archive}.sha256`, "utf8")).includes("weather-"), true);
+      // verify the retained pre-candidate backup
       await executeFile(
         join(deployRoot, "scripts/restore.sh"),
         ["verify", archive, "--identity", identity, "--env-file", envFile],
