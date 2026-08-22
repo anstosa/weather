@@ -277,6 +277,30 @@ test("worker iteration preserves restart success and emits allowlisted diagnosti
   assert.equal(JSON.stringify(diagnostics).includes("diagnostic-secret"), false);
 });
 
+// preserve durable success when a restarted worker has no due sources
+test("worker iteration preserves restart success with no due sources", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const heartbeat = [];
+  const previousSuccess = "2026-08-21T05:20:00.000Z";
+  const repository = scheduledRepository([]);
+  repository.discoverDueSources = async () => [];
+  repository.updateWorkerHeartbeat = async (_pool, input) => {
+    heartbeat.push(input);
+  };
+  const result = await runWorkerIteration({}, {
+    diagnosticWriter: () => {},
+    instance: "worker-test",
+    lastSuccessAt: previousSuccess,
+    now: () => new Date("2026-08-22T05:20:00.000Z"),
+    repository,
+    site,
+    version: "release-test",
+  });
+
+  assert.equal(result.lastSuccessAt, previousSuccess);
+  assert.equal(heartbeat[0].lastSuccessAt, previousSuccess);
+});
+
 // create an exact backfill repository
 function backfillRepository(log, successfulKeys = new Set()) {
   let run = 0;
