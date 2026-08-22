@@ -104,6 +104,85 @@ env_value() {
   printf '%s\n' "$value"
 }
 
+# validate one PostgreSQL identifier
+validate_database_name() {
+  local database_name=$1
+  [[ "$database_name" =~ ^[a-z][a-z0-9_]{0,62}$ ]] || die "invalid database name"
+}
+
+# require one canonical owned descendant
+require_canonical_descendant() {
+  local path=$1
+  local root=$2
+  local description=$3
+  local canonical_path canonical_root
+  require_command realpath
+  canonical_path=$(realpath -m -- "$path")
+  canonical_root=$(realpath -m -- "$root")
+  [[ "$path" == "$canonical_path" ]] || die "$description must use a canonical path"
+  [[ "$canonical_path" == "$canonical_root/"* ]] || die "$description escapes its Weather root"
+  [[ ! -L "$path" ]] || die "$description must not be a symbolic link"
+}
+
+# hash the production deployment control plane
+control_plane_digest() {
+  local file
+  local -a files
+  mapfile -d '' -t files < <(
+    find "$deploy_dir/scripts" "$deploy_dir/postgres" "$deploy_dir/systemd" \
+      "$deploy_dir/sudoers" -type f -print0 | sort -z
+  )
+  files+=("$deploy_dir/compose.yaml")
+  (
+    cd "$repo_root"
+
+    # hash stable relative paths and contents
+    for file in "${files[@]}"; do
+      printf '%s\0' "${file#"$repo_root/"}"
+      sha256sum "$file" | awk '{print $1}'
+    done
+  ) | sha256sum | awk '{print $1}'
+}
+
+# apply the versioned runtime ACL contract
+apply_runtime_database_acl() {
+  local env_file=$1
+  local database_name=$2
+  validate_database_name "$database_name"
+  WEATHER_ENV_FILE=$env_file compose exec -T postgres \
+    psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$database_name" \
+      <"$deploy_dir/postgres/runtime-acl-v1.sql"
+}
+
+# verify effective runtime grants and denials
+verify_runtime_database_acl() {
+  local env_file=$1
+  local database_name=$2
+  local verified
+  validate_database_name "$database_name"
+  verified=$(WEATHER_ENV_FILE=$env_file compose exec -T postgres \
+    psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$database_name" \
+      --tuples-only --no-align --command "SELECT
+        has_database_privilege('weather_api', current_database(), 'CONNECT')
+        AND NOT has_database_privilege('weather_api', current_database(), 'CREATE')
+        AND NOT has_database_privilege('weather_api', current_database(), 'TEMP')
+        AND has_schema_privilege('weather_api', 'public', 'USAGE')
+        AND NOT has_schema_privilege('weather_api', 'public', 'CREATE')
+        AND has_table_privilege('weather_api', 'sites', 'SELECT')
+        AND NOT has_table_privilege('weather_api', 'sites', 'INSERT')
+        AND has_column_privilege('weather_api', 'sources', 'source_key', 'SELECT')
+        AND NOT has_column_privilege('weather_api', 'sources', 'material_provider_config', 'SELECT')
+        AND has_database_privilege('weather_ingest', current_database(), 'CONNECT')
+        AND NOT has_database_privilege('weather_ingest', current_database(), 'CREATE')
+        AND NOT has_database_privilege('weather_ingest', current_database(), 'TEMP')
+        AND has_table_privilege('weather_ingest', 'sources', 'SELECT')
+        AND has_table_privilege('weather_ingest', 'ingestion_runs', 'INSERT')
+        AND has_table_privilege('weather_ingest', 'ingestion_runs', 'UPDATE')
+        AND NOT has_table_privilege('weather_ingest', 'ingestion_runs', 'DELETE')
+        AND has_sequence_privilege('weather_ingest', 'weather_records_id_seq', 'USAGE')")
+  [[ "$verified" == t ]] || die "runtime database ACL verification failed"
+}
+
 # publish private state atomically
 write_private_state() {
   (
