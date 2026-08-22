@@ -1,0 +1,2 @@
+# validate with visudo -cf before installation
+weather-ssh ALL=(root) NOPASSWD: /usr/local/sbin/weather-remote-ops *
