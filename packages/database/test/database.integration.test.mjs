@@ -15,6 +15,7 @@ import {
   completeBackfillIngestion,
   completeScheduledIngestion,
   failIngestionRun,
+  getScheduledCheckpoint,
   hasSuccessfulBackfillChunk,
   loadSiteConfiguration,
   runMigrations,
@@ -87,6 +88,15 @@ test(
           await assert.rejects(
             () => runMigrations(pool, directory),
             /migration checksum mismatch/u,
+          );
+          await writeFile(join(directory, "0001_initial_weather.sql"), source);
+          await writeFile(
+            join(directory, "0000_retroactive.sql"),
+            "SELECT 1;\n",
+          );
+          await assert.rejects(
+            () => runMigrations(pool, directory),
+            /migration history diverges/u,
           );
         } finally {
           await rm(directory, { force: true, recursive: true });
@@ -179,7 +189,7 @@ test(
             pool.query(
               "INSERT INTO sites (slug, display_name, latitude, longitude, timezone) VALUES ('invalid-zone', 'invalid', 0, 0, 'Mars/Olympus')",
             ),
-          hasDatabaseCode("23514"),
+          hasDatabaseCode("23503"),
         );
         await assert.rejects(
           () =>
@@ -227,6 +237,10 @@ test(
             () => apiPool.query("SELECT material_provider_config FROM sources"),
             hasDatabaseCode("42501"),
           );
+          await assert.rejects(
+            () => apiPool.query("CREATE TEMP TABLE api_temp_escape (id integer)"),
+            hasDatabaseCode("42501"),
+          );
         } finally {
           await apiPool.end();
         }
@@ -259,6 +273,13 @@ test(
           );
           await assert.rejects(
             () => ingestPool.query("CREATE ROLE escaped"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () =>
+              ingestPool.query(
+                "UPDATE weather_records SET first_received_at = clock_timestamp()",
+              ),
             hasDatabaseCode("42501"),
           );
         } finally {
@@ -321,6 +342,8 @@ test(
             currentSession,
             currentSource,
             "scheduled",
+            "2026-08-20T00:00:00.000Z",
+            "2026-08-20T00:15:00.000Z",
           );
           currentFirstRunId = currentRun.id;
           await completeScheduledIngestion(currentSession, {
@@ -335,17 +358,19 @@ test(
             windowEndExclusive: "2026-08-20T00:15:00.000Z",
             windowStart: "2026-08-20T00:00:00.000Z",
           });
-          const backfillRun = await createRun(
-            reanalysisSession,
-            reanalysisSource,
-            "backfill",
-          );
-          backfillRunId = backfillRun.id;
           successfulBackfillIdentity = makeChunkIdentity(
             reanalysisSource,
             "2026-08-20T00:00:00.000Z",
             "2026-08-20T01:00:00.000Z",
           );
+          const backfillRun = await createRun(
+            reanalysisSession,
+            reanalysisSource,
+            "backfill",
+            successfulBackfillIdentity.intervalStart,
+            successfulBackfillIdentity.intervalEndExclusive,
+          );
+          backfillRunId = backfillRun.id;
           await completeBackfillIngestion(reanalysisSession, {
             attempts: 1,
             identity: successfulBackfillIdentity,
@@ -430,7 +455,13 @@ test(
         const forecastSession = await requireSession(pool, forecastSource.id);
 
         try {
-          const run = await createRun(forecastSession, forecastSource, "scheduled");
+          const run = await createRun(
+            forecastSession,
+            forecastSource,
+            "scheduled",
+            "2026-08-20T06:00:00.000Z",
+            "2026-08-20T07:00:00.000Z",
+          );
           await assert.rejects(
             () =>
               insertRawRecord(pool, {
@@ -481,7 +512,13 @@ test(
         const retrySession = await requireSession(pool, currentSource.id);
 
         try {
-          const retry = await createRun(retrySession, currentSource, "scheduled");
+          const retry = await createRun(
+            retrySession,
+            currentSource,
+            "scheduled",
+            "2026-08-20T00:15:00.000Z",
+            "2026-08-20T00:30:00.000Z",
+          );
           await completeScheduledIngestion(retrySession, {
             attempts: 1,
             expectedCheckpointVersion: 1,
@@ -507,7 +544,13 @@ test(
           assert.equal(identical.rows[0].last_ingestion_run_id, retry.id);
           assert.equal(identical.rows[0].revision_count, 0);
 
-          const revised = await createRun(retrySession, currentSource, "scheduled");
+          const revised = await createRun(
+            retrySession,
+            currentSource,
+            "scheduled",
+            "2026-08-20T00:30:00.000Z",
+            "2026-08-20T00:45:00.000Z",
+          );
           await completeScheduledIngestion(retrySession, {
             attempts: 1,
             expectedCheckpointVersion: 2,
@@ -533,6 +576,14 @@ test(
           assert.equal(changed.rows[0].last_ingestion_run_id, revised.id);
           assert.equal(changed.rows[0].revision_count, 1);
           assert.equal(changed.rows[0].temperature_c, 12);
+          await assert.rejects(
+            () =>
+              pool.query(
+                "UPDATE weather_records SET first_ingestion_run_id = $1 WHERE source_id = $2 AND valid_at = '2026-08-20T00:00:00.000Z'",
+                [revised.id, currentSource.id],
+              ),
+            hasDatabaseCode("23514"),
+          );
         } finally {
           await retrySession.release();
         }
@@ -540,21 +591,45 @@ test(
 
       // verify current/history index availability
       await context.test("I-DB-16 representative current lookup uses the source-time index", async () => {
+        await pool.query(
+          `
+            INSERT INTO weather_records (
+              source_id,
+              source_kind,
+              valid_at,
+              first_ingestion_run_id,
+              last_ingestion_run_id,
+              first_received_at,
+              last_received_at,
+              upstream_timezone,
+              temperature_c,
+              content_hash
+            )
+            SELECT
+              $1,
+              'model_current',
+              '2020-01-01T00:00:00.000Z'::timestamptz + generated * interval '1 hour',
+              $2,
+              $2,
+              '2020-01-01T00:05:00.000Z'::timestamptz + generated * interval '1 hour',
+              '2020-01-01T00:05:00.000Z'::timestamptz + generated * interval '1 hour',
+              'UTC',
+              10,
+              md5(generated::text) || md5(generated::text)
+            FROM generate_series(1, 2000) AS generated
+            ON CONFLICT ON CONSTRAINT weather_records_identity_key DO NOTHING
+          `,
+          [currentSource.id, currentFirstRunId],
+        );
         await pool.query("ANALYZE weather_records");
-        await pool.query("SET enable_seqscan = off");
-
-        try {
-          const plan = await pool.query(
-            "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT * FROM weather_records WHERE source_id = $1 ORDER BY valid_at DESC, id DESC LIMIT 10",
-            [currentSource.id],
-          );
-          assert.match(
-            plan.rows.map((row) => row["QUERY PLAN"]).join("\n"),
-            /weather_records_(?:current|source_valid)_idx/u,
-          );
-        } finally {
-          await pool.query("RESET enable_seqscan");
-        }
+        const plan = await pool.query(
+          "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) SELECT * FROM weather_records WHERE source_id = $1 ORDER BY valid_at DESC, id DESC LIMIT 10",
+          [currentSource.id],
+        );
+        assert.match(
+          plan.rows.map((row) => row["QUERY PLAN"]).join("\n"),
+          /weather_records_(?:current|source_valid)_idx/u,
+        );
       });
 
       // verify committed running visibility
@@ -620,7 +695,13 @@ test(
         const validAt = "2026-08-20T08:00:00.000Z";
 
         try {
-          const run = await createRun(session, currentSource, "scheduled");
+          const run = await createRun(
+            session,
+            currentSource,
+            "scheduled",
+            validAt,
+            "2026-08-20T08:15:00.000Z",
+          );
           await assert.rejects(
             () =>
               completeScheduledIngestion(session, {
@@ -711,21 +792,33 @@ test(
       // verify lock exclusion and non-expired protection
       await context.test("I-DB-23 active lock excludes a second worker and live run is not recovered", async () => {
         const first = await requireSession(pool, currentSource.id);
+        let run;
 
         try {
           assert.equal(await acquireSourceSession(pool, currentSource.id), null);
-          const run = await createRun(first, currentSource, "scheduled");
+          run = await createRun(first, currentSource, "scheduled");
           assert.deepEqual(
             await abandonExpiredRuns(first, new Date().toISOString()),
             [],
           );
-          await failIngestionRun(first, {
+        } finally {
+          await first.release();
+        }
+
+        const recovered = await requireSession(pool, currentSource.id);
+
+        try {
+          await assert.rejects(
+            () => createRun(recovered, currentSource, "scheduled"),
+            /already has a running ingestion/u,
+          );
+          await failIngestionRun(recovered, {
             attempts: 1,
             error: testError("test_cleanup"),
             runId: run.id,
           });
         } finally {
-          await first.release();
+          await recovered.release();
         }
       });
 
@@ -750,11 +843,30 @@ test(
         const failedSession = await requireSession(pool, reanalysisSource.id);
 
         try {
-          const run = await createRun(failedSession, reanalysisSource, "backfill");
           const failedIdentity = makeChunkIdentity(
             reanalysisSource,
             "2026-08-21T00:00:00.000Z",
             "2026-08-21T01:00:00.000Z",
+          );
+          const run = await createRun(
+            failedSession,
+            reanalysisSource,
+            "backfill",
+            failedIdentity.intervalStart,
+            failedIdentity.intervalEndExclusive,
+          );
+          await assert.rejects(
+            () =>
+              completeBackfillIngestion(failedSession, {
+                attempts: 1,
+                identity: {
+                  ...failedIdentity,
+                  intervalEndExclusive: "2026-08-21T02:00:00.000Z",
+                },
+                records: [],
+                runId: run.id,
+              }),
+            /backfill run identity check/u,
           );
           await failIngestionRun(failedSession, {
             attempts: 1,
@@ -786,6 +898,8 @@ test(
             preservedSession,
             reanalysisSource,
             "backfill",
+            successfulBackfillIdentity.intervalStart,
+            successfulBackfillIdentity.intervalEndExclusive,
           );
           await failIngestionRun(preservedSession, {
             attempts: 1,
@@ -804,15 +918,19 @@ test(
 
       // verify checkpoint compare-and-set conflict protection
       await context.test("I-DB-25 stale checkpoint cannot overwrite newer state", async () => {
-        const initial = await pool.query(
-          "SELECT version FROM ingestion_checkpoints WHERE source_id = $1",
-          [currentSource.id],
-        );
-        const priorVersion = Number(initial.rows[0].version);
         const session = await requireSession(pool, currentSource.id);
 
         try {
-          const winning = await createRun(session, currentSource, "scheduled");
+          const initial = await getScheduledCheckpoint(session);
+          assert.ok(initial);
+          const priorVersion = initial.version;
+          const winning = await createRun(
+            session,
+            currentSource,
+            "scheduled",
+            "2026-08-20T09:00:00.000Z",
+            "2026-08-20T09:15:00.000Z",
+          );
           await completeScheduledIngestion(session, {
             attempts: 1,
             expectedCheckpointVersion: priorVersion,
@@ -825,7 +943,13 @@ test(
             windowEndExclusive: "2026-08-20T09:15:00.000Z",
             windowStart: "2026-08-20T09:00:00.000Z",
           });
-          const stale = await createRun(session, currentSource, "scheduled");
+          const stale = await createRun(
+            session,
+            currentSource,
+            "scheduled",
+            "2026-08-20T10:00:00.000Z",
+            "2026-08-20T10:15:00.000Z",
+          );
           await assert.rejects(
             () =>
               completeScheduledIngestion(session, {
@@ -842,13 +966,11 @@ test(
               }),
             /checkpoint compare-and-set/u,
           );
-          const checkpoint = await pool.query(
-            "SELECT version, last_valid_at FROM ingestion_checkpoints WHERE source_id = $1",
-            [currentSource.id],
-          );
-          assert.equal(Number(checkpoint.rows[0].version), priorVersion + 1);
+          const checkpoint = await getScheduledCheckpoint(session);
+          assert.ok(checkpoint);
+          assert.equal(checkpoint.version, priorVersion + 1);
           assert.equal(
-            checkpoint.rows[0].last_valid_at.toISOString(),
+            checkpoint.lastValidAt,
             "2026-08-20T09:00:00.000Z",
           );
           await failIngestionRun(session, {
@@ -952,14 +1074,20 @@ async function requireSession(pool, sourceId) {
 }
 
 // create a committed running row
-async function createRun(session, source, mode) {
+async function createRun(
+  session,
+  source,
+  mode,
+  requestedStart = "2026-08-22T00:00:00.000Z",
+  requestedEndExclusive = "2026-08-22T01:00:00.000Z",
+) {
   return startIngestionRun(session, {
     adapterVersion: mode === "backfill" ? "archive/v1" : "current/v1",
     chunkPlanVersion: mode === "backfill" ? "archive-hourly/v1" : null,
     deadlineAt: new Date(Date.now() + 120_000).toISOString(),
     mode,
-    requestedEndExclusive: "2026-08-22T01:00:00.000Z",
-    requestedStart: "2026-08-22T00:00:00.000Z",
+    requestedEndExclusive,
+    requestedStart,
     sourceConfigFingerprint: source.source_config_fingerprint,
   });
 }

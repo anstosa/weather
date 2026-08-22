@@ -4,18 +4,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE FUNCTION weather_timezone_exists(value text)
-RETURNS boolean
-LANGUAGE sql
-STABLE
-PARALLEL SAFE
-AS $$
-  SELECT EXISTS (
-    SELECT 1
-    FROM pg_timezone_names
-    WHERE name = value
-  );
-$$;
+CREATE TABLE weather_timezones (
+  name varchar(64) PRIMARY KEY
+);
+
+INSERT INTO weather_timezones (name)
+SELECT name
+FROM pg_timezone_names
+WHERE length(name) <= 64;
 
 CREATE FUNCTION weather_json_object_keys_allowed(value jsonb, allowed text[])
 RETURNS boolean
@@ -54,7 +50,7 @@ CREATE TABLE sites (
   display_name varchar(160) NOT NULL CHECK (length(trim(display_name)) > 0),
   latitude double precision NOT NULL CHECK (latitude BETWEEN -90 AND 90),
   longitude double precision NOT NULL CHECK (longitude BETWEEN -180 AND 180),
-  timezone varchar(64) NOT NULL CHECK (weather_timezone_exists(timezone)),
+  timezone varchar(64) NOT NULL REFERENCES weather_timezones(name) ON DELETE RESTRICT,
   active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
@@ -255,7 +251,7 @@ CREATE TABLE weather_records (
   last_ingestion_run_id bigint NOT NULL,
   first_received_at timestamptz NOT NULL,
   last_received_at timestamptz NOT NULL,
-  upstream_timezone varchar(64) NOT NULL CHECK (weather_timezone_exists(upstream_timezone)),
+  upstream_timezone varchar(64) NOT NULL REFERENCES weather_timezones(name) ON DELETE RESTRICT,
   upstream_model varchar(128),
   device_vendor varchar(128),
   device_model varchar(128),

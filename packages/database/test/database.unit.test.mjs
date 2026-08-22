@@ -77,7 +77,7 @@ test("database configuration reads mounted passwords without embedding them", as
   const secretPath = join(directory, "password");
 
   try {
-    await writeFile(secretPath, "secret-value\n", { mode: 0o600 });
+    await writeFile(secretPath, "secret-value \n", { mode: 0o600 });
     const configuration = await loadDatabaseConfiguration({
       WEATHER_DATABASE_HOST: "127.0.0.1",
       WEATHER_DATABASE_NAME: "weather",
@@ -88,8 +88,8 @@ test("database configuration reads mounted passwords without embedding them", as
     });
     const poolConfiguration = toPoolConfiguration(configuration);
 
-    assert.equal(configuration.password, "secret-value");
-    assert.equal(poolConfiguration.password, "secret-value");
+    assert.equal(configuration.password, "secret-value ");
+    assert.equal(poolConfiguration.password, "secret-value ");
     assert.equal(JSON.stringify({ ...configuration, password: "[redacted]" }).includes("secret-value"), false);
   } finally {
     await rm(directory, { force: true, recursive: true });

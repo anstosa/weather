@@ -51,6 +51,16 @@ export interface StartedIngestionRun extends QueryResultRow {
   readonly state: "running";
 }
 
+export interface ScheduledCheckpointState {
+  readonly lastCommittedAt: string;
+  readonly lastValidAt: string;
+  readonly providerCursor: Readonly<Record<string, JsonValue>> | null;
+  readonly sourceId: string;
+  readonly version: number;
+  readonly windowEndExclusive: string;
+  readonly windowStart: string;
+}
+
 export interface CompleteScheduledIngestionInput {
   readonly attempts: number;
   readonly expectedCheckpointVersion: number | null;
@@ -441,6 +451,24 @@ export async function startIngestionRun(
     validateVersion(input.chunkPlanVersion, "chunkPlanVersion");
   }
 
+  const existing = await session.client.query<{ deadline_at: Date; id: string }>(
+    `
+      SELECT id, deadline_at
+      FROM ingestion_runs
+      WHERE source_id = $1
+        AND state = 'running'
+      FOR UPDATE
+    `,
+    [session.sourceId],
+  );
+
+  // reject replacement before explicit recovery
+  if (existing.rowCount !== 0) {
+    throw new Error(
+      `source already has a running ingestion: ${existing.rows[0]?.id ?? "unknown"}`,
+    );
+  }
+
   const result = await session.client.query<StartedIngestionRun>(
     `
       INSERT INTO ingestion_runs (
@@ -483,6 +511,7 @@ export async function completeScheduledIngestion(
   validateCompletionCounts(input.attempts, input.records.length);
 
   await withTransaction(session.client, async () => {
+    await assertScheduledRunMatches(session, input);
     await upsertWeatherRecords(session, input.runId, input.records);
     await advanceScheduledCheckpoint(session, input);
     await finalizeSuccessfulRun(
@@ -492,6 +521,7 @@ export async function completeScheduledIngestion(
       input.records.length,
       input.responseMetadata ?? null,
       input.upstreamResponseChecksum ?? null,
+      "scheduled",
     );
   });
 }
@@ -511,6 +541,7 @@ export async function completeBackfillIngestion(
   validateCompletionCounts(input.attempts, input.records.length);
 
   await withTransaction(session.client, async () => {
+    await assertBackfillRunMatches(session, input.runId, identity);
     await upsertWeatherRecords(session, input.runId, input.records);
     await upsertBackfillOutcome(session, input.runId, identity, "succeeded", null);
     await finalizeSuccessfulRun(
@@ -520,6 +551,7 @@ export async function completeBackfillIngestion(
       input.records.length,
       input.responseMetadata ?? null,
       input.upstreamResponseChecksum ?? null,
+      "backfill",
     );
   });
 }
@@ -542,6 +574,7 @@ export async function failIngestionRun(
         throw new Error("backfill identity source does not match the locked source");
       }
 
+      await assertBackfillRunMatches(session, input.runId, identity);
       await upsertBackfillOutcome(
         session,
         input.runId,
@@ -549,6 +582,8 @@ export async function failIngestionRun(
         "failed",
         error.code,
       );
+    } else {
+      await assertRunningMode(session, input.runId, "scheduled");
     }
 
     const result = await session.client.query(
@@ -609,6 +644,51 @@ export async function hasSuccessfulBackfillChunk(
   );
 
   return result.rowCount === 1;
+}
+
+// read checkpoint state under the source lock
+export async function getScheduledCheckpoint(
+  session: SourceSession,
+): Promise<ScheduledCheckpointState | null> {
+  const result = await session.client.query<{
+    last_committed_at: Date;
+    last_valid_at: Date;
+    provider_cursor: Readonly<Record<string, JsonValue>> | null;
+    source_id: string;
+    version: string;
+    window_end_exclusive: Date;
+    window_start: Date;
+  }>(
+    `
+      SELECT
+        source_id,
+        last_valid_at,
+        window_start,
+        window_end_exclusive,
+        provider_cursor,
+        version,
+        last_committed_at
+      FROM ingestion_checkpoints
+      WHERE source_id = $1
+    `,
+    [session.sourceId],
+  );
+  const row = result.rows[0];
+
+  // represent an uninitialized checkpoint
+  if (row === undefined) {
+    return null;
+  }
+
+  return {
+    lastCommittedAt: row.last_committed_at.toISOString(),
+    lastValidAt: row.last_valid_at.toISOString(),
+    providerCursor: row.provider_cursor,
+    sourceId: row.source_id,
+    version: Number(row.version),
+    windowEndExclusive: row.window_end_exclusive.toISOString(),
+    windowStart: row.window_start.toISOString(),
+  };
 }
 
 // update liveness independently from ingestion success
@@ -1032,6 +1112,7 @@ async function finalizeSuccessfulRun(
   recordCount: number,
   responseMetadata: Readonly<Record<string, JsonValue>> | null,
   upstreamResponseChecksum: string | null,
+  mode: IngestionMode,
 ): Promise<void> {
   // validate optional upstream checksum
   if (upstreamResponseChecksum !== null) {
@@ -1054,6 +1135,7 @@ async function finalizeSuccessfulRun(
       WHERE id = $1
         AND source_id = $2
         AND state = 'running'
+        AND mode = $7
     `,
     [
       runId,
@@ -1062,9 +1144,89 @@ async function finalizeSuccessfulRun(
       recordCount,
       serializeNullableJson(responseMetadata),
       upstreamResponseChecksum,
+      mode,
     ],
   );
   requireGuardedUpdate(result.rowCount, "successful ingestion finalization");
+}
+
+// bind scheduled completion to its committed run
+async function assertScheduledRunMatches(
+  session: SourceSession,
+  input: CompleteScheduledIngestionInput,
+): Promise<void> {
+  const windowStart = validateUtcInstant(input.windowStart, "windowStart");
+  const windowEndExclusive = validateUtcInstant(
+    input.windowEndExclusive,
+    "windowEndExclusive",
+  );
+  const result = await session.client.query(
+    `
+      SELECT 1
+      FROM ingestion_runs
+      WHERE id = $1
+        AND source_id = $2
+        AND state = 'running'
+        AND mode = 'scheduled'
+        AND requested_start = $3
+        AND requested_end_exclusive = $4
+    `,
+    [input.runId, session.sourceId, windowStart, windowEndExclusive],
+  );
+  requireGuardedUpdate(result.rowCount, "scheduled run identity check");
+}
+
+// bind backfill outcome to its committed run
+async function assertBackfillRunMatches(
+  session: SourceSession,
+  runId: string,
+  identity: BackfillChunkIdentity,
+): Promise<void> {
+  const result = await session.client.query(
+    `
+      SELECT 1
+      FROM ingestion_runs
+      WHERE id = $1
+        AND source_id = $2
+        AND state = 'running'
+        AND mode = 'backfill'
+        AND requested_start = $3
+        AND requested_end_exclusive = $4
+        AND source_config_fingerprint = $5
+        AND adapter_version = $6
+        AND chunk_plan_version = $7
+    `,
+    [
+      runId,
+      session.sourceId,
+      identity.intervalStart,
+      identity.intervalEndExclusive,
+      identity.sourceConfigFingerprint,
+      identity.adapterVersion,
+      identity.chunkPlanVersion,
+    ],
+  );
+  requireGuardedUpdate(result.rowCount, "backfill run identity check");
+}
+
+// require the expected running mode
+async function assertRunningMode(
+  session: SourceSession,
+  runId: string,
+  mode: IngestionMode,
+): Promise<void> {
+  const result = await session.client.query(
+    `
+      SELECT 1
+      FROM ingestion_runs
+      WHERE id = $1
+        AND source_id = $2
+        AND state = 'running'
+        AND mode = $3
+    `,
+    [runId, session.sourceId, mode],
+  );
+  requireGuardedUpdate(result.rowCount, "running ingestion mode check");
 }
 
 // validate completion counts
