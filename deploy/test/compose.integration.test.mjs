@@ -54,6 +54,27 @@ async function compose(environment, override, ...argumentsList) {
 
 // execute one protocol-specific container probe
 async function executeProbe(environment, override, service, kind, ...values) {
+  // use tools available in PostgreSQL
+  if (service === "postgres" && kind === "dns") {
+    return await compose(environment, override, "exec", "-T", service, "getent", "hosts", ...values);
+  }
+
+  // use a protocol-correct PostgreSQL TCP probe
+  if (service === "postgres" && kind === "tcp") {
+    return await compose(
+      environment,
+      override,
+      "exec",
+      "-T",
+      service,
+      "bash",
+      "-c",
+      'timeout 5 bash -c "exec 3<>/dev/tcp/$1/$2"',
+      "weather-network-probe",
+      ...values,
+    );
+  }
+
   const scripts = {
     dns: "require('node:dns').promises.lookup(process.argv[1]).catch(()=>process.exit(1))",
     http: "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)}).then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))",
@@ -131,6 +152,33 @@ async function writeOverride(path, secretsRoot) {
     environment:
       PORT: "3002"
     networks: [provider_egress]
+  migration-network-probe:
+    image: \${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
+    command: [node, -e, "require('node:http').createServer((_,response)=>response.end('migration network probe')).listen(3004,'0.0.0.0')"]
+    networks: [data]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3004/').then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+  provider-egress-probe:
+    image: node:24-bookworm-slim
+    command: [node, -e, "require('node:http').createServer((_,response)=>response.end('provider egress probe')).listen(3003,'0.0.0.0')"]
+    networks: [provider_egress]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3003/').then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+  tunnel-egress-probe:
+    image: node:24-bookworm-slim
+    command: [node, -e, "require('node:http').createServer((_,response)=>response.end('tunnel egress probe')).listen(3005,'0.0.0.0')"]
+    networks: [tunnel_egress]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3005/').then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
   worker:
     environment:
       WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN: http://compatibility-provider:3002
