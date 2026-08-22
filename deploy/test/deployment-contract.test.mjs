@@ -231,6 +231,12 @@ test("container commands match the API, worker, and web runtime contracts", () =
   assert.deepEqual(compose.services.worker.command, ["node", "apps/worker/dist/worker.js"]);
   assert.deepEqual(compose.services.web.command, ["node", "deploy/scripts/web-server.mjs"]);
   assert.equal(compose.services.api.environment.WEATHER_API_PORT, "3001");
+  assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/sites/u);
+  assert.deepEqual(compose.services.worker.healthcheck.test, [
+    "CMD",
+    "node",
+    "apps/worker/dist/health.js",
+  ]);
   assert.equal(
     compose.services.worker.environment.WEATHER_SITE_CONFIG_PATH,
     "/opt/weather/config/sites/ballydidean.json",
@@ -249,7 +255,8 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
   await mkdir(join(fixtureRoot, "apps/web/dist"), { recursive: true });
   await writeFile(join(fixtureRoot, "apps/web/public/index.html"), "<!doctype html><title>Weather</title>\n");
   await writeFile(join(fixtureRoot, "apps/web/public/styles.css"), "body { color: #123; }\n");
-  await writeFile(join(fixtureRoot, "apps/web/dist/client.js"), "export const ready = true;\n");
+  await writeFile(join(fixtureRoot, "apps/web/dist/client.js"), "export { ready } from './index.js';\n");
+  await writeFile(join(fixtureRoot, "apps/web/dist/index.js"), "export const ready = true;\n");
 
   // provide one bounded fake API
   const api = createServer((request, response) => {
@@ -273,15 +280,17 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
     await waitForServer(`http://127.0.0.1:${webPort}/`);
     const home = await fetch(`http://127.0.0.1:${webPort}/`);
     const client = await fetch(`http://127.0.0.1:${webPort}/client.js`);
-    const proxied = await fetch(`http://127.0.0.1:${webPort}/api/v1/health?check=1`);
-    const mutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "POST" });
+    const library = await fetch(`http://127.0.0.1:${webPort}/index.js`);
+    const proxied = await fetch(`http://127.0.0.1:${webPort}/sites/ballydidean/current?check=1`);
+    const mutation = await fetch(`http://127.0.0.1:${webPort}/sites`, { method: "POST" });
     const unknown = await fetch(`http://127.0.0.1:${webPort}/secrets/weather_owner_password`);
     assert.equal(home.status, 200);
     assert.match(await home.text(), /<title>Weather<\/title>/u);
     assert.equal(client.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.equal(library.headers.get("content-type"), "text/javascript; charset=utf-8");
     assert.deepEqual(await proxied.json(), {
       method: "GET",
-      path: "/api/v1/health?check=1",
+      path: "/sites/ballydidean/current?check=1",
     });
     assert.equal(mutation.status, 405);
     assert.equal(unknown.status, 404);
@@ -356,8 +365,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /imagetools inspect/u);
   assert.match(update, /weather_compat_/u);
   assert.match(update, /WEATHER_DATABASE_NAME=\$candidate/u);
-  assert.match(update, /compatibility\.mjs api/u);
-  assert.match(update, /compatibility\.mjs worker/u);
+  assert.match(update, /apps\/api\/dist\/main\.js/u);
+  assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
   assert.match(update, /Creating pre-migration encrypted backup/u);
   assert.match(update, /compose up -d --remove-orphans --wait/u);
   assert.match(update, /record success only after every health gate/u);
