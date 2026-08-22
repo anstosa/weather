@@ -47,7 +47,6 @@ require_command node
 architecture=$(uname -m)
 docker_architecture=$(docker info --format '{{.Architecture}}')
 cpus=$(nproc)
-load15=$(awk '{print $3}' /proc/loadavg)
 minimum_memory_bytes=999999999999
 swap_start_in=$(awk '$1 == "pswpin" {print $2}' /proc/vmstat)
 swap_start_out=$(awk '$1 == "pswpout" {print $2}' /proc/vmstat)
@@ -66,6 +65,7 @@ while (( $(date +%s) < end_epoch )); do
   sleep 1
 done
 
+load15=$(awk '{print $3}' /proc/loadavg)
 swap_end_in=$(awk '$1 == "pswpin" {print $2}' /proc/vmstat)
 swap_end_out=$(awk '$1 == "pswpout" {print $2}' /proc/vmstat)
 swap_bytes_per_minute=$((

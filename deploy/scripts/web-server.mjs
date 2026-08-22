@@ -21,7 +21,7 @@ const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://weather.invalid");
 
     // proxy only the same-origin API namespace
-    if (requestUrl.pathname === "/sites" || requestUrl.pathname.startsWith("/sites/")) {
+    if (requestUrl.pathname.startsWith("/api/v1/")) {
       await proxyApi(request, response, requestUrl);
       return;
     }
@@ -110,16 +110,32 @@ async function proxyApi(request, response, requestUrl) {
       signal: AbortSignal.timeout(5_000),
     });
     const body = request.method === "HEAD" ? Buffer.alloc(0) : await readBoundedBody(upstream);
+    const contentLength =
+      request.method === "HEAD"
+        ? boundedContentLength(upstream.headers.get("content-length"))
+        : body.byteLength;
     setSecurityHeaders(response);
     response.writeHead(upstream.status, {
       "Cache-Control": "no-store",
-      "Content-Length": String(body.byteLength),
+      "Content-Length": String(contentLength),
       "Content-Type": upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
     });
     response.end(body);
   } catch {
     sendText(response, 502, "upstream unavailable\n");
   }
+}
+
+// preserve bounded head metadata
+function boundedContentLength(value) {
+  const length = Number(value ?? "0");
+
+  // reject invalid or oversized metadata
+  if (!Number.isSafeInteger(length) || length < 0 || length > maximumApiBytes) {
+    throw new Error("upstream content length exceeded the edge limit");
+  }
+
+  return length;
 }
 
 // read an upstream response within the edge limit
