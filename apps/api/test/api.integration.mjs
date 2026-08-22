@@ -82,7 +82,11 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     await insertInactiveMetadata(admin);
 
     apiPool = createTestPool(postgres, "weather_test", "weather_api", "api-test");
-    const store = createDatabaseWeatherReadStore(apiPool, { migrationDirectory });
+    const store = createDatabaseWeatherReadStore(apiPool, {
+      migrationAuthorization: null,
+      migrationDirectory,
+      release: "integration/v1",
+    });
     const handler = createWeatherApi(store, {
       now: () => new Date("2026-08-22T05:00:00.000Z"),
       version: "integration/v1",
@@ -177,7 +181,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       ]);
     });
 
-    await context.test("health allows newer trailing migrations but rejects changed known history", async () => {
+    await context.test("health rejects unproven trailing migrations and changed known history", async () => {
       const healthyResponse = await fetch(`${origin}/api/v1/health`);
       const healthy = await healthyResponse.json();
       assert.equal(healthyResponse.status, 200);
@@ -191,12 +195,12 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
         ["0003_future.sql", "1".repeat(64)],
       );
-      const previousBinaryResponse = await fetch(`${origin}/api/v1/health`);
-      const previousBinary = await previousBinaryResponse.json();
-      assert.equal(previousBinaryResponse.status, 200);
-      assert.deepEqual(previousBinary.data.migration, {
-        status: "current",
-        version: "0002_worker_migration_readiness.sql",
+      const unprovenResponse = await fetch(`${origin}/api/v1/health`);
+      const unproven = await unprovenResponse.json();
+      assert.equal(unprovenResponse.status, 503);
+      assert.deepEqual(unproven.data.migration, {
+        status: "outdated",
+        version: null,
       });
 
       const ledger = await admin.query(

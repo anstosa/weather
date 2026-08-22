@@ -9,6 +9,7 @@ import {
   type ActiveSiteRow,
   type CurrentQuery,
   type HistoryQuery,
+  type MigrationReadinessAuthorization,
   type WeatherRecordRow,
 } from "@weather/database";
 import {
@@ -148,7 +149,9 @@ export interface ApiServerOptions {
 }
 
 export interface DatabaseStoreOptions {
+  readonly migrationAuthorization?: MigrationReadinessAuthorization | null;
   readonly migrationDirectory: string;
+  readonly release?: string;
 }
 
 interface MutableStation {
@@ -251,6 +254,10 @@ export function createDatabaseWeatherReadStore(
         const readiness = await verifyMigrationReadiness(
           pool,
           options.migrationDirectory,
+          {
+            authorization: options.migrationAuthorization ?? null,
+            release: options.release ?? "development",
+          },
         );
         migration = { status: "current", version: readiness.version };
       } catch {

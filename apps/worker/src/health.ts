@@ -4,6 +4,7 @@ import {
   assertSupportedPostgres,
   createDatabasePool,
   verifyMigrationReadiness,
+  type MigrationReadinessAuthorization,
 } from "@weather/database";
 
 import { loadWorkerConfiguration } from "./config.js";
@@ -23,9 +24,14 @@ export interface WorkerHealth {
 export async function assertWorkerDatabaseReadiness(
   pool: DatabasePool,
   migrationDirectory: string,
+  release = "development",
+  authorization: MigrationReadinessAuthorization | null = null,
 ): Promise<void> {
   await assertSupportedPostgres(pool);
-  await verifyMigrationReadiness(pool, migrationDirectory);
+  await verifyMigrationReadiness(pool, migrationDirectory, {
+    authorization,
+    release,
+  });
 }
 
 // derive allowlisted worker health
@@ -89,6 +95,8 @@ export async function runWorkerHealthCheck(): Promise<0 | 1> {
     await assertWorkerDatabaseReadiness(
       pool,
       configuration.migrationDirectory,
+      configuration.version,
+      configuration.migrationAuthorization,
     );
     const health = await readWorkerHealth(pool, configuration.instance);
     process.stdout.write(`${JSON.stringify(health)}\n`);

@@ -480,6 +480,8 @@ export async function startWorkerProcess(
   await assertWorkerDatabaseReadiness(
     pool,
     configuration.migrationDirectory,
+    configuration.version,
+    configuration.migrationAuthorization,
   );
   const durableHealth = await readWorkerHealth(pool, configuration.instance);
   const runIteration = createWorkerIterationRunner(pool, {

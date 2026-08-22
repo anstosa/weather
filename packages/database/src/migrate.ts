@@ -18,11 +18,33 @@ export interface MigrationReadiness {
   readonly version: string;
 }
 
+export interface MigrationReadinessAuthorization {
+  readonly historySha256: string;
+  readonly release: string;
+}
+
+export interface MigrationReadinessOptions {
+  readonly authorization?: MigrationReadinessAuthorization | null;
+  readonly release?: string;
+}
+
 interface MigrationFile {
   readonly checksum: string;
   readonly name: string;
   readonly sql: string;
 }
+
+interface AppliedMigration {
+  readonly checksum: string;
+  readonly name: string;
+}
+
+const MIGRATION_AUTHORIZATION_RELEASE =
+  "WEATHER_MIGRATION_AUTHORIZATION_RELEASE";
+const MIGRATION_AUTHORIZATION_HISTORY_SHA256 =
+  "WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256";
+const RELEASE_PATTERN = /^\d{4}\.\d{2}\.\d{2}-[1-9]\d?$/u;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
 // apply checked migrations serially
 export async function runMigrations(
@@ -47,7 +69,9 @@ export async function runMigrations(
     lockHeld = true;
     await bootstrapMigrationTable(client);
     const migrations = await loadMigrationFiles(migrationDirectory);
-    const appliedCount = await validateMigrationHistory(client, migrations);
+    const appliedCount = (
+      await validateMigrationHistory(client, migrations)
+    ).length;
     const applied: string[] = [];
     const current: string[] = [];
 
@@ -86,9 +110,37 @@ export async function runMigrations(
 export async function verifyMigrationReadiness(
   pool: Pool,
   migrationDirectory: string,
+  options: MigrationReadinessOptions = {},
 ): Promise<MigrationReadiness> {
   const migrations = await loadMigrationFiles(migrationDirectory);
-  const appliedCount = await validateMigrationHistory(pool, migrations, true);
+  const authorization = options.authorization ?? null;
+  const applied = await validateMigrationHistory(
+    pool,
+    migrations,
+    authorization !== null,
+  );
+  const appliedCount = Math.min(applied.length, migrations.length);
+
+  // bind compatibility to one running release
+  if (
+    authorization !== null &&
+    (options.release === undefined || authorization.release !== options.release)
+  ) {
+    throw new Error("migration authorization release mismatch");
+  }
+
+  // authorize only the exact complete ledger
+  if (
+    applied.length > migrations.length &&
+    (authorization === null ||
+      authorization.historySha256 !== migrationHistorySha256(applied))
+  ) {
+    throw new Error(
+      authorization === null
+        ? "migration history diverges from ordered artifacts"
+        : "migration authorization history mismatch",
+    );
+  }
 
   // require every shipped artifact
   if (appliedCount !== migrations.length) {
@@ -103,6 +155,44 @@ export async function verifyMigrationReadiness(
   }
 
   return { version };
+}
+
+// parse bounded immutable runtime authorization
+export function readMigrationReadinessAuthorization(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): MigrationReadinessAuthorization | null {
+  const release = environment[MIGRATION_AUTHORIZATION_RELEASE];
+  const historySha256 = environment[MIGRATION_AUTHORIZATION_HISTORY_SHA256];
+
+  // treat an explicitly empty compose contract as absent
+  if (
+    (release === undefined || release.length === 0) &&
+    (historySha256 === undefined || historySha256.length === 0)
+  ) {
+    return null;
+  }
+
+  // reject partial authorization material
+  if (
+    release === undefined ||
+    release.length === 0 ||
+    historySha256 === undefined ||
+    historySha256.length === 0
+  ) {
+    throw new Error("migration authorization must be complete");
+  }
+
+  // restrict authorization to immutable deployment releases
+  if (!RELEASE_PATTERN.test(release)) {
+    throw new Error("migration authorization release is invalid");
+  }
+
+  // require one canonical ledger digest
+  if (!SHA256_PATTERN.test(historySha256)) {
+    throw new Error("migration authorization history SHA-256 is invalid");
+  }
+
+  return { historySha256, release };
 }
 
 // configure bounded lock and statement waits
@@ -176,8 +266,8 @@ async function validateMigrationHistory(
   client: Pick<Pool | PoolClient, "query">,
   migrations: readonly MigrationFile[],
   allowTrailingApplied = false,
-): Promise<number> {
-  const result = await client.query<{ checksum: string; name: string }>(
+): Promise<readonly AppliedMigration[]> {
+  const result = await client.query<AppliedMigration>(
     "SELECT name, checksum FROM schema_migrations ORDER BY name",
   );
 
@@ -201,5 +291,19 @@ async function validateMigrationHistory(
     }
   }
 
-  return Math.min(result.rows.length, migrations.length);
+  return result.rows;
+}
+
+// hash one canonical ordered applied ledger
+function migrationHistorySha256(
+  migrations: readonly AppliedMigration[],
+): string {
+  const hash = createHash("sha256");
+
+  // retain exact row boundaries
+  for (const migration of migrations) {
+    hash.update(`${migration.name}:${migration.checksum}\n`);
+  }
+
+  return hash.digest("hex");
 }

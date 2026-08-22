@@ -1,6 +1,7 @@
 import {
   createDatabasePool,
   loadDatabaseConfiguration,
+  readMigrationReadinessAuthorization,
 } from "@weather/database";
 import { resolve } from "node:path";
 
@@ -18,14 +19,17 @@ const configuration = await loadDatabaseConfiguration({
     process.env.WEATHER_DATABASE_APPLICATION_NAME ?? "weather-api",
 });
 const pool = createDatabasePool(configuration);
+const release = readApiRelease(process.env);
 const store = createDatabaseWeatherReadStore(pool, {
+  migrationAuthorization: readMigrationReadinessAuthorization(process.env),
   migrationDirectory: resolve(
     process.env.WEATHER_MIGRATION_DIRECTORY ?? "packages/database/migrations",
   ),
+  release,
 });
 const handler = createWeatherApi(store, {
   logDiagnostic: writeApiDiagnostic,
-  version: readApiRelease(process.env),
+  version: release,
 });
 const server = createWeatherApiServer(handler, {
   logDiagnostic: writeApiDiagnostic,

@@ -3,7 +3,9 @@ import { resolve } from "node:path";
 import {
   loadDatabaseConfiguration,
   loadSiteConfiguration,
+  readMigrationReadinessAuthorization,
   type DatabaseConfiguration,
+  type MigrationReadinessAuthorization,
   type SiteConfiguration,
 } from "@weather/database";
 import {
@@ -14,6 +16,7 @@ import {
 export interface WorkerConfiguration {
   readonly database: DatabaseConfiguration;
   readonly instance: string;
+  readonly migrationAuthorization: MigrationReadinessAuthorization | null;
   readonly migrationDirectory: string;
   readonly openMeteoCompatibilityOrigin: string | null;
   readonly site: SiteConfiguration;
@@ -36,6 +39,7 @@ export async function loadWorkerConfiguration(
       environment.WEATHER_WORKER_INSTANCE ?? "weather-worker",
       "WEATHER_WORKER_INSTANCE",
     ),
+    migrationAuthorization: readMigrationReadinessAuthorization(environment),
     migrationDirectory: resolve(
       environment.WEATHER_MIGRATION_DIRECTORY ??
         "packages/database/migrations",

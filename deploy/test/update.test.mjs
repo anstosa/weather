@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -35,6 +35,42 @@ restore_images /releases/current.env`,
       "/releases/current.env:up -d --no-deps --force-recreate --wait postgres\n" +
         "/releases/current.env:up -d --no-deps --wait api worker web cloudflared\n",
     );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("migration authorization is private exact and release-bound", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-migration-authorization-"));
+  const releases = join(directory, "releases");
+  const authorization = join(releases, "2026.08.22-2.migration-authorization");
+
+  try {
+    await mkdir(releases);
+    const result = runBash(
+      `source "$1"
+releases_dir=$2
+write_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2" "${"a".repeat(64)}"
+validate_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2"`,
+      [releases, authorization],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal((await stat(authorization)).mode & 0o777, 0o600);
+    assert.equal(
+      await readFile(authorization, "utf8"),
+      `WEATHER_MIGRATION_AUTHORIZATION_VERSION=1\n` +
+        `WEATHER_MIGRATION_AUTHORIZATION_RELEASE=2026.08.22-1\n` +
+        `WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE=2026.08.22-2\n` +
+        `WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=${"a".repeat(64)}\n`,
+    );
+    await writeFile(authorization, `${await readFile(authorization, "utf8")}UNKNOWN=value\n`, {
+      mode: 0o600,
+    });
+    const rejected = runBash(
+      'source "$1"; releases_dir="$2"; validate_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2"',
+      [releases, authorization],
+    );
+    assert.notEqual(rejected.status, 0);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

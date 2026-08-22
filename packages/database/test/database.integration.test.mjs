@@ -274,13 +274,33 @@ test(
             { version: "0002_worker_migration_readiness.sql" },
           );
           try {
-            // allow candidate-only trailing history
+            // reject unproven candidate history
             await pool.query(
               "INSERT INTO schema_migrations (name, checksum) VALUES ('0003_candidate_only.sql', $1)",
               ["3".repeat(64)],
             );
+            await assert.rejects(
+              () => verifyMigrationReadiness(ingestPool, migrationDirectory),
+              /migration history diverges/u,
+            );
+            const history = await pool.query(
+              "SELECT name, checksum FROM schema_migrations ORDER BY name",
+            );
+            const historySha256 = createHash("sha256")
+              .update(
+                history.rows
+                  .map((migration) => `${migration.name}:${migration.checksum}\n`)
+                  .join(""),
+              )
+              .digest("hex");
             assert.deepEqual(
-              await verifyMigrationReadiness(ingestPool, migrationDirectory),
+              await verifyMigrationReadiness(ingestPool, migrationDirectory, {
+                authorization: {
+                  historySha256,
+                  release: "2026.08.22-1",
+                },
+                release: "2026.08.22-1",
+              }),
               { version: "0002_worker_migration_readiness.sql" },
             );
             await pool.query(

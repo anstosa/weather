@@ -9,6 +9,7 @@ import {
   getCurrentWeather,
   listActiveSites,
   listWeatherHistory,
+  readMigrationReadinessAuthorization,
   verifyMigrationReadiness,
 } from "@weather/database";
 
@@ -131,7 +132,7 @@ test("migration readiness verifies the complete ledger with SELECT-only SQL", as
   }
 });
 
-test("previous binaries allow trailing migrations but still reject changed known history", async () => {
+test("trailing migrations require an exact release authorization", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-api-migrations-"));
   const sql = "SELECT 1;\n";
   const checksum = createHash("sha256").update(sql).digest("hex");
@@ -159,9 +160,45 @@ test("previous binaries allow trailing migrations but still reject changed known
       () => verifyMigrationReadiness(changed.pool, directory),
       /migration checksum mismatch/u,
     );
+    await assert.rejects(
+      () => verifyMigrationReadiness(previousBinary.pool, directory),
+      /migration history diverges/u,
+    );
+    const historySha256 = createHash("sha256")
+      .update(`0001_initial.sql:${checksum}\n`)
+      .update(`0002_extra.sql:${"1".repeat(64)}\n`)
+      .digest("hex");
     assert.deepEqual(
-      await verifyMigrationReadiness(previousBinary.pool, directory),
+      await verifyMigrationReadiness(previousBinary.pool, directory, {
+        authorization: {
+          historySha256,
+          release: "2026.08.22-1",
+        },
+        release: "2026.08.22-1",
+      }),
       { version: "0001_initial.sql" },
+    );
+    await assert.rejects(
+      () =>
+        verifyMigrationReadiness(previousBinary.pool, directory, {
+          authorization: {
+            historySha256,
+            release: "2026.08.22-1",
+          },
+          release: "2026.08.22-2",
+        }),
+      /migration authorization release mismatch/u,
+    );
+    await assert.rejects(
+      () =>
+        verifyMigrationReadiness(previousBinary.pool, directory, {
+          authorization: {
+            historySha256: "2".repeat(64),
+            release: "2026.08.22-1",
+          },
+          release: "2026.08.22-1",
+        }),
+      /migration authorization history mismatch/u,
     );
     await assert.rejects(
       () => verifyMigrationReadiness(reordered.pool, directory),
@@ -170,4 +207,41 @@ test("previous binaries allow trailing migrations but still reject changed known
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
+});
+
+test("migration authorization parsing rejects partial and malformed state", () => {
+  assert.equal(readMigrationReadinessAuthorization({}), null);
+  assert.deepEqual(
+    readMigrationReadinessAuthorization({
+      WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256: "a".repeat(64),
+      WEATHER_MIGRATION_AUTHORIZATION_RELEASE: "2026.08.22-1",
+    }),
+    {
+      historySha256: "a".repeat(64),
+      release: "2026.08.22-1",
+    },
+  );
+  assert.throws(
+    () =>
+      readMigrationReadinessAuthorization({
+        WEATHER_MIGRATION_AUTHORIZATION_RELEASE: "2026.08.22-1",
+      }),
+    /migration authorization must be complete/u,
+  );
+  assert.throws(
+    () =>
+      readMigrationReadinessAuthorization({
+        WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256: "a".repeat(63),
+        WEATHER_MIGRATION_AUTHORIZATION_RELEASE: "2026.08.22-1",
+      }),
+    /migration authorization history SHA-256/u,
+  );
+  assert.throws(
+    () =>
+      readMigrationReadinessAuthorization({
+        WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256: "a".repeat(64),
+        WEATHER_MIGRATION_AUTHORIZATION_RELEASE: "development",
+      }),
+    /migration authorization release/u,
+  );
 });

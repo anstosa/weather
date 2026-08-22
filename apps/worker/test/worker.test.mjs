@@ -345,20 +345,37 @@ test("worker health fails closed for missing invalid stale and future heartbeats
   assert.equal(independentSuccess.ready, true);
 });
 
-// share prefix-compatible migration readiness with worker health
-test("worker readiness allows trailing migrations and rejects changed known checksums", async () => {
+// require an exact compatibility authorization
+test("worker readiness rejects unproven trailing migrations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-worker-migrations-"));
   const sql = "SELECT 1;\n";
   const checksum = createHash("sha256").update(sql).digest("hex");
 
   try {
     await writeFile(join(directory, "0001_initial.sql"), sql);
+    const appliedMigrations = [
+      { checksum, name: "0001_initial.sql" },
+      { checksum: "1".repeat(64), name: "0002_candidate_only.sql" },
+    ];
+    await assert.rejects(
+      () =>
+        assertWorkerDatabaseReadiness(
+          workerReadinessPool(appliedMigrations),
+          directory,
+          "2026.08.22-1",
+          null,
+        ),
+      /migration history diverges/u,
+    );
+    const historySha256 = createHash("sha256")
+      .update(`0001_initial.sql:${checksum}\n`)
+      .update(`0002_candidate_only.sql:${"1".repeat(64)}\n`)
+      .digest("hex");
     await assertWorkerDatabaseReadiness(
-      workerReadinessPool([
-        { checksum, name: "0001_initial.sql" },
-        { checksum: "1".repeat(64), name: "0002_candidate_only.sql" },
-      ]),
+      workerReadinessPool(appliedMigrations),
       directory,
+      "2026.08.22-1",
+      { historySha256, release: "2026.08.22-1" },
     );
     await assert.rejects(
       () =>
@@ -367,6 +384,8 @@ test("worker readiness allows trailing migrations and rejects changed known chec
             { checksum: "0".repeat(64), name: "0001_initial.sql" },
           ]),
           directory,
+          "2026.08.22-1",
+          null,
         ),
       /migration checksum mismatch/u,
     );
