@@ -47,9 +47,7 @@ done
 
 # load public backup policy
 if [[ -z "$recipient" && -f "$deploy_dir/config/backup.env" ]]; then
-  # shellcheck disable=SC1091
-  source "$deploy_dir/config/backup.env"
-  recipient=${AGE_RECIPIENT:-}
+  recipient=$(env_value "$deploy_dir/config/backup.env" AGE_RECIPIENT)
 fi
 
 [[ "$recipient" == age1* || "$recipient" == ssh-* ]] ||
