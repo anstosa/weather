@@ -34,6 +34,7 @@ export interface DueSource extends QueryResultRow {
   readonly timezone: string;
 }
 
+// expose one active discovery row
 export interface ActiveSiteRow extends QueryResultRow {
   readonly attributionLabel: string;
   readonly attributionUrl: string;

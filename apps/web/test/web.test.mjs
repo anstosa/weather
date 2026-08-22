@@ -49,6 +49,7 @@ const site = {
   timezone: "America/Los_Angeles",
 };
 
+// represent an incompatible site selection
 const secondSite = {
   ...site,
   name: "Coupeville",

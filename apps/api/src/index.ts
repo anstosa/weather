@@ -165,6 +165,7 @@ interface SourceDetails {
   readonly providerKey: string;
 }
 
+// describe one exact public route
 type Route =
   | Readonly<{ kind: "health" }>
   | Readonly<{ kind: "sites" }>
