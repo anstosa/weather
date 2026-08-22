@@ -4,12 +4,14 @@ set -euo pipefail
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-current=$(cat "$deploy_dir/state/current-release" 2>/dev/null || printf 'none')
-previous=$(cat "$deploy_dir/state/previous-release" 2>/dev/null || printf 'none')
+current=$(read_optional_release_state "$deploy_dir/state/current-release")
+previous=$(read_optional_release_state "$deploy_dir/state/previous-release")
+current=${current:-none}
+previous=${previous:-none}
 printf 'Current release: %s\nPrevious release: %s\n' "$current" "$previous"
 
 # report runtime state only after activation
-if [[ -f "$deploy_dir/state/active.env" ]]; then
+if [[ "$current" != none ]]; then
   require_command docker
   compose ps
   compose exec -T postgres psql --username postgres --dbname weather \
