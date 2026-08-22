@@ -1,0 +1,149 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import {
+  getCurrentWeather,
+  listWeatherHistory,
+  verifyMigrationReadiness,
+} from "@weather/database";
+
+// capture one repository query
+function createCapturingPool(rows = []) {
+  const queries = [];
+  return {
+    pool: {
+      // retain parameterized query evidence
+      async query(text, values = []) {
+        queries.push({ text, values });
+        return { rowCount: rows.length, rows };
+      },
+    },
+    queries,
+  };
+}
+
+test("current SQL enforces active joins and parameterized station/source filters", async () => {
+  const { pool, queries } = createCapturingPool();
+  await getCurrentWeather(pool, "ballydidean", {
+    sourceId: "10",
+    stationSlug: "open-meteo-virtual",
+  });
+
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].values, [
+    "ballydidean",
+    "open-meteo-virtual",
+    "10",
+  ]);
+  assert.match(queries[0].text, /si\.active/u);
+  assert.match(queries[0].text, /st\.active/u);
+  assert.match(queries[0].text, /s\.active/u);
+  assert.match(queries[0].text, /p\.active/u);
+  assert.match(queries[0].text, /st\.slug = \$2/u);
+  assert.match(queries[0].text, /wr\.source_id = \$3/u);
+  assert.match(queries[0].text, /wr\.upstream_timezone AS "upstreamTimezone"/u);
+  assert.match(queries[0].text, /wr\.quality_metadata AS "qualityMetadata"/u);
+  assert.match(queries[0].text, /wr\.provider_metadata AS "providerMetadata"/u);
+});
+
+test("history SQL enforces active predicates, frozen filters, order, and bounded lookahead", async () => {
+  const { pool, queries } = createCapturingPool();
+  await listWeatherHistory(pool, {
+    cursor: { id: "90", validAt: "2026-08-10T00:00:00.000Z" },
+    from: "2026-08-01T00:00:00.000Z",
+    limit: 251,
+    siteSlug: "ballydidean",
+    sourceId: "11",
+    sourceKind: "reanalysis",
+    stationSlug: "open-meteo-virtual",
+    to: "2026-08-22T00:00:00.000Z",
+  });
+
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].values, [
+    "ballydidean",
+    "open-meteo-virtual",
+    "11",
+    "reanalysis",
+    "2026-08-01T00:00:00.000Z",
+    "2026-08-22T00:00:00.000Z",
+    "2026-08-10T00:00:00.000Z",
+    "90",
+    251,
+  ]);
+  assert.match(queries[0].text, /si\.active/u);
+  assert.match(queries[0].text, /st\.active/u);
+  assert.match(queries[0].text, /s\.active/u);
+  assert.match(queries[0].text, /p\.active/u);
+  assert.match(queries[0].text, /ORDER BY wr\.valid_at DESC, wr\.id DESC/u);
+  assert.match(queries[0].text, /LIMIT \$9/u);
+
+  await assert.rejects(
+    () =>
+      listWeatherHistory(pool, {
+        limit: 252,
+        siteSlug: "ballydidean",
+      }),
+    /between 1 and 251/u,
+  );
+});
+
+test("migration readiness verifies the complete ledger with SELECT-only SQL", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-api-migrations-"));
+  const sql = "SELECT 1;\n";
+  const checksum = createHash("sha256").update(sql).digest("hex");
+  const { pool, queries } = createCapturingPool([
+    { checksum, name: "0001_initial.sql" },
+  ]);
+
+  try {
+    await writeFile(join(directory, "0001_initial.sql"), sql);
+    const readiness = await verifyMigrationReadiness(pool, directory);
+
+    assert.deepEqual(readiness, { version: "0001_initial.sql" });
+    assert.equal(queries.length, 1);
+    assert.match(queries[0].text, /^SELECT name, checksum FROM schema_migrations/u);
+    assert.doesNotMatch(queries[0].text, /CREATE|INSERT|UPDATE|DELETE|LOCK/iu);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("migration readiness fails closed on missing, extra, or changed artifacts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-api-migrations-"));
+  const sql = "SELECT 1;\n";
+
+  try {
+    await writeFile(join(directory, "0001_initial.sql"), sql);
+    const missing = createCapturingPool();
+    const changed = createCapturingPool([
+      { checksum: "0".repeat(64), name: "0001_initial.sql" },
+    ]);
+    const extra = createCapturingPool([
+      {
+        checksum: createHash("sha256").update(sql).digest("hex"),
+        name: "0001_initial.sql",
+      },
+      { checksum: "1".repeat(64), name: "0002_extra.sql" },
+    ]);
+
+    await assert.rejects(
+      () => verifyMigrationReadiness(missing.pool, directory),
+      /pending migration artifacts/u,
+    );
+    await assert.rejects(
+      () => verifyMigrationReadiness(changed.pool, directory),
+      /migration checksum mismatch/u,
+    );
+    await assert.rejects(
+      () => verifyMigrationReadiness(extra.pool, directory),
+      /migration history diverges/u,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
