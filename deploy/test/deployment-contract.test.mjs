@@ -391,6 +391,9 @@ test("local Compose binds loopback, preserves isolation, and replaces the connec
   assert.notEqual(compose.networks.local_postgres_ingress.internal, true);
   assert.notEqual(compose.networks.local_web_ingress.internal, true);
   assert.deepEqual(Object.keys(compose.services.api.networks).sort(), ["data", "web_api"]);
+  assert.ok(compose.services.migration.build);
+  assert.equal(compose.services.api.build, undefined);
+  assert.equal(compose.services.worker.build, undefined);
   const published = [
     ...(compose.services.web.ports ?? []),
     ...(compose.services.postgres.ports ?? []),

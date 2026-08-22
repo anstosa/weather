@@ -43,14 +43,12 @@ services:
   api:
     image: ${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
-    build:
-      platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
+    build: !reset null
 
   worker:
     image: ${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
-    build:
-      platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
+    build: !reset null
 
 networks:
   local_postgres_ingress:
