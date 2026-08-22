@@ -32,6 +32,7 @@ GRANT SELECT (
 ) ON sources TO weather_api;
 
 GRANT SELECT ON sites, stations, providers, sources TO weather_ingest;
+GRANT SELECT ON schema_migrations TO weather_ingest;
 GRANT SELECT, INSERT, UPDATE ON ingestion_runs, ingestion_checkpoints, backfill_chunk_outcomes, worker_heartbeats TO weather_ingest;
 GRANT SELECT, INSERT ON weather_records TO weather_ingest;
 GRANT UPDATE (

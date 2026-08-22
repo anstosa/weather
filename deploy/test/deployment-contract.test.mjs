@@ -504,6 +504,7 @@ test("local Compose binds loopback, preserves isolation, and replaces the connec
 // verify backup and restore boundaries
 test("backup is encrypted and restore is disposable verification only", () => {
   const backup = read("deploy/scripts/backup.sh");
+  const common = read("deploy/scripts/common.sh");
   const restore = read("deploy/scripts/restore.sh");
   assert.match(backup, /pg_dump[\s\S]*--format=custom/u);
   assert.match(backup, /\|[\s\n]*age --recipient/u);
@@ -529,7 +530,20 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(restore, /verify_runtime_database_acl/u);
   const runtimeAcl = read("deploy/postgres/runtime-acl-v1.sql");
   assert.match(runtimeAcl, /REVOKE ALL ON ALL TABLES[^;]*weather_api, weather_ingest/u);
+  assert.match(runtimeAcl, /GRANT SELECT ON schema_migrations TO weather_ingest/u);
   assert.match(runtimeAcl, /ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner/u);
+  assert.match(
+    common,
+    /has_table_privilege\('weather_ingest', 'schema_migrations', 'SELECT'\)/u,
+  );
+  assert.match(
+    common,
+    /NOT has_schema_privilege\('weather_ingest', 'public', 'CREATE'\)/u,
+  );
+  assert.match(
+    common,
+    /NOT has_table_privilege\('weather_ingest', 'schema_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER'\)/u,
+  );
   assert.doesNotMatch(restore, /ALTER DATABASE[\s\S]*(?:RENAME|OWNER)|mv[\s\S]*postgres/u);
 });
 
