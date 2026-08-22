@@ -39,7 +39,7 @@ async function compose(environment, override, ...argumentsList) {
       "--project-name",
       environment.WEATHER_COMPOSE_PROJECT_NAME,
       "--env-file",
-      join(deployRoot, ".env.example"),
+      environment.WEATHER_ENV_FILE ?? join(deployRoot, ".env.example"),
       "--file",
       join(deployRoot, "compose.yaml"),
       "--file",
@@ -50,6 +50,33 @@ async function compose(environment, override, ...argumentsList) {
     ],
     { cwd: repoRoot, env: environment, maxBuffer: 8 * 1024 * 1024, timeout: 600_000 },
   );
+}
+
+// execute one protocol-specific container probe
+async function executeProbe(environment, override, service, kind, ...values) {
+  const scripts = {
+    dns: "require('node:dns').promises.lookup(process.argv[1]).catch(()=>process.exit(1))",
+    http: "fetch(process.argv[1],{signal:AbortSignal.timeout(5000)}).then(response=>{if(!response.ok)process.exit(1)}).catch(()=>process.exit(1))",
+    tcp: "const socket=require('node:net').createConnection({host:process.argv[1],port:Number(process.argv[2])});const timer=setTimeout(()=>socket.destroy(new Error('timeout')),5000);socket.on('connect',()=>{clearTimeout(timer);socket.end()});socket.on('error',()=>process.exit(1))",
+  };
+  return await compose(environment, override, "exec", "-T", service, "node", "-e", scripts[kind], ...values);
+}
+
+// assert one allowed or denied network path
+async function assertProbe(environment, override, expected, service, kind, ...values) {
+  try {
+    await executeProbe(environment, override, service, kind, ...values);
+
+    // reject unexpectedly reachable paths
+    if (expected === "denied") {
+      assert.fail(`${service} ${kind} ${values.join(":")} unexpectedly succeeded`);
+    }
+  } catch (error) {
+    // preserve failures for allowed paths
+    if (expected === "allowed") {
+      throw error;
+    }
+  }
 }
 
 // create host-owned consumer secret copies
@@ -122,6 +149,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "weather-compose-integration-"));
     const secretsRoot = join(directory, "secrets");
     const override = join(directory, "compose.override.yaml");
+    const envFile = join(directory, "deployment.env");
     const identity = join(directory, "age-identity.txt");
     const backups = join(directory, "backups");
     const webPort = await reservePort();
@@ -131,6 +159,7 @@ test(
     const environment = {
       ...process.env,
       WEATHER_COMPOSE_PROJECT_NAME: projectName,
+      WEATHER_ENV_FILE: envFile,
       WEATHER_LOCAL_POSTGRES_PORT: String(postgresPort),
       WEATHER_LOCAL_SERVER_IMAGE: `${projectName}-server:local`,
       WEATHER_LOCAL_WEB_PORT: String(webPort),
@@ -138,6 +167,13 @@ test(
     };
 
     await executeFile("mkdir", ["-p", secretsRoot, backups]);
+    await writeFile(
+      envFile,
+      (await readFile(join(deployRoot, ".env.example"), "utf8")).replace(
+        "WEATHER_DATABASE_NAME=weather",
+        "WEATHER_DATABASE_NAME=weather_deploy_test",
+      ),
+    );
 
     try {
       await provisionSecrets(secretsRoot);
@@ -146,28 +182,61 @@ test(
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
       const firstBody = await firstSites.text();
+      const health = await fetch(`http://127.0.0.1:${webPort}/api/v1/health`);
+      assert.equal(health.status, 200);
+      assert.equal((await health.json()).data.version, "2026.08.22-1");
 
-      // prove forbidden network paths stay closed
-      await compose(
-        environment,
-        override,
-        "exec",
-        "-T",
-        "web",
-        "node",
-        "-e",
-        "fetch('http://postgres:5432',{signal:AbortSignal.timeout(1000)}).then(()=>process.exit(1)).catch(()=>process.exit(0))",
-      );
-      await compose(
-        environment,
-        override,
-        "exec",
-        "-T",
-        "api",
-        "node",
-        "-e",
-        "fetch('https://api.open-meteo.com',{signal:AbortSignal.timeout(1000)}).then(()=>process.exit(1)).catch(()=>process.exit(0))",
-      );
+      const allowedDns = [
+        ["web", "api"],
+        ["api", "web"],
+        ["api", "postgres"],
+        ["worker", "api"],
+        ["worker", "postgres"],
+        ["worker", "compatibility-provider"],
+        ["web", "cloudflared"],
+        ["cloudflared", "web"],
+      ];
+      const deniedDns = [
+        ["web", "postgres"],
+        ["web", "worker"],
+        ["web", "compatibility-provider"],
+        ["api", "cloudflared"],
+        ["api", "compatibility-provider"],
+        ["worker", "web"],
+        ["worker", "cloudflared"],
+        ["cloudflared", "api"],
+        ["cloudflared", "postgres"],
+        ["cloudflared", "worker"],
+        ["cloudflared", "compatibility-provider"],
+      ];
+
+      // prove every declared DNS membership
+      for (const [service, target] of allowedDns) {
+        await assertProbe(environment, override, "allowed", service, "dns", target);
+      }
+
+      // prove every undeclared DNS path
+      for (const [service, target] of deniedDns) {
+        await assertProbe(environment, override, "denied", service, "dns", target);
+      }
+
+      await assertProbe(environment, override, "allowed", "api", "tcp", "postgres", "5432");
+      await assertProbe(environment, override, "allowed", "worker", "tcp", "postgres", "5432");
+      await assertProbe(environment, override, "denied", "web", "tcp", "postgres", "5432");
+      await assertProbe(environment, override, "denied", "cloudflared", "tcp", "postgres", "5432");
+      await assertProbe(environment, override, "allowed", "web", "http", "http://api:3001/api/v1/health");
+      await assertProbe(environment, override, "allowed", "api", "http", "http://web:3000/");
+      await assertProbe(environment, override, "allowed", "worker", "http", "http://api:3001/api/v1/health");
+      await assertProbe(environment, override, "allowed", "worker", "http", "http://compatibility-provider:3002/health");
+      await assertProbe(environment, override, "allowed", "web", "http", "http://cloudflared:2000/");
+      await assertProbe(environment, override, "allowed", "cloudflared", "http", "http://web:3000/");
+      await assertProbe(environment, override, "denied", "api", "http", "http://compatibility-provider:3002/health");
+      await assertProbe(environment, override, "denied", "worker", "http", "http://web:3000/");
+      await assertProbe(environment, override, "denied", "cloudflared", "http", "http://api:3001/api/v1/health");
+      await assertProbe(environment, override, "allowed", "worker", "http", "https://example.com/");
+      await assertProbe(environment, override, "allowed", "cloudflared", "http", "https://example.com/");
+      await assertProbe(environment, override, "denied", "api", "http", "https://example.com/");
+      await assertProbe(environment, override, "denied", "web", "http", "https://example.com/");
 
       // prove consumer secret isolation
       await compose(
@@ -204,7 +273,7 @@ test(
       const recipient = (await executeFile("age-keygen", ["-y", identity])).stdout.trim();
       await executeFile(
         join(deployRoot, "scripts/backup.sh"),
-        ["--recipient", recipient, "--output-dir", backups, "--env-file", join(deployRoot, ".env.example")],
+        ["--recipient", recipient, "--output-dir", backups, "--env-file", envFile],
         { cwd: repoRoot, env: environment, timeout: 120_000 },
       );
       const archive = (await executeFile("bash", ["-c", 'printf "%s\\n" "$1"/*.dump.age', "weather-backup", backups])).stdout.trim();
@@ -212,7 +281,7 @@ test(
       assert.equal((await readFile(`${archive}.sha256`, "utf8")).includes("weather-"), true);
       await executeFile(
         join(deployRoot, "scripts/restore.sh"),
-        ["verify", archive, "--identity", identity, "--env-file", join(deployRoot, ".env.example")],
+        ["verify", archive, "--identity", identity, "--env-file", envFile],
         { cwd: repoRoot, env: environment, timeout: 120_000 },
       );
     } finally {
