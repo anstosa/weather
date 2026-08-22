@@ -1,0 +1,7 @@
+services:
+  postgres:
+    volumes:
+      - weather_verify_postgres:/var/lib/postgresql/data
+
+volumes:
+  weather_verify_postgres:

@@ -1,0 +1,10 @@
+Host weather-pi
+  HostName 192.168.11.94
+  User weather-ssh
+  IdentitiesOnly yes
+  IdentityAgent SSH_AUTH_SOCK
+  StrictHostKeyChecking yes
+  UserKnownHostsFile ~/.ssh/known_hosts
+  BatchMode yes
+  PasswordAuthentication no
+  KbdInteractiveAuthentication no

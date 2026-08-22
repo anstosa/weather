@@ -1,0 +1,9 @@
+.env
+backups/*
+!backups/.gitkeep
+config/backup.env
+config/ssh_config
+releases/*
+!releases/.gitkeep
+state/*
+!state/.gitkeep

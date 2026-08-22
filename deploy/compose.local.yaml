@@ -1,0 +1,29 @@
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${WEATHER_LOCAL_POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - weather_local_postgres:/var/lib/postgresql/data
+
+  web:
+    ports:
+      - "127.0.0.1:${WEATHER_LOCAL_WEB_PORT:-3000}:3000"
+
+  cloudflared:
+    image: node:24-bookworm-slim
+    entrypoint: [node]
+    command:
+      - -e
+      - >-
+        require('node:http').createServer((_,response)=>{response.end('local tunnel disabled')}).listen(2000,'0.0.0.0')
+    secrets: !reset []
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:2000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+
+volumes:
+  weather_local_postgres:

@@ -1,0 +1,18 @@
+[Unit]
+Description=Weather ARM64 Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/weather/current/deploy
+ExecStart=/opt/weather/current/deploy/scripts/update.sh recover
+ExecReload=/opt/weather/current/deploy/scripts/update.sh recover
+ExecStop=/usr/bin/docker compose --project-name weather --env-file /opt/weather/current/deploy/state/active.env --file /opt/weather/current/deploy/compose.yaml stop --timeout 45
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target
