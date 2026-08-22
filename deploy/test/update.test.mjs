@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -24,19 +24,19 @@ test("rollback switches images and commits state without forward operations", as
     const result = runBash(
       `source "$1"
 state_dir=/unused
+transcript=$2
 read_release_state() { [[ "$1" == */current-release ]] && printf '2026.08.22-2\\n' || printf '2026.08.22-1\\n'; }
 release_env() { printf '/releases/%s.env\\n' "$1"; }
 validate_release_env() { :; }
 require_deployment_secrets() { :; }
-restore_images() { printf 'restore:%s\\n' "$1" >>"$2"; }
-record_release_success() { printf 'record:%s:%s\\n' "$1" "$2" >>"$3"; }
-export -f read_release_state release_env validate_release_env require_deployment_secrets restore_images record_release_success
-rollback_release "$2" "$2"`,
+restore_images() { printf 'restore:%s\\n' "$1" >>"$transcript"; }
+record_release_success() { printf 'record:%s:%s\\n' "$1" "$2" >>"$transcript"; }
+rollback_release`,
       [transcript],
     );
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
-      await Bun.file(transcript).text(),
+      await readFile(transcript, "utf8"),
       "restore:/releases/2026.08.22-1.env\nrecord:2026.08.22-1:2026.08.22-2\n",
     );
   } finally {
@@ -52,19 +52,20 @@ test("failed rollback restores current images without committing state", async (
     const result = runBash(
       `source "$1"
 state_dir=/unused
+transcript=$2
 attempt=0
 read_release_state() { [[ "$1" == */current-release ]] && printf '2026.08.22-2\\n' || printf '2026.08.22-1\\n'; }
 release_env() { printf '/releases/%s.env\\n' "$1"; }
 validate_release_env() { :; }
 require_deployment_secrets() { :; }
-restore_images() { attempt=$((attempt + 1)); printf 'restore:%s\\n' "$1" >>"$2"; ((attempt > 1)); }
-record_release_success() { printf 'unexpected-record\\n' >>"$2"; }
-rollback_release "$2"`,
+restore_images() { attempt=$((attempt + 1)); printf 'restore:%s\\n' "$1" >>"$transcript"; ((attempt > 1)); }
+record_release_success() { printf 'unexpected-record\\n' >>"$transcript"; }
+rollback_release`,
       [transcript],
     );
     assert.notEqual(result.status, 0);
     assert.equal(
-      await Bun.file(transcript).text(),
+      await readFile(transcript, "utf8"),
       "restore:/releases/2026.08.22-1.env\nrestore:/releases/2026.08.22-2.env\n",
     );
   } finally {

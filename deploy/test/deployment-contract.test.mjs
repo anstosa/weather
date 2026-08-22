@@ -438,7 +438,9 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   const update = read("deploy/scripts/update.sh");
   const stageCase = update.split("  stage)\n")[1].split("  activate)\n")[0];
   const rollbackCase = update.split("  rollback)\n")[1].split("  recover)\n")[0];
-  const rollbackFunction = update.split("rollback_release() {")[1].split("\n}\n\n(($# >= 1))")[0];
+  const rollbackFunction = update
+    .split("rollback_release() {")[1]
+    .split("\n}\n\n# dispatch one operator action")[0];
   assert.match(stageCase, /compose config --quiet/u);
   assert.match(stageCase, /resolve_arm64_image/u);
   assert.match(stageCase, /compose pull/u);
