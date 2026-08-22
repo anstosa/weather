@@ -31,11 +31,21 @@ async function reservePort() {
 }
 
 // build one distinct local release image
-async function buildReleaseImage(directory, baseImage, targetImage, release) {
-  const buildRoot = join(directory, `image-${release}-${targetImage.includes("web") ? "web" : "server"}`);
+async function buildReleaseImage(directory, baseImage, targetImage, release, migrationSql) {
+  const imageKey = targetImage.replaceAll(/[^a-z0-9]+/giu, "-");
+  const buildRoot = join(directory, `image-${release}-${imageKey}`);
   const dockerfile = join(buildRoot, "Dockerfile");
   await executeFile("mkdir", ["-p", buildRoot]);
-  await writeFile(dockerfile, `FROM ${baseImage}\nLABEL weather.test.release=${release}\n`);
+  const migrationName = "0002_candidate_contract.sql";
+  let dockerfileBody = `FROM ${baseImage}\nLABEL weather.test.release=${release}\n`;
+
+  // add only the candidate migration contract
+  if (migrationSql !== undefined) {
+    await writeFile(join(buildRoot, migrationName), migrationSql);
+    dockerfileBody += `USER root\nCOPY --chown=10002:10002 ${migrationName} /opt/weather/packages/database/migrations/${migrationName}\nUSER 10002:10002\n`;
+  }
+
+  await writeFile(dockerfile, dockerfileBody);
   await executeFile(
     "docker",
     ["build", "--quiet", "--file", dockerfile, "--tag", targetImage, buildRoot],
@@ -127,10 +137,12 @@ async function assertProbe(environment, override, expected, service, kind, ...va
 
 // create host-owned consumer secret copies
 async function provisionSecrets(directory) {
+  const admin = "admin-integration-password\n";
   const owner = "owner-integration-password\n";
   const api = "api-integration-password\n";
   const ingest = "ingest-integration-password\n";
   await Promise.all([
+    writeFile(join(directory, "weather_postgres_admin_password"), admin),
     writeFile(join(directory, "weather_postgres_owner_password"), owner),
     writeFile(join(directory, "weather_migration_owner_password"), owner),
     writeFile(join(directory, "weather_postgres_api_password"), api),
@@ -151,6 +163,7 @@ async function provisionSecrets(directory) {
       "node:24-bookworm-slim",
       "-c",
       [
+        "chown 999:999 /secrets/weather_postgres_admin_password",
         "chown 999:999 /secrets/weather_postgres_*",
         "chown 10002:10002 /secrets/weather_migration_owner_password /secrets/weather_api_password /secrets/weather_worker_ingest_password",
         "chown 65532:65532 /secrets/cloudflare_tunnel_token",
@@ -208,7 +221,7 @@ async function writeOverride(path, secretsRoot) {
       compatibility-provider:
         condition: service_started
 secrets:
-  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_worker_ingest_password")}  ${secret("cloudflare_tunnel_token")}`,
+  ${secret("weather_postgres_admin_password")}  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_worker_ingest_password")}  ${secret("cloudflare_tunnel_token")}`,
   );
 }
 
@@ -233,6 +246,8 @@ test(
       ...process.env,
       WEATHER_COMPOSE_PROJECT_NAME: projectName,
       WEATHER_ENV_FILE: envFile,
+      WEATHER_LOCAL_CLOUDFLARED_IMAGE: "node:24-bookworm-slim",
+      WEATHER_LOCAL_POSTGRES_IMAGE: "postgres:17.10-bookworm",
       WEATHER_LOCAL_POSTGRES_PORT: String(postgresPort),
       WEATHER_LOCAL_SERVER_IMAGE: `${projectName}-server:local`,
       WEATHER_LOCAL_WEB_PORT: String(webPort),
@@ -242,11 +257,19 @@ test(
     const targetServerImage = `${projectName}-server:2026.08.22-2`;
     const previousWebImage = `${projectName}-web:2026.08.22-1`;
     const targetWebImage = `${projectName}-web:2026.08.22-2`;
+    const previousPostgresImage = `${projectName}-postgres:2026.08.22-1`;
+    const targetPostgresImage = `${projectName}-postgres:2026.08.22-2`;
+    const previousCloudflaredImage = `${projectName}-cloudflared:2026.08.22-1`;
+    const targetCloudflaredImage = `${projectName}-cloudflared:2026.08.22-2`;
     const releaseImages = [
       previousServerImage,
       targetServerImage,
       previousWebImage,
       targetWebImage,
+      previousPostgresImage,
+      targetPostgresImage,
+      previousCloudflaredImage,
+      targetCloudflaredImage,
     ];
 
     await executeFile("mkdir", ["-p", secretsRoot, backups]);
@@ -263,17 +286,115 @@ test(
       await writeOverride(override, secretsRoot);
       await compose(environment, override, "up", "--detach", "--build", "--wait");
       await buildReleaseImage(directory, environment.WEATHER_LOCAL_SERVER_IMAGE, previousServerImage, "2026.08.22-1");
-      await buildReleaseImage(directory, environment.WEATHER_LOCAL_SERVER_IMAGE, targetServerImage, "2026.08.22-2");
+      await buildReleaseImage(
+        directory,
+        environment.WEATHER_LOCAL_SERVER_IMAGE,
+        targetServerImage,
+        "2026.08.22-2",
+        "SELECT 1;\n",
+      );
       await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, previousWebImage, "2026.08.22-1");
       await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, targetWebImage, "2026.08.22-2");
-      assert.notEqual(await imageId(previousServerImage), await imageId(targetServerImage));
-      assert.notEqual(await imageId(previousWebImage), await imageId(targetWebImage));
+      await buildReleaseImage(
+        directory,
+        environment.WEATHER_LOCAL_POSTGRES_IMAGE,
+        previousPostgresImage,
+        "2026.08.22-1",
+      );
+      await buildReleaseImage(
+        directory,
+        environment.WEATHER_LOCAL_POSTGRES_IMAGE,
+        targetPostgresImage,
+        "2026.08.22-2",
+      );
+      await buildReleaseImage(
+        directory,
+        environment.WEATHER_LOCAL_CLOUDFLARED_IMAGE,
+        previousCloudflaredImage,
+        "2026.08.22-1",
+      );
+      await buildReleaseImage(
+        directory,
+        environment.WEATHER_LOCAL_CLOUDFLARED_IMAGE,
+        targetCloudflaredImage,
+        "2026.08.22-2",
+      );
+      const imagePairs = [
+        [previousServerImage, targetServerImage],
+        [previousWebImage, targetWebImage],
+        [previousPostgresImage, targetPostgresImage],
+        [previousCloudflaredImage, targetCloudflaredImage],
+      ];
+
+      // require four changed release identities
+      for (const [previousImage, targetImage] of imagePairs) {
+        assert.notEqual(await imageId(previousImage), await imageId(targetImage));
+      }
+      await executeFile("docker", [
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        previousServerImage,
+        "-c",
+        "test ! -f /opt/weather/packages/database/migrations/0002_candidate_contract.sql",
+      ]);
+      await executeFile("docker", [
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        targetServerImage,
+        "-c",
+        "test -f /opt/weather/packages/database/migrations/0002_candidate_contract.sql",
+      ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
       const firstBody = await firstSites.text();
       const health = await fetch(`http://127.0.0.1:${webPort}/api/v1/health`);
       assert.equal(health.status, 200);
       assert.equal((await health.json()).data.version, "2026.08.22-1");
+      await assert.rejects(
+        compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "env",
+          "PGPASSWORD=owner-integration-password",
+          "psql",
+          "--host",
+          "127.0.0.1",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--command",
+          "SELECT 1",
+        ),
+      );
+      const administratorLogin = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "env",
+        "PGPASSWORD=admin-integration-password",
+        "psql",
+        "--host",
+        "127.0.0.1",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT current_user",
+      );
+      assert.equal(administratorLogin.stdout.trim(), "postgres");
 
       const networkServices = [
         { name: "postgres", service: "postgres", target: "postgres", networks: ["data"] },
