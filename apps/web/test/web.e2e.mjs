@@ -231,6 +231,29 @@ function sendJson(response, body, status = 200) {
   response.end(JSON.stringify(body));
 }
 
+// verify one rejected site wall clock
+async function assertRejectedSiteWallClock(page, fixture, field, value) {
+  const apiReadsBefore = fixture.state.requests.filter(
+    // count weather data reads
+    (entry) => entry.includes("/current") || entry.includes("/history"),
+  ).length;
+  await page.locator(`input[name='${field}']`).fill(value);
+  await page.getByRole("button", { name: "Apply filters" }).click();
+  const alert = page.getByRole("alert");
+  await alert.waitFor();
+  const message = await alert.textContent() ?? "";
+  const apiReadsAfter = fixture.state.requests.filter(
+    // recount weather data reads
+    (entry) => entry.includes("/current") || entry.includes("/history"),
+  ).length;
+
+  assert.match(message, /daylight saving time/u);
+  assert.match(message, /choose another time/u);
+  assert.equal(message.length <= 160, true);
+  assert.equal(apiReadsAfter, apiReadsBefore);
+  assert.equal(await page.getByText("16.2").first().isVisible(), true);
+}
+
 test("real browser covers filters, pagination, last-good recovery, attribution, and mutation denial", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -305,6 +328,50 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.locator("body").press("Home");
     await page.keyboard.press("Tab");
     assert.equal(await page.evaluate(() => document.activeElement?.tagName), "SELECT");
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+test("real browser rejects Los Angeles DST gaps and overlaps from UTC without losing last-good data", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const pageErrors = [];
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({
+      timezoneId: "UTC",
+      viewport: { height: 900, width: 1440 },
+    });
+    // capture unexpected handler errors
+    page.on("pageerror", (error) => {
+      pageErrors.push(error.message);
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    assert.equal(
+      await page.evaluate(
+        // read the actual browser timezone
+        () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ),
+      "UTC",
+    );
+
+    await assertRejectedSiteWallClock(
+      page,
+      fixture,
+      "from",
+      "2026-03-08T02:30",
+    );
+    await assertRejectedSiteWallClock(
+      page,
+      fixture,
+      "to",
+      "2026-11-01T01:30",
+    );
+    assert.deepEqual(pageErrors, []);
   } finally {
     await browser?.close();
     fixture.server.close();

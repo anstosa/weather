@@ -200,6 +200,11 @@ test("history wall clocks use the selected site timezone instead of the browser 
       () => fromSiteWallClock("2026-03-08T02:30", "America/Los_Angeles"),
       /not valid in the site timezone/u,
     );
+    assert.throws(
+      // reject repeated fall-back minutes
+      () => fromSiteWallClock("2026-11-01T01:30", "America/Los_Angeles"),
+      /not valid in the site timezone/u,
+    );
   } finally {
     // restore the process timezone
     if (browserTimezone === undefined) {
