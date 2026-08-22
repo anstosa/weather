@@ -251,7 +251,9 @@ async function assertRejectedSiteWallClock(page, fixture, field, value) {
   assert.match(message, /choose another time/iu);
   assert.equal(message.length <= 160, true);
   assert.equal(apiReadsAfter, apiReadsBefore);
+  assert.equal(await page.getByText("16.2").count(), 2);
   assert.equal(await page.getByText("16.2").first().isVisible(), true);
+  assert.equal(await page.getByText("16.2").last().isVisible(), true);
 }
 
 test("real browser covers filters, pagination, last-good recovery, attribution, and mutation denial", { timeout: 60_000 }, async () => {
