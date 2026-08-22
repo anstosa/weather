@@ -197,7 +197,12 @@ test("history wall clocks use the selected site timezone instead of the browser 
       fromSiteWallClock("2026-08-21T21:30", "America/Los_Angeles"),
     );
   } finally {
-    process.env.TZ = browserTimezone;
+    // restore the process timezone
+    if (browserTimezone === undefined) {
+      delete process.env.TZ;
+    } else {
+      process.env.TZ = browserTimezone;
+    }
   }
 });
 
