@@ -242,7 +242,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await assert.doesNotReject(() => page.getByRole("heading", { name: "Ballydidean weather" }).waitFor());
     assert.equal(await page.getByText("16.2").first().isVisible(), true);
     assert.equal(await page.getByText("model-derived current conditions").first().isVisible(), true);
-    assert.equal(await page.getByRole("link", { name: "Open-Meteo" }).isVisible(), true);
+    assert.equal(await page.getByRole("link", { exact: true, name: "Open-Meteo" }).isVisible(), true);
     assert.equal(await page.getByRole("link", { name: "CC BY 4.0" }).isVisible(), true);
     assert.equal(await page.locator("table caption").count(), 1);
 
