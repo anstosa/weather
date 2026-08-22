@@ -147,8 +147,15 @@ image_repository() {
 resolve_arm64_image() {
   local image=$1
   local resolved
-  resolved=$(docker buildx imagetools inspect "$image" --raw |
-    node "$deploy_dir/scripts/resolve-image.mjs" "$image")
+
+  # preserve pinned manifests after platform verification
+  if [[ "$image" == *@sha256:* ]]; then
+    resolved=$(docker manifest inspect --verbose "$image" |
+      node "$deploy_dir/scripts/resolve-image.mjs" "$image")
+  else
+    resolved=$(docker buildx imagetools inspect "$image" --raw |
+      node "$deploy_dir/scripts/resolve-image.mjs" "$image")
+  fi
   validate_image_reference "$resolved"
   printf '%s\n' "$resolved"
 }

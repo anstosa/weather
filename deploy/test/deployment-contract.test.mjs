@@ -359,6 +359,7 @@ test("all four production images are immutable digest references", () => {
 // verify deterministic arm64 resolution
 test("image resolver selects one exact linux arm64 manifest", () => {
   const armDigest = `sha256:${"a".repeat(64)}`;
+  const update = read("deploy/scripts/update.sh");
   const index = JSON.stringify({
     manifests: [
       { digest: `sha256:${"b".repeat(64)}`, platform: { architecture: "amd64", os: "linux" } },
@@ -373,6 +374,21 @@ test("image resolver selects one exact linux arm64 manifest", () => {
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, `registry.example/weather/server@${armDigest}\n`);
+
+  const descriptor = JSON.stringify({
+    Descriptor: {
+      digest: armDigest,
+      platform: { architecture: "arm64", os: "linux", variant: "v8" },
+    },
+  });
+  const pinned = spawnSync(
+    process.execPath,
+    [join(scriptsRoot, "resolve-image.mjs"), `registry.example/weather/server@${armDigest}`],
+    { encoding: "utf8", input: descriptor },
+  );
+  assert.equal(pinned.status, 0, pinned.stderr);
+  assert.equal(pinned.stdout, `registry.example/weather/server@${armDigest}\n`);
+  assert.match(update, /if \[\[ "\$image" == \*@sha256:\* \]\]; then[\s\S]*docker manifest inspect --verbose/u);
 
   const ambiguous = JSON.stringify({
     manifests: [
