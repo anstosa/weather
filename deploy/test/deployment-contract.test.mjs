@@ -406,6 +406,18 @@ test("container commands match the API, worker, and web runtime contracts", () =
     compose.services.worker.environment.WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256,
     "",
   );
+
+  // keep authorization outside unrelated services
+  for (const service of ["migration", "postgres", "web", "cloudflared"]) {
+    assert.equal(
+      compose.services[service].environment?.WEATHER_MIGRATION_AUTHORIZATION_RELEASE,
+      undefined,
+    );
+    assert.equal(
+      compose.services[service].environment?.WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256,
+      undefined,
+    );
+  }
   assert.equal(
     compose.services.migration.environment.WEATHER_SITE_CONFIG_PATH,
     "/opt/weather/config/sites/ballydidean.json",
