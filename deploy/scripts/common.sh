@@ -4,6 +4,7 @@ set -euo pipefail
 deploy_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 repo_root=$(cd "$deploy_dir/.." && pwd)
 compose_file="$deploy_dir/compose.yaml"
+: "$repo_root"
 
 # print an operator error
 die() {
