@@ -609,6 +609,10 @@ previous_server=$9
 previous_web=\${10}
 current_server=\${11}
 current_web=\${12}
+previous_postgres=\${13}
+current_postgres=\${14}
+previous_cloudflared=\${15}
+current_cloudflared=\${16}
 # bypass host secret ownership
 require_deployment_secrets() { :; }
 # publish only fixture state
@@ -616,31 +620,51 @@ write_active_symlink() { ln -sfn "../releases/$1.env" "$state_dir/active.env"; }
 # use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$default_env}
-  local selected_release local_server local_web
+  local selected_release local_server local_web local_postgres local_cloudflared
   selected_release=$(env_value "$selected_env" WEATHER_RELEASE)
   # select the fixture image set
   if [[ "$selected_release" == '2026.08.22-1' ]]; then
     local_server=$previous_server
     local_web=$previous_web
+    local_postgres=$previous_postgres
+    local_cloudflared=$previous_cloudflared
   else
     local_server=$current_server
     local_web=$current_web
+    local_postgres=$current_postgres
+    local_cloudflared=$current_cloudflared
   fi
   printf '%s|%s\\n' "$selected_env" "$*" >>"$transcript"
   WEATHER_LOCAL_SERVER_IMAGE="$local_server" WEATHER_LOCAL_WEB_IMAGE="$local_web" \\
+    WEATHER_LOCAL_POSTGRES_IMAGE="$local_postgres" \\
+    WEATHER_LOCAL_CLOUDFLARED_IMAGE="$local_cloudflared" \\
     docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
       --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
+}
+# record one service identity
+record_service_image() {
+  local phase=$1
+  local env_file=$2
+  local service=$3
+  local container
+  container=$(WEATHER_ENV_FILE="$env_file" compose ps -q "$service")
+  printf 'image-%s-%s:%s\\n' "$phase" "$service" \\
+    "$(docker inspect --format '{{.Image}}' "$container")" >>"$transcript"
 }
 # establish the newer image set
 current_env="$releases_dir/2026.08.22-2.env"
 restore_images "$current_env"
-current_api=$(WEATHER_ENV_FILE=$current_env compose ps -q api)
-printf 'image-before:%s\\n' "$(docker inspect --format '{{.Image}}' "$current_api")" >>"$transcript"
+record_service_image before "$current_env" postgres
+record_service_image before "$current_env" api
+record_service_image before "$current_env" web
+record_service_image before "$current_env" cloudflared
 printf 'release-before:%s\\n' "$(WEATHER_ENV_FILE=$current_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
 rollback_release
 previous_env="$releases_dir/2026.08.22-1.env"
-previous_api=$(WEATHER_ENV_FILE=$previous_env compose ps -q api)
-printf 'image-after:%s\\n' "$(docker inspect --format '{{.Image}}' "$previous_api")" >>"$transcript"
+record_service_image after "$previous_env" postgres
+record_service_image after "$previous_env" api
+record_service_image after "$previous_env" web
+record_service_image after "$previous_env" cloudflared
 printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
           "weather-rollback-integration",
           join(deployRoot, "scripts/update.sh"),
@@ -655,6 +679,10 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
           previousWebImage,
           targetServerImage,
           targetWebImage,
+          previousPostgresImage,
+          targetPostgresImage,
+          previousCloudflaredImage,
+          targetCloudflaredImage,
         ],
         { cwd: repoRoot, env: environment, timeout: 300_000 },
       );
@@ -664,14 +692,24 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
       assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
       assert.match(rollbackCommands, /release-before:2026\.08\.22-2/u);
       assert.match(rollbackCommands, /release-after:2026\.08\.22-1/u);
-      assert.equal(
-        rollbackCommands.includes(`image-before:${await imageId(targetServerImage)}`),
-        true,
-      );
-      assert.equal(
-        rollbackCommands.includes(`image-after:${await imageId(previousServerImage)}`),
-        true,
-      );
+      const rollbackIdentities = [
+        ["postgres", previousPostgresImage, targetPostgresImage],
+        ["api", previousServerImage, targetServerImage],
+        ["web", previousWebImage, targetWebImage],
+        ["cloudflared", previousCloudflaredImage, targetCloudflaredImage],
+      ];
+
+      // prove all four identities changed
+      for (const [service, previousImage, targetImage] of rollbackIdentities) {
+        assert.equal(
+          rollbackCommands.includes(`image-before-${service}:${await imageId(targetImage)}`),
+          true,
+        );
+        assert.equal(
+          rollbackCommands.includes(`image-after-${service}:${await imageId(previousImage)}`),
+          true,
+        );
+      }
       const migrationAfter = (
         await compose(
           environment,
