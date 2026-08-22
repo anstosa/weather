@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 
 // remove a mutable tag or existing digest
 function imageRepository(reference) {
@@ -16,7 +16,7 @@ function imageRepository(reference) {
 
 const reference = process.argv[2] ?? "";
 const repository = imageRepository(reference);
-const raw = await readFile(0, "utf8");
+const raw = readFileSync(0, "utf8");
 const document = JSON.parse(raw);
 
 // require a credential-free repository name
