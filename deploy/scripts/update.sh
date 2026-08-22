@@ -106,15 +106,18 @@ validate_release_env() {
 # require the installed deployment contract
 require_control_plane_compatibility() {
   local env_file=$1
-  local expected=$control_plane_version
-
-  # preserve the original version-one release format
-  if grep -q '^WEATHER_CONTROL_PLANE_VERSION=' "$env_file"; then
-    expected=$(env_value "$env_file" WEATHER_CONTROL_PLANE_VERSION)
-  fi
-
-  [[ "$expected" == "$control_plane_version" ]] ||
+  local expected_version expected_digest current_digest
+  grep -q '^WEATHER_CONTROL_PLANE_VERSION=' "$env_file" ||
+    die "release state lacks deployment control-plane version metadata"
+  grep -q '^WEATHER_CONTROL_PLANE_SHA256=' "$env_file" ||
+    die "release state lacks deployment control-plane digest metadata"
+  expected_version=$(env_value "$env_file" WEATHER_CONTROL_PLANE_VERSION)
+  expected_digest=$(env_value "$env_file" WEATHER_CONTROL_PLANE_SHA256)
+  current_digest=$(control_plane_digest)
+  [[ "$expected_version" == "$control_plane_version" ]] ||
     die "deployment control-plane version is incompatible with release state"
+  [[ "$expected_digest" == "$current_digest" ]] ||
+    die "deployment control-plane digest is incompatible with release state"
 }
 
 # write one deterministic release environment

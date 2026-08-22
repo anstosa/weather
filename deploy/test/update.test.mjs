@@ -170,50 +170,90 @@ test("secret validation rejects a symlink outside the Weather secret root", asyn
   }
 });
 
-test("initial activation cleans the Weather project after backup failure", async () => {
+test("initial activation cleans the Weather project after every startup failure", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-initial-cleanup-"));
-  const transcript = join(directory, "transcript");
 
   try {
     await mkdir(join(directory, "scripts"));
-    await writeFile(join(directory, "scripts/backup.sh"), "#!/usr/bin/env bash\nexit 1\n");
+    await writeFile(
+      join(directory, "scripts/backup.sh"),
+      '#!/usr/bin/env bash\nexit "${WEATHER_TEST_BACKUP_STATUS:-0}"\n',
+    );
     await chmod(join(directory, "scripts/backup.sh"), 0o700);
-    const result = runBash(
-      `source "$1"
+    const failureCases = ["backup", "migration", "health"];
+
+    // inject every post-start failure
+    for (const failureCase of failureCases) {
+      const transcript = join(directory, `${failureCase}.transcript`);
+      const result = runBash(
+        `source "$1"
 deploy_dir=$2
 state_dir=$2/state
 transcript=$3
+failure_case=$4
 release_env() { printf '/target.env\\n'; }
 validate_release_env() { :; }
 read_optional_release_state() { :; }
 require_capacity_gate() { :; }
 require_deployment_secrets() { :; }
 require_control_plane_compatibility() { :; }
-compose() { printf 'compose:%s\\n' "$*" >>"$transcript"; }
+record_release_success() { printf 'recorded\\n' >>"$transcript"; }
+compose() {
+  printf 'compose:%s\\n' "$*" >>"$transcript"
+  # fail the selected lifecycle stage
+  if [[ "$failure_case" == migration && "$*" == 'run --rm migration' ]]; then return 1; fi
+  if [[ "$failure_case" == health && "$*" == 'up -d --remove-orphans --wait' ]]; then return 1; fi
+}
+export WEATHER_TEST_BACKUP_STATUS=$([[ "$failure_case" == backup ]] && printf 1 || printf 0)
 start_release 2026.08.22-1`,
-      [directory, transcript],
-    );
-    assert.notEqual(result.status, 0);
-    assert.match(
-      await readFile(transcript, "utf8"),
-      /compose:up -d postgres --wait[\s\S]*compose:down --remove-orphans/u,
-    );
+        [directory, transcript, failureCase],
+      );
+      assert.notEqual(result.status, 0, failureCase);
+      const output = await readFile(transcript, "utf8");
+      assert.match(output, /compose:up -d postgres --wait[\s\S]*compose:down --remove-orphans/u);
+      assert.doesNotMatch(output, /recorded/u);
+    }
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
 });
 
-test("release operations reject an incompatible deployment control-plane version", async () => {
+test("release operations reject incompatible deployment control-plane metadata", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
   const release = join(directory, "release.env");
 
   try {
-    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=1\n");
+    const digest = runBash('source "$1"; control_plane_digest').stdout.trim();
+    await writeFile(
+      release,
+      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=1\n`,
+    );
     const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
     assert.equal(accepted.status, 0, accepted.stderr);
-    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=2\n");
-    const rejected = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
-    assert.notEqual(rejected.status, 0);
+    await writeFile(
+      release,
+      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=2\n`,
+    );
+    const versionRejected = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.notEqual(versionRejected.status, 0);
+    await writeFile(
+      release,
+      `WEATHER_CONTROL_PLANE_SHA256=${"a".repeat(64)}\nWEATHER_CONTROL_PLANE_VERSION=1\n`,
+    );
+    const digestRejected = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.notEqual(digestRejected.status, 0);
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=1\n");
+    const metadataRejected = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.notEqual(metadataRejected.status, 0);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
