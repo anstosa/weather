@@ -97,10 +97,6 @@ async function writeOverride(path, secretsRoot) {
     `services:
   compatibility-provider:
     image: \${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      target: server
     command: [node, deploy/scripts/compatibility-provider.mjs]
     environment:
       PORT: "3002"
