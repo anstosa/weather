@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
       - name: Install deployment validators
-        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+        run: sudo apt-get update && sudo apt-get install --yes age shellcheck
       - name: Run deterministic repository checks
         run: npm run check
       - name: Run PostgreSQL integration gates

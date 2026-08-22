@@ -151,8 +151,7 @@ require_secret_source() {
   read -r uid gid mode <<<"$metadata"
   [[ "$uid" == "$expected_uid" && "$gid" == "$expected_gid" ]] ||
     die "secret source has incorrect ownership: $path"
-  (( (8#$mode & 077) == 0 && (8#$mode & 400) != 0 )) ||
-    die "secret source must be owner-readable and private: $path"
+  [[ "$mode" == 400 ]] || die "secret source must use mode 0400: $path"
 }
 
 # verify every consumer copy without exposing material
@@ -250,8 +249,17 @@ verify_previous_image_compatibility() (
     --network weather_provider_egress --network-alias "$provider_container" \
     "$provider_image" node deploy/scripts/compatibility-provider.mjs >/dev/null
   provider_started=true
-  docker exec "$provider_container" node -e \
-    "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+  # wait for the deterministic provider
+  for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
+    # stop after the first successful readiness response
+    if docker exec "$provider_container" node -e \
+      "fetch('http://127.0.0.1:3002/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"; then
+      break
+    fi
+    sleep 1
+  done
+  ((_attempt < 30)) || die "compatibility provider did not become ready"
 
   before_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \

@@ -12,6 +12,21 @@ printf 'Current release: %s\nPrevious release: %s\n' "$current" "$previous"
 
 # report runtime state only after activation
 if [[ "$current" != none ]]; then
+  current_env="$deploy_dir/releases/$current.env"
+  expected_link="../releases/$current.env"
+  require_file "$current_env"
+  [[ -L "$deploy_dir/state/active.env" ]] || die "active release link is missing"
+  [[ "$(readlink "$deploy_dir/state/active.env")" == "$expected_link" ]] ||
+    die "active release link does not match committed state"
+  printf 'Images:\n'
+
+  # report the four immutable references
+  for name in WEATHER_SERVER_IMAGE WEATHER_WEB_IMAGE POSTGRES_IMAGE CLOUDFLARED_IMAGE; do
+    image=$(env_value "$current_env" "$name")
+    validate_image_reference "$image"
+    printf '  %s=%s\n' "$name" "$image"
+  done
+
   require_command docker
   compose ps
   compose exec -T postgres psql --username postgres --dbname weather \
