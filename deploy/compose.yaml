@@ -41,7 +41,6 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    command: [node, deploy/scripts/web-server.mjs]
     tmpfs:
       - /tmp:size=64m,mode=1777
       - /var/run/postgresql:size=16m,mode=0755,uid=999,gid=999
@@ -212,6 +211,7 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    command: [node, deploy/scripts/web-server.mjs]
     tmpfs:
       - /tmp:size=16m,mode=1777
     environment:
