@@ -28,14 +28,19 @@ any other connector token.
    `/var/lib/weather/backups` without touching neighboring application paths.
 2. Provision the PostgreSQL directory for the pinned image's `999:999` user and
    make `/opt/weather/current` root-owned after release extraction.
-3. Copy `deploy/.env.example` to ignored `deploy/.env` and replace the example
-   release with an immutable `YYYY.MM.DD-N` tag.
-4. Generate separate long random values from a trusted password generator into
-   the four extensionless files named by `deploy/secrets/.gitignore`. Set the
-   database files to `0400` for the operator and the tunnel token to `0400` for
-   UID/GID `65532` at its final mounted source.
+3. Copy `deploy/.env.example` to ignored `deploy/.env`. Set the server and web
+   repositories, the pinned PostgreSQL tag, and the pinned cloudflared tag used
+   as staging inputs. Staging replaces all four with exact Linux ARM64
+   `name@sha256:<digest>` references; `WEATHER_RELEASE` remains a label only.
+4. Generate separate long random owner, API, and ingestion passwords. Install
+   matching PostgreSQL and application copies under the six extensionless names
+   in `deploy/secrets`: the three `weather_postgres_*` sources must be owned by
+   `999:999`; `weather_migration_owner_password`, `weather_api_password`, and
+   `weather_worker_ingest_password` must be owned by `10002:10002`. Install the
+   tunnel token for `65532:65532`. Every source must be mode `0400`; Compose file
+   secrets cannot repair host ownership or modes.
 5. Copy `deploy/config/backup.env.example` to ignored `backup.env` and set only
-   a public age recipient and retention policy.
+   a public age recipient. Enforce off-host retention outside this repository.
 6. Install root-owned scripts as `/usr/local/bin/weather-ssh-dispatch` and
    `/usr/local/sbin/weather-remote-ops`; validate the sudoers rule with
    `visudo -cf deploy/sudoers/weather-ops`.
@@ -75,11 +80,13 @@ deploy/scripts/ssh-run.sh activate 2026.08.22-1
 deploy/scripts/ssh-run.sh status
 ```
 
-Stage validates the exact Compose render and ARM64 manifests, pulls without
-changing running services, and on upgrades creates and drops only a unique
-compatibility database. It migrates the clone and runs the previous server
-image's read/provider-stub probes. The first release records that compatibility
-as not applicable.
+Stage requires a passing 15-minute capacity result from the prior hour, resolves
+and records all four exact ARM64 manifest digests, validates the complete Compose
+render, and pulls without changing running services. On upgrades it creates and
+drops only a unique compatibility database, migrates the clone, runs the previous
+API image's `/api/v1/health` and `/api/v1/sites` reads, and runs one previous
+worker loop against a credential-free deterministic provider stub. The first
+release records compatibility as not applicable.
 
 Activate requires the pre-provisioned Weather connector token, creates an
 encrypted pre-migration backup, runs forward-only checked migrations, starts
@@ -98,10 +105,11 @@ deploy/scripts/ssh-run.sh recover
 sudo systemctl restart weather-compose.service
 ```
 
-Rollback changes only Weather image configuration; it never reverses a
-forward-compatible migration automatically. Failed initial activation removes
-only Weather containers and networks while preserving `/var/lib/weather`.
-Recovery reapplies the recorded Weather release after Docker or host restart.
+Rollback applies the previous four immutable Weather images with `--no-deps`; it
+never runs backup or migration and never reverses a forward-compatible migration.
+Failed initial activation removes only Weather containers and networks while
+preserving `/var/lib/weather`. Recovery reapplies the recorded exact image set
+after Docker or host restart.
 
 ## Local verification
 
