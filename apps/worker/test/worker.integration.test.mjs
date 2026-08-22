@@ -6,6 +6,7 @@ import { loadSiteConfiguration } from "@weather/database";
 import { ProviderFailure } from "@weather/providers";
 
 import {
+  createWorkerIterationRunner,
   executeBackfill,
   runWorkerIteration,
   runScheduledSource,
@@ -302,67 +303,66 @@ test("worker iteration preserves restart success with no due sources", async () 
 });
 
 // retain a committed success across heartbeat persistence failure
-test("worker iteration retains a new success candidate after heartbeat failure", async () => {
+test("worker runner retains a new success candidate after heartbeat failure", async () => {
   const site = await loadSiteConfiguration(sitePath);
-  const heartbeats = [];
   const previousSuccess = "2026-08-21T05:20:00.000Z";
   const newerSuccess = "2026-08-22T05:20:00.000Z";
-  const repository = scheduledRepository([]);
-  let successCandidate = previousSuccess;
-  let iteration = 0;
-  repository.discoverDueSources = async () => {
-    // succeed once then exercise an idle iteration
-    iteration += 1;
-    return iteration === 1 ? [currentDueSource(site)] : [];
-  };
-  repository.updateWorkerHeartbeat = async (_pool, input) => {
-    // fail only the first heartbeat write
-    heartbeats.push(input);
-    if (heartbeats.length === 1) {
-      throw new Error("heartbeat persistence failed");
-    }
-  };
-  const onDurableSuccess = (lastSuccessAt) => {
-    // retain the newest committed candidate
-    successCandidate = lastSuccessAt;
-  };
 
-  await assert.rejects(
-    () =>
-      runWorkerIteration({}, {
-        diagnosticWriter: () => {},
-        fetchCurrent: async () => ({
+  // cover idle and failed follow-up iterations
+  for (const nextMode of ["idle", "failed"]) {
+    const heartbeats = [];
+    const repository = scheduledRepository([]);
+    let fetchCount = 0;
+    let iteration = 0;
+    repository.discoverDueSources = async () => {
+      // succeed once then exercise the selected follow-up
+      iteration += 1;
+      return iteration === 1 || nextMode === "failed"
+        ? [currentDueSource(site)]
+        : [];
+    };
+    repository.updateWorkerHeartbeat = async (_pool, input) => {
+      // fail only the first heartbeat write
+      heartbeats.push(input);
+      if (heartbeats.length === 1) {
+        throw new Error("heartbeat persistence failed");
+      }
+    };
+    const run = createWorkerIterationRunner({}, {
+      diagnosticWriter: () => {},
+      fetchCurrent: async () => {
+        // fail only the selected follow-up fetch
+        fetchCount += 1;
+        if (fetchCount > 1 && nextMode === "failed") {
+          throw new Error("follow-up provider failure");
+        }
+
+        return {
           attempts: 1,
           checksum: "c".repeat(64),
           providerCursor: null,
           records: [{ validAt: newerSuccess }],
           responseMetadata: {},
-        }),
-        instance: "worker-test",
-        lastSuccessAt: successCandidate,
-        now: () => new Date(newerSuccess),
-        onDurableSuccess,
-        repository,
-        site,
-        version: "release-test",
-      }),
-    /heartbeat persistence failed/u,
-  );
-  assert.equal(successCandidate, newerSuccess);
+        };
+      },
+      instance: "worker-test",
+      lastSuccessAt: previousSuccess,
+      now: () => new Date(newerSuccess),
+      repository,
+      site,
+      version: "release-test",
+    });
 
-  const idle = await runWorkerIteration({}, {
-    diagnosticWriter: () => {},
-    instance: "worker-test",
-    lastSuccessAt: successCandidate,
-    now: () => new Date("2026-08-22T05:35:00.000Z"),
-    onDurableSuccess,
-    repository,
-    site,
-    version: "release-test",
-  });
+    await assert.rejects(() => run(), /heartbeat persistence failed/u);
+    const followUp = await run();
 
-  assert.equal(idle.lastSuccessAt, newerSuccess);
-  assert.equal(heartbeats[1].lastSuccessAt, newerSuccess);
+    assert.equal(followUp.lastSuccessAt, newerSuccess);
+    assert.equal(heartbeats[1].lastSuccessAt, newerSuccess);
+    assert.equal(followUp.sources.length, nextMode === "failed" ? 1 : 0);
+    if (nextMode === "failed") {
+      assert.equal(followUp.sources[0].status, "failed");
+    }
+  }
 });
 
 // create an exact backfill repository
