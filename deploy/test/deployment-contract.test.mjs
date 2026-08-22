@@ -242,6 +242,38 @@ test("all four production images are immutable digest references", () => {
   assert.match(read("deploy/compose.yaml"), /\/var\/lib\/weather\/postgres/u);
 });
 
+// verify deterministic arm64 resolution
+test("image resolver selects one exact linux arm64 manifest", () => {
+  const armDigest = `sha256:${"a".repeat(64)}`;
+  const index = JSON.stringify({
+    manifests: [
+      { digest: `sha256:${"b".repeat(64)}`, platform: { architecture: "amd64", os: "linux" } },
+      { digest: armDigest, platform: { architecture: "arm64", os: "linux", variant: "v8" } },
+      { digest: `sha256:${"c".repeat(64)}`, platform: { architecture: "unknown", os: "unknown" } },
+    ],
+  });
+  const result = spawnSync(
+    process.execPath,
+    [join(scriptsRoot, "resolve-image.mjs"), "registry.example/weather/server:release"],
+    { encoding: "utf8", input: index },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, `registry.example/weather/server@${armDigest}\n`);
+
+  const ambiguous = JSON.stringify({
+    manifests: [
+      { digest: armDigest, platform: { architecture: "arm64", os: "linux" } },
+      { digest: `sha256:${"d".repeat(64)}`, platform: { architecture: "arm64", os: "linux" } },
+    ],
+  });
+  const rejected = spawnSync(
+    process.execPath,
+    [join(scriptsRoot, "resolve-image.mjs"), "registry.example/weather/server:release"],
+    { encoding: "utf8", input: ambiguous },
+  );
+  assert.notEqual(rejected.status, 0);
+});
+
 // verify cross-lane runtime commands
 test("container commands match the API, worker, and web runtime contracts", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
@@ -316,6 +348,7 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
     const mutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "POST" });
     const legacy = await fetch(`http://127.0.0.1:${webPort}/sites`);
     const future = await fetch(`http://127.0.0.1:${webPort}/api/v2/sites`);
+    const encoded = await fetch(`http://127.0.0.1:${webPort}/api/v1%2fsites`);
     const unknown = await fetch(`http://127.0.0.1:${webPort}/secrets/weather_owner_password`);
     assert.equal(home.status, 200);
     assert.match(await home.text(), /<title>Weather<\/title>/u);
@@ -331,6 +364,7 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
     assert.equal(mutation.status, 405);
     assert.equal(legacy.status, 404);
     assert.equal(future.status, 404);
+    assert.equal(encoded.status, 404);
     assert.equal(unknown.status, 404);
     assert.match(home.headers.get("content-security-policy"), /default-src 'self'/u);
   } finally {
@@ -384,6 +418,8 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(backup, /chmod 600/u);
   assert.match(backup, /trap cleanup EXIT/u);
   assert.match(backup, /output_dir=\/var\/lib\/weather\/backups/u);
+  assert.match(backup, /publication_complete/u);
+  assert.match(backup, /sync -f/u);
   assert.doesNotMatch(backup, /pg_dump[^\n]*--file|>[^\n]*\.dump(?:["']|\s)/u);
   assert.match(restore, /only verify mode is supported/u);
   assert.match(restore, /live database replacement and cutover are not supported/u);
@@ -414,7 +450,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /weather_compat_/u);
   assert.match(update, /compatibility-provider\.mjs/u);
   assert.match(update, /WEATHER_OPEN_METEO_/u);
-  assert.match(update, /WEATHER_DATABASE_NAME=\$candidate/u);
+  assert.match(update, /WEATHER_DATABASE_NAME="\$candidate"/u);
   assert.match(update, /\/api\/v1\/health/u);
   assert.match(update, /\/api\/v1\/sites/u);
   assert.match(update, /apps\/api\/dist\/main\.js/u);
@@ -426,7 +462,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(rollbackCase, /rollback_release/u);
   assert.match(rollbackFunction, /restore_images/u);
   assert.match(update, /--no-deps --wait[\s\\\n]*postgres api worker web cloudflared/u);
-  assert.doesNotMatch(rollbackFunction, /backup|migration|start_release/u);
+  assert.doesNotMatch(rollbackFunction, /backup\.sh|compose run[^\n]*migration|start_release/u);
   assert.doesNotMatch(
     update,
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
