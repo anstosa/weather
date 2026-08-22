@@ -265,6 +265,60 @@ main recover`,
   }
 });
 
+// prove rollback reactivation preserves recovery state
+test("reactivating a rolled-back runtime rejects before mutation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-reactivation-authorization-"));
+  const state = join(directory, "state");
+  const transcript = join(directory, "transcript");
+  const error = join(directory, "error");
+
+  try {
+    await mkdir(state);
+    await writeFile(join(state, "current-release"), "2026.08.22-1\n", { mode: 0o600 });
+    await writeFile(join(state, "schema-release"), "2026.08.22-2\n", { mode: 0o600 });
+    const result = runBash(
+      `source "$1"
+deploy_dir=$2
+state_dir=$3
+transcript=$4
+error=$5
+release_env() { printf '/releases/%s.env\\n' "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() { :; }
+require_capacity_gate() { printf 'capacity\\n' >>"$transcript"; }
+require_deployment_secrets() { printf 'secrets\\n' >>"$transcript"; }
+require_command() { :; }
+start_postgres() { printf 'postgres\\n' >>"$transcript"; }
+compose() { printf 'compose:%s\\n' "$*" >>"$transcript"; }
+write_private_state() { printf 'state:%s:%s\\n' "$1" "$2" >>"$transcript"; }
+start_exact_release() { printf 'start:%s\\n' "$1" >>"$transcript"; }
+record_release_success() { printf 'record:%s:%s\\n' "$1" "$2" >>"$transcript"; }
+restore_images() { printf 'restore:%s:%s:%s\\n' "$1" "$2" "$3" >>"$transcript"; }
+write_active_symlink() { printf 'active:%s\\n' "$1" >>"$transcript"; }
+# require fail-closed reactivation
+if (start_release 2026.08.22-1) 2>"$error"; then
+  exit 64
+fi
+main recover`,
+      [directory, state, transcript, error],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      await readFile(error, "utf8"),
+      /cannot reactivate runtime release 2026\.08\.22-1 while retained schema release is 2026\.08\.22-2/u,
+    );
+    assert.equal(await readFile(join(state, "schema-release"), "utf8"), "2026.08.22-2\n");
+    assert.equal(
+      await readFile(transcript, "utf8"),
+      "secrets\n" +
+        "restore:/releases/2026.08.22-1.env:2026.08.22-1:2026.08.22-2\n" +
+        "active:2026.08.22-1\n",
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("persistent authorization is written only after API and worker compatibility", async () => {
   const update = await readFile(updateScript, "utf8");
   const compatibility = update

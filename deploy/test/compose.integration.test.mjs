@@ -925,6 +925,12 @@ record_service_image after "$previous_env" api
 record_service_image after "$previous_env" web
 record_service_image after "$previous_env" cloudflared
 printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
+printf 'reactivate-before\\n' >>"$transcript"
+# require fail-closed rolled-back reactivation
+if (main activate 2026.08.22-1) 2>>"$transcript"; then
+  die "rolled-back release reactivation unexpectedly succeeded"
+fi
+printf 'reactivate-after\\n' >>"$transcript"
 WEATHER_ENV_FILE=$previous_env compose down --remove-orphans
 main recover
 printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
@@ -954,7 +960,12 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
       assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
       assert.match(rollbackCommands, /release-before:2026\.08\.22-2/u);
       assert.match(rollbackCommands, /release-after:2026\.08\.22-1/u);
+      assert.match(
+        rollbackCommands,
+        /reactivate-before\nerror: cannot reactivate runtime release 2026\.08\.22-1 while retained schema release is 2026\.08\.22-2\nreactivate-after/u,
+      );
       assert.match(rollbackCommands, /release-recovered:2026\.08\.22-1/u);
+      assert.equal(await readFile(join(releaseState, "schema-release"), "utf8"), "2026.08.22-2\n");
       const rollbackIdentities = [
         ["postgres", previousPostgresImage, targetPostgresImage],
         ["api", previousServerImage, targetServerImage],
