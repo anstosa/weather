@@ -3,7 +3,7 @@ name: Publish production images
 on:
   push:
     tags:
-      - "20??.??.??-*"
+      - "20[0-9][0-9].[0-9][0-9].[0-9][0-9]-[0-9]+"
 
 permissions:
   contents: read
