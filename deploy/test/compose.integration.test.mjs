@@ -573,7 +573,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
       for (const release of ["2026.08.22-1", "2026.08.22-2"]) {
         const digestKeys = release.endsWith("-1")
           ? { cloudflared: "d", postgres: "c", server: "a", web: "b" }
-          : { cloudflared: "h", postgres: "g", server: "e", web: "f" };
+          : { cloudflared: "2", postgres: "1", server: "e", web: "f" };
         await writeFile(
           join(releases, `${release}.env`),
           [
