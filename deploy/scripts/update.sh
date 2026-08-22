@@ -43,8 +43,11 @@ verify_previous_image_compatibility() {
   local target_env=$1
   local previous_env=$2
   local candidate
+  local api_container
+  local api_ready=false
   local status=0
   candidate="weather_compat_$(date -u +%Y%m%d%H%M%S)_$$"
+  api_container="${candidate}_api"
 
   printf 'Creating disposable compatibility database %s...\n' "$candidate"
   compose exec -T postgres createdb --username postgres --owner weather_owner "$candidate"
@@ -62,12 +65,34 @@ verify_previous_image_compatibility() {
     compose run --rm --no-deps migration; then
     status=1
   fi
-  if (( status == 0 )) && ! WEATHER_DATABASE_NAME=$candidate WEATHER_ENV_FILE=$previous_env \
-    compose run --rm --no-deps api node deploy/scripts/compatibility.mjs api; then
-    status=1
+  if (( status == 0 )); then
+    # start the previous API command against the migrated clone
+    if ! WEATHER_DATABASE_NAME=$candidate WEATHER_ENV_FILE=$previous_env \
+      compose run --detach --name "$api_container" --no-deps api \
+        node apps/api/dist/main.js >/dev/null; then
+      status=1
+    fi
   fi
+  # require the previous API read endpoint
+  if (( status == 0 )); then
+    for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
+      # stop retrying after the first successful read
+      if docker exec "$api_container" node -e \
+        "fetch('http://127.0.0.1:3001/sites').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"; then
+        api_ready=true
+        break
+      fi
+      sleep 1
+    done
+
+    # fail when the previous API cannot read the clone
+    if [[ "$api_ready" != true ]]; then
+      status=1
+    fi
+  fi
+  docker rm --force "$api_container" >/dev/null 2>&1 || true
   if (( status == 0 )) && ! WEATHER_DATABASE_NAME=$candidate WEATHER_ENV_FILE=$previous_env \
-    compose run --rm --no-deps worker node deploy/scripts/compatibility.mjs worker; then
+    compose run --rm --no-deps worker node apps/worker/dist/worker.js --once; then
     status=1
   fi
 

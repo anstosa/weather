@@ -13,6 +13,7 @@ const assets = new Map([
   ["/index.html", { cache: "no-cache", path: join(publicRoot, "index.html"), type: "text/html; charset=utf-8" }],
   ["/styles.css", { cache: "public, max-age=300", path: join(publicRoot, "styles.css"), type: "text/css; charset=utf-8" }],
   ["/client.js", { cache: "public, max-age=300", path: join(compiledRoot, "client.js"), type: "text/javascript; charset=utf-8" }],
+  ["/index.js", { cache: "public, max-age=300", path: join(compiledRoot, "index.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 
 const server = createServer(async (request, response) => {
@@ -20,7 +21,7 @@ const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? "/", "http://weather.invalid");
 
     // proxy only the same-origin API namespace
-    if (requestUrl.pathname === "/api" || requestUrl.pathname.startsWith("/api/")) {
+    if (requestUrl.pathname === "/sites" || requestUrl.pathname.startsWith("/sites/")) {
       await proxyApi(request, response, requestUrl);
       return;
     }
