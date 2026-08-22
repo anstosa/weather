@@ -117,8 +117,8 @@ closed into authorized recovery or operator restore of the encrypted backup.
 After a migration-free rollback, every activation except the exact retained
 schema release is rejected before capacity checks, backup, Compose, migration,
 or state mutation while the runtime trails that schema. Use `recover` to restore
-the recorded runtime against that retained schema authorization. The public hostname route remains a
-separate, leader-authorized post-activation operation.
+the recorded runtime against that retained schema authorization. The public
+hostname route remains a separate, leader-authorized post-activation operation.
 
 After a 15-minute ingestion soak, require at least 512 MiB available memory,
 load no greater than `0.75 * CPUs`, no OOM/restart/limit breach, swap no greater
