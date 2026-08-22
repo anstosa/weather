@@ -237,40 +237,48 @@ test(
       assert.equal(health.status, 200);
       assert.equal((await health.json()).data.version, "2026.08.22-1");
 
-      const allowedDns = [
-        ["web", "api"],
-        ["api", "web"],
-        ["api", "postgres"],
-        ["worker", "api"],
-        ["worker", "postgres"],
-        ["worker", "compatibility-provider"],
-        ["web", "cloudflared"],
-        ["cloudflared", "web"],
-      ];
-      const deniedDns = [
-        ["web", "postgres"],
-        ["web", "worker"],
-        ["web", "compatibility-provider"],
-        ["api", "cloudflared"],
-        ["api", "compatibility-provider"],
-        ["worker", "web"],
-        ["worker", "cloudflared"],
-        ["cloudflared", "api"],
-        ["cloudflared", "postgres"],
-        ["cloudflared", "worker"],
-        ["cloudflared", "compatibility-provider"],
+      const networkServices = [
+        { name: "postgres", service: "postgres", target: "postgres", networks: ["data"] },
+        {
+          name: "migration",
+          service: "migration-network-probe",
+          target: "migration-network-probe",
+          networks: ["data"],
+        },
+        { name: "api", service: "api", target: "api", networks: ["data", "web_api"] },
+        {
+          name: "worker",
+          service: "worker",
+          target: "worker",
+          networks: ["data", "provider_egress"],
+        },
+        { name: "web", service: "web", target: "web", networks: ["edge", "web_api"] },
+        {
+          name: "cloudflared",
+          service: "cloudflared",
+          target: "cloudflared",
+          networks: ["edge", "tunnel_egress"],
+        },
       ];
 
-      // prove every declared DNS membership
-      for (const [service, target] of allowedDns) {
-        await assertProbe(environment, override, "allowed", service, "dns", target);
+      // prove the complete directional DNS matrix
+      for (const source of networkServices) {
+        // compare every distinct target
+        for (const target of networkServices) {
+          // skip self reachability
+          if (source.name === target.name) {
+            continue;
+          }
+
+          const expected = source.networks.some((network) => target.networks.includes(network))
+            ? "allowed"
+            : "denied";
+          await assertProbe(environment, override, expected, source.service, "dns", target.target);
+        }
       }
 
-      // prove every undeclared DNS path
-      for (const [service, target] of deniedDns) {
-        await assertProbe(environment, override, "denied", service, "dns", target);
-      }
-
+      // prove data paths with TCP
+      await assertProbe(environment, override, "allowed", "migration-network-probe", "tcp", "postgres", "5432");
       await assertProbe(environment, override, "allowed", "api", "tcp", "postgres", "5432");
       await assertProbe(environment, override, "allowed", "worker", "tcp", "postgres", "5432");
       await assertProbe(environment, override, "denied", "web", "tcp", "postgres", "5432");
@@ -284,10 +292,35 @@ test(
       await assertProbe(environment, override, "denied", "api", "http", "http://compatibility-provider:3002/health");
       await assertProbe(environment, override, "denied", "worker", "http", "http://web:3000/");
       await assertProbe(environment, override, "denied", "cloudflared", "http", "http://api:3001/api/v1/health");
-      await assertProbe(environment, override, "allowed", "worker", "http", "https://example.com/");
-      await assertProbe(environment, override, "allowed", "cloudflared", "http", "https://example.com/");
-      await assertProbe(environment, override, "denied", "api", "http", "https://example.com/");
-      await assertProbe(environment, override, "denied", "web", "http", "https://example.com/");
+
+      // prove both controlled egress boundaries
+      for (const source of networkServices) {
+        const probeKind = source.service === "postgres" ? "tcp" : "http";
+        const providerValues =
+          probeKind === "tcp"
+            ? ["provider-egress-probe", "3003"]
+            : ["http://provider-egress-probe:3003/"];
+        const tunnelValues =
+          probeKind === "tcp"
+            ? ["tunnel-egress-probe", "3005"]
+            : ["http://tunnel-egress-probe:3005/"];
+        await assertProbe(
+          environment,
+          override,
+          source.name === "worker" ? "allowed" : "denied",
+          source.service,
+          probeKind,
+          ...providerValues,
+        );
+        await assertProbe(
+          environment,
+          override,
+          source.name === "cloudflared" ? "allowed" : "denied",
+          source.service,
+          probeKind,
+          ...tunnelValues,
+        );
+      }
 
       const compatibilityEnv = join(directory, "compatibility.env");
       await writeFile(
