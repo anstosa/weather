@@ -30,6 +30,28 @@ async function reservePort() {
   return address.port;
 }
 
+// build one distinct local release image
+async function buildReleaseImage(directory, baseImage, targetImage, release) {
+  const buildRoot = join(directory, `image-${release}-${targetImage.includes("web") ? "web" : "server"}`);
+  const dockerfile = join(buildRoot, "Dockerfile");
+  await executeFile("mkdir", ["-p", buildRoot]);
+  await writeFile(dockerfile, `FROM ${baseImage}\nLABEL weather.test.release=${release}\n`);
+  await executeFile(
+    "docker",
+    ["build", "--quiet", "--file", dockerfile, "--tag", targetImage, buildRoot],
+    { cwd: repoRoot, timeout: 120_000 },
+  );
+}
+
+// read one local image identity
+async function imageId(image) {
+  return (
+    await executeFile("docker", ["image", "inspect", "--format", "{{.Id}}", image], {
+      timeout: 30_000,
+    })
+  ).stdout.trim();
+}
+
 // run one local compose command
 async function compose(environment, override, ...argumentsList) {
   return await executeFile(
@@ -216,6 +238,16 @@ test(
       WEATHER_LOCAL_WEB_PORT: String(webPort),
       WEATHER_LOCAL_WEB_IMAGE: `${projectName}-web:local`,
     };
+    const previousServerImage = `${projectName}-server:2026.08.22-1`;
+    const targetServerImage = `${projectName}-server:2026.08.22-2`;
+    const previousWebImage = `${projectName}-web:2026.08.22-1`;
+    const targetWebImage = `${projectName}-web:2026.08.22-2`;
+    const releaseImages = [
+      previousServerImage,
+      targetServerImage,
+      previousWebImage,
+      targetWebImage,
+    ];
 
     await executeFile("mkdir", ["-p", secretsRoot, backups]);
     await writeFile(
@@ -230,6 +262,12 @@ test(
       await provisionSecrets(secretsRoot);
       await writeOverride(override, secretsRoot);
       await compose(environment, override, "up", "--detach", "--build", "--wait");
+      await buildReleaseImage(directory, environment.WEATHER_LOCAL_SERVER_IMAGE, previousServerImage, "2026.08.22-1");
+      await buildReleaseImage(directory, environment.WEATHER_LOCAL_SERVER_IMAGE, targetServerImage, "2026.08.22-2");
+      await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, previousWebImage, "2026.08.22-1");
+      await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, targetWebImage, "2026.08.22-2");
+      assert.notEqual(await imageId(previousServerImage), await imageId(targetServerImage));
+      assert.notEqual(await imageId(previousWebImage), await imageId(targetWebImage));
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
       const firstBody = await firstSites.text();
@@ -323,11 +361,18 @@ test(
       }
 
       const compatibilityEnv = join(directory, "compatibility.env");
+      const previousCompatibilityEnv = join(directory, "previous-compatibility.env");
       await writeFile(
         compatibilityEnv,
+        (await readFile(envFile, "utf8"))
+          .replace(/^WEATHER_RELEASE=.*$/mu, "WEATHER_RELEASE=2026.08.22-2")
+          .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${targetServerImage}`),
+      );
+      await writeFile(
+        previousCompatibilityEnv,
         (await readFile(envFile, "utf8")).replace(
           /^WEATHER_SERVER_IMAGE=.*$/mu,
-          `WEATHER_SERVER_IMAGE=${projectName}-server:local`,
+          `WEATHER_SERVER_IMAGE=${previousServerImage}`,
         ),
       );
       await executeFile(
@@ -337,19 +382,24 @@ test(
           `source "$1"
 override=$2
 compatibility_env=$3
-compose_file=$4
-local_compose_file=$5
+previous_compatibility_env=$4
+compose_file=$5
+local_compose_file=$6
 # use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$compatibility_env}
-  docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
+  local selected_image
+  selected_image=$(env_value "$selected_env" WEATHER_SERVER_IMAGE)
+  WEATHER_LOCAL_SERVER_IMAGE="$selected_image" docker compose \\
+    --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
     --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
 }
-verify_previous_image_compatibility "$compatibility_env" "$compatibility_env"`,
+verify_previous_image_compatibility "$compatibility_env" "$previous_compatibility_env"`,
           "weather-compatibility-test",
           join(deployRoot, "scripts/update.sh"),
           override,
           compatibilityEnv,
+          previousCompatibilityEnv,
           join(deployRoot, "compose.yaml"),
           join(deployRoot, "compose.local.yaml"),
         ],
@@ -519,6 +569,10 @@ rollback_release`,
       await compose(environment, override, "down", "--volumes", "--remove-orphans").catch(
         () => undefined,
       );
+      // remove every disposable release image
+      for (const image of releaseImages) {
+        await executeFile("docker", ["image", "rm", "--force", image]).catch(() => undefined);
+      }
       await rm(directory, { force: true, recursive: true });
     }
   },
