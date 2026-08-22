@@ -43,6 +43,7 @@ done
 [[ -n "$json_path" && "$json_path" == /* ]] || die "--json requires an absolute output path"
 require_command docker
 require_command node
+require_command sync
 
 architecture=$(uname -m)
 docker_architecture=$(docker info --format '{{.Architecture}}')
@@ -121,10 +122,11 @@ if [[ "$architecture_pass" == true && "$cpu_pass" == true && "$load_pass" == tru
 fi
 
 temporary=$(mktemp "${json_path}.XXXXXX")
+latest_temporary=
 
 # remove interrupted evidence
 cleanup() {
-  rm -f "$temporary"
+  rm -f "$temporary" "$latest_temporary"
 }
 trap cleanup EXIT
 
@@ -183,7 +185,27 @@ console.log(JSON.stringify({
 NODE
 
 chmod 600 "$temporary"
+sync -f "$temporary"
 mv "$temporary" "$json_path"
+
+# publish only a full passing production sample as the activation gate
+if [[ "$overall_pass" == true && "$sample_seconds" -ge 900 ]]; then
+  latest=/var/lib/weather/preflight-latest.json
+  mkdir -p "$(dirname "$latest")"
+
+  # retain the requested timestamped evidence separately
+  if [[ "$json_path" != "$latest" ]]; then
+    latest_temporary=$(mktemp "${latest}.XXXXXX")
+    cp "$json_path" "$latest_temporary"
+    chmod 600 "$latest_temporary"
+    sync -f "$latest_temporary"
+    mv "$latest_temporary" "$latest"
+  fi
+
+  sync -f "$(dirname "$latest")"
+fi
+
+sync -f "$(dirname "$json_path")"
 trap - EXIT
 printf 'Capacity evidence: %s pass=%s\n' "$json_path" "$overall_pass"
 [[ "$overall_pass" == true ]]

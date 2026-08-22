@@ -127,15 +127,16 @@ write_active_symlink() {
   (
   local release=$1
   local path="$deploy_dir/state/active.env"
-  local temporary
+  local temporary_directory
   validate_release "$release"
   mkdir -p "$(dirname "$path")"
-  temporary=$(mktemp -u "$deploy_dir/state/.active.env.XXXXXX")
+  temporary_directory=$(mktemp -d "$deploy_dir/state/.active.env.XXXXXX")
 
   # remove interrupted link writes
-  trap 'rm -f "$temporary"' EXIT
-  ln -s "../releases/$release.env" "$temporary"
-  mv -Tf "$temporary" "$path"
+  trap 'rm -rf "$temporary_directory"' EXIT
+  ln -s "../releases/$release.env" "$temporary_directory/active.env"
+  mv -Tf "$temporary_directory/active.env" "$path"
+  rmdir "$temporary_directory"
   trap - EXIT
   )
 }
