@@ -266,10 +266,41 @@ test(
         );
 
         try {
+          const knownMigration = await pool.query(
+            "SELECT checksum FROM schema_migrations WHERE name = '0001_initial_weather.sql'",
+          );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
             { version: "0002_worker_migration_readiness.sql" },
           );
+          try {
+            // allow candidate-only trailing history
+            await pool.query(
+              "INSERT INTO schema_migrations (name, checksum) VALUES ('0003_candidate_only.sql', $1)",
+              ["3".repeat(64)],
+            );
+            assert.deepEqual(
+              await verifyMigrationReadiness(ingestPool, migrationDirectory),
+              { version: "0002_worker_migration_readiness.sql" },
+            );
+            await pool.query(
+              "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
+              ["0".repeat(64)],
+            );
+            await assert.rejects(
+              () => verifyMigrationReadiness(ingestPool, migrationDirectory),
+              /migration checksum mismatch/u,
+            );
+          } finally {
+            // restore the shared migration ledger
+            await pool.query(
+              "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
+              [knownMigration.rows[0].checksum],
+            );
+            await pool.query(
+              "DELETE FROM schema_migrations WHERE name = '0003_candidate_only.sql'",
+            );
+          }
           await ingestPool.query(
             `
               INSERT INTO worker_heartbeats (
