@@ -322,6 +322,7 @@ verify_previous_image_compatibility() (
   local authorization_path=$3
   local candidate api_container unproven_api_container provider_container provider_image
   local active_database provider_network previous_release target_release history_sha256
+  local previous_history_sha256
   local invalid_history_sha256 unproven_status
   local candidate_created=false
   local api_started=false
@@ -383,6 +384,7 @@ verify_previous_image_compatibility() (
       pg_restore --username postgres --dbname "$candidate" \
         --no-owner --role weather_owner --exit-on-error
 
+  previous_history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
   WEATHER_ENV_FILE=$target_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" migration
   history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
@@ -412,13 +414,6 @@ verify_previous_image_compatibility() (
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
 
-  # prove the previous worker rejects missing authorization
-  if WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
-    --env WEATHER_DATABASE_NAME="$candidate" \
-    worker node apps/worker/dist/health.js >/dev/null 2>&1; then
-    die "previous worker accepted unproven migration history"
-  fi
-
   WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
     --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
@@ -430,28 +425,38 @@ verify_previous_image_compatibility() (
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
   (( after_successes > before_successes )) || die "previous worker compatibility failed"
 
-  WEATHER_ENV_FILE=$previous_env compose run --detach \
-    --name "$unproven_api_container" --no-deps \
-    --env WEATHER_DATABASE_NAME="$candidate" \
-    --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
-    --env WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256="$invalid_history_sha256" \
-    api node apps/api/dist/main.js >/dev/null
-  unproven_api_started=true
-
-  # require the previous API to reject a wrong digest
-  for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
-    # inspect the first reachable health response
-    if unproven_status=$(docker exec "$unproven_api_container" node -e \
-      "fetch('http://127.0.0.1:3001/api/v1/health').then(r=>console.log(r.status)).catch(()=>process.exit(1))" 2>/dev/null); then
-      [[ "$unproven_status" == 503 ]] ||
-        die "previous API accepted invalid migration authorization"
-      break
+  # prove authorization only for trailing history
+  if [[ "$history_sha256" != "$previous_history_sha256" ]]; then
+    # reuse the refreshed worker heartbeat
+    if WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
+      --env WEATHER_DATABASE_NAME="$candidate" \
+      worker node apps/worker/dist/health.js >/dev/null 2>&1; then
+      die "previous worker accepted unproven migration history"
     fi
-    sleep 1
-  done
-  ((_attempt < 30)) || die "previous API did not reject invalid migration authorization"
-  docker rm --force "$unproven_api_container" >/dev/null
-  unproven_api_started=false
+
+    WEATHER_ENV_FILE=$previous_env compose run --detach \
+      --name "$unproven_api_container" --no-deps \
+      --env WEATHER_DATABASE_NAME="$candidate" \
+      --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
+      --env WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256="$invalid_history_sha256" \
+      api node apps/api/dist/main.js >/dev/null
+    unproven_api_started=true
+
+    # require the previous API to reject a wrong digest
+    for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
+      # inspect the first reachable health response
+      if unproven_status=$(docker exec "$unproven_api_container" node -e \
+        "fetch('http://127.0.0.1:3001/api/v1/health').then(r=>console.log(r.status)).catch(()=>process.exit(1))" 2>/dev/null); then
+        [[ "$unproven_status" == 503 ]] ||
+          die "previous API accepted invalid migration authorization"
+        break
+      fi
+      sleep 1
+    done
+    ((_attempt < 30)) || die "previous API did not reject invalid migration authorization"
+    docker rm --force "$unproven_api_container" >/dev/null
+    unproven_api_started=false
+  fi
 
   WEATHER_ENV_FILE=$previous_env compose run --detach --name "$api_container" --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
@@ -672,9 +677,10 @@ case "$action" in
     cloudflared_image=$(resolve_arm64_image "$(env_value "$source_env" CLOUDFLARED_IMAGE)")
     temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.env.partial")
     temporary_authorization=
+    published_authorization=
 
     # remove failed stage state
-    trap 'rm -f "$temporary" ${temporary_authorization:+"$temporary_authorization"}' EXIT
+    trap 'rm -f "$temporary" ${temporary_authorization:+"$temporary_authorization"} ${published_authorization:+"$published_authorization"}' EXIT
     write_release_env "$source_env" "$temporary" "$release" \
       "$server_image" "$web_image" "$postgres_image" "$cloudflared_image"
     WEATHER_ENV_FILE=$temporary compose config --quiet
@@ -702,6 +708,7 @@ case "$action" in
     # publish authorization before the release commit marker
     if [[ -n "$temporary_authorization" ]]; then
       publish_migration_authorization "$temporary_authorization" "$authorization"
+      published_authorization=$authorization
       temporary_authorization=
     fi
 
@@ -709,6 +716,7 @@ case "$action" in
       rm -f "$authorization"
       exit 1
     fi
+    published_authorization=
     trap - EXIT
     printf 'Release %s staged without changing running services or the active database.\n' "$release"
     ;;
