@@ -903,7 +903,10 @@ record_service_image after "$previous_env" postgres
 record_service_image after "$previous_env" api
 record_service_image after "$previous_env" web
 record_service_image after "$previous_env" cloudflared
-printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
+printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
+WEATHER_ENV_FILE=$previous_env compose down --remove-orphans
+main recover
+printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
           "weather-rollback-integration",
           join(deployRoot, "scripts/update.sh"),
           releases,
@@ -930,6 +933,7 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
       assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
       assert.match(rollbackCommands, /release-before:2026\.08\.22-2/u);
       assert.match(rollbackCommands, /release-after:2026\.08\.22-1/u);
+      assert.match(rollbackCommands, /release-recovered:2026\.08\.22-1/u);
       const rollbackIdentities = [
         ["postgres", previousPostgresImage, targetPostgresImage],
         ["api", previousServerImage, targetServerImage],
@@ -992,37 +996,7 @@ printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T a
         ),
       );
 
-      // prove named-volume persistence across recreation
-      await compose(environment, override, "down", "--remove-orphans");
-      const recoveredEnvironment = {
-        ...environment,
-        WEATHER_LOCAL_CLOUDFLARED_IMAGE: previousCloudflaredImage,
-        WEATHER_LOCAL_POSTGRES_IMAGE: previousPostgresImage,
-        WEATHER_LOCAL_SERVER_IMAGE: previousServerImage,
-        WEATHER_LOCAL_WEB_IMAGE: previousWebImage,
-      };
-      await compose(
-        recoveredEnvironment,
-        override,
-        "up",
-        "--detach",
-        "--no-deps",
-        "--force-recreate",
-        "--wait",
-        "postgres",
-      );
-      await compose(
-        recoveredEnvironment,
-        override,
-        "up",
-        "--detach",
-        "--no-deps",
-        "--wait",
-        "api",
-        "worker",
-        "web",
-        "cloudflared",
-      );
+      // prove named-volume persistence through recovery
       const secondSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(secondSites.status, 200);
       assert.equal(await secondSites.text(), firstBody);

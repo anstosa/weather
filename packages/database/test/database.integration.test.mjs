@@ -310,7 +310,14 @@ test(
               ["0".repeat(64)],
             );
             await assert.rejects(
-              () => verifyMigrationReadiness(ingestPool, migrationDirectory),
+              () =>
+                verifyMigrationReadiness(ingestPool, migrationDirectory, {
+                  authorization: {
+                    historySha256,
+                    release: "2026.08.22-1",
+                  },
+                  release: "2026.08.22-1",
+                }),
               /migration checksum mismatch/u,
             );
           } finally {

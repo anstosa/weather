@@ -168,6 +168,13 @@ test("trailing migrations require an exact release authorization", async () => {
       .update(`0001_initial.sql:${checksum}\n`)
       .update(`0002_extra.sql:${"1".repeat(64)}\n`)
       .digest("hex");
+    const changedHistorySha256 = createHash("sha256")
+      .update(`0001_initial.sql:${"0".repeat(64)}\n`)
+      .digest("hex");
+    const reorderedHistorySha256 = createHash("sha256")
+      .update(`0002_extra.sql:${"1".repeat(64)}\n`)
+      .update(`0001_initial.sql:${checksum}\n`)
+      .digest("hex");
     assert.deepEqual(
       await verifyMigrationReadiness(previousBinary.pool, directory, {
         authorization: {
@@ -201,7 +208,25 @@ test("trailing migrations require an exact release authorization", async () => {
       /migration authorization history mismatch/u,
     );
     await assert.rejects(
-      () => verifyMigrationReadiness(reordered.pool, directory),
+      () =>
+        verifyMigrationReadiness(changed.pool, directory, {
+          authorization: {
+            historySha256: changedHistorySha256,
+            release: "2026.08.22-1",
+          },
+          release: "2026.08.22-1",
+        }),
+      /migration checksum mismatch/u,
+    );
+    await assert.rejects(
+      () =>
+        verifyMigrationReadiness(reordered.pool, directory, {
+          authorization: {
+            historySha256: reorderedHistorySha256,
+            release: "2026.08.22-1",
+          },
+          release: "2026.08.22-1",
+        }),
       /migration history diverges/u,
     );
   } finally {
