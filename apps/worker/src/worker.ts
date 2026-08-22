@@ -462,6 +462,20 @@ export async function startWorkerProcess(
   const scheduler = createNonOverlappingScheduler({
     cadenceMs: WORKER_CADENCE_MS,
     key: configuration.instance,
+    onError: (_error: unknown) => {
+      // emit an allowlisted scheduler failure
+      writeWorkerDiagnostic(
+        createWorkerDiagnostic({
+          count: 0,
+          durationMs: 0,
+          errorCode: "worker_iteration_failed",
+          event: "worker_iteration",
+          release: configuration.version,
+          runId: null,
+          sourceId: null,
+        }),
+      );
+    },
     run: async () => {
       const result = await runWorkerIteration(pool, {
         fetchCurrent,

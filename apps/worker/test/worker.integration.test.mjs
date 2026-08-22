@@ -121,6 +121,7 @@ test("I-ING-01 scheduled fetch observes committed running lifecycle", async () =
   };
   const result = await runScheduledSource({}, currentDueSource(site), {
     fetchOptions: {
+      clock: () => Date.parse("2026-08-22T05:20:00.000Z"),
       fetch: injectedFetch,
       now: () => new Date("2026-08-22T05:20:00.000Z"),
     },
@@ -349,7 +350,7 @@ test("I-ING-07 exact resume skips only success and reports partial failure", asy
         : candidate,
     ),
   };
-  const source = historicalSource(site);
+  const source = historicalSource(hydratedSite);
   const successful = new Set(["2026-01-01T08:00:00.000Z"]);
   const log = [];
   let fetchCount = 0;
@@ -428,7 +429,7 @@ test("backfill failure retains primary code and redacted finalization diagnostic
       to: "2026-01-01",
     },
     hydratedSite,
-    historicalSource(site),
+    historicalSource(hydratedSite),
     {
       fetchArchive: async () => {
         throw new ProviderFailure({

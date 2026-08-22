@@ -15,6 +15,7 @@ interface SchedulerOptions {
   readonly clearTimeout?: (timeout: NodeJS.Timeout) => void;
   readonly key: string;
   readonly now?: () => Date;
+  readonly onError?: (error: unknown) => void;
   readonly run: () => Promise<void>;
   readonly setTimeout?: (
     callback: () => void,
@@ -87,7 +88,11 @@ export function createNonOverlappingScheduler(
     );
     timer = setTimer(() => {
       // retain the scheduler after task failures
-      void trigger().finally(scheduleNext);
+      void trigger()
+        .catch((error: unknown) => {
+          options.onError?.(error);
+        })
+        .finally(scheduleNext);
     }, delay);
   }
 

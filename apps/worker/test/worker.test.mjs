@@ -22,6 +22,26 @@ const source = {
   timezone: "America/Los_Angeles",
 };
 
+// create an exact historical source identity
+function historicalSource(site, overrides = {}) {
+  const configuration = site.sources.find(
+    (candidate) => candidate.key === source.key,
+  );
+  assert.ok(configuration);
+
+  return {
+    ...source,
+    materialProviderConfig: configuration.adapterConfig,
+    providerKey: site.provider.key,
+    siteSlug: site.site.key,
+    sourceConfigFingerprint: configuration.fingerprint,
+    sourceKey: configuration.key,
+    sourceKind: configuration.sourceKind,
+    stationSlug: site.station.key,
+    ...overrides,
+  };
+}
+
 // create canonical CLI arguments
 function backfillArguments(overrides = {}) {
   return {
@@ -63,6 +83,35 @@ test("U-WRK-03 scheduler rejects an overlapping trigger", async () => {
   assert.equal(await scheduler.trigger(), false);
   release();
   assert.equal(await first, true);
+});
+
+// prove timer failures are handled before the next run is armed
+test("scheduler reports failed timer runs and continues", async () => {
+  const callbacks = [];
+  const errors = [];
+  const scheduler = createNonOverlappingScheduler({
+    key: "worker-a",
+    now: () => new Date("2026-08-22T05:00:00.000Z"),
+    onError: (error) => {
+      errors.push(error);
+    },
+    run: async () => {
+      throw new Error("iteration failed");
+    },
+    setTimeout: (callback) => {
+      callbacks.push(callback);
+      return {};
+    },
+  });
+  scheduler.start();
+  callbacks[0]();
+  await new Promise((resolve) => {
+    setImmediate(resolve);
+  });
+
+  assert.equal(errors.length, 1);
+  assert.equal(callbacks.length, 2);
+  scheduler.stop();
 });
 
 // prove inclusive chunk coverage and DST-aware boundaries
@@ -141,7 +190,7 @@ test("U-WRK-07 dry-run performs exact-success reads only", async () => {
     {},
     backfillArguments({ dryRun: true, resume: true }),
     hydratedSite,
-    source,
+    historicalSource(hydratedSite),
     {
       fetchArchive: forbidden,
       repository: {
@@ -198,7 +247,7 @@ test("backfill rejects site mismatch before repository or provider I/O", async (
         {},
         backfillArguments({ site: "wrong-site" }),
         site,
-        source,
+        historicalSource(site),
         {
           fetchArchive: forbidden,
           repository: {
