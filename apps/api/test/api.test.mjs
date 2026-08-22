@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   createWeatherApi,
   createWeatherApiServer,
+  readApiRelease,
 } from "../dist/index.js";
 
 const siteRows = [
@@ -98,7 +99,7 @@ function makeRecord(overrides = {}) {
 }
 
 // create an isolated API fixture
-function createFixture(overrides = {}) {
+function createFixture(overrides = {}, options = {}) {
   const currentQueries = [];
   const historyQueries = [];
   const historyRows = [
@@ -135,6 +136,7 @@ function createFixture(overrides = {}) {
     // freeze response time
     now: () => new Date("2026-08-22T05:00:00.000Z"),
     version: "2026.08.22-1",
+    ...options,
   });
   return { currentQueries, handler, historyQueries };
 }
@@ -356,6 +358,66 @@ test("health is allowlisted and reports migration readiness and coarse freshness
     "version",
     "worker",
   ]);
+});
+
+test("health reports the bounded production release environment value", async () => {
+  const version = readApiRelease({ WEATHER_RELEASE: "2026.08.22-9" });
+  const { handler } = createFixture({}, { version });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data.version, "2026.08.22-9");
+  assert.throws(
+    () => readApiRelease({ WEATHER_RELEASE: " ".repeat(129) }),
+    /WEATHER_RELEASE must be non-empty and bounded/u,
+  );
+});
+
+test("unexpected failures return safe errors and emit redacted structured diagnostics", async () => {
+  const diagnostics = [];
+  const failure = new Error(
+    "postgres://weather:super-secret@database/weather?sslkey=/run/secrets/key",
+  );
+  failure.code = "28P01";
+  const { handler } = createFixture(
+    {
+      // fail before returning metadata
+      async listSites() {
+        throw failure;
+      },
+    },
+    {
+      // capture the internal boundary
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(body, {
+    error: { code: "internal_error", message: "Unexpected server error" },
+  });
+  assert.deepEqual(diagnostics, [
+    {
+      errorCode: "28P01",
+      errorName: "Error",
+      event: "api_request_failed",
+      method: "GET",
+      status: 500,
+    },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify({ body, diagnostics }),
+    /super-secret|sslkey|postgres:\/\//u,
+  );
 });
 
 test("health failures stay live, fail readiness, and redact raw database errors", async () => {

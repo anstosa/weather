@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   buildCurrentUrl,
   buildHistoryUrl,
+  fromSiteWallClock,
   renderWeatherDashboard,
+  toSiteWallClock,
   WeatherDashboardController,
 } from "../dist/index.js";
 
@@ -175,6 +177,28 @@ test("current and history URLs use the versioned API and frozen filter names", (
   assert.equal(history.searchParams.has("kind"), false);
   assert.equal(history.searchParams.get("cursor"), "opaque cursor");
   assert.equal(history.searchParams.get("limit"), "100");
+});
+
+test("history wall clocks use the selected site timezone instead of the browser timezone", () => {
+  const browserTimezone = process.env.TZ;
+  process.env.TZ = "UTC";
+
+  try {
+    assert.equal(
+      fromSiteWallClock("2026-08-21T21:30", "America/Los_Angeles"),
+      "2026-08-22T04:30:00.000Z",
+    );
+    assert.equal(
+      toSiteWallClock("2026-08-22T04:30:00.000Z", "America/Los_Angeles"),
+      "2026-08-21T21:30",
+    );
+    assert.notEqual(
+      new Date("2026-08-21T21:30").toISOString(),
+      fromSiteWallClock("2026-08-21T21:30", "America/Los_Angeles"),
+    );
+  } finally {
+    process.env.TZ = browserTimezone;
+  }
 });
 
 test("controller filters both current and history and follows cursor pagination", async () => {

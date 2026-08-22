@@ -131,9 +131,10 @@ test("migration readiness verifies the complete ledger with SELECT-only SQL", as
   }
 });
 
-test("migration readiness fails closed on missing, extra, or changed artifacts", async () => {
+test("previous binaries allow trailing migrations but still reject changed known history", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-api-migrations-"));
   const sql = "SELECT 1;\n";
+  const checksum = createHash("sha256").update(sql).digest("hex");
 
   try {
     await writeFile(join(directory, "0001_initial.sql"), sql);
@@ -141,12 +142,13 @@ test("migration readiness fails closed on missing, extra, or changed artifacts",
     const changed = createCapturingPool([
       { checksum: "0".repeat(64), name: "0001_initial.sql" },
     ]);
-    const extra = createCapturingPool([
-      {
-        checksum: createHash("sha256").update(sql).digest("hex"),
-        name: "0001_initial.sql",
-      },
+    const previousBinary = createCapturingPool([
+      { checksum, name: "0001_initial.sql" },
       { checksum: "1".repeat(64), name: "0002_extra.sql" },
+    ]);
+    const reordered = createCapturingPool([
+      { checksum: "1".repeat(64), name: "0002_extra.sql" },
+      { checksum, name: "0001_initial.sql" },
     ]);
 
     await assert.rejects(
@@ -157,8 +159,12 @@ test("migration readiness fails closed on missing, extra, or changed artifacts",
       () => verifyMigrationReadiness(changed.pool, directory),
       /migration checksum mismatch/u,
     );
+    assert.deepEqual(
+      await verifyMigrationReadiness(previousBinary.pool, directory),
+      { version: "0001_initial.sql" },
+    );
     await assert.rejects(
-      () => verifyMigrationReadiness(extra.pool, directory),
+      () => verifyMigrationReadiness(reordered.pool, directory),
       /migration history diverges/u,
     );
   } finally {
