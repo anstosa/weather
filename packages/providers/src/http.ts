@@ -181,6 +181,10 @@ async function fetchAttempt(
       attempt,
     );
     return { body, response };
+  } catch (error) {
+    // abort transport work without waiting on cleanup
+    controller.abort(error);
+    throw error;
   } finally {
     // clear the live deadline
     if (timeout !== undefined) {
@@ -204,7 +208,14 @@ async function readBoundedResponseBody(
     Number.isFinite(Number(contentLength)) &&
     Number(contentLength) > maxBodyBytes
   ) {
-    throw responseTooLargeFailure(attempt, response.status);
+    const failure = responseTooLargeFailure(attempt, response.status);
+
+    // cancel a declared oversized body without awaiting cleanup
+    if (response.body !== null) {
+      void response.body.cancel(failure).catch(() => undefined);
+    }
+
+    throw failure;
   }
 
   // preserve empty response semantics
@@ -216,6 +227,7 @@ async function readBoundedResponseBody(
   const decoder = new TextDecoder();
   let body = "";
   let bytes = 0;
+  let completed = false;
 
   try {
     // enforce the limit against every streamed chunk
@@ -224,6 +236,7 @@ async function readBoundedResponseBody(
 
       // finish the UTF-8 stream
       if (chunk.done) {
+        completed = true;
         return body + decoder.decode();
       }
 
@@ -237,16 +250,14 @@ async function readBoundedResponseBody(
       body += decoder.decode(chunk.value, { stream: true });
     }
   } catch (error) {
-    // cancel stalled or rejected streams
-    try {
-      await reader.cancel(error);
-    } catch {
-      // preserve the primary body failure
-    }
-
+    // start cleanup without masking or extending the deadline
+    void reader.cancel(error).catch(() => undefined);
     throw error;
   } finally {
-    reader.releaseLock();
+    // release only after all reads completed
+    if (completed) {
+      reader.releaseLock();
+    }
   }
 }
 

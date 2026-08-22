@@ -166,6 +166,64 @@ test("provider timeout cancels a stalled response body", async () => {
   assert.equal(cancelled, true);
 });
 
+// prove cleanup cannot extend the response deadline
+test("provider timeout does not await stalled stream cancellation", async () => {
+  let cancelCalled = false;
+  const body = new ReadableStream({
+    // retain an incomplete body
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("{"));
+    },
+    // simulate a cleanup implementation that never settles
+    cancel() {
+      cancelCalled = true;
+      return new Promise(() => {});
+    },
+  });
+  const outcome = await Promise.race([
+    fetchJsonWithRetry(new URL("https://example.test/weather"), {
+      fetch: async () => new Response(body, { status: 200 }),
+      maxAttempts: 1,
+      timeoutMs: 5,
+    }).catch((error) => error),
+    new Promise((resolve) => {
+      setTimeout(() => resolve("still-pending"), 100);
+    }),
+  ]);
+
+  assert.notEqual(outcome, "still-pending");
+  assert.equal(cancelCalled, true);
+});
+
+// prove declared oversize bodies are cancelled before reads
+test("provider cancels an honestly declared oversized body", async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    // retain a body that should never be read
+    start() {},
+    // observe pre-read cancellation
+    cancel() {
+      cancelled = true;
+    },
+  });
+
+  await assert.rejects(
+    fetchJsonWithRetry(new URL("https://example.test/weather"), {
+      fetch: async () =>
+        new Response(body, {
+          headers: { "content-length": "100" },
+          status: 200,
+        }),
+      maxAttempts: 1,
+      maxBodyBytes: 8,
+    }),
+    (error) =>
+      error instanceof ProviderFailure &&
+      error.ingestionError.code === "provider_response_too_large",
+  );
+  assert.equal(cancelled, true);
+});
+
 // prove response bodies cannot exceed the configured byte ceiling
 test("provider rejects oversized response bodies before parsing", async () => {
   // enforce the stream limit for both success and error responses
@@ -275,9 +333,12 @@ test("U-OM-09 4xx and invalid JSON do not retry", async () => {
 test("provider response reasons are bounded and redacted", async () => {
   const reason = [
     "api_key=provider-secret",
+    "api key: spaced-provider-secret",
     "Authorization: Basic authorization-secret",
     "Bearer bearer-secret",
     "postgresql://worker:database-secret@database/weather",
+    'token="alpha-secret,beta-secret"',
+    "password=gamma-secret;delta-secret",
   ].join(" ");
 
   await assert.rejects(
@@ -294,9 +355,14 @@ test("provider response reasons are bounded and redacted", async () => {
 
       assert.match(error.ingestionError.message, /\[redacted\]/u);
       assert.doesNotMatch(error.ingestionError.message, /provider-secret/u);
+      assert.doesNotMatch(error.ingestionError.message, /spaced-provider-secret/u);
       assert.doesNotMatch(error.ingestionError.message, /authorization-secret/u);
       assert.doesNotMatch(error.ingestionError.message, /bearer-secret/u);
       assert.doesNotMatch(error.ingestionError.message, /database-secret/u);
+      assert.doesNotMatch(
+        error.ingestionError.message,
+        /alpha-secret|beta-secret|gamma-secret|delta-secret/u,
+      );
       assert.ok(error.ingestionError.message.length <= 512);
       return true;
     },

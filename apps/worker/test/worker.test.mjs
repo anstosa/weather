@@ -4,6 +4,7 @@ import test from "node:test";
 import { loadSiteConfiguration } from "@weather/database";
 
 import {
+  boundedWorkerError,
   createNonOverlappingScheduler,
   executeBackfill,
   nextScheduledAt,
@@ -83,6 +84,19 @@ test("U-WRK-03 scheduler rejects an overlapping trigger", async () => {
   assert.equal(await scheduler.trigger(), false);
   release();
   assert.equal(await first, true);
+});
+
+// redact whitespace and delimited credential variants
+test("worker diagnostics redact complete credential values", () => {
+  const diagnostic = boundedWorkerError(
+    'api key: worker-secret token="alpha-secret,beta-secret" password=gamma-secret;delta-secret',
+  );
+
+  assert.match(diagnostic, /\[redacted\]/u);
+  assert.doesNotMatch(
+    diagnostic,
+    /worker-secret|alpha-secret|beta-secret|gamma-secret|delta-secret/u,
+  );
 });
 
 // prove timer failures are handled before the next run is armed

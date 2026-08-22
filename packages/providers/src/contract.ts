@@ -92,18 +92,18 @@ export function asProviderFailure(error: unknown, attempts = 1): ProviderFailure
 // redact and bound external error text
 export function boundedProviderMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  const redacted = raw
-    .replace(
-      /["']?authorization["']?\s*(?:=|:)?\s*["']?(?:basic|bearer)?\s*[^\s&,;"'}]+["']?/giu,
-      "[redacted]",
-    )
-    .replace(
-      /["']?(?:api[_-]?key|password|token)["']?\s*(?:=|:)?\s*["']?[^\s&,;"'}]+["']?/giu,
-      "[redacted]",
-    )
-    .replace(/Bearer\s+[^\s&,;"'}]+/giu, "Bearer [redacted]")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/giu, "$1[redacted]@")
-    .trim();
+  const redacted = redactSensitiveText(raw).trim();
 
   return (redacted.length === 0 ? "provider request failed" : redacted).slice(0, 512);
+}
+
+// redact credential-shaped text across trust boundaries
+export function redactSensitiveText(value: string): string {
+  return value
+    .replace(
+      /["']?\b(?:api(?:[_\s-]?key)|authorization|password|token)\b["']?\s*(?:=|:)?\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:basic|bearer)\s+[^\s]+|[^\s]+)/giu,
+      "[redacted]",
+    )
+    .replace(/Bearer\s+[^\s]+/giu, "Bearer [redacted]")
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/giu, "$1[redacted]@");
 }

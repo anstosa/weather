@@ -23,18 +23,7 @@ interface WorkerDiagnosticInput {
 // redact and bound worker errors
 export function boundedWorkerError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  const redacted = message
-    .replace(
-      /["']?authorization["']?\s*(?:=|:)?\s*["']?(?:basic|bearer)?\s*[^\s&,;"'}]+["']?/giu,
-      "[redacted]",
-    )
-    .replace(
-      /["']?(?:api[_-]?key|password|token)["']?\s*(?:=|:)?\s*["']?[^\s&,;"'}]+["']?/giu,
-      "[redacted]",
-    )
-    .replace(/Bearer\s+[^\s&,;"'}]+/giu, "Bearer [redacted]")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/giu, "$1[redacted]@")
-    .trim();
+  const redacted = redactSensitiveText(message).trim();
 
   return (redacted.length === 0 ? "worker operation failed" : redacted).slice(
     0,
@@ -127,3 +116,4 @@ function boundedDiagnosticErrorCode(value: string | null): string | null {
 
   return value;
 }
+import { redactSensitiveText } from "@weather/providers";
