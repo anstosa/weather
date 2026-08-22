@@ -139,9 +139,10 @@ export async function loadSiteConfiguration(
 // parse configuration at the trust boundary
 export function parseSiteConfiguration(raw: unknown): SiteConfiguration {
   const root = requireObject(raw, "site configuration");
+  const version = root.version;
 
   // require the initial version
-  if (root.version !== 1) {
+  if (version !== 1) {
     throw new RangeError("site configuration version must be 1");
   }
 
@@ -183,7 +184,7 @@ export function parseSiteConfiguration(raw: unknown): SiteConfiguration {
     parseSourceConfiguration(
       requireObject(source, `sources[${index}]`),
       index,
-      root.version,
+      version,
       providerKey,
       stationKey,
       {
@@ -245,7 +246,7 @@ export function parseSiteConfiguration(raw: unknown): SiteConfiguration {
       serial: optionalBoundedString(station.serial, "station.serial", 128),
       vendor: optionalBoundedString(station.vendor, "station.vendor", 128),
     },
-    version: root.version,
+    version,
   };
 }
 
