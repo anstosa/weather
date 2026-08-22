@@ -1,0 +1,341 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { basename, join, relative, resolve } from "node:path";
+import test from "node:test";
+
+const repoRoot = resolve(import.meta.dirname, "../..");
+const deployRoot = join(repoRoot, "deploy");
+const scriptsRoot = join(deployRoot, "scripts");
+
+// render a deterministic Compose model
+function renderCompose(overrides = []) {
+  const files = [join(deployRoot, "compose.yaml"), ...overrides.map((name) => join(deployRoot, name))];
+  const argumentsList = [
+    "compose",
+    "--project-name",
+    "weather",
+    "--env-file",
+    join(deployRoot, ".env.example"),
+  ];
+
+  // add ordered Compose files
+  for (const file of files) {
+    argumentsList.push("--file", file);
+  }
+
+  argumentsList.push("config", "--format", "json");
+  return JSON.parse(
+    execFileSync("docker", argumentsList, { cwd: repoRoot, encoding: "utf8" }),
+  );
+}
+
+// collect files recursively
+function collectFiles(root) {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(root, entry.name);
+    return entry.isDirectory() ? collectFiles(path) : [path];
+  });
+}
+
+// read one repository artifact
+function read(path) {
+  return readFileSync(join(repoRoot, path), "utf8");
+}
+
+// list secret sources
+function secretSources(service) {
+  return (service.secrets ?? []).map((secret) => secret.source).sort();
+}
+
+// verify the production topology
+test("production Compose has the exact five-network isolation matrix", () => {
+  const compose = renderCompose(["compose.verify.yaml"]);
+  const services = Object.keys(compose.services).sort();
+  assert.deepEqual(services, ["api", "cloudflared", "migration", "postgres", "web", "worker"]);
+  assert.deepEqual(Object.keys(compose.networks).sort(), [
+    "data",
+    "edge",
+    "provider_egress",
+    "tunnel_egress",
+    "web_api",
+  ]);
+  assert.equal(compose.networks.edge.internal, true);
+  assert.equal(compose.networks.web_api.internal, true);
+  assert.equal(compose.networks.data.internal, true);
+  assert.notEqual(compose.networks.provider_egress.internal, true);
+  assert.notEqual(compose.networks.tunnel_egress.internal, true);
+
+  const memberships = Object.fromEntries(
+    Object.entries(compose.services).map(([name, service]) => [
+      name,
+      Object.keys(service.networks).sort(),
+    ]),
+  );
+  assert.deepEqual(memberships, {
+    api: ["data", "web_api"],
+    cloudflared: ["edge", "tunnel_egress"],
+    migration: ["data"],
+    postgres: ["data"],
+    web: ["edge", "web_api"],
+    worker: ["data", "provider_egress"],
+  });
+
+  // reject undeclared exposure and dual egress
+  for (const [name, service] of Object.entries(compose.services)) {
+    assert.equal(service.platform, "linux/arm64", `${name} must target ARM64`);
+    assert.equal(service.ports, undefined, `${name} must publish no production ports`);
+    const networks = Object.keys(service.networks);
+    assert.equal(
+      networks.includes("provider_egress") && networks.includes("tunnel_egress"),
+      false,
+      `${name} must not join both egress networks`,
+    );
+  }
+});
+
+// verify hardening and capacity
+test("services are non-root, read-only, bounded, ordered, and healthy", () => {
+  const compose = renderCompose(["compose.verify.yaml"]);
+  const hardened = ["api", "cloudflared", "migration", "postgres", "web", "worker"];
+
+  // check every container boundary
+  for (const name of hardened) {
+    const service = compose.services[name];
+    assert.ok(service.user && !/^0(?::0)?$/u.test(service.user), `${name} must be non-root`);
+    assert.equal(service.read_only, true, `${name} must use a read-only root filesystem`);
+    assert.ok(service.cap_drop.includes("ALL"), `${name} must drop all capabilities`);
+    assert.ok(
+      service.security_opt.includes("no-new-privileges:true"),
+      `${name} must disable privilege escalation`,
+    );
+    assert.ok(Number(service.pids_limit) > 0, `${name} must cap processes`);
+    assert.ok(service.deploy.resources.limits.cpus, `${name} must cap CPU`);
+    assert.ok(service.deploy.resources.limits.memory, `${name} must cap memory`);
+    assert.ok(service.logging.options["max-size"], `${name} must rotate logs`);
+    assert.ok(service.stop_grace_period, `${name} must bound shutdown`);
+  }
+
+  assert.equal(compose.services.api.user, "10002:10002");
+  assert.equal(compose.services.worker.user, "10002:10002");
+  assert.equal(compose.services.web.user, "10002:10002");
+  assert.equal(compose.services.postgres.user, "999:999");
+  assert.equal(compose.services.cloudflared.user, "65532:65532");
+  assert.equal(Number(compose.services.postgres.deploy.resources.limits.memory), 536870912);
+  assert.equal(Number(compose.services.api.deploy.resources.limits.memory), 268435456);
+  assert.equal(Number(compose.services.worker.deploy.resources.limits.memory), 268435456);
+  assert.equal(Number(compose.services.web.deploy.resources.limits.memory), 134217728);
+  assert.equal(Number(compose.services.cloudflared.deploy.resources.limits.memory), 134217728);
+  assert.equal(compose.services.migration.depends_on.postgres.condition, "service_healthy");
+  assert.equal(compose.services.api.depends_on.migration.condition, "service_completed_successfully");
+  assert.equal(compose.services.worker.depends_on.migration.condition, "service_completed_successfully");
+  assert.equal(compose.services.web.depends_on.api.condition, "service_healthy");
+  assert.equal(compose.services.cloudflared.depends_on.web.condition, "service_healthy");
+
+  // require health probes on steady services
+  for (const name of ["api", "cloudflared", "postgres", "web", "worker"]) {
+    assert.ok(compose.services[name].healthcheck.test, `${name} must define a health probe`);
+  }
+});
+
+// verify role-specific secret access
+test("database and connector secrets are scoped to least-privilege consumers", () => {
+  const compose = renderCompose(["compose.verify.yaml"]);
+  assert.deepEqual(secretSources(compose.services.api), ["weather_api_password"]);
+  assert.deepEqual(secretSources(compose.services.worker), ["weather_ingest_password"]);
+  assert.deepEqual(secretSources(compose.services.migration), ["weather_owner_password"]);
+  assert.deepEqual(secretSources(compose.services.cloudflared), ["cloudflare_tunnel_token"]);
+  assert.deepEqual(secretSources(compose.services.web), []);
+  assert.deepEqual(secretSources(compose.services.postgres), [
+    "weather_api_password",
+    "weather_ingest_password",
+    "weather_owner_password",
+  ]);
+
+  // require read-only secret mounts
+  for (const service of Object.values(compose.services)) {
+    for (const secret of service.secrets ?? []) {
+      const mode = typeof secret.mode === "string" ? Number.parseInt(secret.mode, 8) : secret.mode;
+      assert.equal(mode & 0o222, 0, `${secret.source} must be read-only`);
+    }
+  }
+
+  const environments = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(compose.services).map(([name, service]) => [name, service.environment ?? {}]),
+    ),
+  );
+  assert.doesNotMatch(environments, /PASSWORD=(?!_FILE)|TUNNEL_TOKEN=/u);
+  assert.match(environments, /WEATHER_DATABASE_PASSWORD_FILE/u);
+});
+
+// verify pinned dependencies and durable storage
+test("PostgreSQL and cloudflared are patch-pinned for ARM64 production", () => {
+  const compose = renderCompose(["compose.verify.yaml"]);
+  assert.match(compose.services.postgres.image, /^postgres:17\.10-bookworm$/u);
+  assert.match(compose.services.cloudflared.image, /^cloudflare\/cloudflared:2026\.7\.2$/u);
+  assert.ok(compose.services.cloudflared.command.includes("--token-file"));
+  assert.ok(compose.services.cloudflared.command.includes("--no-autoupdate"));
+  const postgresData = compose.services.postgres.volumes.find(
+    (volume) => volume.target === "/var/lib/postgresql/data",
+  );
+  assert.equal(postgresData.type, "volume");
+  assert.match(postgresData.source, /weather_verify_postgres/u);
+  assert.match(read("deploy/compose.yaml"), /\/var\/lib\/weather\/postgres/u);
+});
+
+// verify the local-only override
+test("local Compose binds only loopback and replaces the production connector", () => {
+  const compose = renderCompose(["compose.local.yaml"]);
+  const published = [
+    ...(compose.services.web.ports ?? []),
+    ...(compose.services.postgres.ports ?? []),
+  ];
+
+  // require loopback for each local port
+  for (const port of published) {
+    assert.equal(port.host_ip, "127.0.0.1");
+  }
+
+  assert.equal(compose.services.cloudflared.image, "node:24-bookworm-slim");
+  assert.deepEqual(secretSources(compose.services.cloudflared), []);
+  assert.match(JSON.stringify(compose.services.cloudflared.command), /local tunnel disabled/u);
+  const postgresData = compose.services.postgres.volumes.find(
+    (volume) => volume.target === "/var/lib/postgresql/data",
+  );
+  assert.equal(postgresData.type, "volume");
+  assert.match(postgresData.source, /weather_local_postgres/u);
+});
+
+// verify backup and restore boundaries
+test("backup is encrypted and restore is disposable verification only", () => {
+  const backup = read("deploy/scripts/backup.sh");
+  const restore = read("deploy/scripts/restore.sh");
+  assert.match(backup, /pg_dump[\s\S]*--format=custom/u);
+  assert.match(backup, /\|[\s\n]*age --recipient/u);
+  assert.match(backup, /\.partial/u);
+  assert.match(backup, /sha256sum/u);
+  assert.match(backup, /chmod 600/u);
+  assert.match(backup, /trap cleanup EXIT/u);
+  assert.doesNotMatch(backup, /pg_dump[^\n]*--file|>[^\n]*\.dump(?:["']|\s)/u);
+  assert.match(restore, /only verify mode is supported/u);
+  assert.match(restore, /live database replacement and cutover are not supported/u);
+  assert.match(restore, /weather_verify_/u);
+  assert.match(restore, /createdb[\s\S]*--owner weather_owner/u);
+  assert.match(restore, /age --decrypt[\s\S]*\|[\s\n]*[\s\S]*pg_restore/u);
+  assert.match(restore, /server_version[\s\S]*150000/u);
+  assert.match(restore, /schema_migrations/u);
+  assert.match(restore, /rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication/u);
+  assert.match(restore, /dropdb[\s\S]*--if-exists/u);
+  assert.doesNotMatch(restore, /ALTER DATABASE[\s\S]*(?:RENAME|OWNER)|mv[\s\S]*postgres/u);
+});
+
+// verify release-state safety
+test("release operations stage, compatibility-check, activate, rollback, and recover Weather only", () => {
+  const update = read("deploy/scripts/update.sh");
+  const stageCase = update.split("  stage)\n")[1].split("  activate)\n")[0];
+  assert.match(stageCase, /compose config --quiet/u);
+  assert.match(stageCase, /verify_arm64_image/u);
+  assert.match(stageCase, /compose pull/u);
+  assert.doesNotMatch(stageCase, /compose up|compose down/u);
+  assert.match(update, /imagetools inspect/u);
+  assert.match(update, /weather_compat_/u);
+  assert.match(update, /WEATHER_DATABASE_NAME=\$candidate/u);
+  assert.match(update, /compatibility\.mjs api/u);
+  assert.match(update, /compatibility\.mjs worker/u);
+  assert.match(update, /Creating pre-migration encrypted backup/u);
+  assert.match(update, /compose up -d --remove-orphans --wait/u);
+  assert.match(update, /record success only after every health gate/u);
+  assert.match(update, /compose down --remove-orphans/u);
+  assert.doesNotMatch(
+    update,
+    /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
+  );
+});
+
+// verify capacity thresholds
+test("capacity preflight records every numeric coexistence gate", () => {
+  const preflight = read("deploy/scripts/preflight-capacity.sh");
+  assert.match(preflight, /sample_seconds=900/u);
+  assert.match(preflight, /aarch64/u);
+  assert.match(preflight, /cpus >= 4/u);
+  assert.match(preflight, /cpus \* 0\.50/u);
+  assert.match(preflight, /1792 \* 1024 \* 1024/u);
+  assert.match(preflight, /1024 \* 1024/u);
+  assert.match(preflight, /3 \* database_bytes \+ 5 \* 1024 \* 1024 \* 1024/u);
+  assert.match(preflight, /10 \* 1024 \* 1024 \* 1024/u);
+  assert.match(preflight, /4 \* 1024 \* 1024 \* 1024/u);
+  assert.match(preflight, /inode_free_percent >= 10/u);
+  assert.match(preflight, /JSON\.stringify/u);
+});
+
+// verify isolated operator controls
+test("SSH, sudo, and systemd controls use Weather-only absolute identities", () => {
+  const ssh = [
+    read("deploy/scripts/ssh-dispatch.sh"),
+    read("deploy/scripts/ssh-run.sh"),
+    read("deploy/scripts/remote-ops.sh"),
+    read("deploy/config/ssh_config.example"),
+    read("docs/operations/raspberry-pi.md"),
+  ].join("\n");
+  assert.match(ssh, /SSH_ORIGINAL_COMMAND/u);
+  assert.match(ssh, /weather-ssh/u);
+  assert.match(ssh, /PasswordAuthentication no/u);
+  assert.match(ssh, /PermitRootLogin no/u);
+  assert.doesNotMatch(ssh, /\beval\b|sh\s+-c\s+["']?\$SSH_ORIGINAL_COMMAND/u);
+  assert.match(read("deploy/sudoers/weather-ops"), /weather-ssh[\s\S]*weather-remote-ops/u);
+  const unit = read("deploy/systemd/weather-compose.service");
+  assert.match(unit, /WorkingDirectory=\/opt\/weather\/current\/deploy/u);
+  assert.match(unit, /--project-name weather/u);
+  assert.doesNotMatch(unit, /\.\.\/|actionable/u);
+});
+
+// verify no neighboring deployment identity leaked
+test("deployment artifacts contain no neighboring identity or production secret", () => {
+  const files = [
+    join(repoRoot, "Dockerfile"),
+    ...collectFiles(deployRoot),
+    ...collectFiles(join(repoRoot, "docs/operations")),
+    ...collectFiles(join(repoRoot, ".github/workflows")),
+  ];
+  const combined = files
+    .filter((path) => !path.endsWith("deployment-contract.test.mjs"))
+    .map((path) => `# ${relative(repoRoot, path)}\n${readFileSync(path, "utf8")}`)
+    .join("\n");
+  assert.doesNotMatch(combined, /\/opt\/actionable|\/var\/lib\/actionable|actionable-compose|10001:10001/iu);
+  assert.doesNotMatch(combined, /BEGIN (?:RSA|OPENSSH|EC) PRIVATE KEY|age-secret-key-/iu);
+  assert.doesNotMatch(combined, /docker\s+(?:system|volume|network)\s+prune/iu);
+  assert.doesNotMatch(combined, /cloudflared\s+tunnel\s+(?:create|delete|route)/iu);
+});
+
+// verify release workflow immutability
+test("release workflow publishes only immutable ARM64 server and web images", () => {
+  const workflow = read(".github/workflows/publish-images.yml");
+  assert.match(workflow, /tags:[\s\S]*20\?\?\.\?\?\.\?\?-\*/u);
+  assert.match(workflow, /matrix:[\s\S]*target: \[server, web\]/u);
+  assert.match(workflow, /platforms: linux\/arm64/u);
+  assert.match(workflow, /push: true/u);
+  assert.match(workflow, /imagetools inspect/u);
+  assert.match(workflow, /postgres:17\.10-bookworm/u);
+  assert.doesNotMatch(workflow, /:latest|deploy|ssh-run/u);
+});
+
+// keep helper coverage visible
+test("all deployment shell entrypoints have stable names", () => {
+  const names = collectFiles(scriptsRoot)
+    .filter((path) => path.endsWith(".sh"))
+    .map((path) => basename(path))
+    .sort();
+  assert.deepEqual(names, [
+    "backup.sh",
+    "common.sh",
+    "preflight-capacity.sh",
+    "remote-ops.sh",
+    "restore.sh",
+    "ssh-dispatch.sh",
+    "ssh-run.sh",
+    "status.sh",
+    "update.sh",
+    "verify-static.sh",
+  ]);
+});

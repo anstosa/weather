@@ -42,8 +42,9 @@ verify_arm64_image() {
 verify_previous_image_compatibility() {
   local target_env=$1
   local previous_env=$2
-  local candidate="weather_compat_$(date -u +%Y%m%d%H%M%S)_$$"
+  local candidate
   local status=0
+  candidate="weather_compat_$(date -u +%Y%m%d%H%M%S)_$$"
 
   printf 'Creating disposable compatibility database %s...\n' "$candidate"
   compose exec -T postgres createdb --username postgres --owner weather_owner "$candidate"
@@ -77,7 +78,7 @@ verify_previous_image_compatibility() {
 # start one staged release with health gates
 start_release() {
   local target=$1
-  local target_env current current_env
+  local target_env current current_env backup_env
   target_env=$(release_env "$target")
   require_file "$target_env"
   current=$(cat "$state_dir/current-release" 2>/dev/null || true)
@@ -85,8 +86,16 @@ start_release() {
   # require the isolated connector credential
   require_file "$deploy_dir/secrets/cloudflare_tunnel_token"
 
+  # establish the database used for the safety backup
+  if [[ -n "$current" ]]; then
+    backup_env=$(release_env "$current")
+  else
+    backup_env=$target_env
+    WEATHER_ENV_FILE=$target_env compose up -d postgres --wait
+  fi
+
   printf 'Creating pre-migration encrypted backup...\n'
-  "$deploy_dir/scripts/backup.sh" --env-file "${current:+$(release_env "$current")}" ||
+  "$deploy_dir/scripts/backup.sh" --env-file "$backup_env" ||
     die "pre-migration backup failed"
 
   printf 'Applying candidate migrations...\n'

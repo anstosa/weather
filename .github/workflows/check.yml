@@ -24,3 +24,24 @@ jobs:
         run: npm ci
       - name: Run repository checks
         run: npm run check
+
+  deployment-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install dependencies
+        run: npm ci
+      - name: Install deployment validators
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Verify static deployment contracts
+        run: deploy/scripts/verify-static.sh
+      - name: Build production image targets
+        run: |
+          docker build --target server --tag weather-server:check .
+          docker build --target web --tag weather-web:check .
