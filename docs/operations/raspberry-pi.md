@@ -32,8 +32,9 @@ any other connector token.
    repositories, the pinned PostgreSQL tag, and the pinned cloudflared tag used
    as staging inputs. Staging replaces all four with exact Linux ARM64
    `name@sha256:<digest>` references; `WEATHER_RELEASE` remains a label only.
-   Staging also records a digest of Compose, lifecycle scripts, and the runtime
-   ACL contract. Activate, recover, and rollback fail closed on a mismatch.
+   Staging also records a digest and compatibility version for Compose,
+   lifecycle scripts, and the runtime ACL contract. Activate, recover, and
+   rollback fail closed on an incompatible control-plane version.
 4. Generate separate long random owner, API, and ingestion passwords. Install
    matching PostgreSQL and application copies under the six extensionless names
    in `deploy/secrets`: the three `weather_postgres_*` sources must be owned by

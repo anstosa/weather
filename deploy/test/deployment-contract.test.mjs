@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readdirSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
@@ -45,6 +45,44 @@ function collectFiles(root) {
 // read one repository artifact
 function read(path) {
   return readFileSync(join(repoRoot, path), "utf8");
+}
+
+// extract one executable workflow run block
+function workflowRunScript(workflow, stepName) {
+  const lines = workflow.split("\n");
+  const stepIndex = lines.findIndex((line) => line.trim() === `- name: ${stepName}`);
+
+  // require the named step
+  if (stepIndex < 0) {
+    throw new Error(`workflow step not found: ${stepName}`);
+  }
+
+  const runIndex = lines.findIndex(
+    (line, index) => index > stepIndex && line.trim() === "run: |",
+  );
+
+  // require one shell block
+  if (runIndex < 0) {
+    throw new Error(`workflow run block not found: ${stepName}`);
+  }
+
+  const indentation = lines[runIndex].indexOf("run:");
+  const script = [];
+
+  // collect the indented shell body
+  for (let index = runIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const leading = line.search(/\S/u);
+
+    // stop at the next workflow key
+    if (leading >= 0 && leading <= indentation) {
+      break;
+    }
+
+    script.push(line.slice(indentation + 2));
+  }
+
+  return script.join("\n");
 }
 
 // list secret sources
@@ -628,6 +666,48 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
   assert.match(workflow, /npm run test:e2e/u);
   assert.match(workflow, /npm run test:deploy/u);
   assert.doesNotMatch(workflow, /:latest|ssh-run|update\.sh activate/u);
+});
+
+test("dependency manifest workflow shell executes with ARM64 verification", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-workflow-execution-"));
+  const bin = join(directory, "bin");
+  const workflow = read(".github/workflows/publish-images.yml");
+  const script = workflowRunScript(workflow, "Resolve pinned dependency ARM64 digests").replaceAll(
+    "deploy/scripts/resolve-image.mjs",
+    join(deployRoot, "scripts/resolve-image.mjs"),
+  );
+
+  try {
+    await mkdir(bin);
+    await writeFile(
+      join(bin, "docker"),
+      `#!/usr/bin/env bash
+set -euo pipefail
+# emulate manifest inspection
+if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
+  printf '{"schemaVersion":2,"manifests":[{"digest":"sha256:%s","platform":{"architecture":"arm64","os":"linux"}}]}\n' "$(printf 'c%.0s' {1..64})"
+  exit 0
+fi
+# emulate ARM64 execution
+if [[ "$1" == run ]]; then
+  printf 'PostgreSQL 17.10\n'
+  exit 0
+fi
+exit 64
+`,
+    );
+    await chmod(join(bin, "docker"), 0o700);
+    const result = spawnSync("bash", ["-c", script], {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(readFileSync(join(directory, "dependency-images.env"), "utf8"), /POSTGRES_IMAGE=.*@sha256:/u);
+    assert.match(readFileSync(join(directory, "dependency-images.env"), "utf8"), /CLOUDFLARED_IMAGE=.*@sha256:/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
 
 test("production release reaches the API and deployment status exposes operations evidence", () => {
