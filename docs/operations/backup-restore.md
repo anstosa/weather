@@ -19,6 +19,9 @@ only `weather-*.dump.age` and matching `.sha256` files. Interrupted partial or
 half-published pairs are removed. Copy encrypted artifacts off-host under an
 operator-reviewed retention policy.
 
+Backup, verification restore, and status use `WEATHER_DATABASE_NAME` from the
+selected deployment environment.
+
 ## Verify a restore
 
 Keep the age identity outside the repository and run:
@@ -30,8 +33,9 @@ deploy/scripts/restore.sh verify \
 ```
 
 Verification checks the ciphertext checksum, decrypts directly into
-`pg_restore`, creates a unique `weather_verify_*` database, and validates the
-PostgreSQL 15+ floor, exact migration checksums, runtime role restrictions,
+`pg_restore`, creates a unique database derived from the configured name,
+reapplies the versioned runtime ACL contract, and validates the PostgreSQL 15+
+floor, exact migration checksums, effective API/ingestion grants and denials,
 table counts, and representative row hashes. It drops the candidate on success
 and failure. `--retain` is only for an explicitly reviewed diagnostic session;
 the printed candidate name must later be dropped by the operator.
@@ -52,8 +56,8 @@ In disposable local Compose only:
 2. corrupt a copy of its checksum and prove verification fails before database
    creation;
 3. corrupt a ciphertext copy and prove decryption/restore fails while the live
-   `weather` database remains unchanged;
-4. confirm no `weather_verify_*` database remains after either failure; and
+   configured database remains unchanged;
+4. confirm no disposable verification database remains after either failure; and
 5. confirm no plaintext dump or `.partial` artifact remains.
 
 These procedures are local/staging checks. They do not perform a production

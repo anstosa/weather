@@ -252,6 +252,7 @@ test(
           "-c",
           `source "$1"
 override=$2
+# use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$3}
   docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
@@ -327,8 +328,11 @@ verify_previous_image_compatibility "$3" "$3"`,
 releases_dir=$2
 state_dir=$3
 override=$4
+# bypass host secret ownership
 require_deployment_secrets() { :; }
+# publish only fixture state
 write_active_symlink() { ln -sfn "../releases/$1.env" "$state_dir/active.env"; }
+# use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$5}
   docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\

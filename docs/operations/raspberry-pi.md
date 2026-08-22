@@ -32,6 +32,8 @@ any other connector token.
    repositories, the pinned PostgreSQL tag, and the pinned cloudflared tag used
    as staging inputs. Staging replaces all four with exact Linux ARM64
    `name@sha256:<digest>` references; `WEATHER_RELEASE` remains a label only.
+   Staging also records a digest of Compose, lifecycle scripts, and the runtime
+   ACL contract. Activate, recover, and rollback fail closed on a mismatch.
 4. Generate separate long random owner, API, and ingestion passwords. Install
    matching PostgreSQL and application copies under the six extensionless names
    in `deploy/secrets`: the three `weather_postgres_*` sources must be owned by
@@ -108,8 +110,13 @@ sudo systemctl restart weather-compose.service
 Rollback applies the previous four immutable Weather images with `--no-deps`; it
 never runs backup or migration and never reverses a forward-compatible migration.
 Failed initial activation removes only Weather containers and networks while
-preserving `/var/lib/weather`. Recovery reapplies the recorded exact image set
-after Docker or host restart.
+preserving `/var/lib/weather`. Cleanup is armed as soon as the first PostgreSQL
+service starts, including backup, migration, and health failures. Recovery
+reapplies the recorded exact image set after Docker or host restart.
+
+`status` reports connector state, the latest ingestion run, overdue running
+work, the latest chunk outcome, and bounded failure classification/code evidence
+without printing persisted error messages.
 
 ## Local verification
 
