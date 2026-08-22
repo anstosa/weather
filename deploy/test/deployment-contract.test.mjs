@@ -577,7 +577,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
   );
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
-  assert.match(read("deploy/test/compose.integration.test.mjs"), /0002_candidate_contract\.sql/u);
+  assert.match(read("deploy/test/compose.integration.test.mjs"), /0003_candidate_contract\.sql/u);
 });
 
 // verify capacity thresholds

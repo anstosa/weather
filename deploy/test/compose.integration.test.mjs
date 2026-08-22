@@ -36,7 +36,7 @@ async function buildReleaseImage(directory, baseImage, targetImage, release, mig
   const buildRoot = join(directory, `image-${release}-${imageKey}`);
   const dockerfile = join(buildRoot, "Dockerfile");
   await executeFile("mkdir", ["-p", buildRoot]);
-  const migrationName = "0002_candidate_contract.sql";
+  const migrationName = "0003_candidate_contract.sql";
   let dockerfileBody = `FROM ${baseImage}\nLABEL weather.test.release=${release}\n`;
 
   // add only the candidate migration contract
@@ -337,7 +337,7 @@ test(
         "sh",
         previousServerImage,
         "-c",
-        "test ! -f /opt/weather/packages/database/migrations/0002_candidate_contract.sql",
+        "test ! -f /opt/weather/packages/database/migrations/0003_candidate_contract.sql",
       ]);
       await executeFile("docker", [
         "run",
@@ -346,7 +346,7 @@ test(
         "sh",
         targetServerImage,
         "-c",
-        "test -f /opt/weather/packages/database/migrations/0002_candidate_contract.sql",
+        "test -f /opt/weather/packages/database/migrations/0003_candidate_contract.sql",
       ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
