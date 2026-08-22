@@ -19,7 +19,8 @@
     "clean": "node scripts/clean.mjs",
     "lint": "node scripts/lint.mjs .editorconfig .gitignore .github .npmrc .nvmrc README.md package.json package-lock.json tsconfig.base.json scripts apps packages",
     "test": "npm run test --workspaces",
-    "typecheck": "npm run typecheck --workspaces"
+    "typecheck": "npm run typecheck --workspaces",
+    "weather:backfill": "npm run weather:backfill --workspace @weather/worker --"
   },
   "devDependencies": {
     "@types/node": "24.13.3",
