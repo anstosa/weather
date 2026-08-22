@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { loadSiteConfiguration } from "@weather/database";
 
 import {
+  assertWorkerDatabaseReadiness,
   boundedWorkerError,
   createNonOverlappingScheduler,
   executeBackfill,
@@ -22,6 +27,26 @@ const source = {
   longitude: -122.42797012608193,
   timezone: "America/Los_Angeles",
 };
+
+// create a worker readiness query double
+function workerReadinessPool(appliedMigrations) {
+  return {
+    // answer only the readiness queries
+    async query(text) {
+      // expose a supported PostgreSQL version
+      if (text.includes("server_version_num")) {
+        return { rows: [{ server_version_num: "150000" }] };
+      }
+
+      // expose the applied migration ledger
+      if (text.includes("schema_migrations")) {
+        return { rows: appliedMigrations };
+      }
+
+      throw new Error(`unexpected readiness query: ${text}`);
+    },
+  };
+}
 
 // create an exact historical source identity
 function historicalSource(site, overrides = {}) {
@@ -318,4 +343,34 @@ test("worker health fails closed for missing invalid stale and future heartbeats
     ready: true,
   });
   assert.equal(independentSuccess.ready, true);
+});
+
+// share prefix-compatible migration readiness with worker health
+test("worker readiness allows trailing migrations and rejects changed known checksums", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-worker-migrations-"));
+  const sql = "SELECT 1;\n";
+  const checksum = createHash("sha256").update(sql).digest("hex");
+
+  try {
+    await writeFile(join(directory, "0001_initial.sql"), sql);
+    await assertWorkerDatabaseReadiness(
+      workerReadinessPool([
+        { checksum, name: "0001_initial.sql" },
+        { checksum: "1".repeat(64), name: "0002_candidate_only.sql" },
+      ]),
+      directory,
+    );
+    await assert.rejects(
+      () =>
+        assertWorkerDatabaseReadiness(
+          workerReadinessPool([
+            { checksum: "0".repeat(64), name: "0001_initial.sql" },
+          ]),
+          directory,
+        ),
+      /migration checksum mismatch/u,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
