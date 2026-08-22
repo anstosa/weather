@@ -192,3 +192,21 @@ start_release 2026.08.22-1`,
     await rm(directory, { force: true, recursive: true });
   }
 });
+
+test("release operations reject a mismatched deployment control plane", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
+  const release = join(directory, "release.env");
+
+  try {
+    const digestResult = runBash('source "$1"; control_plane_digest');
+    assert.equal(digestResult.status, 0, digestResult.stderr);
+    await writeFile(release, `WEATHER_CONTROL_PLANE_SHA256=${digestResult.stdout.trim()}\n`);
+    const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    await writeFile(release, `WEATHER_CONTROL_PLANE_SHA256=${"0".repeat(64)}\n`);
+    const rejected = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
+    assert.notEqual(rejected.status, 0);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
