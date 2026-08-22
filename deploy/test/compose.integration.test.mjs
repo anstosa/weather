@@ -526,6 +526,17 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
         ],
         { cwd: repoRoot, env: environment, timeout: 300_000 },
       );
+      await compose(
+        {
+          ...environment,
+          WEATHER_ENV_FILE: compatibilityEnv,
+          WEATHER_LOCAL_SERVER_IMAGE: targetServerImage,
+        },
+        override,
+        "run",
+        "--rm",
+        "migration",
+      );
 
       const migrationBefore = (
         await compose(
@@ -560,15 +571,17 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
 
       // create two immutable rollback states
       for (const release of ["2026.08.22-1", "2026.08.22-2"]) {
-        const digest = `sha256:${(release.endsWith("-1") ? "a" : "b").repeat(64)}`;
+        const digestKeys = release.endsWith("-1")
+          ? { cloudflared: "d", postgres: "c", server: "a", web: "b" }
+          : { cloudflared: "h", postgres: "g", server: "e", web: "f" };
         await writeFile(
           join(releases, `${release}.env`),
           [
             `WEATHER_RELEASE=${release}`,
-            `WEATHER_SERVER_IMAGE=registry.example/weather-server@${digest}`,
-            `WEATHER_WEB_IMAGE=registry.example/weather-web@${digest}`,
-            `POSTGRES_IMAGE=postgres@${digest}`,
-            `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${digest}`,
+            `WEATHER_SERVER_IMAGE=registry.example/weather-server@sha256:${digestKeys.server.repeat(64)}`,
+            `WEATHER_WEB_IMAGE=registry.example/weather-web@sha256:${digestKeys.web.repeat(64)}`,
+            `POSTGRES_IMAGE=postgres@sha256:${digestKeys.postgres.repeat(64)}`,
+            `CLOUDFLARED_IMAGE=cloudflare/cloudflared@sha256:${digestKeys.cloudflared.repeat(64)}`,
             "WEATHER_DATABASE_NAME=weather_deploy_test",
             "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
             `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
