@@ -9,9 +9,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "node --test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "typecheck": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@weather/database": "0.0.0",
