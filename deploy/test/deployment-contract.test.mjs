@@ -256,7 +256,7 @@ test("container commands match the API, worker, and web runtime contracts", () =
   );
   assert.equal(compose.services.api.environment.WEATHER_API_PORT, "3001");
   assert.equal(compose.services.worker.environment.WEATHER_DATABASE_USER, "weather_ingest");
-  assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/sites/u);
+  assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/api\/v1\/health/u);
   assert.deepEqual(compose.services.worker.healthcheck.test, [
     "CMD",
     "node",
@@ -287,8 +287,10 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
 
   // provide one bounded fake API
   const api = createServer((request, response) => {
+    const body = JSON.stringify({ method: request.method, path: request.url });
     response.setHeader("Content-Type", "application/json");
-    response.end(JSON.stringify({ method: request.method, path: request.url }));
+    response.setHeader("Content-Length", String(Buffer.byteLength(body)));
+    response.end(body);
   });
   api.listen(apiPort, "127.0.0.1");
   await once(api, "listening");
@@ -310,6 +312,7 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
     const library = await fetch(`http://127.0.0.1:${webPort}/index.js`);
     const proxied = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/current?check=1`);
     const health = await fetch(`http://127.0.0.1:${webPort}/api/v1/health`);
+    const head = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "HEAD" });
     const mutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "POST" });
     const legacy = await fetch(`http://127.0.0.1:${webPort}/sites`);
     const future = await fetch(`http://127.0.0.1:${webPort}/api/v2/sites`);
@@ -323,6 +326,8 @@ test("web edge serves allowlisted assets and a bounded read-only API proxy", asy
       path: "/api/v1/sites/ballydidean/current?check=1",
     });
     assert.deepEqual(await health.json(), { method: "GET", path: "/api/v1/health" });
+    assert.equal(head.status, 200);
+    assert.ok(Number(head.headers.get("content-length")) > 0);
     assert.equal(mutation.status, 405);
     assert.equal(legacy.status, 404);
     assert.equal(future.status, 404);
@@ -397,6 +402,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   const update = read("deploy/scripts/update.sh");
   const stageCase = update.split("  stage)\n")[1].split("  activate)\n")[0];
   const rollbackCase = update.split("  rollback)\n")[1].split("  recover)\n")[0];
+  const rollbackFunction = update.split("rollback_release() {")[1].split("\n}\n\n(($# >= 1))")[0];
   assert.match(stageCase, /compose config --quiet/u);
   assert.match(stageCase, /resolve_arm64_image/u);
   assert.match(stageCase, /compose pull/u);
@@ -417,9 +423,10 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /compose up -d --remove-orphans --wait/u);
   assert.match(update, /record success only after every health gate/u);
   assert.match(update, /compose down --remove-orphans/u);
-  assert.match(rollbackCase, /--no-deps/u);
-  assert.match(rollbackCase, /api worker web cloudflared/u);
-  assert.doesNotMatch(rollbackCase, /backup|migration|start_release/u);
+  assert.match(rollbackCase, /rollback_release/u);
+  assert.match(rollbackFunction, /restore_images/u);
+  assert.match(update, /--no-deps --wait[\s\\\n]*postgres api worker web cloudflared/u);
+  assert.doesNotMatch(rollbackFunction, /backup|migration|start_release/u);
   assert.doesNotMatch(
     update,
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
@@ -440,10 +447,7 @@ test("capacity preflight records every numeric coexistence gate", () => {
   assert.match(preflight, /4 \* 1024 \* 1024 \* 1024/u);
   assert.match(preflight, /inode_free_percent >= 10/u);
   assert.match(preflight, /JSON\.stringify/u);
-  assert.ok(
-    preflight.indexOf("load15=$(awk") > preflight.indexOf("done\n\n"),
-    "load must be captured after the sample interval",
-  );
+  assert.match(preflight, /while \(\([\s\S]*done\n\nload15=\$\(awk/u);
 });
 
 // verify strict release-state parsing
@@ -561,7 +565,7 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
   assert.match(workflow, /npm run test:integration/u);
   assert.match(workflow, /npm run test:e2e/u);
   assert.match(workflow, /npm run test:deploy/u);
-  assert.doesNotMatch(workflow, /:latest|deploy|ssh-run/u);
+  assert.doesNotMatch(workflow, /:latest|ssh-run|update\.sh activate/u);
 });
 
 // verify pull-request quality gates

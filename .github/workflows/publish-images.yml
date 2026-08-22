@@ -1,0 +1,137 @@
+name: Publish production images
+
+on:
+  push:
+    tags:
+      - "20??.??.??-*"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.release.outputs.release }}
+    steps:
+      - id: release
+        name: Validate immutable release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          release=${GITHUB_REF_NAME}
+          if [[ ! "${release}" =~ ^([0-9]{4})\.([0-9]{2})\.([0-9]{2})-([1-9][0-9]?)$ ]]; then
+            echo "release tag must use YYYY.MM.DD-N" >&2
+            exit 1
+          fi
+          release_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+          if [[ "$(date --date "${release_date}" +%Y-%m-%d)" != "${release_date}" ]]; then
+            echo "release tag contains an invalid date" >&2
+            exit 1
+          fi
+          echo "release=${release}" >> "${GITHUB_OUTPUT}"
+
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install dependencies
+        run: npm ci
+      - name: Install deployment validators
+        run: sudo apt-get update && sudo apt-get install --yes shellcheck
+      - name: Run deterministic repository checks
+        run: npm run check
+      - name: Run PostgreSQL integration gates
+        run: npm run test:integration
+      - name: Run browser end-to-end gates
+        run: npm run test:e2e
+      - name: Run deployment gates
+        env:
+          WEATHER_RUN_DEPLOY_INTEGRATION: "1"
+        run: npm run test:deploy
+      - name: Verify static deployment contracts
+        run: deploy/scripts/verify-static.sh
+
+  dependency-manifests:
+    needs: [validate-release, quality-gates]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Resolve pinned dependency ARM64 digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > dependency-images.env
+          while read -r variable image; do
+            reference=$(docker buildx imagetools inspect "${image}" --raw |
+              node deploy/scripts/resolve-image.mjs "${image}")
+            printf '%s=%s\n' "${variable}" "${reference}" >> dependency-images.env
+          done <<'EOF'
+          POSTGRES_IMAGE postgres:17.10-bookworm
+          CLOUDFLARED_IMAGE cloudflare/cloudflared:2026.7.2
+          EOF
+          docker run --rm --platform linux/arm64 postgres:17.10-bookworm \
+            postgres --version | grep -E 'PostgreSQL 1[7-9]|PostgreSQL [2-9][0-9]'
+      - name: Retain dependency digest references
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-image-digests
+          path: dependency-images.env
+
+  publish:
+    needs: [validate-release, quality-gates, dependency-manifests]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [server, web]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        name: Build and publish ARM64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          target: ${{ matrix.target }}
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/anstosa/weather-${{ matrix.target }}:${{ needs.validate-release.outputs.release }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
+      - name: Resolve published ARM64 digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/anstosa/weather-${{ matrix.target }}:${{ needs.validate-release.outputs.release }}"
+          reference=$(docker buildx imagetools inspect "${image}" --raw |
+            node deploy/scripts/resolve-image.mjs "${image}")
+          variable=$(printf '%s' "${{ matrix.target }}" | tr '[:lower:]' '[:upper:]')
+          printf 'WEATHER_%s_IMAGE=%s\n' "${variable}" "${reference}" > image-digest.env
+      - name: Retain published digest reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-image-digest
+          path: image-digest.env
