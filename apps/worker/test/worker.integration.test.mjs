@@ -100,6 +100,7 @@ function historicalSource(site, overrides = {}) {
     providerKey: site.provider.key,
     siteSlug: site.site.key,
     sourceConfigFingerprint: configuration.fingerprint,
+    sourceKey: configuration.key,
     sourceKind: configuration.sourceKind,
     stationSlug: site.station.key,
     timezone: site.site.timezone,

@@ -9,7 +9,6 @@ import {
   createDatabasePool,
   failIngestionRun,
   hasSuccessfulBackfillChunk,
-  listActiveSites,
   startIngestionRun,
   type SiteConfiguration,
   type SourceSession,
@@ -31,7 +30,15 @@ import {
 } from "@weather/providers";
 
 import { loadWorkerConfiguration } from "./config.js";
-import { boundedWorkerError } from "./errors.js";
+import {
+  boundedWorkerError,
+  combineWorkerDiagnostics,
+} from "./errors.js";
+import { planIngestionDeadlines } from "./run-deadline.js";
+import {
+  sourceIdentityMatchesConfiguration,
+  type RuntimeSourceIdentity,
+} from "./source-identity.js";
 
 type DatabasePool = ReturnType<typeof createDatabasePool>;
 
@@ -77,7 +84,7 @@ export interface BackfillReport {
   readonly to: string;
 }
 
-interface BackfillSource {
+export interface BackfillSource extends RuntimeSourceIdentity {
   readonly id: string;
   readonly key: string;
   readonly latitude: number;
@@ -258,6 +265,16 @@ export async function executeBackfill(
     throw new Error("selected source does not support historical ingestion");
   }
 
+  // reject identity drift before resume reads locks or provider I/O
+  if (
+    !sourceIdentityMatchesConfiguration(source, site, sourceConfiguration) ||
+    source.latitude !== site.site.latitude ||
+    source.longitude !== site.site.longitude ||
+    source.key !== sourceConfiguration.key
+  ) {
+    throw new Error("source identity does not match configuration");
+  }
+
   requireArchiveContract(sourceConfiguration.adapterConfig);
   const chunks = planBackfillChunks({
     chunkDays: arguments_.chunkDays,
@@ -350,14 +367,16 @@ async function executeBackfillChunk(
 ): Promise<Readonly<{ ok: boolean; report: BackfillChunkReport }>> {
   let runId: string | null = null;
   let attempts = 0;
+  let result: Readonly<{ ok: boolean; report: BackfillChunkReport }>;
 
   try {
     const startedAt = now();
+    const deadlines = planIngestionDeadlines(startedAt, fetchOptions);
     await repository.abandonExpiredRuns(session, startedAt.toISOString());
     const started = await repository.startIngestionRun(session, {
       adapterVersion: chunk.identity.adapterVersion,
       chunkPlanVersion: chunk.identity.chunkPlanVersion,
-      deadlineAt: new Date(startedAt.getTime() + 60_000).toISOString(),
+      deadlineAt: deadlines.runDeadlineAt,
       mode: "backfill",
       requestMetadata: {
         end_date: chunk.endDate,
@@ -378,7 +397,7 @@ async function executeBackfillChunk(
         startDate: chunk.startDate,
         timezone: source.timezone,
       },
-      { ...fetchOptions, now },
+      { ...fetchOptions, deadlineAt: deadlines.providerDeadlineAt, now },
     );
     attempts = batch.attempts;
     assertRecordsWithinChunk(batch.records, chunk.identity);
@@ -390,7 +409,7 @@ async function executeBackfillChunk(
       runId,
       upstreamResponseChecksum: batch.checksum,
     });
-    return {
+    result = {
       ok: true,
       report: {
         errorCode: null,
@@ -418,7 +437,7 @@ async function executeBackfillChunk(
       }
     }
 
-    return {
+    result = {
       ok: false,
       report: {
         errorCode: failure.ingestionError.code,
@@ -427,8 +446,42 @@ async function executeBackfillChunk(
         status: "failed",
       },
     };
-  } finally {
+  }
+
+  const releaseError = await guardReleaseSession(session);
+
+  // retain the primary chunk outcome when cleanup also fails
+  if (releaseError !== null) {
+    return {
+      ok: false,
+      report: {
+        ...result.report,
+        errorCode:
+          result.report.status === "completed"
+            ? "session_release_failed"
+            : result.report.errorCode,
+        secondaryError: combineWorkerDiagnostics([
+          { label: "finalization", value: result.report.secondaryError },
+          { label: "release", value: releaseError },
+        ]),
+        status: "failed",
+      },
+    };
+  }
+
+  return result;
+}
+
+// release a backfill session without masking its result
+async function guardReleaseSession(
+  session: SourceSession,
+): Promise<string | null> {
+  try {
     await session.release();
+    return null;
+  } catch (error) {
+    // retain bounded cleanup diagnostics
+    return boundedWorkerError(error);
   }
 }
 
@@ -496,36 +549,90 @@ export async function resolveBackfillSource(
   site: SiteConfiguration,
   sourceKey: string | null,
 ): Promise<BackfillSource> {
-  const rows = await listActiveSites(pool) as readonly Readonly<{
+  const configuredSource = site.sources.find(
+    (candidate) =>
+      candidate.sourceKind === "reanalysis" &&
+      candidate.capabilities.includes("historical") &&
+      (sourceKey === null || candidate.key === sourceKey),
+  );
+
+  // require one configured historical source
+  if (configuredSource === undefined) {
+    throw new Error("no configured Open-Meteo reanalysis source matches the request");
+  }
+
+  const result = await pool.query<{
     latitude: number;
     longitude: number;
+    materialProviderConfig: RuntimeSourceIdentity["materialProviderConfig"];
     providerKey: string;
     siteSlug: string;
+    sourceConfigFingerprint: string;
     sourceId: string;
     sourceKey: string;
-    sourceKind: string;
+    sourceKind: RuntimeSourceIdentity["sourceKind"];
+    stationSlug: string;
     timezone: string;
-  }>[];
-  const row = rows.find(
-    (candidate) =>
-      candidate.siteSlug === site.site.key &&
-      candidate.providerKey === "open-meteo" &&
-      candidate.sourceKind === "reanalysis" &&
-      (sourceKey === null || candidate.sourceKey === sourceKey),
+  }>(
+    `
+      SELECT
+        si.latitude,
+        si.longitude,
+        s.material_provider_config AS "materialProviderConfig",
+        p.provider_key AS "providerKey",
+        si.slug AS "siteSlug",
+        s.source_config_fingerprint AS "sourceConfigFingerprint",
+        s.id AS "sourceId",
+        s.source_key AS "sourceKey",
+        s.source_kind AS "sourceKind",
+        st.slug AS "stationSlug",
+        si.timezone
+      FROM sources s
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      WHERE si.slug = $1
+        AND s.source_key = $2
+        AND s.active
+        AND st.active
+        AND si.active
+        AND p.active
+      LIMIT 1
+    `,
+    [site.site.key, configuredSource.key],
   );
+  const row = result.rows[0];
 
   // reject absent or unsupported sources
   if (row === undefined) {
     throw new Error("no active Open-Meteo reanalysis source matches the request");
   }
 
-  return {
+  const source: BackfillSource = {
     id: row.sourceId,
     key: row.sourceKey,
     latitude: Number(row.latitude),
     longitude: Number(row.longitude),
+    materialProviderConfig: row.materialProviderConfig,
+    providerKey: row.providerKey,
+    siteSlug: row.siteSlug,
+    sourceConfigFingerprint: row.sourceConfigFingerprint,
+    sourceKey: row.sourceKey,
+    sourceKind: row.sourceKind,
+    stationSlug: row.stationSlug,
     timezone: row.timezone,
   };
+
+  // reject database identity drift before execution
+  if (
+    !sourceIdentityMatchesConfiguration(source, site, configuredSource) ||
+    source.latitude !== site.site.latitude ||
+    source.longitude !== site.site.longitude
+  ) {
+    throw new Error("source identity does not match configuration");
+  }
+
+  return source;
 }
 
 // run the complete one-shot CLI
