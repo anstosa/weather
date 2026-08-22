@@ -399,14 +399,16 @@ async function handleReadRoute(
   // serve selected current rows
   if (route.kind === "current") {
     rejectUnexpectedParameters(url.searchParams, new Set(["source", "station"]));
-    const query = parseCurrentQuery(url.searchParams, site);
+    const query = parsePublicQuery(() => parseCurrentQuery(url.searchParams, site));
     const rows = await store.getCurrent(route.siteSlug, query);
     const generatedAt = now().toISOString();
     const records = mapWeatherRecords(rows, indexSources(site), generatedAt);
     return jsonResponse({ data: records, generatedAt, site });
   }
 
-  const parsed = parseHistoryQuery(url.searchParams, route.siteSlug, site);
+  const parsed = parsePublicQuery(() =>
+    parseHistoryQuery(url.searchParams, route.siteSlug, site),
+  );
   const rows = await store.listHistory(parsed.query);
   const hasMore = rows.length > parsed.requestedLimit;
   const visibleRows = hasMore ? rows.slice(0, parsed.requestedLimit) : rows;
@@ -1119,18 +1121,29 @@ function errorResponse(error: unknown): Response {
     );
   }
 
-  // expose safe validation feedback
-  if (error instanceof RangeError || error instanceof TypeError) {
-    return jsonResponse(
-      { error: { code: "invalid_query", message: "Request query is invalid" } },
-      400,
-    );
-  }
-
   return jsonResponse(
     { error: { code: "internal_error", message: "Unexpected server error" } },
     500,
   );
+}
+
+// classify only request parsing failures
+function parsePublicQuery<Result>(read: () => Result): Result {
+  try {
+    return read();
+  } catch (error) {
+    // preserve intentional query responses
+    if (error instanceof HttpError) {
+      throw error;
+    }
+
+    // hide validation implementation details
+    if (error instanceof RangeError || error instanceof TypeError) {
+      throw new HttpError(400, "invalid_query", "Request query is invalid");
+    }
+
+    throw error;
+  }
 }
 
 // build one allowlisted diagnostic event

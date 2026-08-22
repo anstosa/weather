@@ -378,7 +378,7 @@ test("health reports the bounded production release environment value", async ()
 
 test("unexpected failures return safe errors and emit redacted structured diagnostics", async () => {
   const diagnostics = [];
-  const failure = new Error(
+  const failure = new TypeError(
     "postgres://weather:super-secret@database/weather?sslkey=/run/secrets/key",
   );
   failure.code = "28P01";
@@ -408,7 +408,7 @@ test("unexpected failures return safe errors and emit redacted structured diagno
   assert.deepEqual(diagnostics, [
     {
       errorCode: "28P01",
-      errorName: "Error",
+      errorName: "TypeError",
       event: "api_request_failed",
       method: "GET",
       status: 500,
