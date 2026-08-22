@@ -99,6 +99,7 @@ services:
       WEATHER_DATABASE_USER: weather_owner
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_owner_password
       WEATHER_MIGRATION_DIRECTORY: /opt/weather/packages/database/migrations
+      WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
     secrets:
       - source: weather_owner_password
         target: weather_owner_password
