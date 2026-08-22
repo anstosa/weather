@@ -471,6 +471,10 @@ default_env=$5
 compose_file=$6
 local_compose_file=$7
 transcript=$8
+previous_server=$9
+previous_web=\${10}
+current_server=\${11}
+current_web=\${12}
 # bypass host secret ownership
 require_deployment_secrets() { :; }
 # publish only fixture state
@@ -478,11 +482,32 @@ write_active_symlink() { ln -sfn "../releases/$1.env" "$state_dir/active.env"; }
 # use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$default_env}
+  local selected_release local_server local_web
+  selected_release=$(env_value "$selected_env" WEATHER_RELEASE)
+  # select the fixture image set
+  if [[ "$selected_release" == '2026.08.22-1' ]]; then
+    local_server=$previous_server
+    local_web=$previous_web
+  else
+    local_server=$current_server
+    local_web=$current_web
+  fi
   printf '%s|%s\\n' "$selected_env" "$*" >>"$transcript"
-  docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
-    --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
+  WEATHER_LOCAL_SERVER_IMAGE="$local_server" WEATHER_LOCAL_WEB_IMAGE="$local_web" \\
+    docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
+      --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
 }
-rollback_release`,
+# establish the newer image set
+current_env="$releases_dir/2026.08.22-2.env"
+restore_images "$current_env"
+current_api=$(WEATHER_ENV_FILE=$current_env compose ps -q api)
+printf 'image-before:%s\\n' "$(docker inspect --format '{{.Image}}' "$current_api")" >>"$transcript"
+printf 'release-before:%s\\n' "$(WEATHER_ENV_FILE=$current_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
+rollback_release
+previous_env="$releases_dir/2026.08.22-1.env"
+previous_api=$(WEATHER_ENV_FILE=$previous_env compose ps -q api)
+printf 'image-after:%s\\n' "$(docker inspect --format '{{.Image}}' "$previous_api")" >>"$transcript"
+printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
           "weather-rollback-integration",
           join(deployRoot, "scripts/update.sh"),
           releases,
@@ -492,6 +517,10 @@ rollback_release`,
           join(deployRoot, "compose.yaml"),
           join(deployRoot, "compose.local.yaml"),
           rollbackTranscript,
+          previousServerImage,
+          previousWebImage,
+          targetServerImage,
+          targetWebImage,
         ],
         { cwd: repoRoot, env: environment, timeout: 300_000 },
       );
@@ -499,6 +528,16 @@ rollback_release`,
       const rollbackCommands = await readFile(rollbackTranscript, "utf8");
       assert.match(rollbackCommands, /2026\.08\.22-1\.env\|up -d --no-deps --wait/u);
       assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
+      assert.match(rollbackCommands, /release-before:2026\.08\.22-2/u);
+      assert.match(rollbackCommands, /release-after:2026\.08\.22-1/u);
+      assert.equal(
+        rollbackCommands.includes(`image-before:${await imageId(targetServerImage)}`),
+        true,
+      );
+      assert.equal(
+        rollbackCommands.includes(`image-after:${await imageId(previousServerImage)}`),
+        true,
+      );
       const migrationAfter = (
         await compose(
           environment,
