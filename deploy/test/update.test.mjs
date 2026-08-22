@@ -29,6 +29,7 @@ read_release_state() { [[ "$1" == */current-release ]] && printf '2026.08.22-2\\
 release_env() { printf '/releases/%s.env\\n' "$1"; }
 validate_release_env() { :; }
 require_deployment_secrets() { :; }
+require_control_plane_compatibility() { :; }
 restore_images() { printf 'restore:%s\\n' "$1" >>"$transcript"; }
 record_release_success() { printf 'record:%s:%s\\n' "$1" "$2" >>"$transcript"; }
 rollback_release`,
@@ -58,6 +59,7 @@ read_release_state() { [[ "$1" == */current-release ]] && printf '2026.08.22-2\\
 release_env() { printf '/releases/%s.env\\n' "$1"; }
 validate_release_env() { :; }
 require_deployment_secrets() { :; }
+require_control_plane_compatibility() { :; }
 restore_images() { attempt=$((attempt + 1)); printf 'restore:%s\\n' "$1" >>"$transcript"; ((attempt > 1)); }
 record_release_success() { printf 'unexpected-record\\n' >>"$transcript"; }
 rollback_release`,
