@@ -33,15 +33,16 @@ any other connector token.
    as staging inputs. Staging replaces all four with exact Linux ARM64
    `name@sha256:<digest>` references; `WEATHER_RELEASE` remains a label only.
    Staging also records a digest and compatibility version for Compose,
-   lifecycle scripts, and the runtime ACL contract. Activate, recover, and
-   rollback fail closed on an incompatible control-plane version.
-4. Generate separate long random owner, API, and ingestion passwords. Install
-   matching PostgreSQL and application copies under the six extensionless names
-   in `deploy/secrets`: the three `weather_postgres_*` sources must be owned by
-   `999:999`; `weather_migration_owner_password`, `weather_api_password`, and
-   `weather_worker_ingest_password` must be owned by `10002:10002`. Install the
-   tunnel token for `65532:65532`. Every source must be mode `0400`; Compose file
-   secrets cannot repair host ownership or modes.
+   lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
+   and rollback fail closed on an incompatible control-plane version or digest.
+4. Generate separate long random administrator, owner, API, and ingestion
+   passwords. The administrator and owner values must differ. Install the four
+   `weather_postgres_*` sources for `999:999`; the administrator source is
+   mounted only into PostgreSQL. Install matching owner, API, and ingestion
+   application copies as `weather_migration_owner_password`,
+   `weather_api_password`, and `weather_worker_ingest_password` for
+   `10002:10002`. Install the tunnel token for `65532:65532`. Every source must
+   be mode `0400`; Compose file secrets cannot repair host ownership or modes.
 5. Copy `deploy/config/backup.env.example` to ignored `backup.env` and set only
    a public age recipient. Enforce off-host retention outside this repository.
 6. Install root-owned scripts as `/usr/local/bin/weather-ssh-dispatch` and
@@ -86,15 +87,19 @@ deploy/scripts/ssh-run.sh status
 Stage requires a passing 15-minute capacity result from the prior hour, resolves
 and records all four exact ARM64 manifest digests, validates the complete Compose
 render, and pulls without changing running services. On upgrades it creates and
-drops only a unique compatibility database, migrates the clone, runs the previous
-API image's `/api/v1/health` and `/api/v1/sites` reads, and runs one previous
-worker loop against a credential-free deterministic provider stub. The first
-release records compatibility as not applicable.
+drops only a unique compatibility database, applies the candidate's trailing
+migrations, runs the previous API image's `/api/v1/health`, `/api/v1/sites`,
+`/current`, and `/history` reads, and runs one previous worker loop against a
+credential-free deterministic provider stub. The existing release must match
+the installed control plane before these checks. The first release records
+compatibility as not applicable.
 
 Activate requires the pre-provisioned Weather connector token, creates an
 encrypted pre-migration backup, runs forward-only checked migrations, starts
-the project with Compose health gates, and records the release last. The public
-hostname route remains a separate, leader-authorized post-activation operation.
+the project with Compose health gates, and records the release last. It validates
+the existing release against the installed control plane before backup,
+migration, or any failure restoration. The public hostname route remains a
+separate, leader-authorized post-activation operation.
 
 After a 15-minute ingestion soak, require at least 512 MiB available memory,
 load no greater than `0.75 * CPUs`, no OOM/restart/limit breach, swap no greater

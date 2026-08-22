@@ -44,8 +44,9 @@ the printed candidate name must later be dropped by the operator.
 
 The API and ingestion roles are `NOSUPERUSER NOCREATEDB NOCREATEROLE` and never
 receive restore authority. The root-owned operator wrapper is the only boundary
-allowed to use the database administrator for unique candidate creation and
-deletion. `restore.sh replace` and `restore.sh cutover` are rejected. Live
+allowed to use the database administrator's PostgreSQL-only credential for
+unique candidate creation and deletion. That credential is distinct from the
+`weather_owner` credential. `restore.sh replace` and `restore.sh cutover` are rejected. Live
 replacement requires a future separately approved staged-cutover plan.
 
 ## Fault checks
