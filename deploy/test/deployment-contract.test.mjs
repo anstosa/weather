@@ -134,6 +134,14 @@ test("production Compose has the exact five-network isolation matrix", () => {
   }
 });
 
+// verify local ingress without broadening egress
+test("local Compose preserves internal application networks", () => {
+  const compose = renderCompose(["compose.local.yaml", "compose.verify.yaml"]);
+  assert.equal(compose.networks.edge.internal, true);
+  assert.equal(compose.networks.web_api.internal, true);
+  assert.equal(compose.networks.data.internal, true);
+});
+
 // verify hardening and capacity
 test("services are non-root, read-only, bounded, ordered, and healthy", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
