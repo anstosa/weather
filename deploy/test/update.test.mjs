@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -85,6 +85,7 @@ test("release environment validator rejects duplicate and unknown state", async 
     `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${digest}`,
     "WEATHER_DATABASE_NAME=weather",
     "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
+    `WEATHER_CONTROL_PLANE_SHA256=${"b".repeat(64)}`,
   ].join("\n");
 
   try {
@@ -97,6 +98,90 @@ test("release environment validator rejects duplicate and unknown state", async 
     await writeFile(valid, `${content}\nUNKNOWN_STATE=value\n`, { mode: 0o600 });
     const unknown = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [valid]);
     assert.notEqual(unknown.status, 0);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("release environment validator rejects non-canonical PostgreSQL paths", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-release-path-"));
+  const candidate = join(directory, "candidate.env");
+  const digest = `sha256:${"a".repeat(64)}`;
+  const controlPlane = "b".repeat(64);
+
+  try {
+    // reject every alias and escape
+    for (const postgresDirectory of [
+      "/var/lib/weather/postgres/../escape",
+      "/var/lib/weather//postgres",
+      "/var/lib/weather/postgres/.",
+      "/var/lib/weather-postgres",
+    ]) {
+      const content = [
+        "WEATHER_RELEASE=2026.08.22-1",
+        `WEATHER_SERVER_IMAGE=registry.example/weather-server@${digest}`,
+        `WEATHER_WEB_IMAGE=registry.example/weather-web@${digest}`,
+        `POSTGRES_IMAGE=postgres@${digest}`,
+        `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${digest}`,
+        "WEATHER_DATABASE_NAME=weather",
+        `WEATHER_POSTGRES_DIR=${postgresDirectory}`,
+        `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
+      ].join("\n");
+      await writeFile(candidate, `${content}\n`, { mode: 0o600 });
+      const result = runBash('source "$1"; validate_release_env "$2" "2026.08.22-1"', [candidate]);
+      assert.notEqual(result.status, 0, postgresDirectory);
+    }
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("secret validation rejects a symlink outside the Weather secret root", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-secret-path-"));
+  const outside = join(directory, "outside-secret");
+  const link = join(directory, "secret-link");
+
+  try {
+    await writeFile(outside, "secret\n");
+    await chmod(outside, 0o400);
+    await symlink(outside, link);
+    const result = runBash(
+      'source "$1"; deploy_dir="$2"; require_secret_source "$3" "$(id -u)" "$(id -g)"',
+      [directory, link],
+    );
+    assert.notEqual(result.status, 0);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("initial activation cleans the Weather project after backup failure", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-initial-cleanup-"));
+  const transcript = join(directory, "transcript");
+
+  try {
+    await mkdir(join(directory, "scripts"));
+    await writeFile(join(directory, "scripts/backup.sh"), "#!/usr/bin/env bash\nexit 1\n");
+    await chmod(join(directory, "scripts/backup.sh"), 0o700);
+    const result = runBash(
+      `source "$1"
+deploy_dir=$2
+state_dir=$2/state
+transcript=$3
+release_env() { printf '/target.env\\n'; }
+validate_release_env() { :; }
+read_optional_release_state() { :; }
+require_capacity_gate() { :; }
+require_deployment_secrets() { :; }
+compose() { printf 'compose:%s\\n' "$*" >>"$transcript"; }
+start_release 2026.08.22-1`,
+      [directory, transcript],
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      await readFile(transcript, "utf8"),
+      /compose:up -d postgres --wait[\s\S]*compose:down --remove-orphans/u,
+    );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

@@ -424,6 +424,8 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(backup, /sha256sum/u);
   assert.match(backup, /chmod 600/u);
   assert.match(backup, /trap cleanup EXIT/u);
+  assert.match(backup, /env_value[^\n]*WEATHER_DATABASE_NAME/u);
+  assert.doesNotMatch(backup, /--dbname weather\b/u);
   assert.match(backup, /output_dir=\/var\/lib\/weather\/backups/u);
   assert.match(backup, /publication_complete/u);
   assert.match(backup, /sync -f/u);
@@ -437,6 +439,7 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(restore, /schema_migrations/u);
   assert.match(restore, /rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication/u);
   assert.match(restore, /dropdb[\s\S]*--if-exists/u);
+  assert.match(restore, /verify_runtime_database_acl/u);
   assert.doesNotMatch(restore, /ALTER DATABASE[\s\S]*(?:RENAME|OWNER)|mv[\s\S]*postgres/u);
 });
 
@@ -464,6 +467,11 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /\/api\/v1\/sites/u);
   assert.match(update, /apps\/api\/dist\/main\.js/u);
   assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
+  assert.match(update, /state='succeeded'/u);
+  assert.doesNotMatch(update, /state='success'/u);
+  assert.match(update, /last_committed_at/u);
+  assert.match(update, /verify_runtime_database_acl/u);
+  assert.doesNotMatch(update, /pg_dump[^\n]*--no-acl/u);
   assert.match(update, /Creating pre-migration encrypted backup/u);
   assert.match(update, /compose up -d --remove-orphans --wait/u);
   assert.match(update, /record success only after every health gate/u);
@@ -606,11 +614,31 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
   assert.match(workflow, /imagetools inspect/u);
   assert.match(workflow, /postgres:17\.10-bookworm/u);
   assert.match(workflow, /upload-artifact/u);
+  const dependencyJob = workflow.split("  dependency-manifests:\n")[1].split("\n  publish:\n")[0];
+  assert.match(dependencyJob, /docker\/setup-qemu-action@v3/u);
+  assert.ok(
+    dependencyJob.indexOf("docker/setup-qemu-action@v3") <
+      dependencyJob.indexOf("docker run --rm --platform linux/arm64"),
+  );
   assert.match(workflow, /npm run check/u);
   assert.match(workflow, /npm run test:integration/u);
   assert.match(workflow, /npm run test:e2e/u);
   assert.match(workflow, /npm run test:deploy/u);
   assert.doesNotMatch(workflow, /:latest|ssh-run|update\.sh activate/u);
+});
+
+test("production release reaches the API and deployment status exposes operations evidence", () => {
+  const compose = parseCompose("deploy/compose.yaml");
+  const status = read("deploy/scripts/status.sh");
+  assert.equal(compose.services.api.environment.WEATHER_RELEASE, "${WEATHER_RELEASE:?set WEATHER_RELEASE}");
+  assert.equal(compose.services.api.environment.WEATHER_VERSION, undefined);
+  assert.match(status, /env_value[^\n]*WEATHER_DATABASE_NAME/u);
+  assert.doesNotMatch(status, /--dbname weather\b/u);
+  assert.match(status, /connector/u);
+  assert.match(status, /latest_run/u);
+  assert.match(status, /stale_run/u);
+  assert.match(status, /chunk_outcome/u);
+  assert.match(status, /failure_evidence/u);
 });
 
 // verify pull-request quality gates
