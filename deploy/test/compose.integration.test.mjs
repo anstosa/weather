@@ -254,13 +254,13 @@ test(
       WEATHER_LOCAL_WEB_IMAGE: `${projectName}-web:local`,
     };
     const previousServerImage = `${projectName}-server:2026.08.22-1`;
-    const targetServerImage = `${projectName}-server:2026.08.22-2`;
+    const targetServerImage = `${projectName}-server:2026.08.22-3`;
     const previousWebImage = `${projectName}-web:2026.08.22-1`;
-    const targetWebImage = `${projectName}-web:2026.08.22-2`;
+    const targetWebImage = `${projectName}-web:2026.08.22-3`;
     const previousPostgresImage = `${projectName}-postgres:2026.08.22-1`;
-    const targetPostgresImage = `${projectName}-postgres:2026.08.22-2`;
+    const targetPostgresImage = `${projectName}-postgres:2026.08.22-3`;
     const previousCloudflaredImage = `${projectName}-cloudflared:2026.08.22-1`;
-    const targetCloudflaredImage = `${projectName}-cloudflared:2026.08.22-2`;
+    const targetCloudflaredImage = `${projectName}-cloudflared:2026.08.22-3`;
     const disposableImages = [
       environment.WEATHER_LOCAL_SERVER_IMAGE,
       environment.WEATHER_LOCAL_WEB_IMAGE,
@@ -292,11 +292,11 @@ test(
         directory,
         environment.WEATHER_LOCAL_SERVER_IMAGE,
         targetServerImage,
-        "2026.08.22-2",
+        "2026.08.22-3",
         "SELECT 1;\n",
       );
       await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, previousWebImage, "2026.08.22-1");
-      await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, targetWebImage, "2026.08.22-2");
+      await buildReleaseImage(directory, environment.WEATHER_LOCAL_WEB_IMAGE, targetWebImage, "2026.08.22-3");
       await buildReleaseImage(
         directory,
         environment.WEATHER_LOCAL_POSTGRES_IMAGE,
@@ -307,7 +307,7 @@ test(
         directory,
         environment.WEATHER_LOCAL_POSTGRES_IMAGE,
         targetPostgresImage,
-        "2026.08.22-2",
+        "2026.08.22-3",
       );
       await buildReleaseImage(
         directory,
@@ -319,7 +319,7 @@ test(
         directory,
         environment.WEATHER_LOCAL_CLOUDFLARED_IMAGE,
         targetCloudflaredImage,
-        "2026.08.22-2",
+        "2026.08.22-3",
       );
       const imagePairs = [
         [previousServerImage, targetServerImage],
@@ -617,17 +617,17 @@ test(
       const compatibilityReleases = join(directory, "compatibility-releases");
       const compatibilityAuthorization = join(
         compatibilityReleases,
-        "2026.08.22-2.migration-authorization",
+        "2026.08.22-3.migration-authorization",
       );
       const codeOnlyAuthorization = join(
         compatibilityReleases,
-        "code-only.migration-authorization",
+        "2026.08.22-2.migration-authorization",
       );
       await mkdir(compatibilityReleases);
       await writeFile(
         compatibilityEnv,
         (await readFile(envFile, "utf8"))
-          .replace(/^WEATHER_RELEASE=.*$/mu, "WEATHER_RELEASE=2026.08.22-2")
+          .replace(/^WEATHER_RELEASE=.*$/mu, "WEATHER_RELEASE=2026.08.22-3")
           .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${targetServerImage}`),
       );
       await writeFile(
@@ -682,8 +682,9 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
         );
 
       await verifyCompatibility(codeOnlyCompatibilityEnv, codeOnlyAuthorization);
+      const codeOnlyAuthorizationText = await readFile(codeOnlyAuthorization, "utf8");
       assert.match(
-        await readFile(codeOnlyAuthorization, "utf8"),
+        codeOnlyAuthorizationText,
         /^WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=[a-f0-9]{64}$/mu,
       );
       await verifyCompatibility(compatibilityEnv, compatibilityAuthorization);
@@ -822,11 +823,11 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
       const rollbackTranscript = join(releaseRoot, "rollback-transcript");
       await executeFile("mkdir", ["-p", releases, releaseState]);
 
-      // create two immutable rollback states
-      for (const release of ["2026.08.22-1", "2026.08.22-2"]) {
-        const digestKeys = release.endsWith("-1")
-          ? { cloudflared: "d", postgres: "c", server: "a", web: "b" }
-          : { cloudflared: "2", postgres: "1", server: "e", web: "f" };
+      // create three immutable lifecycle states
+      for (const release of ["2026.08.22-1", "2026.08.22-2", "2026.08.22-3"]) {
+        const digestKeys = release.endsWith("-3")
+          ? { cloudflared: "2", postgres: "1", server: "e", web: "f" }
+          : { cloudflared: "d", postgres: "c", server: "a", web: "b" };
         await writeFile(
           join(releases, `${release}.env`),
           [
@@ -844,11 +845,16 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           { mode: 0o600 },
         );
       }
-      await writeFile(join(releaseState, "current-release"), "2026.08.22-2\n", { mode: 0o600 });
+      await writeFile(join(releaseState, "current-release"), "2026.08.22-3\n", { mode: 0o600 });
       await writeFile(join(releaseState, "previous-release"), "2026.08.22-1\n", { mode: 0o600 });
-      await writeFile(join(releaseState, "schema-release"), "2026.08.22-2\n", { mode: 0o600 });
+      await writeFile(join(releaseState, "schema-release"), "2026.08.22-3\n", { mode: 0o600 });
       await writeFile(
         join(releases, "2026.08.22-2.migration-authorization"),
+        codeOnlyAuthorizationText,
+        { mode: 0o600 },
+      );
+      await writeFile(
+        join(releases, "2026.08.22-3.migration-authorization"),
         authorizationText,
         { mode: 0o600 },
       );
@@ -882,16 +888,16 @@ compose() {
   local selected_release local_server local_web local_postgres local_cloudflared
   selected_release=$(env_value "$selected_env" WEATHER_RELEASE)
   # select the fixture image set
-  if [[ "$selected_release" == '2026.08.22-1' ]]; then
-    local_server=$previous_server
-    local_web=$previous_web
-    local_postgres=$previous_postgres
-    local_cloudflared=$previous_cloudflared
-  else
+  if [[ "$selected_release" == '2026.08.22-3' ]]; then
     local_server=$current_server
     local_web=$current_web
     local_postgres=$current_postgres
     local_cloudflared=$current_cloudflared
+  else
+    local_server=$previous_server
+    local_web=$previous_web
+    local_postgres=$previous_postgres
+    local_cloudflared=$previous_cloudflared
   fi
   printf '%s|%s\\n' "$selected_env" "$*" >>"$transcript"
   WEATHER_LOCAL_SERVER_IMAGE="$local_server" WEATHER_LOCAL_WEB_IMAGE="$local_web" \\
@@ -911,7 +917,7 @@ record_service_image() {
     "$(docker inspect --format '{{.Image}}' "$container")" >>"$transcript"
 }
 # establish the newer image set
-current_env="$releases_dir/2026.08.22-2.env"
+current_env="$releases_dir/2026.08.22-3.env"
 restore_images "$current_env"
 record_service_image before "$current_env" postgres
 record_service_image before "$current_env" api
@@ -925,12 +931,12 @@ record_service_image after "$previous_env" api
 record_service_image after "$previous_env" web
 record_service_image after "$previous_env" cloudflared
 printf 'release-after:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
-printf 'reactivate-before\\n' >>"$transcript"
-# require fail-closed rolled-back reactivation
-if (main activate 2026.08.22-1) 2>>"$transcript"; then
-  die "rolled-back release reactivation unexpectedly succeeded"
+printf 'stale-activate-before\\n' >>"$transcript"
+# require fail-closed stale activation
+if (main activate 2026.08.22-2) 2>>"$transcript"; then
+  die "stale release activation unexpectedly succeeded"
 fi
-printf 'reactivate-after\\n' >>"$transcript"
+printf 'stale-activate-after\\n' >>"$transcript"
 WEATHER_ENV_FILE=$previous_env compose down --remove-orphans
 main recover
 printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
@@ -958,14 +964,18 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
       const rollbackCommands = await readFile(rollbackTranscript, "utf8");
       assert.match(rollbackCommands, /2026\.08\.22-1\.env\|up -d --no-deps --wait/u);
       assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
-      assert.match(rollbackCommands, /release-before:2026\.08\.22-2/u);
+      assert.match(rollbackCommands, /release-before:2026\.08\.22-3/u);
       assert.match(rollbackCommands, /release-after:2026\.08\.22-1/u);
       assert.match(
         rollbackCommands,
-        /reactivate-before\nerror: cannot reactivate runtime release 2026\.08\.22-1 while retained schema release is 2026\.08\.22-2\nreactivate-after/u,
+        /stale-activate-before\nerror: cannot activate release 2026\.08\.22-2 while runtime release 2026\.08\.22-1 differs from retained schema release 2026\.08\.22-3\nstale-activate-after/u,
       );
       assert.match(rollbackCommands, /release-recovered:2026\.08\.22-1/u);
-      assert.equal(await readFile(join(releaseState, "schema-release"), "utf8"), "2026.08.22-2\n");
+      assert.equal(await readFile(join(releaseState, "schema-release"), "utf8"), "2026.08.22-3\n");
+      assert.equal(
+        await readFile(join(releases, "2026.08.22-2.migration-authorization"), "utf8"),
+        codeOnlyAuthorizationText,
+      );
       const rollbackIdentities = [
         ["postgres", previousPostgresImage, targetPostgresImage],
         ["api", previousServerImage, targetServerImage],

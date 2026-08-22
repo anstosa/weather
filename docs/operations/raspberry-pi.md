@@ -114,10 +114,10 @@ the existing release against the installed control plane and validates its
 rollback authorization before backup or migration. Activation records the
 target schema release before the first migration, so a partial migration fails
 closed into authorized recovery or operator restore of the encrypted backup.
-After a migration-free rollback, activating that same older runtime release is
-rejected before backup, Compose, migration, or state mutation while the retained
-schema release is newer. Use `recover` to restore the recorded runtime against
-that retained schema authorization. The public hostname route remains a
+After a migration-free rollback, every activation except the exact retained
+schema release is rejected before capacity checks, backup, Compose, migration,
+or state mutation while the runtime trails that schema. Use `recover` to restore
+the recorded runtime against that retained schema authorization. The public hostname route remains a
 separate, leader-authorized post-activation operation.
 
 After a 15-minute ingestion soak, require at least 512 MiB available memory,

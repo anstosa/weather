@@ -637,11 +637,22 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     'read_optional_release_state "$state_dir/schema-release"',
   );
   const activationSchemaGate = startRelease.indexOf(
-    'if [[ -n "$current" && "$current" == "$target" && "$schema_release" != "$target" ]]',
+    'if [[ "$current" != "$schema_release" && "$target" != "$schema_release" ]]',
   );
   const activationCleanupTrap = startRelease.indexOf("trap cleanup_initial_activation EXIT");
   assert.notEqual(activationSchemaRead, -1);
   assert.equal(activationSchemaRead < activationSchemaGate, true);
+  // reject stale targets before every mutation boundary
+  for (const mutation of [
+    "require_capacity_gate",
+    "require_deployment_secrets",
+    'start_postgres "$backup_env"',
+    "Creating pre-migration encrypted backup",
+    'write_private_state "$state_dir/schema-release"',
+    "compose run --rm migration",
+  ]) {
+    assert.equal(activationSchemaGate < startRelease.indexOf(mutation), true, mutation);
+  }
   assert.equal(activationSchemaGate < activationCleanupTrap, true);
   assert.equal(activationControlGate < activationCleanupTrap, true);
   assert.equal(activationCleanupTrap < startRelease.indexOf('start_postgres "$backup_env"'), true);

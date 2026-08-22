@@ -556,9 +556,9 @@ start_release() (
     schema_release=$current
   fi
 
-  # reject schema-state regression
-  if [[ -n "$current" && "$current" == "$target" && "$schema_release" != "$target" ]]; then
-    die "cannot reactivate runtime release $target while retained schema release is $schema_release"
+  # reject stale retained targets
+  if [[ "$current" != "$schema_release" && "$target" != "$schema_release" ]]; then
+    die "cannot activate release $target while runtime release ${current:-unrecorded} differs from retained schema release $schema_release"
   fi
 
   require_capacity_gate
@@ -724,6 +724,7 @@ case "$action" in
       temporary_authorization=
     fi
 
+    # clean failed release publication
     if ! mv "$temporary" "$target"; then
       # remove orphaned authorization
       rm -f "$authorization"

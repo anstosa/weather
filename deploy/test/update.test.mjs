@@ -265,38 +265,63 @@ main recover`,
   }
 });
 
-// prove rollback reactivation preserves recovery state
-test("reactivating a rolled-back runtime rejects before mutation", async () => {
+// prove stale activation preserves retained recovery state
+test("stale target activation rejects before mutation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-reactivation-authorization-"));
+  const scripts = join(directory, "scripts");
   const state = join(directory, "state");
   const transcript = join(directory, "transcript");
   const error = join(directory, "error");
 
   try {
-    await mkdir(state);
+    await mkdir(scripts, { recursive: true });
+    await mkdir(state, { recursive: true });
+    await writeFile(
+      join(scripts, "backup.sh"),
+      '#!/usr/bin/env bash\nprintf \'backup\\n\' >>"$WEATHER_TEST_TRANSCRIPT"\n',
+    );
+    await chmod(join(scripts, "backup.sh"), 0o700);
     await writeFile(join(state, "current-release"), "2026.08.22-1\n", { mode: 0o600 });
-    await writeFile(join(state, "schema-release"), "2026.08.22-2\n", { mode: 0o600 });
+    await writeFile(join(state, "schema-release"), "2026.08.22-3\n", { mode: 0o600 });
     const result = runBash(
       `source "$1"
 deploy_dir=$2
 state_dir=$3
 transcript=$4
 error=$5
+export WEATHER_TEST_TRANSCRIPT=$transcript
+# resolve fixture release paths
 release_env() { printf '/releases/%s.env\\n' "$1"; }
+# accept fixture release metadata
 validate_release_env() { :; }
+# accept fixture control planes
 require_control_plane_compatibility() { :; }
+# record fixture capacity checks
 require_capacity_gate() { printf 'capacity\\n' >>"$transcript"; }
+# record fixture secret checks
 require_deployment_secrets() { printf 'secrets\\n' >>"$transcript"; }
+# accept fixture command checks
 require_command() { :; }
+# record fixture database starts
 start_postgres() { printf 'postgres\\n' >>"$transcript"; }
+# record fixture compose calls
 compose() { printf 'compose:%s\\n' "$*" >>"$transcript"; }
-write_private_state() { printf 'state:%s:%s\\n' "$1" "$2" >>"$transcript"; }
+# publish fixture state
+write_private_state() { printf 'state:%s:%s\\n' "$1" "$2" >>"$transcript"; printf '%s\\n' "$2" >"$1"; }
+# record fixture release starts
 start_exact_release() { printf 'start:%s\\n' "$1" >>"$transcript"; }
+# record fixture release commits
 record_release_success() { printf 'record:%s:%s\\n' "$1" "$2" >>"$transcript"; }
+# resolve fixture authorizations
+migration_authorization() { printf 'authorization:%s\\n' "$1" >>"$transcript"; printf '/releases/%s.migration-authorization\\n' "$1"; }
+# record fixture authorization checks
+validate_migration_authorization() { printf 'validate-authorization:%s:%s:%s\\n' "$1" "$2" "$3" >>"$transcript"; }
+# record fixture image restores
 restore_images() { printf 'restore:%s:%s:%s\\n' "$1" "$2" "$3" >>"$transcript"; }
+# record fixture active links
 write_active_symlink() { printf 'active:%s\\n' "$1" >>"$transcript"; }
-# require fail-closed reactivation
-if (start_release 2026.08.22-1) 2>"$error"; then
+# require fail-closed stale activation
+if (main activate 2026.08.22-2) 2>"$error"; then
   exit 64
 fi
 main recover`,
@@ -305,13 +330,13 @@ main recover`,
     assert.equal(result.status, 0, result.stderr);
     assert.match(
       await readFile(error, "utf8"),
-      /cannot reactivate runtime release 2026\.08\.22-1 while retained schema release is 2026\.08\.22-2/u,
+      /cannot activate release 2026\.08\.22-2 while runtime release 2026\.08\.22-1 differs from retained schema release 2026\.08\.22-3/u,
     );
-    assert.equal(await readFile(join(state, "schema-release"), "utf8"), "2026.08.22-2\n");
+    assert.equal(await readFile(join(state, "schema-release"), "utf8"), "2026.08.22-3\n");
     assert.equal(
       await readFile(transcript, "utf8"),
       "secrets\n" +
-        "restore:/releases/2026.08.22-1.env:2026.08.22-1:2026.08.22-2\n" +
+        "restore:/releases/2026.08.22-1.env:2026.08.22-1:2026.08.22-3\n" +
         "active:2026.08.22-1\n",
     );
   } finally {
