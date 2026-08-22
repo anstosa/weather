@@ -225,16 +225,28 @@ test("database and connector secrets are scoped to least-privilege consumers", (
   assert.deepEqual(secretSources(compose.services.cloudflared), ["cloudflare_tunnel_token"]);
   assert.deepEqual(secretSources(compose.services.web), []);
   assert.deepEqual(secretSources(compose.services.postgres), [
+    "weather_postgres_admin_password",
     "weather_postgres_api_password",
     "weather_postgres_ingest_password",
     "weather_postgres_owner_password",
   ]);
+  assert.equal(
+    compose.services.postgres.environment.POSTGRES_PASSWORD_FILE,
+    "/run/secrets/weather_admin_password",
+  );
+
+  // isolate the administrator credential
+  for (const [name, service] of Object.entries(compose.services)) {
+    if (name !== "postgres") {
+      assert.equal(secretSources(service).includes("weather_postgres_admin_password"), false);
+    }
+  }
 
   // require distinct host-owned secret sources
   const passwordSecretFiles = Object.entries(compose.secrets)
     .filter(([name]) => name !== "cloudflare_tunnel_token")
     .map(([, secret]) => secret.file);
-  assert.equal(passwordSecretFiles.length, 6);
+  assert.equal(passwordSecretFiles.length, 7);
   assert.equal(new Set(passwordSecretFiles).size, passwordSecretFiles.length);
 
   // reject ignored compose ownership metadata
@@ -253,6 +265,43 @@ test("database and connector secrets are scoped to least-privilege consumers", (
   );
   assert.doesNotMatch(environments, /PASSWORD=(?!_FILE)|TUNNEL_TOKEN=/u);
   assert.match(environments, /WEATHER_DATABASE_PASSWORD_FILE/u);
+});
+
+test("PostgreSQL bootstrap rejects equal administrator and owner credentials", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-postgres-separation-"));
+  const bin = join(directory, "bin");
+  const admin = join(directory, "admin");
+  const owner = join(directory, "owner");
+  const api = join(directory, "api");
+  const ingest = join(directory, "ingest");
+
+  try {
+    await mkdir(bin);
+    await Promise.all([
+      writeFile(admin, "shared-password\n"),
+      writeFile(owner, "shared-password\n"),
+      writeFile(api, "api-password\n"),
+      writeFile(ingest, "ingest-password\n"),
+      writeFile(join(bin, "psql"), "#!/usr/bin/env bash\ncat >/dev/null\n"),
+    ]);
+    await chmod(join(bin, "psql"), 0o700);
+    const result = spawnSync(join(deployRoot, "postgres/010-create-runtime-roles.sh"), [], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        WEATHER_ADMIN_PASSWORD_FILE: admin,
+        WEATHER_API_PASSWORD_FILE: api,
+        WEATHER_INGEST_PASSWORD_FILE: ingest,
+        WEATHER_OWNER_PASSWORD_FILE: owner,
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /administrator and owner passwords must differ/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
 
 // verify pinned dependencies and durable storage
@@ -506,6 +555,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /WEATHER_DATABASE_NAME="\$candidate"/u);
   assert.match(update, /\/api\/v1\/health/u);
   assert.match(update, /\/api\/v1\/sites/u);
+  assert.match(update, /\/current/u);
+  assert.match(update, /\/history/u);
   assert.match(update, /apps\/api\/dist\/main\.js/u);
   assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
   assert.match(update, /state='succeeded'/u);
@@ -525,6 +576,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     update,
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
   );
+  assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
+  assert.match(read("deploy/test/compose.integration.test.mjs"), /0002_candidate_contract\.sql/u);
 });
 
 // verify capacity thresholds

@@ -20,10 +20,12 @@ const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 
 // configure production-equivalent database roles
 async function bootstrapRuntimeRoles(server, directory) {
+  const adminPath = join(directory, "admin");
   const ownerPath = join(directory, "owner");
   const apiPath = join(directory, "api");
   const ingestPath = join(directory, "ingest");
   await Promise.all([
+    writeFile(adminPath, `${server.password}\n`, { mode: 0o600 }),
     writeFile(ownerPath, "owner-test\n", { mode: 0o600 }),
     writeFile(apiPath, "api-test\n", { mode: 0o600 }),
     writeFile(ingestPath, "ingest-test\n", { mode: 0o600 }),
@@ -36,6 +38,7 @@ async function bootstrapRuntimeRoles(server, directory) {
       PGPORT: String(server.port),
       POSTGRES_DB: "weather_test",
       POSTGRES_USER: server.user,
+      WEATHER_ADMIN_PASSWORD_FILE: adminPath,
       WEATHER_API_PASSWORD_FILE: apiPath,
       WEATHER_INGEST_PASSWORD_FILE: ingestPath,
       WEATHER_OWNER_PASSWORD_FILE: ownerPath,

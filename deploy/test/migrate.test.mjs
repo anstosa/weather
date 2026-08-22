@@ -70,6 +70,35 @@ test("migration entrypoint bootstraps the configured site after migrations", asy
   assert.deepEqual(result.migrations.applied, ["0001_initial_weather.sql"]);
 });
 
+test("migration entrypoint passes configured lock and statement timeouts", async () => {
+  const events = [];
+  const dependencies = {
+    // return one stable bootstrap
+    async bootstrapSiteConfiguration() {
+      return { siteId: "site-id" };
+    },
+    // return one stable configuration
+    async loadSiteConfiguration() {
+      return { site: { key: "ballydidean" } };
+    },
+    // capture configured migration waits
+    async runMigrations(_pool, _directory, options) {
+      events.push(options);
+      return { applied: [], current: ["0001_initial_weather.sql"], serverVersionNum: 170_010 };
+    },
+  };
+  const options = { lockTimeoutMs: 12_345, statementTimeoutMs: 54_321 };
+  await migrateAndBootstrap(
+    createPool("owner", events),
+    "/migrations",
+    "/config/ballydidean.json",
+    dependencies,
+    options,
+  );
+
+  assert.deepEqual(events[0], options);
+});
+
 // verify the composed entrypoint can be rerun
 test("migration entrypoint preserves bootstrap identities across reruns", async () => {
   const events = [];

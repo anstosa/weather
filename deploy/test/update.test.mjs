@@ -319,7 +319,7 @@ env_value() {
     CLOUDFLARED_IMAGE) printf 'cloudflare/cloudflared\n' ;;
   esac
 }
-resolve_arm64_image() { printf '%s@sha256:%064d\n' "${1%%:*}" 0; }
+resolve_arm64_image() { printf '%s@sha256:%064d\n' "$1" 0; }
 write_release_env() { : >"$2"; }
 compose() {
   printf 'compose:%s\n' "$*" >>"$transcript"
