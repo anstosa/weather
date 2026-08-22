@@ -1,8 +1,9 @@
 # Encrypted backup and disposable restore verification
 
 Weather backup streams a PostgreSQL custom-format dump directly into `age`,
-publishes by atomic rename, writes an adjacent SHA-256 checksum, and sets both
-files to mode `0600`. It never writes a plaintext dump. The ignored
+publishes the encrypted artifact and adjacent SHA-256 checksum as a cleaned-up
+pair, synchronizes their durable directory entries, and sets both files to mode
+`0600`. It never writes a plaintext dump. The ignored
 `deploy/config/backup.env` contains a public recipient, not a private identity.
 
 ## Create a backup
@@ -13,9 +14,10 @@ deploy/scripts/backup.sh \
   --output-dir /var/lib/weather/backups
 ```
 
-A successful run leaves only `weather-*.dump.age` and matching `.sha256` files.
-Interrupted `.partial` files are removed. Copy encrypted artifacts off-host
-under an operator-reviewed retention policy.
+The default destination is `/var/lib/weather/backups`. A successful run leaves
+only `weather-*.dump.age` and matching `.sha256` files. Interrupted partial or
+half-published pairs are removed. Copy encrypted artifacts off-host under an
+operator-reviewed retention policy.
 
 ## Verify a restore
 
