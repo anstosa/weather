@@ -316,7 +316,9 @@ function boundedWorkerError(error: unknown): string {
 }
 
 // start the long-running worker process
-export async function startWorkerProcess(): Promise<void> {
+export async function startWorkerProcess(
+  options: Readonly<{ once?: boolean }> = {},
+): Promise<void> {
   const configuration = await loadWorkerConfiguration();
   const pool = createDatabasePool(configuration.database);
   await assertSupportedPostgres(pool);
@@ -334,6 +336,13 @@ export async function startWorkerProcess(): Promise<void> {
       lastSuccessAt = result.lastSuccessAt;
     },
   });
+
+  // run one compatibility loop without retaining timers
+  if (options.once === true) {
+    await scheduler.trigger();
+    await pool.end();
+    return;
+  }
 
   // close the retained database pool on termination
   const shutdown = async (): Promise<void> => {
@@ -360,8 +369,16 @@ if (
   process.argv[1] !== undefined &&
   pathToFileURL(process.argv[1]).href === import.meta.url
 ) {
-  startWorkerProcess().catch((error: unknown) => {
-    process.stderr.write(`${boundedWorkerError(error)}\n`);
+  const arguments_ = process.argv.slice(2);
+
+  // reject undocumented process controls
+  if (arguments_.some((argument) => argument !== "--once")) {
+    process.stderr.write("worker supports only the optional --once flag\n");
     process.exitCode = 1;
-  });
+  } else {
+    startWorkerProcess({ once: arguments_.includes("--once") }).catch((error: unknown) => {
+      process.stderr.write(`${boundedWorkerError(error)}\n`);
+      process.exitCode = 1;
+    });
+  }
 }
