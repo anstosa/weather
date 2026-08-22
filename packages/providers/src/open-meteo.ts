@@ -265,6 +265,7 @@ export function normalizeCurrentPayload(
     requireString(current.time, "current.time"),
     envelope.timezone,
     envelope.utcOffsetSeconds,
+    { preferProviderOffset: true },
   );
 
   return createNormalizedWeatherRecord({
@@ -306,7 +307,7 @@ export function normalizeArchivePayload(
       localTime,
       envelope.timezone,
       envelope.utcOffsetSeconds,
-      previousValidAt,
+      { previousValidAt },
     );
     const values = Object.fromEntries(
       Object.entries(metricArrays).map(([key, value]) => [key, value[index]]),
@@ -510,7 +511,10 @@ function providerTimeToUtc(
   value: string,
   timezone: string,
   fallbackOffsetSeconds: number,
-  previousValidAt: string | null = null,
+  selection: Readonly<{
+    preferProviderOffset?: boolean;
+    previousValidAt?: string | null;
+  }> = {},
 ): string {
   // accept explicit instants directly
   if (/(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) {
@@ -550,10 +554,32 @@ function providerTimeToUtc(
     }
   }
 
-  const previous = previousValidAt === null ? null : Date.parse(previousValidAt);
-  const selected = [...new Set(candidates)]
-    .sort((left, right) => left - right)
-    .find((candidate) => previous === null || candidate > previous);
+  // order exact timezone candidates
+  const orderedCandidates = [...new Set(candidates)].sort(
+    (left, right) => left - right,
+  );
+
+  // require current times to agree with the provider offset
+  if (selection.preferProviderOffset === true) {
+    const preferred = naiveUtc - fallbackOffsetSeconds * 1_000;
+
+    // reject contradictory timezone metadata
+    if (!orderedCandidates.includes(preferred)) {
+      throw invalidPayload("provider time does not match its UTC offset");
+    }
+
+    return new Date(preferred).toISOString();
+  }
+
+  const previous =
+    selection.previousValidAt === undefined || selection.previousValidAt === null
+      ? null
+      : Date.parse(selection.previousValidAt);
+
+  // select the next archive instant
+  const selected = orderedCandidates.find(
+    (candidate) => previous === null || candidate > previous,
+  );
 
   // reject missing, duplicate, or non-monotonic local time
   if (selected === undefined) {

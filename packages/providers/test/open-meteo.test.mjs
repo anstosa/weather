@@ -79,6 +79,28 @@ test("U-OM-03 current fixture normalizes to model_current", async () => {
   });
 });
 
+// prove the first repeated hour follows the provider offset
+test("current fall-back time honors the daylight offset", async () => {
+  const payload = await fixture("current.json");
+  payload.current.time = "2026-11-01T01:30";
+  payload.utc_offset_seconds = -25_200;
+
+  const record = normalizeCurrentPayload(payload, location.sourceId, receivedAt);
+
+  assert.equal(record.validAt, "2026-11-01T08:30:00.000Z");
+});
+
+// prove the second repeated hour follows the provider offset
+test("current fall-back time honors the standard offset", async () => {
+  const payload = await fixture("current.json");
+  payload.current.time = "2026-11-01T01:30";
+  payload.utc_offset_seconds = -28_800;
+
+  const record = normalizeCurrentPayload(payload, location.sourceId, receivedAt);
+
+  assert.equal(record.validAt, "2026-11-01T09:30:00.000Z");
+});
+
 // prove archive normalization across repeated DST time
 test("U-OM-04 archive fixture normalizes distinct reanalysis instants", async () => {
   const records = normalizeArchivePayload(
