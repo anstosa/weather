@@ -103,7 +103,7 @@ function makeRecord(id, validAt, temperatureC) {
   };
 }
 
-// locate an installed real Chromium binary
+// locate an optional host Chromium binary
 function findChromium() {
   const explicit = process.env.WEATHER_CHROMIUM_EXECUTABLE;
 
@@ -130,7 +130,16 @@ function findChromium() {
     }
   }
 
-  throw new Error("no Chromium executable is installed for real-browser tests");
+  return undefined;
+}
+
+// launch the available real browser
+async function launchBrowser() {
+  const executablePath = findChromium();
+  return await chromium.launch({
+    ...(executablePath === undefined ? {} : { executablePath }),
+    headless: true,
+  });
 }
 
 // start a bounded static and fake API server
@@ -224,13 +233,11 @@ function sendJson(response, body, status = 200) {
 
 test("real browser covers filters, pagination, last-good recovery, attribution, and mutation denial", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
-  const browser = await chromium.launch({
-    executablePath: findChromium(),
-    headless: true,
-  });
-  const page = await browser.newPage({ viewport: { height: 900, width: 1440 } });
+  let browser;
 
   try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { height: 900, width: 1440 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     await assert.doesNotReject(() => page.getByRole("heading", { name: "Ballydidean weather" }).waitFor());
     assert.equal(await page.getByText("16.2").first().isVisible(), true);
@@ -292,7 +299,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.keyboard.press("Tab");
     assert.equal(await page.evaluate(() => document.activeElement?.tagName), "SELECT");
   } finally {
-    await browser.close();
+    await browser?.close();
     fixture.server.close();
     await once(fixture.server, "close");
   }
@@ -300,13 +307,11 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
 
 test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
-  const browser = await chromium.launch({
-    executablePath: findChromium(),
-    headless: true,
-  });
-  const page = await browser.newPage({ viewport: { height: 844, width: 390 } });
+  let browser;
 
   try {
+    browser = await launchBrowser();
+    const page = await browser.newPage({ viewport: { height: 844, width: 390 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const width = await page.evaluate(() => ({
       body: document.body.scrollWidth,
@@ -315,7 +320,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
     assert.equal(width.body <= width.viewport, true);
     assert.equal(await page.getByRole("button", { name: "Apply filters" }).isVisible(), true);
   } finally {
-    await browser.close();
+    await browser?.close();
     fixture.server.close();
     await once(fixture.server, "close");
   }
