@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -613,6 +613,12 @@ test(
 
       const compatibilityEnv = join(directory, "compatibility.env");
       const previousCompatibilityEnv = join(directory, "previous-compatibility.env");
+      const compatibilityReleases = join(directory, "compatibility-releases");
+      const compatibilityAuthorization = join(
+        compatibilityReleases,
+        "2026.08.22-2.migration-authorization",
+      );
+      await mkdir(compatibilityReleases);
       await writeFile(
         compatibilityEnv,
         (await readFile(envFile, "utf8"))
@@ -636,6 +642,8 @@ compatibility_env=$3
 previous_compatibility_env=$4
 compose_file=$5
 local_compose_file=$6
+releases_dir=$7
+authorization=$8
 # use the disposable Compose project
 compose() {
   local selected_env=\${WEATHER_ENV_FILE:-$compatibility_env}
@@ -645,7 +653,7 @@ compose() {
     --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
     --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
 }
-verify_previous_image_compatibility "$compatibility_env" "$previous_compatibility_env"`,
+verify_previous_image_compatibility "$compatibility_env" "$previous_compatibility_env" "$authorization"`,
           "weather-compatibility-test",
           join(deployRoot, "scripts/update.sh"),
           override,
@@ -653,9 +661,16 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           previousCompatibilityEnv,
           join(deployRoot, "compose.yaml"),
           join(deployRoot, "compose.local.yaml"),
+          compatibilityReleases,
+          compatibilityAuthorization,
         ],
         { cwd: repoRoot, env: environment, timeout: 300_000 },
       );
+      const authorizationText = await readFile(compatibilityAuthorization, "utf8");
+      const authorizationHistorySha256 = authorizationText.match(
+        /^WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=([a-f0-9]{64})$/mu,
+      )?.[1];
+      assert.match(authorizationHistorySha256 ?? "", /^[a-f0-9]{64}$/u);
       await compose(
         {
           ...environment,
@@ -672,6 +687,9 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
         ...environment,
         WEATHER_ENV_FILE: previousCompatibilityEnv,
         WEATHER_LOCAL_SERVER_IMAGE: previousServerImage,
+        WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256:
+          authorizationHistorySha256,
+        WEATHER_MIGRATION_AUTHORIZATION_RELEASE: "2026.08.22-1",
       };
       // run the deployed previous-image health command
       const runPreviousWorkerHealth = async () =>
@@ -807,6 +825,12 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
       }
       await writeFile(join(releaseState, "current-release"), "2026.08.22-2\n", { mode: 0o600 });
       await writeFile(join(releaseState, "previous-release"), "2026.08.22-1\n", { mode: 0o600 });
+      await writeFile(join(releaseState, "schema-release"), "2026.08.22-2\n", { mode: 0o600 });
+      await writeFile(
+        join(releases, "2026.08.22-2.migration-authorization"),
+        authorizationText,
+        { mode: 0o600 },
+      );
       await executeFile(
         "bash",
         [
