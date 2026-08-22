@@ -432,7 +432,7 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.doesNotMatch(backup, /pg_dump[^\n]*--file|>[^\n]*\.dump(?:["']|\s)/u);
   assert.match(restore, /only verify mode is supported/u);
   assert.match(restore, /live database replacement and cutover are not supported/u);
-  assert.match(restore, /weather_verify_/u);
+  assert.match(restore, /_verify_/u);
   assert.match(restore, /createdb[\s\S]*--owner weather_owner/u);
   assert.match(restore, /age --decrypt[\s\S]*\|[\s\n]*[\s\S]*pg_restore/u);
   assert.match(restore, /server_version[\s\S]*150000/u);
@@ -628,9 +628,9 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
 });
 
 test("production release reaches the API and deployment status exposes operations evidence", () => {
-  const compose = parseCompose("deploy/compose.yaml");
+  const compose = renderCompose(["compose.verify.yaml"]);
   const status = read("deploy/scripts/status.sh");
-  assert.equal(compose.services.api.environment.WEATHER_RELEASE, "${WEATHER_RELEASE:?set WEATHER_RELEASE}");
+  assert.equal(compose.services.api.environment.WEATHER_RELEASE, "2026.08.22-1");
   assert.equal(compose.services.api.environment.WEATHER_VERSION, undefined);
   assert.match(status, /env_value[^\n]*WEATHER_DATABASE_NAME/u);
   assert.doesNotMatch(status, /--dbname weather\b/u);

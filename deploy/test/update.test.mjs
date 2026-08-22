@@ -138,16 +138,19 @@ test("release environment validator rejects non-canonical PostgreSQL paths", asy
 
 test("secret validation rejects a symlink outside the Weather secret root", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-secret-path-"));
-  const outside = join(directory, "outside-secret");
-  const link = join(directory, "secret-link");
+  const deployDirectory = join(directory, "deploy");
+  const outside = join(directory, "outside");
+  const secret = join(outside, "weather_api_password");
 
   try {
-    await writeFile(outside, "secret\n");
-    await chmod(outside, 0o400);
-    await symlink(outside, link);
+    await mkdir(deployDirectory);
+    await mkdir(outside);
+    await writeFile(secret, "secret\n");
+    await chmod(secret, 0o400);
+    await symlink(outside, join(deployDirectory, "secrets"));
     const result = runBash(
       'source "$1"; deploy_dir="$2"; require_secret_source "$3" "$(id -u)" "$(id -g)"',
-      [directory, link],
+      [deployDirectory, join(deployDirectory, "secrets/weather_api_password")],
     );
     assert.notEqual(result.status, 0);
   } finally {
@@ -173,6 +176,7 @@ validate_release_env() { :; }
 read_optional_release_state() { :; }
 require_capacity_gate() { :; }
 require_deployment_secrets() { :; }
+require_control_plane_compatibility() { :; }
 compose() { printf 'compose:%s\\n' "$*" >>"$transcript"; }
 start_release 2026.08.22-1`,
       [directory, transcript],
