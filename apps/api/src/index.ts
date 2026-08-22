@@ -399,15 +399,19 @@ async function handleReadRoute(
   // serve selected current rows
   if (route.kind === "current") {
     rejectUnexpectedParameters(url.searchParams, new Set(["source", "station"]));
-    const query = parsePublicQuery(() => parseCurrentQuery(url.searchParams, site));
+    const query = parsePublicQuery(
+      // parse only the current query boundary
+      () => parseCurrentQuery(url.searchParams, site),
+    );
     const rows = await store.getCurrent(route.siteSlug, query);
     const generatedAt = now().toISOString();
     const records = mapWeatherRecords(rows, indexSources(site), generatedAt);
     return jsonResponse({ data: records, generatedAt, site });
   }
 
-  const parsed = parsePublicQuery(() =>
-    parseHistoryQuery(url.searchParams, route.siteSlug, site),
+  const parsed = parsePublicQuery(
+    // parse only the history query boundary
+    () => parseHistoryQuery(url.searchParams, route.siteSlug, site),
   );
   const rows = await store.listHistory(parsed.query);
   const hasMore = rows.length > parsed.requestedLimit;
