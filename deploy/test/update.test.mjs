@@ -270,21 +270,44 @@ test("persistent authorization is written only after API and worker compatibilit
   const compatibility = update
     .split("verify_previous_image_compatibility() (")[1]
     .split("\n)\n\n# reconcile retained PostgreSQL")[0];
+  const previousHistory = compatibility.indexOf(
+    'previous_history_sha256=$(migration_history_sha256',
+  );
+  const currentHistory = compatibility.indexOf(
+    'history_sha256=$(migration_history_sha256',
+  );
+  const authorizedWorker = compatibility.indexOf(
+    "worker node apps/worker/dist/worker.js --once",
+  );
+  const workerGate = compatibility.indexOf("previous worker compatibility failed");
+  const schemaChangeGate = compatibility.indexOf(
+    'if [[ "$history_sha256" != "$previous_history_sha256" ]]',
+  );
+  const unprovenWorkerHealth = compatibility.indexOf(
+    "worker node apps/worker/dist/health.js",
+  );
   const workerRejection = compatibility.indexOf(
     "previous worker accepted unproven migration history",
   );
-  const workerGate = compatibility.indexOf("previous worker compatibility failed");
   const apiRejection = compatibility.indexOf(
     "previous API accepted invalid migration authorization",
   );
   const apiGate = compatibility.indexOf("previous API compatibility failed");
   const publication = compatibility.lastIndexOf("write_migration_authorization");
 
-  assert.equal(workerRejection >= 0, true);
-  assert.equal(workerGate > workerRejection, true);
+  assert.equal(previousHistory >= 0, true);
+  assert.equal(currentHistory > previousHistory, true);
+  assert.equal(authorizedWorker > currentHistory, true);
+  assert.equal(workerGate > authorizedWorker, true);
+  assert.equal(schemaChangeGate > workerGate, true);
+  assert.equal(unprovenWorkerHealth > schemaChangeGate, true);
+  assert.equal(workerRejection > unprovenWorkerHealth, true);
   assert.equal(apiRejection > workerGate, true);
   assert.equal(apiGate > apiRejection, true);
   assert.equal(publication > apiGate, true);
+  const stage = update.split("  stage)\n")[1].split("  activate)\n")[0];
+  assert.match(stage, /published_authorization/u);
+  assert.match(stage, /trap 'rm -f[^']*published_authorization/u);
 });
 
 test("release environment validator requires exact current control metadata", async () => {
