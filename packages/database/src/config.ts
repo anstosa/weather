@@ -82,11 +82,11 @@ export async function loadDatabaseConfiguration(
     environment,
     "WEATHER_DATABASE_PASSWORD_FILE",
   );
-  const password = (await readFile(passwordFile, "utf8")).trimEnd();
+  const password = (await readFile(passwordFile, "utf8")).replace(/[\r\n]+$/u, "");
 
-  // reject empty mounted secrets
-  if (password.length === 0) {
-    throw new Error("database password file is empty");
+  // reject empty or multiline mounted secrets
+  if (password.length === 0 || /[\r\n]/u.test(password)) {
+    throw new Error("database password file must contain one non-empty line");
   }
 
   return {

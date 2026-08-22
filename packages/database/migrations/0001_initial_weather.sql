@@ -114,6 +114,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  -- reject material mutation
   IF ROW(
     OLD.station_id,
     OLD.provider_id,
@@ -182,6 +183,10 @@ CREATE TABLE ingestion_runs (
 
 CREATE INDEX ingestion_runs_source_state_deadline_idx
 ON ingestion_runs (source_id, state, deadline_at);
+
+CREATE UNIQUE INDEX ingestion_runs_one_running_source_idx
+ON ingestion_runs (source_id)
+WHERE state = 'running';
 
 CREATE TABLE ingestion_checkpoints (
   source_id bigint PRIMARY KEY REFERENCES sources(id) ON DELETE RESTRICT,
@@ -281,6 +286,7 @@ CREATE TABLE weather_records (
     REFERENCES ingestion_runs(id, source_id)
     ON DELETE RESTRICT,
   CONSTRAINT weather_records_forecast_product_check CHECK (source_kind <> 'forecast' OR product_run_at IS NOT NULL),
+  CONSTRAINT weather_records_receipt_order_check CHECK (last_received_at >= first_received_at),
   CONSTRAINT weather_records_temperature_check CHECK (temperature_c IS NULL OR temperature_c BETWEEN -100 AND 70),
   CONSTRAINT weather_records_apparent_temperature_check CHECK (apparent_temperature_c IS NULL OR apparent_temperature_c BETWEEN -100 AND 70),
   CONSTRAINT weather_records_precipitation_check CHECK (precipitation_mm IS NULL OR precipitation_mm BETWEEN 0 AND 2000),
@@ -320,6 +326,86 @@ CREATE INDEX weather_records_current_idx
 ON weather_records (source_id, valid_at DESC, id DESC)
 INCLUDE (last_received_at, source_kind);
 
+CREATE FUNCTION weather_guard_weather_record_update()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  -- preserve record identity and first linkage
+  IF ROW(
+    OLD.source_id,
+    OLD.source_kind,
+    OLD.valid_at,
+    OLD.product_run_at,
+    OLD.first_ingestion_run_id,
+    OLD.first_received_at
+  ) IS DISTINCT FROM ROW(
+    NEW.source_id,
+    NEW.source_kind,
+    NEW.valid_at,
+    NEW.product_run_at,
+    NEW.first_ingestion_run_id,
+    NEW.first_received_at
+  ) THEN
+    RAISE EXCEPTION 'weather record identity and first linkage are immutable' USING ERRCODE = '23514';
+  END IF;
+
+  -- guard identical retries
+  IF OLD.content_hash = NEW.content_hash THEN
+    -- permit only last linkage changes
+    IF NEW.revision_count <> OLD.revision_count OR ROW(
+      OLD.upstream_timezone,
+      OLD.upstream_model,
+      OLD.device_vendor,
+      OLD.device_model,
+      OLD.device_serial,
+      OLD.quality_metadata,
+      OLD.provider_metadata,
+      OLD.temperature_c,
+      OLD.apparent_temperature_c,
+      OLD.precipitation_mm,
+      OLD.wind_speed_mps,
+      OLD.wind_gust_mps,
+      OLD.pressure_hpa,
+      OLD.relative_humidity_percent,
+      OLD.cloud_cover_percent,
+      OLD.wind_direction_degrees
+    ) IS DISTINCT FROM ROW(
+      NEW.upstream_timezone,
+      NEW.upstream_model,
+      NEW.device_vendor,
+      NEW.device_model,
+      NEW.device_serial,
+      NEW.quality_metadata,
+      NEW.provider_metadata,
+      NEW.temperature_c,
+      NEW.apparent_temperature_c,
+      NEW.precipitation_mm,
+      NEW.wind_speed_mps,
+      NEW.wind_gust_mps,
+      NEW.pressure_hpa,
+      NEW.relative_humidity_percent,
+      NEW.cloud_cover_percent,
+      NEW.wind_direction_degrees
+    ) THEN
+      RAISE EXCEPTION 'identical weather retry may update only last linkage' USING ERRCODE = '23514';
+    END IF;
+  ELSE
+    -- require one monotonic revision
+    IF NEW.revision_count <> OLD.revision_count + 1 THEN
+      RAISE EXCEPTION 'changed weather content must increment revision_count once' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER weather_records_revision_guard
+BEFORE UPDATE ON weather_records
+FOR EACH ROW
+EXECUTE FUNCTION weather_guard_weather_record_update();
+
 CREATE TABLE worker_heartbeats (
   worker_instance varchar(128) PRIMARY KEY,
   last_loop_at timestamptz NOT NULL,
@@ -347,7 +433,30 @@ GRANT SELECT (
 ) ON sources TO weather_api;
 
 GRANT SELECT ON sites, stations, providers, sources TO weather_ingest;
-GRANT SELECT, INSERT, UPDATE ON ingestion_runs, ingestion_checkpoints, backfill_chunk_outcomes, weather_records, worker_heartbeats TO weather_ingest;
+GRANT SELECT, INSERT, UPDATE ON ingestion_runs, ingestion_checkpoints, backfill_chunk_outcomes, worker_heartbeats TO weather_ingest;
+GRANT SELECT, INSERT ON weather_records TO weather_ingest;
+GRANT UPDATE (
+  last_ingestion_run_id,
+  last_received_at,
+  upstream_timezone,
+  upstream_model,
+  device_vendor,
+  device_model,
+  device_serial,
+  quality_metadata,
+  provider_metadata,
+  temperature_c,
+  apparent_temperature_c,
+  precipitation_mm,
+  wind_speed_mps,
+  wind_gust_mps,
+  pressure_hpa,
+  relative_humidity_percent,
+  cloud_cover_percent,
+  wind_direction_degrees,
+  content_hash,
+  revision_count
+) ON weather_records TO weather_ingest;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO weather_ingest;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;

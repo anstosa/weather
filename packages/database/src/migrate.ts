@@ -43,15 +43,14 @@ export async function runMigrations(
     lockHeld = true;
     await bootstrapMigrationTable(client);
     const migrations = await loadMigrationFiles(migrationDirectory);
+    const appliedCount = await validateMigrationHistory(client, migrations);
     const applied: string[] = [];
     const current: string[] = [];
 
     // apply files in lexical order
-    for (const migration of migrations) {
-      const status = await migrationStatus(client, migration);
-
-      // retain verified migrations
-      if (status === "current") {
+    for (const [index, migration] of migrations.entries()) {
+      // retain the verified prefix
+      if (index < appliedCount) {
         current.push(migration.name);
         continue;
       }
@@ -145,25 +144,29 @@ async function loadMigrationFiles(
   return migrations;
 }
 
-// verify an applied checksum
-async function migrationStatus(
+// validate the complete applied prefix
+async function validateMigrationHistory(
   client: PoolClient,
-  migration: MigrationFile,
-): Promise<"current" | "pending"> {
-  const result = await client.query<{ checksum: string }>(
-    "SELECT checksum FROM schema_migrations WHERE name = $1",
-    [migration.name],
+  migrations: readonly MigrationFile[],
+): Promise<number> {
+  const result = await client.query<{ checksum: string; name: string }>(
+    "SELECT name, checksum FROM schema_migrations ORDER BY name",
   );
 
-  // mark unapplied files pending
-  if (result.rowCount === 0) {
-    return "pending";
+  // require applied history to remain an exact prefix
+  for (const [index, applied] of result.rows.entries()) {
+    const artifact = migrations[index];
+
+    // reject deleted or retroactively inserted files
+    if (artifact === undefined || artifact.name !== applied.name) {
+      throw new Error("migration history diverges from ordered artifacts");
+    }
+
+    // fail closed on changed history
+    if (applied.checksum !== artifact.checksum) {
+      throw new Error(`migration checksum mismatch: ${artifact.name}`);
+    }
   }
 
-  // fail closed on changed history
-  if (result.rows[0]?.checksum !== migration.checksum) {
-    throw new Error(`migration checksum mismatch: ${migration.name}`);
-  }
-
-  return "current";
+  return result.rows.length;
 }

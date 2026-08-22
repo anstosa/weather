@@ -67,6 +67,8 @@ SELECT format('ALTER DATABASE %I OWNER TO weather_owner', current_database())
 ALTER SCHEMA public OWNER TO weather_owner;
 SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
 \gexec
+SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database())
+\gexec
 SELECT format(
   'GRANT CONNECT ON DATABASE %I TO weather_owner, weather_api, weather_ingest',
   current_database()
