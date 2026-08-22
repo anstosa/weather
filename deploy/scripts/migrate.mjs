@@ -6,10 +6,15 @@ export async function migrateAndBootstrap(
   migrationDirectory,
   siteConfigurationPath,
   dependencies,
+  migrationOptions = {},
 ) {
   try {
     // apply checked migrations first
-    const migrations = await dependencies.runMigrations(pool, migrationDirectory);
+    const migrations = await dependencies.runMigrations(
+      pool,
+      migrationDirectory,
+      migrationOptions,
+    );
     // load configuration after the schema is ready
     const siteConfiguration = await dependencies.loadSiteConfiguration(siteConfigurationPath);
     // bootstrap through the owner pool
@@ -51,6 +56,10 @@ if (isEntrypoint) {
       bootstrapSiteConfiguration,
       loadSiteConfiguration,
       runMigrations,
+    },
+    {
+      lockTimeoutMs: configuration.lockTimeoutMs,
+      statementTimeoutMs: configuration.statementTimeoutMs,
     },
   );
   console.log(

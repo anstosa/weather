@@ -68,18 +68,11 @@ validate_release_env() {
   require_file "$path"
   [[ ! -L "$path" ]] || die "release environment must not be a symbolic link: $path"
   meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
-  # accept the original version-one release format
-  if [[ "$meaningful_lines" -eq 7 ]]; then
-    allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR)='
-    control_plane=
-    control_version=1
-  elif [[ "$meaningful_lines" -eq 9 ]]; then
-    allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
-    control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
-    control_version=$(env_value "$path" WEATHER_CONTROL_PLANE_VERSION)
-  else
-    die "release environment must use the version-one legacy or current format"
-  fi
+  [[ "$meaningful_lines" -eq 9 ]] ||
+    die "release environment must contain the exact current control-plane format"
+  allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
+  control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
+  control_version=$(env_value "$path" WEATHER_CONTROL_PLANE_VERSION)
   grep -qEv "$allowed_fields" "$path" &&
     die "release environment contains an unknown or malformed value"
   release=$(env_value "$path" WEATHER_RELEASE)
@@ -98,7 +91,7 @@ validate_release_env() {
   postgres_dir=$(env_value "$path" WEATHER_POSTGRES_DIR)
   validate_database_name "$database_name"
   require_canonical_descendant "$postgres_dir" /var/lib/weather "PostgreSQL directory"
-  [[ -z "$control_plane" || "$control_plane" =~ ^[a-f0-9]{64}$ ]] ||
+  [[ "$control_plane" =~ ^[a-f0-9]{64}$ ]] ||
     die "invalid deployment control-plane digest"
   [[ "$control_version" =~ ^[1-9][0-9]*$ ]] || die "invalid deployment control-plane version"
 }
@@ -192,6 +185,7 @@ require_secret_source() {
 # verify every consumer copy without exposing material
 require_deployment_secrets() {
   require_command cmp
+  require_secret_source "$deploy_dir/secrets/weather_postgres_admin_password" 999 999
   require_secret_source "$deploy_dir/secrets/weather_postgres_owner_password" 999 999
   require_secret_source "$deploy_dir/secrets/weather_postgres_api_password" 999 999
   require_secret_source "$deploy_dir/secrets/weather_postgres_ingest_password" 999 999
@@ -199,6 +193,9 @@ require_deployment_secrets() {
   require_secret_source "$deploy_dir/secrets/weather_api_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_worker_ingest_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/cloudflare_tunnel_token" 65532 65532
+  ! cmp -s "$deploy_dir/secrets/weather_postgres_admin_password" \
+    "$deploy_dir/secrets/weather_postgres_owner_password" ||
+    die "administrator and owner passwords must differ"
   cmp -s "$deploy_dir/secrets/weather_postgres_owner_password" \
     "$deploy_dir/secrets/weather_migration_owner_password" ||
     die "owner password copies differ"
@@ -320,11 +317,11 @@ verify_previous_image_compatibility() (
     --env WEATHER_DATABASE_NAME="$candidate" api node apps/api/dist/main.js >/dev/null
   api_started=true
 
-  # wait for both previous API contracts
+  # wait for every previous API read contract
   for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
-    # accept only health and read success together
+    # accept only complete read success
     if docker exec "$api_container" node -e \
-      "Promise.all(['/api/v1/health','/api/v1/sites'].map(path=>fetch('http://127.0.0.1:3001'+path))).then(async([health,sites])=>{if(!health.ok||!sites.ok)process.exit(1);const healthBody=await health.json();const sitesBody=await sites.json();if(healthBody.data?.ready!==true||healthBody.data?.version!=='$previous_release'||!Array.isArray(sitesBody.data))process.exit(1)}).catch(()=>process.exit(1))"; then
+      "const base='http://127.0.0.1:3001/api/v1';Promise.all([fetch(base+'/health'),fetch(base+'/sites')]).then(async([health,sites])=>{if(!health.ok||!sites.ok)process.exit(1);const healthBody=await health.json();const sitesBody=await sites.json();const site=sitesBody.data?.[0]?.slug;if(healthBody.data?.ready!==true||healthBody.data?.version!=='$previous_release'||typeof site!=='string')process.exit(1);const [current,history]=await Promise.all([fetch(base+'/sites/'+encodeURIComponent(site)+'/current'),fetch(base+'/sites/'+encodeURIComponent(site)+'/history?limit=1')]);if(!current.ok||!history.ok)process.exit(1);const currentBody=await current.json();const historyBody=await history.json();if(!Array.isArray(currentBody.data)||!Array.isArray(historyBody.data))process.exit(1)}).catch(()=>process.exit(1))"; then
       exit 0
     fi
     sleep 1
@@ -371,6 +368,7 @@ start_release() (
   if [[ -n "$current" ]]; then
     current_env=$(release_env "$current")
     validate_release_env "$current_env" "$current"
+    require_control_plane_compatibility "$current_env"
     backup_env=$current_env
   else
     backup_env=$activation_env
@@ -481,6 +479,7 @@ case "$action" in
     if [[ -n "$current" ]]; then
       previous_env=$(release_env "$current")
       validate_release_env "$previous_env" "$current"
+      require_control_plane_compatibility "$previous_env"
       require_deployment_secrets
       verify_previous_image_compatibility "$temporary" "$previous_env"
     else
