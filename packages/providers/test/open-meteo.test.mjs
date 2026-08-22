@@ -168,17 +168,24 @@ test("provider timeout cancels a stalled response body", async () => {
 
 // prove response bodies cannot exceed the configured byte ceiling
 test("provider rejects oversized response bodies before parsing", async () => {
-  await assert.rejects(
-    fetchJsonWithRetry(new URL("https://example.test/weather"), {
-      fetch: async () => new Response('{"payload":"too-large"}', { status: 200 }),
-      maxAttempts: 1,
-      maxBodyBytes: 8,
-    }),
-    (error) =>
-      error instanceof ProviderFailure &&
-      error.ingestionError.classification === "invalid_payload" &&
-      error.ingestionError.code === "provider_response_too_large",
-  );
+  // enforce the stream limit for both success and error responses
+  for (const status of [200, 400]) {
+    await assert.rejects(
+      fetchJsonWithRetry(new URL("https://example.test/weather"), {
+        fetch: async () =>
+          new Response('{"payload":"too-large"}', {
+            headers: { "content-length": "1" },
+            status,
+          }),
+        maxAttempts: 1,
+        maxBodyBytes: 8,
+      }),
+      (error) =>
+        error instanceof ProviderFailure &&
+        error.ingestionError.classification === "invalid_payload" &&
+        error.ingestionError.code === "provider_response_too_large",
+    );
+  }
 });
 
 // prove the durable run budget covers every bounded retry phase
@@ -187,6 +194,30 @@ test("provider request budget includes attempts and maximum retry delays", () =>
     providerRequestBudgetMilliseconds({ maxAttempts: 3, timeoutMs: 10_000 }),
     90_000,
   );
+});
+
+// stop before a retry delay that would cross the absolute run deadline
+test("provider retry sleep respects the persisted run deadline", async () => {
+  let sleeps = 0;
+
+  await assert.rejects(
+    fetchJsonWithRetry(new URL("https://example.test/weather"), {
+      clock: () => 0,
+      deadlineAt: "1970-01-01T00:00:01.000Z",
+      fetch: async () =>
+        new Response('{"reason":"slow down"}', {
+          headers: { "retry-after": "30" },
+          status: 429,
+        }),
+      sleep: async () => {
+        sleeps += 1;
+      },
+    }),
+    (error) =>
+      error instanceof ProviderFailure &&
+      error.ingestionError.code === "provider_deadline_exceeded",
+  );
+  assert.equal(sleeps, 0);
 });
 
 // prove bounded retry and no secret headers
