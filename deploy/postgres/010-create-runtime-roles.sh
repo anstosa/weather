@@ -26,13 +26,28 @@ sql_literal() {
   printf "'%s'" "${value//\'/\'\'}"
 }
 
+require_secret_file WEATHER_ADMIN_PASSWORD_FILE
 require_secret_file WEATHER_OWNER_PASSWORD_FILE
 require_secret_file WEATHER_API_PASSWORD_FILE
 require_secret_file WEATHER_INGEST_PASSWORD_FILE
 
+admin_password="$(<"$WEATHER_ADMIN_PASSWORD_FILE")"
 owner_password="$(<"$WEATHER_OWNER_PASSWORD_FILE")"
 api_password="$(<"$WEATHER_API_PASSWORD_FILE")"
 ingest_password="$(<"$WEATHER_INGEST_PASSWORD_FILE")"
+
+# separate administrator authority
+if [[ -z "$admin_password" || "$admin_password" == *$'\n'* || "$admin_password" == *$'\r'* ]]; then
+  printf 'database role secret must be non-empty and single-line\n' >&2
+  exit 1
+fi
+
+# reject shared administrator authority
+if [[ "$admin_password" == "$owner_password" ]]; then
+  printf 'administrator and owner passwords must differ\n' >&2
+  exit 1
+fi
+
 owner_literal="$(sql_literal "$owner_password")"
 api_literal="$(sql_literal "$api_password")"
 ingest_literal="$(sql_literal "$ingest_password")"
@@ -77,4 +92,4 @@ SELECT format(
 ALTER ROLE weather_owner WITH LOGIN PASSWORD $owner_literal NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 SQL
 
-unset owner_password api_password ingest_password owner_literal api_literal ingest_literal
+unset admin_password owner_password api_password ingest_password owner_literal api_literal ingest_literal

@@ -19,7 +19,7 @@ services:
 
   cloudflared:
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
-    image: node:24-bookworm-slim
+    image: ${WEATHER_LOCAL_CLOUDFLARED_IMAGE:-node:24-bookworm-slim}
     entrypoint: [node]
     command:
       - -e

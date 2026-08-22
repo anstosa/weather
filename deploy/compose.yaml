@@ -47,11 +47,14 @@ services:
     environment:
       POSTGRES_DB: ${WEATHER_DATABASE_NAME:-weather}
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD_FILE: /run/secrets/weather_owner_password
+      POSTGRES_PASSWORD_FILE: /run/secrets/weather_admin_password
+      WEATHER_ADMIN_PASSWORD_FILE: /run/secrets/weather_admin_password
       WEATHER_OWNER_PASSWORD_FILE: /run/secrets/weather_owner_password
       WEATHER_API_PASSWORD_FILE: /run/secrets/weather_api_password
       WEATHER_INGEST_PASSWORD_FILE: /run/secrets/weather_ingest_password
     secrets:
+      - source: weather_postgres_admin_password
+        target: weather_admin_password
       - source: weather_postgres_owner_password
         target: weather_owner_password
       - source: weather_postgres_api_password
@@ -287,6 +290,8 @@ networks:
     driver: bridge
 
 secrets:
+  weather_postgres_admin_password:
+    file: ./secrets/weather_postgres_admin_password
   weather_postgres_owner_password:
     file: ./secrets/weather_postgres_owner_password
   weather_migration_owner_password:
