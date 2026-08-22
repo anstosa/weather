@@ -96,7 +96,7 @@ async function writeOverride(path, secretsRoot) {
     path,
     `services:
   compatibility-provider:
-    image: weather-server:local
+    image: \${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     build:
       context: ..
       dockerfile: Dockerfile
@@ -136,7 +136,9 @@ test(
       ...process.env,
       WEATHER_COMPOSE_PROJECT_NAME: projectName,
       WEATHER_LOCAL_POSTGRES_PORT: String(postgresPort),
+      WEATHER_LOCAL_SERVER_IMAGE: `${projectName}-server:local`,
       WEATHER_LOCAL_WEB_PORT: String(webPort),
+      WEATHER_LOCAL_WEB_IMAGE: `${projectName}-web:local`,
     };
 
     await executeFile("mkdir", ["-p", secretsRoot, backups]);
