@@ -6,11 +6,14 @@ import {
   ProviderFailure,
   buildOpenMeteoArchiveRequest,
   buildOpenMeteoCurrentRequest,
+  createOpenMeteoCurrentOperation,
+  createOpenMeteoHistoricalOperation,
   fetchJsonWithRetry,
   fetchOpenMeteoCurrent,
   normalizeArchivePayload,
   normalizeCurrentPayload,
   openMeteoCapabilities,
+  parseOpenMeteoCompatibilityOrigin,
 } from "../dist/index.js";
 
 const location = {
@@ -189,4 +192,61 @@ test("U-OM-09 4xx and invalid JSON do not retry", async () => {
 // prove capability boundary stays narrow
 test("U-OM-10 capability report is exact", () => {
   assert.deepEqual(openMeteoCapabilities(), ["current", "historical"]);
+});
+
+// prove executable operations and safe endpoint selection
+test("Open-Meteo operations default official and allow a safe compatibility origin", async () => {
+  const current = await fixture("current.json");
+  const archive = await fixture("archive-fall-back.json");
+  const requests = [];
+  const currentOperation = createOpenMeteoCurrentOperation();
+  const historicalOperation = createOpenMeteoHistoricalOperation(
+    "http://provider-stub:8080",
+  );
+  await currentOperation(location, {
+    fetch: async (url) => {
+      requests.push(String(url));
+      return new Response(JSON.stringify(current), { status: 200 });
+    },
+    now: () => new Date(receivedAt),
+  });
+  await historicalOperation(
+    { ...location, endDate: "2026-11-01", startDate: "2026-11-01" },
+    {
+      fetch: async (url) => {
+        requests.push(String(url));
+        return new Response(JSON.stringify(archive), { status: 200 });
+      },
+      now: () => new Date(receivedAt),
+    },
+  );
+
+  assert.equal(new URL(requests[0]).origin, "https://api.open-meteo.com");
+  assert.equal(
+    new URL(requests[1]).origin + new URL(requests[1]).pathname,
+    "http://provider-stub:8080/v1/archive",
+  );
+});
+
+// reject unsafe compatibility origins
+test("compatibility origin is credential-free and origin-only", () => {
+  assert.equal(parseOpenMeteoCompatibilityOrigin(undefined), null);
+  assert.equal(
+    parseOpenMeteoCompatibilityOrigin("http://provider-stub:8080"),
+    "http://provider-stub:8080",
+  );
+
+  // reject credentials paths queries fragments and non-http schemes
+  for (const value of [
+    "http://user:secret@provider-stub:8080",
+    "http://provider-stub:8080/path",
+    "http://provider-stub:8080?token=secret",
+    "http://provider-stub:8080#fragment",
+    "file:///tmp/provider",
+  ]) {
+    assert.throws(
+      () => parseOpenMeteoCompatibilityOrigin(value),
+      /credential-free HTTP origin/u,
+    );
+  }
 });

@@ -60,6 +60,16 @@ test("source fingerprints ignore operational cadence and active fields", async (
         : source,
     ),
   });
+  const locationChanges = [
+    { latitude: raw.site.latitude + 0.01 },
+    { longitude: raw.site.longitude - 0.01 },
+    { timezone: "UTC" },
+  ].map((siteChange) =>
+    parseSiteConfiguration({
+      ...raw,
+      site: { ...raw.site, ...siteChange },
+    }),
+  );
 
   assert.equal(
     baseline.sources[0].fingerprint,
@@ -69,6 +79,24 @@ test("source fingerprints ignore operational cadence and active fields", async (
     baseline.sources[0].fingerprint,
     materialChange.sources[0].fingerprint,
   );
+  // require every location part in source identity
+  for (const changed of locationChanges) {
+    assert.notEqual(
+      baseline.sources[0].fingerprint,
+      changed.sources[0].fingerprint,
+    );
+  }
+});
+
+// reject non-object configuration roots
+test("site configuration rejects null primitive and array roots", () => {
+  // exercise every non-object JSON category
+  for (const value of [null, true, 1, "invalid", []]) {
+    assert.throws(
+      () => parseSiteConfiguration(value),
+      /site configuration must be an object/u,
+    );
+  }
 });
 
 // verify secret-file configuration

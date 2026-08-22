@@ -97,6 +97,34 @@ test("I-ING-01 scheduled fetch observes committed running lifecycle", async () =
   assert.deepEqual(log, ["lock", "abandon", "start-committed", "fetch", "complete:1", "release"]);
 });
 
+// retain primary and secondary scheduled failures
+test("scheduled failure retains primary code and redacted finalization diagnostics", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const log = [];
+  const repository = scheduledRepository(log);
+  repository.failIngestionRun = async () => {
+    throw new Error(`password=scheduled-secret ${"x".repeat(700)}`);
+  };
+  const result = await runScheduledSource({}, currentDueSource(), {
+    fetchCurrent: async () => {
+      throw new ProviderFailure({
+        classification: "retryable",
+        code: "provider_primary",
+        message: "primary failure",
+      });
+    },
+    now: () => new Date("2026-08-22T05:20:00.000Z"),
+    repository,
+    site,
+  });
+
+  assert.equal(result.reason, "provider_primary");
+  assert.equal(result.status, "failed");
+  assert.match(result.secondaryError, /\[redacted\]/u);
+  assert.doesNotMatch(result.secondaryError, /scheduled-secret/u);
+  assert.ok(result.secondaryError.length <= 512);
+});
+
 // create an exact backfill repository
 function backfillRepository(log, successfulKeys = new Set()) {
   let run = 0;
@@ -223,4 +251,58 @@ test("I-ING-07 exact resume skips only success and reports partial failure", asy
   assert.equal(fetchCount, 2);
   assert.equal(log.filter((entry) => entry === "start-committed").length, 2);
   assert.equal(log.some((entry) => entry.startsWith("fail:")), true);
+});
+
+// retain primary and secondary backfill failures
+test("backfill failure retains primary code and redacted finalization diagnostics", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const hydratedSite = {
+    ...site,
+    sources: site.sources.map((candidate) =>
+      candidate.key === "open-meteo-reanalysis-v1"
+        ? { ...candidate, fingerprint }
+        : candidate,
+    ),
+  };
+  const repository = backfillRepository([]);
+  repository.failIngestionRun = async () => {
+    throw new Error(`token=backfill-secret ${"x".repeat(700)}`);
+  };
+  const report = await executeBackfill(
+    {},
+    {
+      chunkDays: 14,
+      dryRun: false,
+      from: "2026-01-01",
+      reportPath: null,
+      resume: false,
+      site: "ballydidean",
+      source: null,
+      to: "2026-01-01",
+    },
+    hydratedSite,
+    {
+      id: sourceId,
+      key: "open-meteo-reanalysis-v1",
+      latitude: site.site.latitude,
+      longitude: site.site.longitude,
+      timezone: site.site.timezone,
+    },
+    {
+      fetchArchive: async () => {
+        throw new ProviderFailure({
+          classification: "retryable",
+          code: "archive_primary",
+          message: "primary failure",
+        });
+      },
+      now: () => new Date("2026-08-22T05:20:00.000Z"),
+      repository,
+    },
+  );
+
+  assert.equal(report.chunks[0].errorCode, "archive_primary");
+  assert.match(report.chunks[0].secondaryError, /\[redacted\]/u);
+  assert.doesNotMatch(report.chunks[0].secondaryError, /backfill-secret/u);
+  assert.ok(report.chunks[0].secondaryError.length <= 512);
 });
