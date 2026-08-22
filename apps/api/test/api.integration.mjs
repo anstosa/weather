@@ -183,20 +183,20 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0001_initial_weather.sql",
+        version: "0002_worker_migration_readiness.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
       await admin.query(
         "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
-        ["0002_future.sql", "1".repeat(64)],
+        ["0003_future.sql", "1".repeat(64)],
       );
       const previousBinaryResponse = await fetch(`${origin}/api/v1/health`);
       const previousBinary = await previousBinaryResponse.json();
       assert.equal(previousBinaryResponse.status, 200);
       assert.deepEqual(previousBinary.data.migration, {
         status: "current",
-        version: "0001_initial_weather.sql",
+        version: "0002_worker_migration_readiness.sql",
       });
 
       const ledger = await admin.query(
@@ -219,7 +219,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         [ledger.rows[0].checksum],
       );
       await admin.query(
-        "DELETE FROM schema_migrations WHERE name = '0002_future.sql'",
+        "DELETE FROM schema_migrations WHERE name = '0003_future.sql'",
       );
     });
 
