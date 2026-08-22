@@ -321,25 +321,26 @@ restore_images() {
 # activate one forward release
 start_release() (
   local target=$1
-  local target_env current current_env backup_env
+  local activation_env current current_env backup_env
   local initial_started=false
 
   # clean a partially started first activation
+  # shellcheck disable=SC2329
   cleanup_initial_activation() {
     local status=$?
 
     # stop only this Weather project
     if [[ "$initial_started" == true ]]; then
-      WEATHER_ENV_FILE=$target_env compose down --remove-orphans >/dev/null 2>&1 || status=1
+      WEATHER_ENV_FILE=$activation_env compose down --remove-orphans >/dev/null 2>&1 || status=1
     fi
 
     trap - EXIT
     exit "$status"
   }
   trap cleanup_initial_activation EXIT
-  target_env=$(release_env "$target")
-  validate_release_env "$target_env" "$target"
-  require_control_plane_compatibility "$target_env"
+  activation_env=$(release_env "$target")
+  validate_release_env "$activation_env" "$target"
+  require_control_plane_compatibility "$activation_env"
   current=$(read_optional_release_state "$state_dir/current-release")
   require_capacity_gate
   require_deployment_secrets
@@ -350,9 +351,9 @@ start_release() (
     validate_release_env "$current_env" "$current"
     backup_env=$current_env
   else
-    backup_env=$target_env
+    backup_env=$activation_env
     initial_started=true
-    WEATHER_ENV_FILE=$target_env compose up -d postgres --wait
+    WEATHER_ENV_FILE=$activation_env compose up -d postgres --wait
   fi
 
   printf 'Creating pre-migration encrypted backup...\n'
@@ -360,10 +361,10 @@ start_release() (
     die "pre-migration backup failed"
 
   printf 'Applying candidate migrations...\n'
-  WEATHER_ENV_FILE=$target_env compose run --rm migration
+  WEATHER_ENV_FILE=$activation_env compose run --rm migration
 
   printf 'Starting release %s...\n' "$target"
-  if ! WEATHER_ENV_FILE=$target_env compose up -d --remove-orphans --wait; then
+  if ! WEATHER_ENV_FILE=$activation_env compose up -d --remove-orphans --wait; then
     # restore only the prior exact image configuration
     if [[ -n "$current" && "$current" != "$target" ]]; then
       printf 'Activation failed; restoring Weather release %s...\n' "$current" >&2
