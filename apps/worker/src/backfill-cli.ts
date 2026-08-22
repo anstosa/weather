@@ -33,6 +33,7 @@ import { loadWorkerConfiguration } from "./config.js";
 import {
   boundedWorkerError,
   combineWorkerDiagnostics,
+  guardReleaseSession,
 } from "./errors.js";
 import { planIngestionDeadlines } from "./run-deadline.js";
 import {
@@ -470,19 +471,6 @@ async function executeBackfillChunk(
   }
 
   return result;
-}
-
-// release a backfill session without masking its result
-async function guardReleaseSession(
-  session: SourceSession,
-): Promise<string | null> {
-  try {
-    await session.release();
-    return null;
-  } catch (error) {
-    // retain bounded cleanup diagnostics
-    return boundedWorkerError(error);
-  }
 }
 
 // require all records inside the exact half-open interval

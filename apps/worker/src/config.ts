@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 import {
   loadDatabaseConfiguration,
   loadSiteConfiguration,
@@ -12,6 +14,7 @@ import {
 export interface WorkerConfiguration {
   readonly database: DatabaseConfiguration;
   readonly instance: string;
+  readonly migrationDirectory: string;
   readonly openMeteoCompatibilityOrigin: string | null;
   readonly site: SiteConfiguration;
   readonly siteConfigurationPath: string;
@@ -32,6 +35,10 @@ export async function loadWorkerConfiguration(
     instance: boundedEnvironment(
       environment.WEATHER_WORKER_INSTANCE ?? "weather-worker",
       "WEATHER_WORKER_INSTANCE",
+    ),
+    migrationDirectory: resolve(
+      environment.WEATHER_MIGRATION_DIRECTORY ??
+        "packages/database/migrations",
     ),
     openMeteoCompatibilityOrigin: parseOpenMeteoCompatibilityOrigin(
       environment[OPEN_METEO_COMPATIBILITY_ORIGIN_ENV],

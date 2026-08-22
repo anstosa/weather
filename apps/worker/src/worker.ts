@@ -3,7 +3,6 @@ import { pathToFileURL } from "node:url";
 import {
   abandonExpiredRuns,
   acquireSourceSession,
-  assertSupportedPostgres,
   completeScheduledIngestion,
   createDatabasePool,
   discoverDueSources,
@@ -31,10 +30,14 @@ import {
   boundedWorkerError,
   combineWorkerDiagnostics,
   createWorkerDiagnostic,
+  guardReleaseSession,
   writeWorkerDiagnostic,
   type WorkerDiagnostic,
 } from "./errors.js";
-import { readWorkerHealth } from "./health.js";
+import {
+  assertWorkerDatabaseReadiness,
+  readWorkerHealth,
+} from "./health.js";
 import { planIngestionDeadlines } from "./run-deadline.js";
 import {
   WORKER_CADENCE_MS,
@@ -62,6 +65,7 @@ export interface WorkerIterationOptions {
   readonly instance: string;
   readonly lastSuccessAt: string | null;
   readonly now?: () => Date;
+  readonly onDurableSuccess?: (lastSuccessAt: string) => void;
   readonly repository?: WorkerRepository;
   readonly site: SiteConfiguration;
   readonly version: string;
@@ -138,6 +142,7 @@ export async function runWorkerIteration(
       // track ingestion success separately from loop liveness
       if (result.status === "succeeded") {
         lastSuccessAt = now().toISOString();
+        options.onDurableSuccess?.(lastSuccessAt);
       }
     } catch (error) {
       const result: SourceRunResult = {
@@ -417,19 +422,6 @@ async function guardFailScheduledRun(
   }
 }
 
-// release a retained source session without masking work
-async function guardReleaseSession(
-  session: SourceSession,
-): Promise<string | null> {
-  try {
-    await session.release();
-    return null;
-  } catch (error) {
-    // retain bounded cleanup diagnostics
-    return boundedWorkerError(error);
-  }
-}
-
 // validate the frozen source contract version
 function requireContractVersion(
   adapterConfig: unknown,
@@ -456,7 +448,10 @@ export async function startWorkerProcess(
   const fetchCurrent = createOpenMeteoCurrentOperation(
     configuration.openMeteoCompatibilityOrigin,
   );
-  await assertSupportedPostgres(pool);
+  await assertWorkerDatabaseReadiness(
+    pool,
+    configuration.migrationDirectory,
+  );
   const durableHealth = await readWorkerHealth(pool, configuration.instance);
   let lastSuccessAt = durableHealth.lastSuccessAt;
   const scheduler = createNonOverlappingScheduler({
@@ -481,6 +476,10 @@ export async function startWorkerProcess(
         fetchCurrent,
         instance: configuration.instance,
         lastSuccessAt,
+        // retain committed success before heartbeat persistence
+        onDurableSuccess: (candidate) => {
+          lastSuccessAt = candidate;
+        },
         site: configuration.site,
         version: configuration.version,
       });

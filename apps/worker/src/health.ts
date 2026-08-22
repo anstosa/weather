@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import {
   assertSupportedPostgres,
   createDatabasePool,
+  verifyMigrationReadiness,
 } from "@weather/database";
 
 import { loadWorkerConfiguration } from "./config.js";
@@ -16,6 +17,15 @@ export interface WorkerHealth {
   readonly live: boolean;
   readonly ready: boolean;
   readonly stale: boolean;
+}
+
+// verify the worker database contract
+export async function assertWorkerDatabaseReadiness(
+  pool: DatabasePool,
+  migrationDirectory: string,
+): Promise<void> {
+  await assertSupportedPostgres(pool);
+  await verifyMigrationReadiness(pool, migrationDirectory);
 }
 
 // derive allowlisted worker health
@@ -76,7 +86,10 @@ export async function runWorkerHealthCheck(): Promise<0 | 1> {
   const pool = createDatabasePool(configuration.database);
 
   try {
-    await assertSupportedPostgres(pool);
+    await assertWorkerDatabaseReadiness(
+      pool,
+      configuration.migrationDirectory,
+    );
     const health = await readWorkerHealth(pool, configuration.instance);
     process.stdout.write(`${JSON.stringify(health)}\n`);
     return health.ready ? 0 : 1;

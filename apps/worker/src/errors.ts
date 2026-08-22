@@ -1,3 +1,5 @@
+import { redactSensitiveText } from "@weather/providers";
+
 export type WorkerDiagnosticEvent = "source_run" | "worker_iteration";
 
 export interface WorkerDiagnostic {
@@ -58,6 +60,19 @@ export function combineWorkerDiagnostics(
   return parts.join("; ").slice(0, 512);
 }
 
+// release a source session without masking work
+export async function guardReleaseSession(
+  session: Readonly<{ release(): Promise<void> }>,
+): Promise<string | null> {
+  try {
+    await session.release();
+    return null;
+  } catch (error) {
+    // retain bounded cleanup diagnostics
+    return boundedWorkerError(error);
+  }
+}
+
 // construct one allowlisted structured diagnostic
 export function createWorkerDiagnostic(
   input: WorkerDiagnosticInput,
@@ -116,4 +131,3 @@ function boundedDiagnosticErrorCode(value: string | null): string | null {
 
   return value;
 }
-import { redactSensitiveText } from "@weather/providers";
