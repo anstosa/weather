@@ -817,7 +817,11 @@ test("deployment artifacts contain no neighboring identity or production secret"
 // verify release workflow immutability
 test("release workflow publishes only immutable ARM64 server and web images", () => {
   const workflow = read(".github/workflows/publish-images.yml");
-  assert.match(workflow, /tags:[\s\S]*20\?\?\.\?\?\.\?\?-\*/u);
+  assert.match(
+    workflow,
+    /tags:\n\s+- "20\[0-9\]\[0-9\]\.\[0-9\]\[0-9\]\.\[0-9\]\[0-9\]-\[0-9\]\+"/u,
+  );
+  assert.doesNotMatch(workflow, /tags:\n\s+- "[^"\n]*\?/u);
   assert.match(workflow, /matrix:[\s\S]*target: \[server, web\]/u);
   assert.match(workflow, /platforms: linux\/arm64/u);
   assert.match(workflow, /push: true/u);
