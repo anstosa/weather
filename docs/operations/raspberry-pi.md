@@ -120,6 +120,19 @@ preserving `/var/lib/weather`. Cleanup is armed as soon as the first PostgreSQL
 service starts, including backup, migration, and health failures. Recovery
 reapplies the recorded exact image set after Docker or host restart.
 
+PostgreSQL startup reconciles the mounted administrator secret on both empty and
+retained data directories before opening a network listener. Recovery, rollback,
+and activation force-recreate only the PostgreSQL container before starting the
+runtime images; the data directory is retained. Its health gate authenticates as
+`postgres` with the administrator secret rather than relying on `pg_isready`.
+To rotate that secret, atomically replace
+`deploy/secrets/weather_postgres_admin_password` with another `999:999`, mode
+`0400` value that differs from the owner password, then run `recover` through the
+normal root-owned operator path. Do not use a plain container restart: recreating
+the container is required to pick up an atomically replaced file-secret inode.
+Any reconciliation or authenticated-health failure stops recovery before the API,
+worker, web, or connector is restarted.
+
 `status` reports connector state, the latest ingestion run, overdue running
 work, the latest chunk outcome, and bounded failure classification/code evidence
 without printing persisted error messages.

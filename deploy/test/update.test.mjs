@@ -16,6 +16,30 @@ function runBash(source, argumentsList = []) {
   });
 }
 
+// verify retained credential handoff
+test("restore recreates PostgreSQL before starting runtime images", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-postgres-restore-"));
+  const transcript = join(directory, "transcript");
+
+  try {
+    const result = runBash(
+      `source "$1"
+transcript=$2
+compose() { printf '%s:%s\n' "$WEATHER_ENV_FILE" "$*" >>"$transcript"; }
+restore_images /releases/current.env`,
+      [transcript],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      await readFile(transcript, "utf8"),
+      "/releases/current.env:up -d --no-deps --force-recreate --wait postgres\n" +
+        "/releases/current.env:up -d --no-deps --wait api worker web cloudflared\n",
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("rollback switches images and commits state without forward operations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-rollback-"));
   const transcript = join(directory, "transcript");
@@ -242,7 +266,10 @@ start_release 2026.08.22-1`,
       );
       assert.notEqual(result.status, 0, failureCase);
       const output = await readFile(transcript, "utf8");
-      assert.match(output, /compose:up -d postgres --wait[\s\S]*compose:down --remove-orphans/u);
+      assert.match(
+        output,
+        /compose:up -d --no-deps --force-recreate --wait postgres[\s\S]*compose:down --remove-orphans/u,
+      );
       assert.doesNotMatch(output, /recorded/u);
     }
   } finally {

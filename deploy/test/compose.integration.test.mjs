@@ -412,6 +412,27 @@ test(
         "--command",
         "DO $$ BEGIN EXECUTE format('ALTER ROLE postgres WITH LOGIN PASSWORD %L', regexp_replace(pg_read_file('/run/secrets/weather_owner_password'), E'[\\r\\n]+$', '')); END $$;",
       );
+      const legacyOwnerLogin = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "env",
+        "PGPASSWORD=owner-integration-password",
+        "psql",
+        "--host",
+        "postgres",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT current_user",
+      );
+      assert.equal(legacyOwnerLogin.stdout.trim(), "postgres");
       // restart without deleting data
       await compose(environment, override, "restart", "postgres");
       await compose(environment, override, "up", "--detach", "--no-deps", "--wait", "postgres");
@@ -456,6 +477,40 @@ test(
         "SELECT current_user",
       );
       assert.equal(reconciledAdministratorLogin.stdout.trim(), "postgres");
+      await compose(environment, override, "restart", "postgres");
+      await compose(environment, override, "up", "--detach", "--no-deps", "--wait", "postgres");
+      const idempotentAdministratorLogin = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "env",
+        "PGPASSWORD=admin-integration-password",
+        "psql",
+        "--host",
+        "postgres",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT current_user",
+      );
+      assert.equal(idempotentAdministratorLogin.stdout.trim(), "postgres");
+      const postgresLogs = await compose(environment, override, "logs", "--no-color", "postgres");
+
+      // reject credential disclosure
+      for (const secret of [
+        "admin-integration-password",
+        "owner-integration-password",
+        "api-integration-password",
+        "ingest-integration-password",
+      ]) {
+        assert.equal(`${postgresLogs.stdout}${postgresLogs.stderr}`.includes(secret), false);
+      }
 
       const networkServices = [
         { name: "postgres", service: "postgres", target: "postgres", networks: ["data"] },

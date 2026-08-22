@@ -9,10 +9,10 @@ command -v node >/dev/null
 command -v shellcheck >/dev/null
 
 # validate shell syntax before semantic checks
-for script in deploy/scripts/*.sh; do
+for script in deploy/postgres/*.sh deploy/scripts/*.sh; do
   bash -n "$script"
 done
-shellcheck -x -P deploy/scripts deploy/scripts/*.sh
+shellcheck -x -P deploy/scripts deploy/postgres/*.sh deploy/scripts/*.sh
 
 # validate JavaScript and repository text contracts
 for script in deploy/scripts/*.mjs deploy/test/*.mjs; do

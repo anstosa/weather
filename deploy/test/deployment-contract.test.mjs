@@ -304,6 +304,32 @@ test("PostgreSQL bootstrap rejects equal administrator and owner credentials", a
   }
 });
 
+// verify retained administrator reconciliation
+test("PostgreSQL reconciles retained administrator credentials before network startup", () => {
+  const compose = renderCompose(["compose.verify.yaml"]);
+  const postgres = compose.services.postgres;
+  const entrypoint = read("deploy/postgres/postgres-admin-entrypoint.sh");
+  const entrypointMount = postgres.volumes.find(
+    (volume) => volume.target === "/usr/local/bin/weather-postgres-entrypoint",
+  );
+  assert.deepEqual(postgres.entrypoint, ["/usr/local/bin/weather-postgres-entrypoint"]);
+  assert.ok(entrypointMount);
+  assert.equal(entrypointMount.read_only, true);
+  assert.deepEqual(postgres.healthcheck.test, [
+    "CMD",
+    "/usr/local/bin/weather-postgres-entrypoint",
+    "health",
+  ]);
+  assert.match(entrypoint, /PG_VERSION/u);
+  assert.match(entrypoint, /listen_addresses=''/u);
+  assert.match(entrypoint, /pg_ctl[\s\S]*start/u);
+  assert.match(entrypoint, /ALTER ROLE postgres WITH LOGIN PASSWORD/u);
+  assert.match(entrypoint, /exec \/usr\/local\/bin\/docker-entrypoint\.sh/u);
+  assert.match(entrypoint, /PGPASSWORD[\s\S]*--host postgres/u);
+  assert.doesNotMatch(entrypoint, /printf[^\n]*(?:admin_password|owner_password)/u);
+  assert.match(read("deploy/scripts/verify-static.sh"), /deploy\/postgres\/\*\.sh/u);
+});
+
 // verify pinned dependencies and durable storage
 test("all four production images are immutable digest references", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
@@ -584,7 +610,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /compose down --remove-orphans/u);
   assert.match(rollbackCase, /rollback_release/u);
   assert.match(rollbackFunction, /restore_images/u);
-  assert.match(update, /--no-deps --wait[\s\\\n]*postgres api worker web cloudflared/u);
+  assert.match(update, /--no-deps --force-recreate --wait postgres/u);
+  assert.match(update, /--no-deps --wait api worker web cloudflared/u);
   assert.doesNotMatch(rollbackFunction, /backup\.sh|compose run[^\n]*migration|start_release/u);
   assert.doesNotMatch(
     update,

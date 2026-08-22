@@ -330,11 +330,17 @@ verify_previous_image_compatibility() (
   die "previous API compatibility failed"
 )
 
+# reconcile retained PostgreSQL administrator authority
+start_postgres() {
+  local env_file=$1
+  WEATHER_ENV_FILE=$env_file compose up -d --no-deps --force-recreate --wait postgres
+}
+
 # restore one exact image set without migration
 restore_images() {
   local env_file=$1
-  WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait \
-    postgres api worker web cloudflared
+  start_postgres "$env_file"
+  WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait api worker web cloudflared
 }
 
 # activate one forward release
@@ -373,8 +379,8 @@ start_release() (
   else
     backup_env=$activation_env
     initial_started=true
-    WEATHER_ENV_FILE=$activation_env compose up -d postgres --wait
   fi
+  start_postgres "$backup_env"
 
   printf 'Creating pre-migration encrypted backup...\n'
   "$deploy_dir/scripts/backup.sh" --env-file "$backup_env" ||
