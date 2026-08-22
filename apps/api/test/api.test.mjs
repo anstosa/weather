@@ -491,3 +491,52 @@ test("Node server exposes the versioned handler end to end", async (context) => 
   assert.equal(response.status, 200);
   assert.equal(body.data[0].name, "Ballydidean");
 });
+
+test("Node server adapter redacts rejected handler diagnostics", async (context) => {
+  const diagnostics = [];
+  const failure = new Error("authorization=Bearer super-secret");
+  failure.code = "ERR_HANDLER";
+  const server = createWeatherApiServer(
+    // reject outside the fetch-compatible boundary
+    async () => {
+      throw failure;
+    },
+    {
+      // capture the server boundary
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+    },
+  );
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  // close the ephemeral server
+  context.after(async () => {
+    server.close();
+    await once(server, "close");
+  });
+
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const response = await fetch(`http://127.0.0.1:${String(address.port)}/`);
+  const body = await response.json();
+
+  assert.equal(response.status, 500);
+  assert.deepEqual(body, {
+    error: { code: "internal_error", message: "Unexpected server error" },
+  });
+  assert.deepEqual(diagnostics, [
+    {
+      errorCode: "ERR_HANDLER",
+      errorName: "Error",
+      event: "api_request_failed",
+      method: "GET",
+      status: 500,
+    },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify({ body, diagnostics }),
+    /super-secret|authorization|Bearer/u,
+  );
+});

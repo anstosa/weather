@@ -196,6 +196,10 @@ test("history wall clocks use the selected site timezone instead of the browser 
       new Date("2026-08-21T21:30").toISOString(),
       fromSiteWallClock("2026-08-21T21:30", "America/Los_Angeles"),
     );
+    assert.throws(
+      () => fromSiteWallClock("2026-03-08T02:30", "America/Los_Angeles"),
+      /not valid in the site timezone/u,
+    );
   } finally {
     // restore the process timezone
     if (browserTimezone === undefined) {

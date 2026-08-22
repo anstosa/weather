@@ -177,7 +177,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       ]);
     });
 
-    await context.test("health verifies exact ledger without leaking failures", async () => {
+    await context.test("health allows newer trailing migrations but rejects changed known history", async () => {
       const healthyResponse = await fetch(`${origin}/api/v1/health`);
       const healthy = await healthyResponse.json();
       assert.equal(healthyResponse.status, 200);
@@ -186,6 +186,18 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         version: "0001_initial_weather.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
+
+      await admin.query(
+        "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
+        ["0002_future.sql", "1".repeat(64)],
+      );
+      const previousBinaryResponse = await fetch(`${origin}/api/v1/health`);
+      const previousBinary = await previousBinaryResponse.json();
+      assert.equal(previousBinaryResponse.status, 200);
+      assert.deepEqual(previousBinary.data.migration, {
+        status: "current",
+        version: "0001_initial_weather.sql",
+      });
 
       const ledger = await admin.query(
         "SELECT checksum FROM schema_migrations WHERE name = '0001_initial_weather.sql'",
@@ -205,6 +217,9 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       await admin.query(
         "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
         [ledger.rows[0].checksum],
+      );
+      await admin.query(
+        "DELETE FROM schema_migrations WHERE name = '0002_future.sql'",
       );
     });
 
