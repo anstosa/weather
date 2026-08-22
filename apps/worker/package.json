@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "health": "node dist/health.js",
     "start": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node dist/worker.js",
     "test": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node --test test/*.test.mjs",
     "test:integration": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build && node --test --test-concurrency=1 test/*.integration.test.mjs",

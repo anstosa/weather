@@ -30,3 +30,77 @@ export function workerHealth(
     stale,
   };
 }
+
+// read durable heartbeat health
+export async function readWorkerHealth(
+  pool: DatabasePool,
+  instance: string,
+  now = new Date(),
+): Promise<WorkerHealth> {
+  const result = await pool.query<{
+    last_loop_at: Date;
+    last_success_at: Date | null;
+  }>(
+    `
+      SELECT last_loop_at, last_success_at
+      FROM worker_heartbeats
+      WHERE worker_instance = $1
+    `,
+    [instance],
+  );
+  const row = result.rows[0];
+
+  return workerHealth(now, {
+    lastLoopAt: row?.last_loop_at.toISOString() ?? null,
+    lastSuccessAt: row?.last_success_at?.toISOString() ?? null,
+    ready: row !== undefined,
+  });
+}
+
+// run the one-shot container health command
+export async function runWorkerHealthCheck(): Promise<0 | 1> {
+  const configuration = await loadWorkerConfiguration();
+  const pool = createDatabasePool(configuration.database);
+
+  try {
+    await assertSupportedPostgres(pool);
+    const health = await readWorkerHealth(pool, configuration.instance);
+    process.stdout.write(`${JSON.stringify(health)}\n`);
+    return health.ready ? 0 : 1;
+  } finally {
+    await pool.end();
+  }
+}
+
+// bound one-shot health failures
+function healthError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/(?:password|token|authorization)=?[^\s&]*/giu, "[redacted]")
+    .slice(0, 512);
+}
+
+// run only from the built health entrypoint
+if (
+  process.argv[1] !== undefined &&
+  pathToFileURL(process.argv[1]).href === import.meta.url
+) {
+  runWorkerHealthCheck()
+    .then((exitCode) => {
+      process.exitCode = exitCode;
+    })
+    .catch((error: unknown) => {
+      process.stderr.write(`${healthError(error)}\n`);
+      process.exitCode = 1;
+    });
+}
+import { pathToFileURL } from "node:url";
+
+import {
+  assertSupportedPostgres,
+  createDatabasePool,
+} from "@weather/database";
+
+import { loadWorkerConfiguration } from "./config.js";
+
+type DatabasePool = ReturnType<typeof createDatabasePool>;
