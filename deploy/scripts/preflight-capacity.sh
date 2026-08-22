@@ -126,7 +126,12 @@ latest_temporary=
 
 # remove interrupted evidence
 cleanup() {
-  rm -f "$temporary" "$latest_temporary"
+  rm -f "$temporary"
+
+  # remove an interrupted activation-gate copy
+  if [[ -n "$latest_temporary" ]]; then
+    rm -f "$latest_temporary"
+  fi
 }
 trap cleanup EXIT
 
