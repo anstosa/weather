@@ -231,6 +231,7 @@ test(
     skip: runIntegration ? false : "set WEATHER_RUN_DEPLOY_INTEGRATION=1",
     timeout: 900_000,
   },
+  // exercise lifecycle behavior
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "weather-compose-integration-"));
     const secretsRoot = join(directory, "secrets");
@@ -825,6 +826,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
 
       // create three immutable lifecycle states
       for (const release of ["2026.08.22-1", "2026.08.22-2", "2026.08.22-3"]) {
+        // select lifecycle image digests
         const digestKeys = release.endsWith("-3")
           ? { cloudflared: "2", postgres: "1", server: "e", web: "f" }
           : { cloudflared: "d", postgres: "c", server: "a", web: "b" };
