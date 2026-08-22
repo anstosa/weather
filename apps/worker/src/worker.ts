@@ -27,11 +27,20 @@ import {
 } from "@weather/providers";
 
 import { loadWorkerConfiguration } from "./config.js";
-import { boundedWorkerError } from "./errors.js";
+import {
+  boundedWorkerError,
+  combineWorkerDiagnostics,
+  createWorkerDiagnostic,
+  writeWorkerDiagnostic,
+  type WorkerDiagnostic,
+} from "./errors.js";
+import { readWorkerHealth } from "./health.js";
+import { planIngestionDeadlines } from "./run-deadline.js";
 import {
   WORKER_CADENCE_MS,
   createNonOverlappingScheduler,
 } from "./scheduler.js";
+import { sourceIdentityMatchesConfiguration } from "./source-identity.js";
 
 type DatabasePool = ReturnType<typeof createDatabasePool>;
 
@@ -47,6 +56,7 @@ export interface WorkerRepository {
 }
 
 export interface WorkerIterationOptions {
+  readonly diagnosticWriter?: (diagnostic: WorkerDiagnostic) => void;
   readonly fetchCurrent?: OpenMeteoCurrentOperation;
   readonly fetchOptions?: ProviderFetchOptions;
   readonly instance: string;
@@ -58,7 +68,10 @@ export interface WorkerIterationOptions {
 }
 
 export interface SourceRunResult {
+  readonly durationMs: number;
+  readonly recordCount: number;
   readonly reason: string | null;
+  readonly runId: string | null;
   readonly secondaryError: string | null;
   readonly sourceId: string;
   readonly status: "failed" | "skipped" | "succeeded";
@@ -88,6 +101,8 @@ export async function runWorkerIteration(
 ): Promise<WorkerIterationResult> {
   const repository = options.repository ?? databaseRepository;
   const now = options.now ?? defaultNow;
+  const diagnosticWriter = options.diagnosticWriter ?? writeWorkerDiagnostic;
+  const iterationStartedAt = now().getTime();
   const loopAt = now().toISOString();
   const dueSources = await repository.discoverDueSources(pool, loopAt);
   const results: SourceRunResult[] = [];
@@ -108,18 +123,44 @@ export async function runWorkerIteration(
           : { fetchCurrent: options.fetchCurrent }),
       });
       results.push(result);
+      diagnosticWriter(
+        createWorkerDiagnostic({
+          count: result.recordCount,
+          durationMs: result.durationMs,
+          errorCode: result.status === "failed" ? result.reason : null,
+          event: "source_run",
+          release: options.version,
+          runId: result.runId,
+          sourceId: result.sourceId,
+        }),
+      );
 
       // track ingestion success separately from loop liveness
       if (result.status === "succeeded") {
         lastSuccessAt = now().toISOString();
       }
     } catch (error) {
-      results.push({
-        reason: boundedWorkerError(error),
-        secondaryError: null,
+      const result: SourceRunResult = {
+        durationMs: elapsedMilliseconds(iterationStartedAt, now()),
+        reason: "worker_source_failure",
+        recordCount: 0,
+        runId: null,
+        secondaryError: boundedWorkerError(error),
         sourceId: source.id,
         status: "failed",
-      });
+      };
+      results.push(result);
+      diagnosticWriter(
+        createWorkerDiagnostic({
+          count: 0,
+          durationMs: result.durationMs,
+          errorCode: result.reason,
+          event: "source_run",
+          release: options.version,
+          runId: null,
+          sourceId: source.id,
+        }),
+      );
     }
   }
 
@@ -133,6 +174,19 @@ export async function runWorkerIteration(
     lastSuccessAt,
     version: options.version,
   });
+  diagnosticWriter(
+    createWorkerDiagnostic({
+      count: results.length,
+      durationMs: elapsedMilliseconds(iterationStartedAt, now()),
+      errorCode: results.some((result) => result.status === "failed")
+        ? "worker_iteration_degraded"
+        : null,
+      event: "worker_iteration",
+      release: options.version,
+      runId: null,
+      sourceId: null,
+    }),
+  );
 
   return { completedAt, lastSuccessAt, sources: results };
 }
@@ -149,6 +203,7 @@ export async function runScheduledSource(
     site: SiteConfiguration;
   }>,
 ): Promise<SourceRunResult> {
+  const executionStartedAt = options.now().getTime();
   const sourceConfiguration = options.site.sources.find(
     (candidate) => candidate.key === source.sourceKey,
   );
@@ -160,10 +215,18 @@ export async function runScheduledSource(
     source.sourceKind !== "model_current" ||
     source.siteSlug !== options.site.site.key ||
     sourceConfiguration === undefined ||
-    !sourceConfiguration.capabilities.includes("current")
+    !sourceConfiguration.capabilities.includes("current") ||
+    !sourceIdentityMatchesConfiguration(
+      source,
+      options.site,
+      sourceConfiguration,
+    )
   ) {
     return {
+      durationMs: elapsedMilliseconds(executionStartedAt, options.now()),
       reason: "source is not an active configured Open-Meteo current source",
+      recordCount: 0,
+      runId: null,
       secondaryError: null,
       sourceId: source.id,
       status: "skipped",
@@ -179,7 +242,10 @@ export async function runScheduledSource(
   // skip a source already owned elsewhere
   if (session === null) {
     return {
+      durationMs: elapsedMilliseconds(executionStartedAt, options.now()),
       reason: "source lock is held",
+      recordCount: 0,
+      runId: null,
       secondaryError: null,
       sourceId: source.id,
       status: "skipped",
@@ -188,15 +254,18 @@ export async function runScheduledSource(
 
   let runId: string | null = null;
   let attempts = 0;
+  let recordCount = 0;
+  let result: SourceRunResult;
 
   try {
     const now = options.now();
+    const deadlines = planIngestionDeadlines(now, options.fetchOptions);
     await options.repository.abandonExpiredRuns(session, now.toISOString());
     const checkpoint = await options.repository.getScheduledCheckpoint(session);
     const window = scheduledWindow(now, source.cadenceSeconds, checkpoint);
     const started = await options.repository.startIngestionRun(session, {
       adapterVersion: OPEN_METEO_CURRENT_ADAPTER_VERSION,
-      deadlineAt: new Date(now.getTime() + 60_000).toISOString(),
+      deadlineAt: deadlines.runDeadlineAt,
       mode: "scheduled",
       requestMetadata: { endpoint: "forecast/current" },
       requestedEndExclusive: window.endExclusive,
@@ -211,9 +280,14 @@ export async function runScheduledSource(
         sourceId: source.id,
         timezone: options.site.site.timezone,
       },
-      { ...options.fetchOptions, now: options.now },
+      {
+        ...options.fetchOptions,
+        deadlineAt: deadlines.providerDeadlineAt,
+        now: options.now,
+      },
     );
     attempts = batch.attempts;
+    recordCount = batch.records.length;
     const lastRecord = batch.records.at(-1);
 
     // reject successful empty batches
@@ -238,8 +312,11 @@ export async function runScheduledSource(
       windowStart: window.start,
     });
 
-    return {
+    result = {
+      durationMs: 0,
       reason: null,
+      recordCount,
+      runId,
       secondaryError: null,
       sourceId: source.id,
       status: "succeeded",
@@ -258,15 +335,40 @@ export async function runScheduledSource(
       );
     }
 
-    return {
+    result = {
+      durationMs: 0,
       reason: failure.ingestionError.code,
+      recordCount,
+      runId,
       secondaryError,
       sourceId: source.id,
       status: "failed",
     };
-  } finally {
-    await session.release();
   }
+
+  const releaseError = await guardReleaseSession(session);
+
+  // retain primary results when cleanup also fails
+  if (releaseError !== null) {
+    return {
+      ...result,
+      durationMs: elapsedMilliseconds(executionStartedAt, options.now()),
+      reason:
+        result.status === "succeeded"
+          ? "session_release_failed"
+          : result.reason,
+      secondaryError: combineWorkerDiagnostics([
+        { label: "finalization", value: result.secondaryError },
+        { label: "release", value: releaseError },
+      ]),
+      status: "failed",
+    };
+  }
+
+  return {
+    ...result,
+    durationMs: elapsedMilliseconds(executionStartedAt, options.now()),
+  };
 }
 
 // calculate an anchored half-open scheduled interval
@@ -315,6 +417,19 @@ async function guardFailScheduledRun(
   }
 }
 
+// release a retained source session without masking work
+async function guardReleaseSession(
+  session: SourceSession,
+): Promise<string | null> {
+  try {
+    await session.release();
+    return null;
+  } catch (error) {
+    // retain bounded cleanup diagnostics
+    return boundedWorkerError(error);
+  }
+}
+
 // validate the frozen source contract version
 function requireContractVersion(
   adapterConfig: unknown,
@@ -342,7 +457,8 @@ export async function startWorkerProcess(
     configuration.openMeteoCompatibilityOrigin,
   );
   await assertSupportedPostgres(pool);
-  let lastSuccessAt: string | null = null;
+  const durableHealth = await readWorkerHealth(pool, configuration.instance);
+  let lastSuccessAt = durableHealth.lastSuccessAt;
   const scheduler = createNonOverlappingScheduler({
     cadenceMs: WORKER_CADENCE_MS,
     key: configuration.instance,
@@ -378,6 +494,11 @@ export async function startWorkerProcess(
   });
   scheduler.start();
   await scheduler.trigger();
+}
+
+// calculate a bounded non-negative duration
+function elapsedMilliseconds(startedAt: number, completedAt: Date): number {
+  return Math.max(0, Math.round(completedAt.getTime() - startedAt));
 }
 
 // read the current clock
