@@ -8,7 +8,7 @@ services:
       - weather_local_postgres:/var/lib/postgresql/data
 
   web:
-    image: weather-web:local
+    image: ${WEATHER_LOCAL_WEB_IMAGE:-weather-web:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
@@ -33,19 +33,19 @@ services:
           fetch('http://127.0.0.1:2000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
 
   migration:
-    image: weather-server:local
+    image: ${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
 
   api:
-    image: weather-server:local
+    image: ${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
 
   worker:
-    image: weather-server:local
+    image: ${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
