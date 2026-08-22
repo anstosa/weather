@@ -666,6 +666,92 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
         "migration",
       );
 
+      const previousWorkerHealthEnvironment = {
+        ...environment,
+        WEATHER_ENV_FILE: previousCompatibilityEnv,
+        WEATHER_LOCAL_SERVER_IMAGE: previousServerImage,
+      };
+      // run the deployed previous-image health command
+      const runPreviousWorkerHealth = async () =>
+        await compose(
+          previousWorkerHealthEnvironment,
+          override,
+          "run",
+          "--rm",
+          "--no-deps",
+          "worker",
+          "node",
+          "apps/worker/dist/health.js",
+        );
+      const trailingMigrationHealth = await runPreviousWorkerHealth();
+      assert.equal(JSON.parse(trailingMigrationHealth.stdout.trim()).ready, true);
+      const knownMigrationChecksum = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT checksum FROM schema_migrations WHERE name = '0001_initial_weather.sql'",
+        )
+      ).stdout.trim();
+      assert.match(knownMigrationChecksum, /^[a-f0-9]{64}$/u);
+
+      try {
+        // corrupt one known checksum
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--command",
+          "UPDATE schema_migrations SET checksum = repeat('0', 64) WHERE name = '0001_initial_weather.sql'",
+        );
+        await assert.rejects(
+          runPreviousWorkerHealth(),
+          // require bounded migration diagnostics
+          (error) => {
+            assert.match(
+              `${error.stdout ?? ""}${error.stderr ?? ""}`,
+              /migration checksum mismatch: 0001_initial_weather\.sql/u,
+            );
+            return true;
+          },
+        );
+      } finally {
+        // restore the disposable ledger
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--set",
+          `known_checksum=${knownMigrationChecksum}`,
+          "--command",
+          "UPDATE schema_migrations SET checksum = :'known_checksum' WHERE name = '0001_initial_weather.sql'",
+        );
+      }
+
       const migrationBefore = (
         await compose(
           environment,
