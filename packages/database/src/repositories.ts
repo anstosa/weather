@@ -1,0 +1,1116 @@
+import { createHash } from "node:crypto";
+
+import {
+  createBackfillChunkIdentity,
+  validateFingerprint,
+  validateIngestionError,
+  validateUtcInstant,
+  validateVersion,
+  weatherRecordContent,
+  type BackfillChunkIdentity,
+  type IngestionError,
+  type IngestionMode,
+  type JsonValue,
+  type NormalizedWeatherRecord,
+  type SourceKind,
+} from "@weather/domain";
+import type { Pool, PoolClient, QueryResultRow } from "pg";
+
+import type { SiteConfiguration } from "./config.js";
+import { withTransaction } from "./pool.js";
+
+export interface DueSource extends QueryResultRow {
+  readonly active: boolean;
+  readonly cadenceSeconds: number;
+  readonly id: string;
+  readonly materialProviderConfig: JsonValue;
+  readonly providerKey: string;
+  readonly siteSlug: string;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceKey: string;
+  readonly sourceKind: SourceKind;
+  readonly stationSlug: string;
+  readonly timezone: string;
+}
+
+export interface StartIngestionRunInput {
+  readonly adapterVersion: string;
+  readonly attempts?: number;
+  readonly chunkPlanVersion?: string | null;
+  readonly deadlineAt: string;
+  readonly mode: IngestionMode;
+  readonly requestMetadata?: Readonly<Record<string, JsonValue>> | null;
+  readonly requestedEndExclusive: string;
+  readonly requestedStart: string;
+  readonly sourceConfigFingerprint: string;
+}
+
+export interface StartedIngestionRun extends QueryResultRow {
+  readonly id: string;
+  readonly startedAt: string;
+  readonly state: "running";
+}
+
+export interface CompleteScheduledIngestionInput {
+  readonly attempts: number;
+  readonly expectedCheckpointVersion: number | null;
+  readonly lastValidAt: string;
+  readonly providerCursor: Readonly<Record<string, JsonValue>> | null;
+  readonly records: readonly NormalizedWeatherRecord[];
+  readonly responseMetadata?: Readonly<Record<string, JsonValue>> | null;
+  readonly runId: string;
+  readonly upstreamResponseChecksum?: string | null;
+  readonly windowEndExclusive: string;
+  readonly windowStart: string;
+}
+
+export interface CompleteBackfillIngestionInput {
+  readonly attempts: number;
+  readonly identity: BackfillChunkIdentity;
+  readonly records: readonly NormalizedWeatherRecord[];
+  readonly responseMetadata?: Readonly<Record<string, JsonValue>> | null;
+  readonly runId: string;
+  readonly upstreamResponseChecksum?: string | null;
+}
+
+export interface FailIngestionRunInput {
+  readonly attempts: number;
+  readonly backfillIdentity?: BackfillChunkIdentity;
+  readonly error: IngestionError;
+  readonly responseMetadata?: Readonly<Record<string, JsonValue>> | null;
+  readonly runId: string;
+}
+
+export interface HistoryQuery {
+  readonly cursor?: Readonly<{ id: string; validAt: string }>;
+  readonly from?: string;
+  readonly limit?: number;
+  readonly siteSlug: string;
+  readonly sourceId?: string;
+  readonly sourceKind?: SourceKind;
+  readonly stationSlug?: string;
+  readonly to?: string;
+}
+
+export interface WeatherRecordRow extends QueryResultRow {
+  readonly apparentTemperatureC: number | null;
+  readonly cloudCoverPercent: number | null;
+  readonly firstReceivedAt: string;
+  readonly id: string;
+  readonly lastReceivedAt: string;
+  readonly precipitationMm: number | null;
+  readonly pressureHpa: number | null;
+  readonly productRunAt: string | null;
+  readonly providerKey: string;
+  readonly relativeHumidityPercent: number | null;
+  readonly revisionCount: number;
+  readonly siteSlug: string;
+  readonly sourceId: string;
+  readonly sourceKey: string;
+  readonly sourceKind: SourceKind;
+  readonly stationSlug: string;
+  readonly temperatureC: number | null;
+  readonly validAt: string;
+  readonly windDirectionDegrees: number | null;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
+}
+
+// retain one source-scoped advisory lock
+export class SourceSession {
+  readonly #client: PoolClient;
+  #released = false;
+  readonly sourceId: string;
+
+  // initialize a claimed source session
+  constructor(client: PoolClient, sourceId: string) {
+    this.#client = client;
+    this.sourceId = sourceId;
+  }
+
+  // expose the retained client internally
+  get client(): PoolClient {
+    // reject use after release
+    if (this.#released) {
+      throw new Error("source session has already been released");
+    }
+
+    return this.#client;
+  }
+
+  // release the source lock and client
+  async release(): Promise<void> {
+    // make release idempotent
+    if (this.#released) {
+      return;
+    }
+
+    try {
+      await this.#client.query(
+        "SELECT pg_advisory_unlock(hashtextextended('weather-source:' || $1, 0))",
+        [this.sourceId],
+      );
+    } finally {
+      this.#released = true;
+      this.#client.release();
+    }
+  }
+}
+
+// idempotently bootstrap configured entities
+export async function bootstrapSiteConfiguration(
+  pool: Pool,
+  configuration: SiteConfiguration,
+): Promise<Readonly<{ providerId: string; siteId: string; sourceIds: readonly string[]; stationId: string }>> {
+  const client = await pool.connect();
+
+  try {
+    return await withTransaction(client, async () => {
+      const site = await client.query<{ id: string }>(
+        `
+          INSERT INTO sites (slug, display_name, latitude, longitude, timezone, active)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (slug) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            latitude = EXCLUDED.latitude,
+            longitude = EXCLUDED.longitude,
+            timezone = EXCLUDED.timezone,
+            active = EXCLUDED.active,
+            updated_at = clock_timestamp()
+          RETURNING id
+        `,
+        [
+          configuration.site.key,
+          configuration.site.displayName,
+          configuration.site.latitude,
+          configuration.site.longitude,
+          configuration.site.timezone,
+          configuration.site.active,
+        ],
+      );
+      const provider = await client.query<{ id: string }>(
+        `
+          INSERT INTO providers (
+            provider_key,
+            display_name,
+            attribution_label,
+            attribution_url,
+            active
+          )
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (provider_key) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            attribution_label = EXCLUDED.attribution_label,
+            attribution_url = EXCLUDED.attribution_url,
+            active = EXCLUDED.active,
+            updated_at = clock_timestamp()
+          RETURNING id
+        `,
+        [
+          configuration.provider.key,
+          configuration.provider.displayName,
+          configuration.provider.attributionLabel,
+          configuration.provider.attributionUrl,
+          configuration.provider.active,
+        ],
+      );
+      const siteId = requireRow(site.rows[0], "site bootstrap").id;
+      const providerId = requireRow(provider.rows[0], "provider bootstrap").id;
+      const station = await client.query<{ id: string }>(
+        `
+          INSERT INTO stations (
+            site_id,
+            slug,
+            display_name,
+            station_kind,
+            vendor,
+            model,
+            serial,
+            active
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          ON CONFLICT (site_id, slug) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            station_kind = EXCLUDED.station_kind,
+            vendor = EXCLUDED.vendor,
+            model = EXCLUDED.model,
+            serial = EXCLUDED.serial,
+            active = EXCLUDED.active,
+            updated_at = clock_timestamp()
+          RETURNING id
+        `,
+        [
+          siteId,
+          configuration.station.key,
+          configuration.station.displayName,
+          configuration.station.kind,
+          configuration.station.vendor,
+          configuration.station.model,
+          configuration.station.serial,
+          configuration.station.active,
+        ],
+      );
+      const stationId = requireRow(station.rows[0], "station bootstrap").id;
+      const sourceIds: string[] = [];
+
+      // bootstrap every immutable source
+      for (const source of configuration.sources) {
+        const result = await client.query<{ id: string }>(
+          `
+            INSERT INTO sources (
+              station_id,
+              provider_id,
+              source_key,
+              source_kind,
+              material_provider_config,
+              source_config_fingerprint,
+              capabilities,
+              cadence_seconds,
+              active
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9)
+            ON CONFLICT (station_id, source_key) DO UPDATE SET
+              cadence_seconds = EXCLUDED.cadence_seconds,
+              active = EXCLUDED.active
+            WHERE sources.source_config_fingerprint = EXCLUDED.source_config_fingerprint
+            RETURNING id
+          `,
+          [
+            stationId,
+            providerId,
+            source.key,
+            source.sourceKind,
+            JSON.stringify(source.adapterConfig),
+            source.fingerprint,
+            JSON.stringify(source.capabilities),
+            source.cadenceSeconds,
+            source.active,
+          ],
+        );
+
+        // reject silent semantic drift
+        if (result.rowCount !== 1 || result.rows[0] === undefined) {
+          throw new Error(
+            `source ${source.key} changed material configuration; create a new source key`,
+          );
+        }
+
+        sourceIds.push(result.rows[0].id);
+      }
+
+      return { providerId, siteId, sourceIds, stationId };
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// discover scheduled sources due for work
+export async function discoverDueSources(
+  pool: Pool,
+  asOf: string,
+  limit = 100,
+): Promise<readonly DueSource[]> {
+  const validatedAsOf = validateUtcInstant(asOf, "asOf");
+
+  // enforce bounded discovery
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+    throw new RangeError("source discovery limit must be between 1 and 500");
+  }
+
+  const result = await pool.query<DueSource>(
+    `
+      SELECT
+        s.id,
+        s.source_key AS "sourceKey",
+        s.source_kind AS "sourceKind",
+        s.source_config_fingerprint AS "sourceConfigFingerprint",
+        s.material_provider_config AS "materialProviderConfig",
+        s.cadence_seconds AS "cadenceSeconds",
+        s.active,
+        st.slug AS "stationSlug",
+        si.slug AS "siteSlug",
+        si.timezone,
+        p.provider_key AS "providerKey"
+      FROM sources s
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      LEFT JOIN ingestion_checkpoints checkpoint ON checkpoint.source_id = s.id
+      WHERE s.active
+        AND st.active
+        AND si.active
+        AND p.active
+        AND s.cadence_seconds IS NOT NULL
+        AND (
+          checkpoint.last_committed_at IS NULL
+          OR checkpoint.last_committed_at + make_interval(secs => s.cadence_seconds) <= $1
+        )
+      ORDER BY checkpoint.last_committed_at ASC NULLS FIRST, s.id ASC
+      LIMIT $2
+    `,
+    [validatedAsOf, limit],
+  );
+
+  return result.rows;
+}
+
+// try to retain one per-source session lock
+export async function acquireSourceSession(
+  pool: Pool,
+  sourceId: string,
+): Promise<SourceSession | null> {
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query<{ acquired: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtextextended('weather-source:' || $1, 0)) AS acquired",
+      [sourceId],
+    );
+
+    // release unclaimed clients
+    if (result.rows[0]?.acquired !== true) {
+      client.release();
+      return null;
+    }
+
+    return new SourceSession(client, sourceId);
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+// recover expired work under its source lock
+export async function abandonExpiredRuns(
+  session: SourceSession,
+  asOf: string,
+): Promise<readonly string[]> {
+  const result = await session.client.query<{ id: string }>(
+    `
+      UPDATE ingestion_runs
+      SET
+        state = 'abandoned',
+        completed_at = $2,
+        error_classification = 'retryable',
+        error_code = 'deadline_expired',
+        error_message = 'ingestion run exceeded its recovery deadline'
+      WHERE source_id = $1
+        AND state = 'running'
+        AND deadline_at < $2
+      RETURNING id
+    `,
+    [session.sourceId, validateUtcInstant(asOf, "asOf")],
+  );
+
+  return result.rows.map((row) => row.id);
+}
+
+// commit a running row before provider I/O
+export async function startIngestionRun(
+  session: SourceSession,
+  input: StartIngestionRunInput,
+): Promise<StartedIngestionRun> {
+  const requestedStart = validateUtcInstant(input.requestedStart, "requestedStart");
+  const requestedEndExclusive = validateUtcInstant(
+    input.requestedEndExclusive,
+    "requestedEndExclusive",
+  );
+  const deadlineAt = validateUtcInstant(input.deadlineAt, "deadlineAt");
+
+  // require ordered request bounds
+  if (requestedStart >= requestedEndExclusive) {
+    throw new RangeError("ingestion interval must be increasing");
+  }
+
+  // require a future recovery deadline
+  if (deadlineAt <= new Date().toISOString()) {
+    throw new RangeError("ingestion deadline must be in the future");
+  }
+
+  validateFingerprint(input.sourceConfigFingerprint);
+  validateVersion(input.adapterVersion, "adapterVersion");
+
+  // validate backfill plan identity
+  if (input.mode === "backfill" && input.chunkPlanVersion == null) {
+    throw new RangeError("backfill runs require chunkPlanVersion");
+  }
+
+  // validate optional plan version
+  if (input.chunkPlanVersion != null) {
+    validateVersion(input.chunkPlanVersion, "chunkPlanVersion");
+  }
+
+  const result = await session.client.query<StartedIngestionRun>(
+    `
+      INSERT INTO ingestion_runs (
+        source_id,
+        mode,
+        requested_start,
+        requested_end_exclusive,
+        source_config_fingerprint,
+        adapter_version,
+        chunk_plan_version,
+        deadline_at,
+        attempts,
+        request_metadata
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+      RETURNING id, started_at AS "startedAt", state
+    `,
+    [
+      session.sourceId,
+      input.mode,
+      requestedStart,
+      requestedEndExclusive,
+      input.sourceConfigFingerprint,
+      input.adapterVersion,
+      input.chunkPlanVersion ?? null,
+      deadlineAt,
+      input.attempts ?? 0,
+      JSON.stringify(input.requestMetadata ?? null),
+    ],
+  );
+
+  return requireRow(result.rows[0], "running ingestion insert");
+}
+
+// atomically store scheduled success
+export async function completeScheduledIngestion(
+  session: SourceSession,
+  input: CompleteScheduledIngestionInput,
+): Promise<void> {
+  validateCompletionCounts(input.attempts, input.records.length);
+
+  await withTransaction(session.client, async () => {
+    await upsertWeatherRecords(session, input.runId, input.records);
+    await advanceScheduledCheckpoint(session, input);
+    await finalizeSuccessfulRun(
+      session,
+      input.runId,
+      input.attempts,
+      input.records.length,
+      input.responseMetadata ?? null,
+      input.upstreamResponseChecksum ?? null,
+    );
+  });
+}
+
+// atomically store backfill success
+export async function completeBackfillIngestion(
+  session: SourceSession,
+  input: CompleteBackfillIngestionInput,
+): Promise<void> {
+  const identity = createBackfillChunkIdentity(input.identity);
+
+  // require matching source identity
+  if (identity.sourceId !== session.sourceId) {
+    throw new Error("backfill identity source does not match the locked source");
+  }
+
+  validateCompletionCounts(input.attempts, input.records.length);
+
+  await withTransaction(session.client, async () => {
+    await upsertWeatherRecords(session, input.runId, input.records);
+    await upsertBackfillOutcome(session, input.runId, identity, "succeeded", null);
+    await finalizeSuccessfulRun(
+      session,
+      input.runId,
+      input.attempts,
+      input.records.length,
+      input.responseMetadata ?? null,
+      input.upstreamResponseChecksum ?? null,
+    );
+  });
+}
+
+// guard-finalize a failed run
+export async function failIngestionRun(
+  session: SourceSession,
+  input: FailIngestionRunInput,
+): Promise<void> {
+  const error = validateIngestionError(input.error);
+
+  await withTransaction(session.client, async () => {
+    // record an eligible failed chunk
+    if (input.backfillIdentity !== undefined) {
+      const identity = createBackfillChunkIdentity(input.backfillIdentity);
+
+      // require matching source identity
+      if (identity.sourceId !== session.sourceId) {
+        throw new Error("backfill identity source does not match the locked source");
+      }
+
+      await upsertBackfillOutcome(
+        session,
+        input.runId,
+        identity,
+        "failed",
+        error.code,
+      );
+    }
+
+    const result = await session.client.query(
+      `
+        UPDATE ingestion_runs
+        SET
+          state = 'failed',
+          completed_at = clock_timestamp(),
+          attempts = $3,
+          response_metadata = $4::jsonb,
+          error_classification = $5,
+          error_code = $6,
+          error_message = $7
+        WHERE id = $1
+          AND source_id = $2
+          AND state = 'running'
+      `,
+      [
+        input.runId,
+        session.sourceId,
+        input.attempts,
+        JSON.stringify(input.responseMetadata ?? null),
+        error.classification,
+        error.code,
+        error.message,
+      ],
+    );
+    requireGuardedUpdate(result.rowCount, "failed ingestion finalization");
+  });
+}
+
+// test exact successful resume identity
+export async function hasSuccessfulBackfillChunk(
+  pool: Pool,
+  identity: BackfillChunkIdentity,
+): Promise<boolean> {
+  const validated = createBackfillChunkIdentity(identity);
+  const result = await pool.query(
+    `
+      SELECT 1
+      FROM backfill_chunk_outcomes
+      WHERE source_id = $1
+        AND interval_start = $2
+        AND interval_end_exclusive = $3
+        AND source_config_fingerprint = $4
+        AND adapter_version = $5
+        AND chunk_plan_version = $6
+        AND outcome = 'succeeded'
+    `,
+    [
+      validated.sourceId,
+      validated.intervalStart,
+      validated.intervalEndExclusive,
+      validated.sourceConfigFingerprint,
+      validated.adapterVersion,
+      validated.chunkPlanVersion,
+    ],
+  );
+
+  return result.rowCount === 1;
+}
+
+// update liveness independently from ingestion success
+export async function updateWorkerHeartbeat(
+  pool: Pool,
+  input: Readonly<{
+    activity: string | null;
+    instance: string;
+    lastLoopAt: string;
+    lastSuccessAt: string | null;
+    version: string;
+  }>,
+): Promise<void> {
+  const lastLoopAt = validateUtcInstant(input.lastLoopAt, "lastLoopAt");
+  const lastSuccessAt =
+    input.lastSuccessAt === null
+      ? null
+      : validateUtcInstant(input.lastSuccessAt, "lastSuccessAt");
+
+  // require bounded heartbeat fields
+  if (
+    input.instance.length === 0 ||
+    input.instance.length > 128 ||
+    input.version.length === 0 ||
+    input.version.length > 128 ||
+    (input.activity !== null && input.activity.length > 256)
+  ) {
+    throw new RangeError("heartbeat fields must be non-empty and bounded");
+  }
+
+  await pool.query(
+    `
+      INSERT INTO worker_heartbeats (
+        worker_instance,
+        last_loop_at,
+        last_success_at,
+        current_activity,
+        worker_version
+      )
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (worker_instance) DO UPDATE SET
+        last_loop_at = EXCLUDED.last_loop_at,
+        last_success_at = EXCLUDED.last_success_at,
+        current_activity = EXCLUDED.current_activity,
+        worker_version = EXCLUDED.worker_version,
+        updated_at = clock_timestamp()
+    `,
+    [input.instance, lastLoopAt, lastSuccessAt, input.activity, input.version],
+  );
+}
+
+// list active site and source metadata
+export async function listActiveSites(pool: Pool): Promise<readonly QueryResultRow[]> {
+  const result = await pool.query(
+    `
+      SELECT
+        si.slug AS "siteSlug",
+        si.display_name AS "siteName",
+        si.latitude,
+        si.longitude,
+        si.timezone,
+        st.slug AS "stationSlug",
+        st.display_name AS "stationName",
+        st.station_kind AS "stationKind",
+        s.id AS "sourceId",
+        s.source_key AS "sourceKey",
+        s.source_kind AS "sourceKind",
+        p.provider_key AS "providerKey",
+        p.display_name AS "providerName",
+        p.attribution_label AS "attributionLabel",
+        p.attribution_url AS "attributionUrl"
+      FROM sites si
+      JOIN stations st ON st.site_id = si.id AND st.active
+      JOIN sources s ON s.station_id = st.id AND s.active
+      JOIN providers p ON p.id = s.provider_id AND p.active
+      WHERE si.active
+      ORDER BY si.slug, st.slug, s.source_key
+    `,
+  );
+
+  return result.rows;
+}
+
+// read the latest row per source
+export async function getCurrentWeather(
+  pool: Pool,
+  siteSlug: string,
+  sourceId?: string,
+): Promise<readonly WeatherRecordRow[]> {
+  const result = await pool.query<WeatherRecordRow>(
+    `
+      SELECT DISTINCT ON (wr.source_id)
+        ${weatherRecordSelection()}
+      FROM weather_records wr
+      JOIN sources s ON s.id = wr.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      WHERE si.slug = $1
+        AND ($2::bigint IS NULL OR wr.source_id = $2)
+      ORDER BY wr.source_id, wr.valid_at DESC, wr.id DESC
+    `,
+    [siteSlug, sourceId ?? null],
+  );
+
+  return result.rows;
+}
+
+// read bounded cursor history
+export async function listWeatherHistory(
+  pool: Pool,
+  query: HistoryQuery,
+): Promise<readonly WeatherRecordRow[]> {
+  const limit = query.limit ?? 100;
+
+  // enforce the API bound at the repository edge
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 250) {
+    throw new RangeError("history limit must be between 1 and 250");
+  }
+
+  const conditions = ["si.slug = $1"];
+  const values: unknown[] = [query.siteSlug];
+
+  // add station filter
+  if (query.stationSlug !== undefined) {
+    values.push(query.stationSlug);
+    conditions.push(`st.slug = $${values.length}`);
+  }
+
+  // add source filter
+  if (query.sourceId !== undefined) {
+    values.push(query.sourceId);
+    conditions.push(`wr.source_id = $${values.length}`);
+  }
+
+  // add provenance filter
+  if (query.sourceKind !== undefined) {
+    values.push(query.sourceKind);
+    conditions.push(`wr.source_kind = $${values.length}`);
+  }
+
+  // add lower time bound
+  if (query.from !== undefined) {
+    values.push(validateUtcInstant(query.from, "from"));
+    conditions.push(`wr.valid_at >= $${values.length}`);
+  }
+
+  // add upper time bound
+  if (query.to !== undefined) {
+    values.push(validateUtcInstant(query.to, "to"));
+    conditions.push(`wr.valid_at < $${values.length}`);
+  }
+
+  // add stable cursor
+  if (query.cursor !== undefined) {
+    values.push(validateUtcInstant(query.cursor.validAt, "cursor.validAt"));
+    const validAtParameter = values.length;
+    values.push(query.cursor.id);
+    const idParameter = values.length;
+    conditions.push(
+      `(wr.valid_at, wr.id) < ($${validAtParameter}::timestamptz, $${idParameter}::bigint)`,
+    );
+  }
+
+  values.push(limit);
+  const result = await pool.query<WeatherRecordRow>(
+    `
+      SELECT
+        ${weatherRecordSelection()}
+      FROM weather_records wr
+      JOIN sources s ON s.id = wr.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      WHERE ${conditions.join("\n        AND ")}
+      ORDER BY wr.valid_at DESC, wr.id DESC
+      LIMIT $${values.length}
+    `,
+    values,
+  );
+
+  return result.rows;
+}
+
+// atomically upsert normalized records
+async function upsertWeatherRecords(
+  session: SourceSession,
+  runId: string,
+  records: readonly NormalizedWeatherRecord[],
+): Promise<void> {
+  // persist each provider-neutral row
+  for (const record of records) {
+    // reject cross-source writes
+    if (record.sourceId !== session.sourceId) {
+      throw new Error("weather record source does not match the locked source");
+    }
+
+    const contentHash = createHash("sha256")
+      .update(weatherRecordContent(record))
+      .digest("hex");
+    await session.client.query(
+      `
+        INSERT INTO weather_records (
+          source_id,
+          source_kind,
+          valid_at,
+          product_run_at,
+          first_ingestion_run_id,
+          last_ingestion_run_id,
+          first_received_at,
+          last_received_at,
+          upstream_timezone,
+          upstream_model,
+          device_vendor,
+          device_model,
+          device_serial,
+          quality_metadata,
+          provider_metadata,
+          temperature_c,
+          apparent_temperature_c,
+          precipitation_mm,
+          wind_speed_mps,
+          wind_gust_mps,
+          pressure_hpa,
+          relative_humidity_percent,
+          cloud_cover_percent,
+          wind_direction_degrees,
+          content_hash
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $5, $6, $6, $7, $8, $9, $10, $11,
+          $12::jsonb, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21,
+          $22, $23
+        )
+        ON CONFLICT ON CONSTRAINT weather_records_identity_key DO UPDATE SET
+          last_ingestion_run_id = EXCLUDED.last_ingestion_run_id,
+          last_received_at = EXCLUDED.last_received_at,
+          upstream_timezone = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.upstream_timezone ELSE weather_records.upstream_timezone END,
+          upstream_model = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.upstream_model ELSE weather_records.upstream_model END,
+          device_vendor = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_vendor ELSE weather_records.device_vendor END,
+          device_model = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_model ELSE weather_records.device_model END,
+          device_serial = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_serial ELSE weather_records.device_serial END,
+          quality_metadata = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.quality_metadata ELSE weather_records.quality_metadata END,
+          provider_metadata = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.provider_metadata ELSE weather_records.provider_metadata END,
+          temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.temperature_c ELSE weather_records.temperature_c END,
+          apparent_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.apparent_temperature_c ELSE weather_records.apparent_temperature_c END,
+          precipitation_mm = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_mm ELSE weather_records.precipitation_mm END,
+          wind_speed_mps = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_speed_mps ELSE weather_records.wind_speed_mps END,
+          wind_gust_mps = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_gust_mps ELSE weather_records.wind_gust_mps END,
+          pressure_hpa = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pressure_hpa ELSE weather_records.pressure_hpa END,
+          relative_humidity_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.relative_humidity_percent ELSE weather_records.relative_humidity_percent END,
+          cloud_cover_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.cloud_cover_percent ELSE weather_records.cloud_cover_percent END,
+          wind_direction_degrees = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_direction_degrees ELSE weather_records.wind_direction_degrees END,
+          revision_count = weather_records.revision_count + CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN 1 ELSE 0 END,
+          content_hash = EXCLUDED.content_hash
+      `,
+      [
+        session.sourceId,
+        record.sourceKind,
+        record.validAt,
+        record.productRunAt,
+        runId,
+        record.receivedAt,
+        record.metadata.upstreamTimezone,
+        record.metadata.model,
+        record.metadata.device?.vendor ?? null,
+        record.metadata.device?.model ?? null,
+        record.metadata.device?.serial ?? null,
+        JSON.stringify(record.metadata.quality),
+        JSON.stringify(record.metadata.provider),
+        record.metrics.temperatureC,
+        record.metrics.apparentTemperatureC,
+        record.metrics.precipitationMm,
+        record.metrics.windSpeedMps,
+        record.metrics.windGustMps,
+        record.metrics.pressureHpa,
+        record.metrics.relativeHumidityPercent,
+        record.metrics.cloudCoverPercent,
+        record.metrics.windDirectionDegrees,
+        contentHash,
+      ],
+    );
+  }
+}
+
+// compare-and-set a scheduled checkpoint
+async function advanceScheduledCheckpoint(
+  session: SourceSession,
+  input: CompleteScheduledIngestionInput,
+): Promise<void> {
+  const lastValidAt = validateUtcInstant(input.lastValidAt, "lastValidAt");
+  const windowStart = validateUtcInstant(input.windowStart, "windowStart");
+  const windowEndExclusive = validateUtcInstant(
+    input.windowEndExclusive,
+    "windowEndExclusive",
+  );
+
+  // create the initial checkpoint
+  if (input.expectedCheckpointVersion === null) {
+    const result = await session.client.query(
+      `
+        INSERT INTO ingestion_checkpoints (
+          source_id,
+          last_valid_at,
+          window_start,
+          window_end_exclusive,
+          provider_cursor
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (source_id) DO NOTHING
+      `,
+      [
+        session.sourceId,
+        lastValidAt,
+        windowStart,
+        windowEndExclusive,
+        JSON.stringify(input.providerCursor),
+      ],
+    );
+    requireGuardedUpdate(result.rowCount, "initial checkpoint insert");
+    return;
+  }
+
+  const result = await session.client.query(
+    `
+      UPDATE ingestion_checkpoints
+      SET
+        last_valid_at = $3,
+        window_start = $4,
+        window_end_exclusive = $5,
+        provider_cursor = $6::jsonb,
+        version = version + 1,
+        last_committed_at = clock_timestamp()
+      WHERE source_id = $1
+        AND version = $2
+    `,
+    [
+      session.sourceId,
+      input.expectedCheckpointVersion,
+      lastValidAt,
+      windowStart,
+      windowEndExclusive,
+      JSON.stringify(input.providerCursor),
+    ],
+  );
+  requireGuardedUpdate(result.rowCount, "checkpoint compare-and-set");
+}
+
+// insert or revise an exact chunk outcome
+async function upsertBackfillOutcome(
+  session: SourceSession,
+  runId: string,
+  identity: BackfillChunkIdentity,
+  outcome: "failed" | "succeeded",
+  errorCode: string | null,
+): Promise<void> {
+  await session.client.query(
+    `
+      INSERT INTO backfill_chunk_outcomes (
+        source_id,
+        interval_start,
+        interval_end_exclusive,
+        source_config_fingerprint,
+        adapter_version,
+        chunk_plan_version,
+        requested_from_date,
+        requested_to_date,
+        ingestion_run_id,
+        outcome,
+        error_code
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (
+        source_id,
+        interval_start,
+        interval_end_exclusive,
+        source_config_fingerprint,
+        adapter_version,
+        chunk_plan_version
+      ) DO UPDATE SET
+        ingestion_run_id = EXCLUDED.ingestion_run_id,
+        requested_from_date = EXCLUDED.requested_from_date,
+        requested_to_date = EXCLUDED.requested_to_date,
+        outcome = EXCLUDED.outcome,
+        error_code = EXCLUDED.error_code,
+        completed_at = clock_timestamp()
+    `,
+    [
+      session.sourceId,
+      identity.intervalStart,
+      identity.intervalEndExclusive,
+      identity.sourceConfigFingerprint,
+      identity.adapterVersion,
+      identity.chunkPlanVersion,
+      identity.requestedFromDate,
+      identity.requestedToDate,
+      runId,
+      outcome,
+      errorCode,
+    ],
+  );
+}
+
+// guard-finalize successful work
+async function finalizeSuccessfulRun(
+  session: SourceSession,
+  runId: string,
+  attempts: number,
+  recordCount: number,
+  responseMetadata: Readonly<Record<string, JsonValue>> | null,
+  upstreamResponseChecksum: string | null,
+): Promise<void> {
+  // validate optional upstream checksum
+  if (upstreamResponseChecksum !== null) {
+    validateFingerprint(upstreamResponseChecksum);
+  }
+
+  const result = await session.client.query(
+    `
+      UPDATE ingestion_runs
+      SET
+        state = 'succeeded',
+        completed_at = clock_timestamp(),
+        attempts = $3,
+        record_count = $4,
+        response_metadata = $5::jsonb,
+        upstream_response_checksum = $6,
+        error_classification = NULL,
+        error_code = NULL,
+        error_message = NULL
+      WHERE id = $1
+        AND source_id = $2
+        AND state = 'running'
+    `,
+    [
+      runId,
+      session.sourceId,
+      attempts,
+      recordCount,
+      JSON.stringify(responseMetadata),
+      upstreamResponseChecksum,
+    ],
+  );
+  requireGuardedUpdate(result.rowCount, "successful ingestion finalization");
+}
+
+// validate completion counts
+function validateCompletionCounts(attempts: number, recordCount: number): void {
+  // require non-negative integer counts
+  if (
+    !Number.isSafeInteger(attempts) ||
+    attempts < 0 ||
+    !Number.isSafeInteger(recordCount) ||
+    recordCount < 0
+  ) {
+    throw new RangeError("completion counts must be non-negative integers");
+  }
+}
+
+// require exactly one guarded row
+function requireGuardedUpdate(
+  rowCount: number | null,
+  operation: string,
+): void {
+  // reject stale or duplicated lifecycle transitions
+  if (rowCount !== 1) {
+    throw new Error(`${operation} did not affect exactly one row`);
+  }
+}
+
+// require an expected query row
+function requireRow<R>(row: R | undefined, operation: string): R {
+  // reject missing results
+  if (row === undefined) {
+    throw new Error(`${operation} returned no row`);
+  }
+
+  return row;
+}
+
+// centralize the read projection
+function weatherRecordSelection(): string {
+  return `
+    wr.id,
+    wr.source_id AS "sourceId",
+    s.source_key AS "sourceKey",
+    wr.source_kind AS "sourceKind",
+    wr.valid_at AS "validAt",
+    wr.product_run_at AS "productRunAt",
+    wr.first_received_at AS "firstReceivedAt",
+    wr.last_received_at AS "lastReceivedAt",
+    wr.revision_count AS "revisionCount",
+    wr.temperature_c AS "temperatureC",
+    wr.apparent_temperature_c AS "apparentTemperatureC",
+    wr.precipitation_mm AS "precipitationMm",
+    wr.wind_speed_mps AS "windSpeedMps",
+    wr.wind_gust_mps AS "windGustMps",
+    wr.pressure_hpa AS "pressureHpa",
+    wr.relative_humidity_percent AS "relativeHumidityPercent",
+    wr.cloud_cover_percent AS "cloudCoverPercent",
+    wr.wind_direction_degrees AS "windDirectionDegrees",
+    st.slug AS "stationSlug",
+    si.slug AS "siteSlug",
+    p.provider_key AS "providerKey"
+  `;
+}
