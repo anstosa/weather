@@ -25,7 +25,6 @@ releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
 control_plane_version=1
-mkdir -p "$releases_dir" "$state_dir"
 
 # locate one validated release environment
 release_env() {
@@ -107,10 +106,11 @@ require_control_plane_compatibility() {
   expected_version=$(env_value "$env_file" WEATHER_CONTROL_PLANE_VERSION)
   expected_digest=$(env_value "$env_file" WEATHER_CONTROL_PLANE_SHA256)
   current_digest=$(control_plane_digest)
+  # reject unallowlisted control-plane handoffs
   [[ "$expected_version" == "$control_plane_version" ]] ||
-    die "deployment control-plane version is incompatible with release state"
+    die "deployment control-plane version is unsupported without a versioned allowlisted handoff"
   [[ "$expected_digest" == "$current_digest" ]] ||
-    die "deployment control-plane digest is incompatible with release state"
+    die "deployment control-plane digest is unsupported without a versioned allowlisted handoff"
 }
 
 # write one deterministic release environment
@@ -362,7 +362,6 @@ start_release() (
     trap - EXIT
     exit "$status"
   }
-  trap cleanup_initial_activation EXIT
   activation_env=$(release_env "$target")
   validate_release_env "$activation_env" "$target"
   require_control_plane_compatibility "$activation_env"
@@ -380,6 +379,7 @@ start_release() (
     backup_env=$activation_env
     initial_started=true
   fi
+  trap cleanup_initial_activation EXIT
   start_postgres "$backup_env"
 
   printf 'Creating pre-migration encrypted backup...\n'
@@ -454,7 +454,17 @@ case "$action" in
     require_file "$source_env"
     require_command docker
     require_command node
+    current=$(read_optional_release_state "$state_dir/current-release")
+
+    # gate the active control plane before any stage work
+    if [[ -n "$current" ]]; then
+      previous_env=$(release_env "$current")
+      validate_release_env "$previous_env" "$current"
+      require_control_plane_compatibility "$previous_env"
+    fi
+
     require_capacity_gate
+    mkdir -p "$releases_dir"
     target=$(release_env "$release")
     [[ ! -e "$target" && ! -L "$target" ]] || die "release is already staged: $release"
     server_source="$(image_repository "$(env_value "$source_env" WEATHER_SERVER_IMAGE)"):$release"
@@ -479,13 +489,9 @@ case "$action" in
     done
 
     WEATHER_ENV_FILE=$temporary compose pull
-    current=$(read_optional_release_state "$state_dir/current-release")
 
     # require previous-image compatibility for upgrades
     if [[ -n "$current" ]]; then
-      previous_env=$(release_env "$current")
-      validate_release_env "$previous_env" "$current"
-      require_control_plane_compatibility "$previous_env"
       require_deployment_secrets
       verify_previous_image_compatibility "$temporary" "$previous_env"
     else

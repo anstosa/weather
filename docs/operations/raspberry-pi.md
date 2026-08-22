@@ -35,6 +35,12 @@ any other connector token.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
+   This release allowlists no cross-version or cross-digest control-plane
+   handoff. Any control-plane change is therefore unsupported until the already
+   installed version contains an explicit versioned allowlist for that exact
+   source and target. Do not rewrite release metadata or use wildcard handoffs:
+   every mutating lifecycle action rejects the mismatch before changing images,
+   containers, the database, or release state.
 4. Generate separate long random administrator, owner, API, and ingestion
    passwords. The administrator and owner values must differ. Install the four
    `weather_postgres_*` sources for `999:999`; the administrator source is
