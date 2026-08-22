@@ -336,13 +336,16 @@ test(
           "-c",
           `source "$1"
 override=$2
+compatibility_env=$3
+compose_file=$4
+local_compose_file=$5
 # use the disposable Compose project
 compose() {
-  local selected_env=\${WEATHER_ENV_FILE:-$3}
+  local selected_env=\${WEATHER_ENV_FILE:-$compatibility_env}
   docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
-    --file "$4" --file "$5" --file "$override" "$@"
+    --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
 }
-verify_previous_image_compatibility "$3" "$3"`,
+verify_previous_image_compatibility "$compatibility_env" "$compatibility_env"`,
           "weather-compatibility-test",
           join(deployRoot, "scripts/update.sh"),
           override,
@@ -414,16 +417,20 @@ verify_previous_image_compatibility "$3" "$3"`,
 releases_dir=$2
 state_dir=$3
 override=$4
+default_env=$5
+compose_file=$6
+local_compose_file=$7
+transcript=$8
 # bypass host secret ownership
 require_deployment_secrets() { :; }
 # publish only fixture state
 write_active_symlink() { ln -sfn "../releases/$1.env" "$state_dir/active.env"; }
 # use the disposable Compose project
 compose() {
-  local selected_env=\${WEATHER_ENV_FILE:-$5}
-  printf '%s|%s\\n' "$selected_env" "$*" >>"$8"
+  local selected_env=\${WEATHER_ENV_FILE:-$default_env}
+  printf '%s|%s\\n' "$selected_env" "$*" >>"$transcript"
   docker compose --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
-    --file "$6" --file "$7" --file "$override" "$@"
+    --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
 }
 rollback_release`,
           "weather-rollback-integration",
