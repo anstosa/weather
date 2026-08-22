@@ -2,6 +2,7 @@ services:
   postgres:
     image: ${WEATHER_LOCAL_POSTGRES_IMAGE:-postgres:17.10-bookworm}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
+    networks: [data, local_postgres_ingress]
     ports:
       - "127.0.0.1:${WEATHER_LOCAL_POSTGRES_PORT:-5433}:5432"
     volumes:
@@ -10,6 +11,7 @@ services:
   web:
     image: ${WEATHER_LOCAL_WEB_IMAGE:-weather-web:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
+    networks: [edge, web_api, local_web_ingress]
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
     ports:
@@ -49,6 +51,12 @@ services:
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
+
+networks:
+  local_postgres_ingress:
+    driver: bridge
+  local_web_ingress:
+    driver: bridge
 
 volumes:
   weather_local_postgres:
