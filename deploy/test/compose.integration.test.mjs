@@ -64,18 +64,21 @@ async function executeProbe(environment, override, service, kind, ...values) {
 
 // assert one allowed or denied network path
 async function assertProbe(environment, override, expected, service, kind, ...values) {
+  let succeeded = false;
+
   try {
     await executeProbe(environment, override, service, kind, ...values);
-
-    // reject unexpectedly reachable paths
-    if (expected === "denied") {
-      assert.fail(`${service} ${kind} ${values.join(":")} unexpectedly succeeded`);
-    }
+    succeeded = true;
   } catch (error) {
     // preserve failures for allowed paths
     if (expected === "allowed") {
       throw error;
     }
+  }
+
+  // reject unexpectedly reachable paths
+  if (expected === "denied" && succeeded) {
+    assert.fail(`${service} ${kind} ${values.join(":")} unexpectedly succeeded`);
   }
 }
 
