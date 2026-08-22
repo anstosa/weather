@@ -396,6 +396,67 @@ test(
       );
       assert.equal(administratorLogin.stdout.trim(), "postgres");
 
+      // emulate retained owner authority
+      await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "--set=ON_ERROR_STOP=1",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--command",
+        "SELECT format('ALTER ROLE postgres WITH LOGIN PASSWORD %L', regexp_replace(pg_read_file('/run/secrets/weather_owner_password'), E'[\\r\\n]+$', ''))\n\\gexec",
+      );
+      // restart without deleting data
+      await compose(environment, override, "restart", "postgres");
+      await compose(environment, override, "up", "--detach", "--no-deps", "--wait", "postgres");
+      await assert.rejects(
+        compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "env",
+          "PGPASSWORD=owner-integration-password",
+          "psql",
+          "--host",
+          "postgres",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--command",
+          "SELECT 1",
+        ),
+      );
+      const reconciledAdministratorLogin = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "env",
+        "PGPASSWORD=admin-integration-password",
+        "psql",
+        "--host",
+        "postgres",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT current_user",
+      );
+      assert.equal(reconciledAdministratorLogin.stdout.trim(), "postgres");
+
       const networkServices = [
         { name: "postgres", service: "postgres", target: "postgres", networks: ["data"] },
         {
