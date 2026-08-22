@@ -37,6 +37,7 @@ services:
     image: ${POSTGRES_IMAGE:?set digest-pinned POSTGRES_IMAGE}
     platform: linux/arm64
     entrypoint: [/usr/local/bin/weather-postgres-entrypoint]
+    command: [postgres]
     restart: unless-stopped
     user: "999:999"
     read_only: true

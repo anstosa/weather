@@ -313,6 +313,7 @@ test("PostgreSQL reconciles retained administrator credentials before network st
     (volume) => volume.target === "/usr/local/bin/weather-postgres-entrypoint",
   );
   assert.deepEqual(postgres.entrypoint, ["/usr/local/bin/weather-postgres-entrypoint"]);
+  assert.deepEqual(postgres.command, ["postgres"]);
   assert.ok(entrypointMount);
   assert.equal(entrypointMount.read_only, true);
   assert.deepEqual(postgres.healthcheck.test, [
