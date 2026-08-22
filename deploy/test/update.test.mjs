@@ -298,6 +298,7 @@ test("release operations reject incompatible deployment control-plane metadata",
       [release],
     );
     assert.notEqual(versionRejected.status, 0);
+    assert.match(versionRejected.stderr, /unsupported without a versioned allowlisted handoff/u);
     await writeFile(
       release,
       `WEATHER_CONTROL_PLANE_SHA256=${"a".repeat(64)}\nWEATHER_CONTROL_PLANE_VERSION=1\n`,
@@ -307,6 +308,7 @@ test("release operations reject incompatible deployment control-plane metadata",
       [release],
     );
     assert.notEqual(digestRejected.status, 0);
+    assert.match(digestRejected.stderr, /unsupported without a versioned allowlisted handoff/u);
     await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=1\n");
     const metadataRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
@@ -318,7 +320,8 @@ test("release operations reject incompatible deployment control-plane metadata",
   }
 });
 
-test("stage rejects an unchecked current release before compatibility migration", async () => {
+// prove stage rejects before mutation
+test("stage rejects an unsupported current control plane before any mutation", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-stage-current-gate-"));
   const releases = join(directory, "releases");
   const state = join(directory, "state");
@@ -337,7 +340,7 @@ state_dir=$4
 transcript=$5
 require_file() { :; }
 require_command() { :; }
-require_capacity_gate() { :; }
+require_capacity_gate() { printf 'capacity\n' >>"$transcript"; }
 env_value() {
   case "$2" in
     WEATHER_SERVER_IMAGE) printf 'registry.example/weather-server\n' ;;
@@ -346,8 +349,8 @@ env_value() {
     CLOUDFLARED_IMAGE) printf 'cloudflare/cloudflared\n' ;;
   esac
 }
-resolve_arm64_image() { printf '%s@sha256:%064d\n' "$1" 0; }
-write_release_env() { : >"$2"; }
+resolve_arm64_image() { printf 'resolve:%s\n' "$1" >>"$transcript"; printf '%s@sha256:%064d\n' "$1" 0; }
+write_release_env() { printf 'write:%s\n' "$2" >>"$transcript"; : >"$2"; }
 compose() {
   printf 'compose:%s\n' "$*" >>"$transcript"
   if [[ "$*" == 'config --images' ]]; then
@@ -370,7 +373,10 @@ main stage 2026.08.22-2 --from "$6"`,
     assert.notEqual(result.status, 0);
     const output = await readFile(transcript, "utf8");
     assert.match(output, /gate:.*2026\.08\.22-1\.env/u);
-    assert.doesNotMatch(output, /compatibility-migration/u);
+    assert.doesNotMatch(
+      output,
+      /capacity|resolve:|write:|compose:|secrets|compatibility-migration/u,
+    );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
@@ -415,7 +421,66 @@ start_release 2026.08.22-2`,
     assert.notEqual(result.status, 0);
     const output = await readFile(transcript, "utf8");
     assert.match(output, /gate:.*2026\.08\.22-2\.env[\s\S]*gate:.*2026\.08\.22-1\.env/u);
-    assert.doesNotMatch(output, /backup|compose:run --rm migration|restore:|record:/u);
+    assert.doesNotMatch(output, /backup|compose:|restore:|record:/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// prove rollback and recovery gate every release
+test("rollback and recovery reject unsupported control planes before mutation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-rollback-control-gate-"));
+
+  try {
+    // reject either rollback boundary
+    for (const rejectedRelease of ["2026.08.22-2", "2026.08.22-1"]) {
+      const transcript = join(directory, `${rejectedRelease}.transcript`);
+      const result = runBash(
+        `source "$1"
+state_dir=$2/state
+transcript=$3
+rejected_release=$4
+read_release_state() {
+  case "$1" in
+    */current-release) printf '2026.08.22-2\n' ;;
+    */previous-release) printf '2026.08.22-1\n' ;;
+  esac
+}
+release_env() { printf '/releases/%s.env\n' "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() {
+  printf 'gate:%s\n' "$1" >>"$transcript"
+  [[ "$1" != *"$rejected_release.env" ]]
+}
+require_deployment_secrets() { printf 'secrets\n' >>"$transcript"; }
+restore_images() { printf 'restore:%s\n' "$1" >>"$transcript"; }
+record_release_success() { printf 'record:%s\n' "$1" >>"$transcript"; }
+rollback_release`,
+        [directory, transcript, rejectedRelease],
+      );
+      assert.notEqual(result.status, 0, rejectedRelease);
+      const output = await readFile(transcript, "utf8");
+      assert.match(output, new RegExp(`gate:.*${rejectedRelease.replaceAll(".", "\\.")}\\.env`, "u"));
+      assert.doesNotMatch(output, /secrets|restore:|record:/u);
+    }
+
+    const recoverTranscript = join(directory, "recover.transcript");
+    const recover = runBash(
+      `source "$1"
+state_dir=$2/state
+transcript=$3
+read_release_state() { printf '2026.08.22-2\n'; }
+release_env() { printf '/releases/%s.env\n' "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() { printf 'gate:%s\n' "$1" >>"$transcript"; return 1; }
+require_deployment_secrets() { printf 'secrets\n' >>"$transcript"; }
+restore_images() { printf 'restore:%s\n' "$1" >>"$transcript"; }
+write_active_symlink() { printf 'active:%s\n' "$1" >>"$transcript"; }
+main recover`,
+      [directory, recoverTranscript],
+    );
+    assert.notEqual(recover.status, 0);
+    assert.match(await readFile(recoverTranscript, "utf8"), /^gate:.*2026\.08\.22-2\.env\n$/u);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }

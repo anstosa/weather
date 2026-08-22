@@ -582,6 +582,9 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   const rollbackFunction = update
     .split("rollback_release() {")[1]
     .split("\n}\n\n# dispatch one operator action")[0];
+  const startRelease = update
+    .split("start_release() (")[1]
+    .split("\n)\n\n# roll back images")[0];
   assert.match(stageCase, /compose config --quiet/u);
   assert.match(stageCase, /resolve_arm64_image/u);
   assert.match(stageCase, /compose pull/u);
@@ -589,6 +592,28 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(stageCase, /trap[\s\S]*EXIT/u);
   assert.match(stageCase, /mv[\s\S]*\$target/u);
   assert.doesNotMatch(stageCase, /compose up|compose down/u);
+  const stageControlGate = stageCase.indexOf("require_control_plane_compatibility");
+  assert.notEqual(stageControlGate, -1);
+
+  // require compatibility before stage mutation
+  for (const mutation of [
+    "require_capacity_gate",
+    "mkdir -p \"$releases_dir\"",
+    "resolve_arm64_image",
+    "mktemp",
+    "trap 'rm -f",
+    "compose pull",
+  ]) {
+    assert.equal(stageControlGate < stageCase.indexOf(mutation), true, mutation);
+  }
+  assert.doesNotMatch(
+    update.split("# locate one validated release environment")[0],
+    /mkdir -p/u,
+  );
+  const activationControlGate = startRelease.lastIndexOf("require_control_plane_compatibility");
+  const activationCleanupTrap = startRelease.indexOf("trap cleanup_initial_activation EXIT");
+  assert.equal(activationControlGate < activationCleanupTrap, true);
+  assert.equal(activationCleanupTrap < startRelease.indexOf('start_postgres "$backup_env"'), true);
   assert.match(update, /imagetools inspect/u);
   assert.match(update, /weather_compat_/u);
   assert.match(update, /compatibility-provider\.mjs/u);
@@ -620,6 +645,10 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   );
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
   assert.match(read("deploy/test/compose.integration.test.mjs"), /0003_candidate_contract\.sql/u);
+  assert.match(
+    read("docs/operations/raspberry-pi.md"),
+    /allowlists no cross-version or cross-digest control-plane[\s\S]*rejects the mismatch before changing/u,
+  );
 });
 
 // verify capacity thresholds
