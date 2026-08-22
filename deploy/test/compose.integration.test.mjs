@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -37,7 +37,7 @@ async function compose(environment, override, ...argumentsList) {
     [
       "compose",
       "--project-name",
-      "weather",
+      environment.WEATHER_COMPOSE_PROJECT_NAME,
       "--env-file",
       join(deployRoot, ".env.example"),
       "--file",
@@ -130,8 +130,11 @@ test(
     const backups = join(directory, "backups");
     const webPort = await reservePort();
     const postgresPort = await reservePort();
+    // isolate shared Docker state
+    const projectName = basename(directory).toLowerCase();
     const environment = {
       ...process.env,
+      WEATHER_COMPOSE_PROJECT_NAME: projectName,
       WEATHER_LOCAL_POSTGRES_PORT: String(postgresPort),
       WEATHER_LOCAL_WEB_PORT: String(webPort),
     };

@@ -86,8 +86,9 @@ default_env_file() {
 # run the Weather-scoped Compose project
 compose() {
   local env_file=${WEATHER_ENV_FILE:-$(default_env_file)}
+  local project_name=${WEATHER_COMPOSE_PROJECT_NAME:-weather}
   require_file "$env_file"
-  docker compose --project-name weather --env-file "$env_file" -f "$compose_file" "$@"
+  docker compose --project-name "$project_name" --env-file "$env_file" -f "$compose_file" "$@"
 }
 
 # read a simple env value without evaluating it
