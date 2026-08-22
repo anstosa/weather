@@ -237,7 +237,10 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
 
   try {
     browser = await launchBrowser();
-    const page = await browser.newPage({ viewport: { height: 900, width: 1440 } });
+    const page = await browser.newPage({
+      timezoneId: "UTC",
+      viewport: { height: 900, width: 1440 },
+    });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     await assert.doesNotReject(() => page.getByRole("heading", { name: "Ballydidean weather" }).waitFor());
     assert.equal(await page.getByText("16.2").first().isVisible(), true);
@@ -249,6 +252,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.locator("select[name='stationSlug']").selectOption("open-meteo-virtual");
     await page.locator("select[name='sourceId']").selectOption("11");
     await page.locator("select[name='sourceKind']").selectOption("reanalysis");
+    await page.locator("input[name='from']").fill("2026-08-21T21:30");
+    await page.locator("input[name='to']").fill("2026-08-21T22:30");
     await page.getByRole("button", { name: "Apply filters" }).click();
     await page.waitForLoadState("networkidle");
     assert.ok(
@@ -265,7 +270,9 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         // require frozen history filter names
         (entry) =>
           entry.includes("/history?") &&
-          entry.includes("sourceKind=reanalysis"),
+          entry.includes("sourceKind=reanalysis") &&
+          entry.includes("from=2026-08-22T04%3A30%3A00.000Z") &&
+          entry.includes("to=2026-08-22T05%3A30%3A00.000Z"),
       ),
     );
 
