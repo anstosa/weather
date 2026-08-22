@@ -39,7 +39,12 @@ export async function fetchJsonWithRetry(
   // attempt only the bounded request budget
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const attemptTimeoutMs = boundedAttemptTimeout(timeoutMs, deadline, clock);
+      const attemptTimeoutMs = boundedAttemptTimeout(
+        timeoutMs,
+        deadline,
+        clock,
+        attempt,
+      );
       const { body, response } = await fetchAttempt(
         fetchImplementation,
         url,
@@ -282,6 +287,7 @@ function boundedAttemptTimeout(
   timeoutMs: number,
   deadline: number | null,
   clock: () => number,
+  attempts: number,
 ): number {
   // retain the request timeout without a run deadline
   if (deadline === null) {
@@ -292,7 +298,7 @@ function boundedAttemptTimeout(
 
   // fail before starting work past the run deadline
   if (remaining <= 0) {
-    throw deadlineFailure(1);
+    throw deadlineFailure(attempts);
   }
 
   return Math.min(timeoutMs, remaining);
