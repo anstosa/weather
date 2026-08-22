@@ -301,6 +301,70 @@ test("worker iteration preserves restart success with no due sources", async () 
   assert.equal(heartbeat[0].lastSuccessAt, previousSuccess);
 });
 
+// retain a committed success across heartbeat persistence failure
+test("worker iteration retains a new success candidate after heartbeat failure", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const heartbeats = [];
+  const previousSuccess = "2026-08-21T05:20:00.000Z";
+  const newerSuccess = "2026-08-22T05:20:00.000Z";
+  const repository = scheduledRepository([]);
+  let successCandidate = previousSuccess;
+  let iteration = 0;
+  repository.discoverDueSources = async () => {
+    // succeed once then exercise an idle iteration
+    iteration += 1;
+    return iteration === 1 ? [currentDueSource(site)] : [];
+  };
+  repository.updateWorkerHeartbeat = async (_pool, input) => {
+    // fail only the first heartbeat write
+    heartbeats.push(input);
+    if (heartbeats.length === 1) {
+      throw new Error("heartbeat persistence failed");
+    }
+  };
+  const onDurableSuccess = (lastSuccessAt) => {
+    // retain the newest committed candidate
+    successCandidate = lastSuccessAt;
+  };
+
+  await assert.rejects(
+    () =>
+      runWorkerIteration({}, {
+        diagnosticWriter: () => {},
+        fetchCurrent: async () => ({
+          attempts: 1,
+          checksum: "c".repeat(64),
+          providerCursor: null,
+          records: [{ validAt: newerSuccess }],
+          responseMetadata: {},
+        }),
+        instance: "worker-test",
+        lastSuccessAt: successCandidate,
+        now: () => new Date(newerSuccess),
+        onDurableSuccess,
+        repository,
+        site,
+        version: "release-test",
+      }),
+    /heartbeat persistence failed/u,
+  );
+  assert.equal(successCandidate, newerSuccess);
+
+  const idle = await runWorkerIteration({}, {
+    diagnosticWriter: () => {},
+    instance: "worker-test",
+    lastSuccessAt: successCandidate,
+    now: () => new Date("2026-08-22T05:35:00.000Z"),
+    onDurableSuccess,
+    repository,
+    site,
+    version: "release-test",
+  });
+
+  assert.equal(idle.lastSuccessAt, newerSuccess);
+  assert.equal(heartbeats[1].lastSuccessAt, newerSuccess);
+});
+
 // create an exact backfill repository
 function backfillRepository(log, successfulKeys = new Set()) {
   let run = 0;
