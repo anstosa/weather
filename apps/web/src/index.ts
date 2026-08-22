@@ -32,6 +32,28 @@ export interface WeatherRecord {
     readonly status: "delayed" | "fresh" | "stale";
   };
   readonly id: string;
+  readonly metadata: {
+    readonly device: {
+      readonly model: string | null;
+      readonly serial: string | null;
+      readonly vendor: string | null;
+    } | null;
+    readonly provider: {
+      readonly dataset: string | null;
+      readonly elevationM: number | null;
+      readonly gridCell: string | null;
+    } | null;
+    readonly quality: {
+      readonly confidencePercent: number | null;
+      readonly flags: readonly string[] | null;
+      readonly interpolation: string | null;
+      readonly status: string | null;
+    } | null;
+    readonly upstream: {
+      readonly model: string | null;
+      readonly timezone: string;
+    };
+  };
   readonly metrics: {
     readonly apparentTemperatureC: number | null;
     readonly cloudCoverPercent: number | null;
@@ -65,6 +87,7 @@ export interface HistoryFilters {
   readonly from?: string;
   readonly sourceId?: string;
   readonly sourceKind?: SiteSource["kind"];
+  readonly stationSlug?: string;
   readonly to?: string;
 }
 
@@ -122,7 +145,7 @@ export class WeatherDashboardController {
 
   // retain injectable browser boundaries
   constructor(options: DashboardOptions = {}) {
-    this.#apiBaseUrl = normalizeBaseUrl(options.apiBaseUrl ?? "");
+    this.#apiBaseUrl = normalizeBaseUrl(options.apiBaseUrl ?? "/api/v1");
     this.#fetcher = options.fetcher ?? fetch;
   }
 
@@ -210,7 +233,7 @@ export class WeatherDashboardController {
     this.resetPagination();
     this.#state = { ...this.#state, filters };
     this.emit();
-    await this.loadHistory();
+    await this.loadSelectedSite();
   }
 
   // advance to the next cursor page
@@ -260,7 +283,11 @@ export class WeatherDashboardController {
       const [current, history] = await Promise.all([
         getJson<RecordsResponse>(
           this.#fetcher,
-          `${this.#apiBaseUrl}/sites/${encodeURIComponent(site.slug)}/current`,
+          buildCurrentUrl(
+            this.#apiBaseUrl,
+            site.slug,
+            this.#state.filters,
+          ),
         ),
         getJson<RecordsResponse>(this.#fetcher, historyUrl),
       ]);
@@ -346,7 +373,12 @@ export function buildHistoryUrl(
   filters: HistoryFilters,
   cursor?: string,
 ): string {
-  const parameters = new URLSearchParams({ limit: "25" });
+  const parameters = new URLSearchParams({ limit: "100" });
+
+  // include the station filter
+  if (filters.stationSlug !== undefined) {
+    parameters.set("station", filters.stationSlug);
+  }
 
   // include the source filter
   if (filters.sourceId !== undefined) {
@@ -355,7 +387,7 @@ export function buildHistoryUrl(
 
   // include the provenance filter
   if (filters.sourceKind !== undefined) {
-    parameters.set("kind", filters.sourceKind);
+    parameters.set("sourceKind", filters.sourceKind);
   }
 
   // include the lower bound
@@ -374,6 +406,28 @@ export function buildHistoryUrl(
   }
 
   return `${normalizeBaseUrl(apiBaseUrl)}/sites/${encodeURIComponent(siteSlug)}/history?${parameters.toString()}`;
+}
+
+// construct a filtered current endpoint
+export function buildCurrentUrl(
+  apiBaseUrl: string,
+  siteSlug: string,
+  filters: HistoryFilters,
+): string {
+  const parameters = new URLSearchParams();
+
+  // include the station filter
+  if (filters.stationSlug !== undefined) {
+    parameters.set("station", filters.stationSlug);
+  }
+
+  // include the source filter
+  if (filters.sourceId !== undefined) {
+    parameters.set("source", filters.sourceId);
+  }
+
+  const query = parameters.size === 0 ? "" : `?${parameters.toString()}`;
+  return `${normalizeBaseUrl(apiBaseUrl)}/sites/${encodeURIComponent(siteSlug)}/current${query}`;
 }
 
 // mount the interactive dashboard
@@ -407,9 +461,37 @@ export function renderWeatherDashboard(state: DashboardState): string {
         ${renderSiteSelector(state)}
       </header>
       ${renderStatus(state)}
+      ${renderAttribution(state)}
       ${renderCurrent(state)}
       ${renderHistory(state)}
     </main>
+  `;
+}
+
+// render permanent provider and license attribution
+function renderAttribution(state: DashboardState): string {
+  const source = state.selectedSite?.stations
+    .flatMap(
+      // collect every site source
+      (station) => station.sources,
+    )
+    .find(
+      // select the configured provider
+      (candidate) => candidate.providerKey === "open-meteo",
+    );
+
+  // preserve an honest pre-initialization shell
+  if (source === undefined) {
+    return "";
+  }
+
+  return `
+    <aside class="attribution" aria-label="Weather data attribution">
+      <span>${escapeHtml(source.attribution.label)}.</span>
+      <a href="${escapeHtml(source.attribution.url)}" rel="license noreferrer">Open-Meteo</a>
+      <span>data is available under</span>
+      <a href="https://creativecommons.org/licenses/by/4.0/" rel="license noreferrer">CC BY 4.0</a>.
+    </aside>
   `;
 }
 
@@ -483,7 +565,7 @@ function renderCurrent(state: DashboardState): string {
         ${renderMetric("Pressure", current.metrics.pressureHpa, "hPa")}
       </div>
       <div class="provenance">
-        <p><strong>Nearby model value</strong> valid ${formatInstant(current.validAt, state.selectedSite?.timezone)}. This is ${escapeHtml(current.provenance.label)}, not an on-site sensor reading.</p>
+        <p><strong>Nearby model value</strong> valid ${formatInstant(current.validAt, state.selectedSite?.timezone)}. This is ${escapeHtml(current.provenance.label)}, not an on-site sensor reading.${current.metadata.upstream.model === null ? "" : ` Upstream model: ${escapeHtml(current.metadata.upstream.model)}.`}</p>
         <a href="${escapeHtml(current.provenance.attribution.url)}" rel="noreferrer">${escapeHtml(current.provenance.attribution.label)}</a>
       </div>
     </section>
@@ -517,7 +599,7 @@ function renderHistory(state: DashboardState): string {
       <div class="table-scroll">
         <table>
           <caption class="sr-only">Filterable weather history for ${escapeHtml(state.selectedSite?.name ?? "the selected site")}</caption>
-          <thead><tr><th scope="col">Valid time</th><th scope="col">Temperature</th><th scope="col">Humidity</th><th scope="col">Wind</th><th scope="col">Precipitation</th><th scope="col">Source</th></tr></thead>
+          <thead><tr><th scope="col">Valid time</th><th scope="col">Temperature (°C)</th><th scope="col">Humidity (%)</th><th scope="col">Wind (m/s)</th><th scope="col">Precipitation (mm)</th><th scope="col">Source and provenance</th></tr></thead>
           <tbody>${renderHistoryRows(state)}</tbody>
         </table>
       </div>
@@ -531,10 +613,14 @@ function renderHistory(state: DashboardState): string {
 
 // render history filter controls
 function renderHistoryFilters(state: DashboardState): string {
+  let stationOptions = `<option value="">All stations</option>`;
   let sourceOptions = `<option value="">All sources</option>`;
 
   // collect the selected site's sources
   for (const station of state.selectedSite?.stations ?? []) {
+    const stationSelected = station.slug === state.filters.stationSlug ? " selected" : "";
+    stationOptions += `<option value="${escapeHtml(station.slug)}"${stationSelected}>${escapeHtml(station.name)}</option>`;
+
     // render every source option
     for (const source of station.sources) {
       const selected = source.id === state.filters.sourceId ? " selected" : "";
@@ -544,6 +630,7 @@ function renderHistoryFilters(state: DashboardState): string {
 
   return `
     <form class="filters" data-history-filters>
+      <label><span>Station</span><select name="stationSlug">${stationOptions}</select></label>
       <label><span>Source</span><select name="sourceId">${sourceOptions}</select></label>
       <label><span>Provenance</span><select name="sourceKind">
         <option value="">All kinds</option>
@@ -613,6 +700,7 @@ function bindDashboardControls(
           "sourceKind",
           readFormValue(data.get("sourceKind")) as SiteSource["kind"] | undefined,
         ),
+        ...optionalFilter("stationSlug", readFormValue(data.get("stationSlug"))),
         ...optionalFilter("to", toInstant(data.get("to"))),
       });
     });
