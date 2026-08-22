@@ -83,7 +83,7 @@ jobs:
           CLOUDFLARED_IMAGE cloudflare/cloudflared:2026.7.2
           EOF
           docker run --rm --platform linux/arm64 postgres:17.10-bookworm \
-            postgres --version | grep -E 'PostgreSQL 1[7-9]|PostgreSQL [2-9][0-9]'
+            postgres --version | grep -E '^postgres \(PostgreSQL\) (1[7-9]|[2-9][0-9])\.'
       - name: Retain dependency digest references
         uses: actions/upload-artifact@v4
         with:

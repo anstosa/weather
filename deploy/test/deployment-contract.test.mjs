@@ -854,7 +854,8 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
   assert.doesNotMatch(workflow, /:latest|ssh-run|update\.sh activate/u);
 });
 
-test("dependency manifest workflow shell executes with ARM64 verification", async () => {
+// verify canonical PostgreSQL version output
+test("dependency manifest workflow shell enforces ARM64 PostgreSQL 17+ verification", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-workflow-execution-"));
   const bin = join(directory, "bin");
   const workflow = read(".github/workflows/publish-images.yml");
@@ -876,21 +877,34 @@ if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
 fi
 # emulate ARM64 execution
 if [[ "$1" == run ]]; then
-  printf 'PostgreSQL 17.10\n'
+  printf '%s\n' "$POSTGRES_VERSION_OUTPUT"
   exit 0
 fi
 exit 64
 `,
     );
     await chmod(join(bin, "docker"), 0o700);
-    const result = spawnSync("bash", ["-c", script], {
-      cwd: directory,
-      encoding: "utf8",
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
-    });
-    assert.equal(result.status, 0, result.stderr);
+    // execute the exact workflow shell
+    const runWithVersion = (versionOutput) =>
+      spawnSync("bash", ["-c", script], {
+        cwd: directory,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          POSTGRES_VERSION_OUTPUT: versionOutput,
+        },
+      });
+    const accepted17 = runWithVersion("postgres (PostgreSQL) 17.10 (Debian 17.10-1.pgdg13+1)");
+    assert.equal(accepted17.status, 0, accepted17.stderr);
     assert.match(readFileSync(join(directory, "dependency-images.env"), "utf8"), /POSTGRES_IMAGE=.*@sha256:/u);
     assert.match(readFileSync(join(directory, "dependency-images.env"), "utf8"), /CLOUDFLARED_IMAGE=.*@sha256:/u);
+    const accepted20 = runWithVersion("postgres (PostgreSQL) 20.1 (Debian 20.1-1.pgdg13+1)");
+    assert.equal(accepted20.status, 0, accepted20.stderr);
+    const rejected16 = runWithVersion("postgres (PostgreSQL) 16.9 (Debian 16.9-1.pgdg13+1)");
+    assert.equal(rejected16.status, 1, rejected16.stderr);
+    const rejected100 = runWithVersion("postgres (PostgreSQL) 100.1 (Debian 100.1-1.pgdg13+1)");
+    assert.equal(rejected100.status, 1, rejected100.stderr);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
