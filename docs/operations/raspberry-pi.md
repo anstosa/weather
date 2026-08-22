@@ -97,8 +97,10 @@ drops only a unique compatibility database, applies the candidate's trailing
 migrations, runs the previous API image's `/api/v1/health`, `/api/v1/sites`,
 `/current`, and `/history` reads, and runs one previous worker loop against a
 credential-free deterministic provider stub. The existing release must match
-the installed control plane before these checks. The first release records
-compatibility as not applicable.
+the installed control plane before these checks. Only after every real previous-
+image check passes, staging records a private authorization bound to that
+previous release and the exact ordered candidate migration ledger. The first
+release records compatibility as not applicable.
 
 Activate requires the pre-provisioned Weather connector token, creates an
 encrypted pre-migration backup, runs forward-only checked migrations, starts
@@ -121,6 +123,10 @@ sudo systemctl restart weather-compose.service
 
 Rollback applies the previous four immutable Weather images with `--no-deps`; it
 never runs backup or migration and never reverses a forward-compatible migration.
+Ordinary API and worker readiness rejects every trailing migration. Rollback and
+recovery inject the staged release-specific ledger authorization only when an
+older proven-compatible image set must run against the retained newer schema;
+forward activation clears it, and runtime database roles cannot alter it.
 Failed initial activation removes only Weather containers and networks while
 preserving `/var/lib/weather`. Cleanup is armed as soon as the first PostgreSQL
 service starts, including backup, migration, and health failures. Recovery

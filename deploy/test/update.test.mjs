@@ -76,6 +76,37 @@ validate_migration_authorization "$3" "2026.08.22-1" "2026.08.22-2"`,
   }
 });
 
+test("restore injects authorization only for an older compatible release", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-authorized-restore-"));
+  const releases = join(directory, "releases");
+  const authorization = join(releases, "2026.08.22-2.migration-authorization");
+  const transcript = join(directory, "transcript");
+
+  try {
+    await mkdir(releases);
+    const result = runBash(
+      `source "$1"
+releases_dir=$2
+transcript=$3
+write_migration_authorization "$4" "2026.08.22-1" "2026.08.22-2" "${"a".repeat(64)}"
+start_postgres() { :; }
+compose() { printf '%s|%s\n' "\${WEATHER_MIGRATION_AUTHORIZATION_RELEASE-unset}" "\${WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256-unset}" >>"$transcript"; }
+restore_images /releases/previous.env 2026.08.22-1 2026.08.22-2
+export WEATHER_MIGRATION_AUTHORIZATION_RELEASE=untrusted
+export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=untrusted
+restore_images /releases/current.env 2026.08.22-2 2026.08.22-2`,
+      [releases, transcript, authorization],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      await readFile(transcript, "utf8"),
+      `2026.08.22-1|${"a".repeat(64)}\nunset|unset\n`,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 test("rollback switches images and commits state without forward operations", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-rollback-"));
   const transcript = join(directory, "transcript");
@@ -86,11 +117,12 @@ test("rollback switches images and commits state without forward operations", as
 state_dir=/unused
 transcript=$2
 read_release_state() { [[ "$1" == */current-release ]] && printf '2026.08.22-2\\n' || printf '2026.08.22-1\\n'; }
+read_optional_release_state() { printf '2026.08.22-2\\n'; }
 release_env() { printf '/releases/%s.env\\n' "$1"; }
 validate_release_env() { :; }
 require_deployment_secrets() { :; }
 require_control_plane_compatibility() { :; }
-restore_images() { printf 'restore:%s\\n' "$1" >>"$transcript"; }
+restore_images() { printf 'restore:%s:%s:%s\\n' "$1" "$2" "$3" >>"$transcript"; }
 record_release_success() { printf 'record:%s:%s\\n' "$1" "$2" >>"$transcript"; }
 rollback_release`,
       [transcript],
@@ -98,7 +130,8 @@ rollback_release`,
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
       await readFile(transcript, "utf8"),
-      "restore:/releases/2026.08.22-1.env\nrecord:2026.08.22-1:2026.08.22-2\n",
+      "restore:/releases/2026.08.22-1.env:2026.08.22-1:2026.08.22-2\n" +
+        "record:2026.08.22-1:2026.08.22-2\n",
     );
   } finally {
     await rm(directory, { force: true, recursive: true });
@@ -116,11 +149,12 @@ state_dir=/unused
 transcript=$2
 attempt=0
 read_release_state() { [[ "$1" == */current-release ]] && printf '2026.08.22-2\\n' || printf '2026.08.22-1\\n'; }
+read_optional_release_state() { printf '2026.08.22-2\\n'; }
 release_env() { printf '/releases/%s.env\\n' "$1"; }
 validate_release_env() { :; }
 require_deployment_secrets() { :; }
 require_control_plane_compatibility() { :; }
-restore_images() { attempt=$((attempt + 1)); printf 'restore:%s\\n' "$1" >>"$transcript"; ((attempt > 1)); }
+restore_images() { attempt=$((attempt + 1)); printf 'restore:%s:%s:%s\\n' "$1" "$2" "$3" >>"$transcript"; ((attempt > 1)); }
 record_release_success() { printf 'unexpected-record\\n' >>"$transcript"; }
 rollback_release`,
       [transcript],
@@ -128,11 +162,104 @@ rollback_release`,
     assert.notEqual(result.status, 0);
     assert.equal(
       await readFile(transcript, "utf8"),
-      "restore:/releases/2026.08.22-1.env\nrestore:/releases/2026.08.22-2.env\n",
+      "restore:/releases/2026.08.22-1.env:2026.08.22-1:2026.08.22-2\n" +
+        "restore:/releases/2026.08.22-2.env:2026.08.22-2:2026.08.22-2\n",
     );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
+});
+
+test("failed activation records schema state before authorized image recovery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-activation-authorization-"));
+  const scripts = join(directory, "scripts");
+  const transcript = join(directory, "transcript");
+
+  try {
+    await mkdir(scripts);
+    await writeFile(join(scripts, "backup.sh"), "#!/usr/bin/env bash\nexit 0\n");
+    await chmod(join(scripts, "backup.sh"), 0o700);
+    const result = runBash(
+      `source "$1"
+deploy_dir=$2
+state_dir=$2/state
+transcript=$3
+release_env() { printf '/releases/%s.env\n' "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() { :; }
+read_optional_release_state() { printf '2026.08.22-1\n'; }
+require_capacity_gate() { :; }
+require_deployment_secrets() { :; }
+start_postgres() { :; }
+compose() { printf 'compose:%s\n' "$*" >>"$transcript"; }
+write_private_state() { printf 'state:%s:%s\n' "$1" "$2" >>"$transcript"; }
+start_exact_release() { printf 'start-exact:%s\n' "$1" >>"$transcript"; return 1; }
+migration_authorization() { printf '/releases/%s.migration-authorization\n' "$1"; }
+validate_migration_authorization() { printf 'validate-auth:%s:%s:%s\n' "$1" "$2" "$3" >>"$transcript"; }
+restore_images() { printf 'restore:%s:%s:%s\n' "$1" "$2" "$3" >>"$transcript"; }
+start_release 2026.08.22-2`,
+      [directory, transcript],
+    );
+    assert.notEqual(result.status, 0);
+    const output = await readFile(transcript, "utf8");
+    assert.match(output, /compose:run --rm migration/u);
+    assert.match(
+      output,
+      /state:.*schema-release:2026\.08\.22-2[\s\S]*start-exact:.*2026\.08\.22-2\.env/u,
+    );
+    assert.match(
+      output,
+      /validate-auth:.*2026\.08\.22-2\.migration-authorization:2026\.08\.22-1:2026\.08\.22-2[\s\S]*restore:.*2026\.08\.22-1\.env:2026\.08\.22-1:2026\.08\.22-2/u,
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("recovery restores the active runtime against retained schema state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-recovery-authorization-"));
+  const transcript = join(directory, "transcript");
+
+  try {
+    const result = runBash(
+      `source "$1"
+state_dir=$2/state
+transcript=$3
+read_release_state() { printf '2026.08.22-1\n'; }
+read_optional_release_state() { printf '2026.08.22-2\n'; }
+release_env() { printf '/releases/%s.env\n' "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() { :; }
+require_command() { :; }
+require_deployment_secrets() { :; }
+restore_images() { printf 'restore:%s:%s:%s\n' "$1" "$2" "$3" >>"$transcript"; }
+write_active_symlink() { printf 'active:%s\n' "$1" >>"$transcript"; }
+main recover`,
+      [directory, transcript],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      await readFile(transcript, "utf8"),
+      "restore:/releases/2026.08.22-1.env:2026.08.22-1:2026.08.22-2\n" +
+        "active:2026.08.22-1\n",
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+test("persistent authorization is written only after API and worker compatibility", async () => {
+  const update = await readFile(updateScript, "utf8");
+  const compatibility = update
+    .split("verify_previous_image_compatibility() (")[1]
+    .split("\n)\n\n# reconcile retained PostgreSQL")[0];
+  const workerGate = compatibility.indexOf("previous worker compatibility failed");
+  const apiGate = compatibility.indexOf("previous API compatibility failed");
+  const publication = compatibility.lastIndexOf("write_migration_authorization");
+
+  assert.equal(workerGate >= 0, true);
+  assert.equal(apiGate > workerGate, true);
+  assert.equal(publication > apiGate, true);
 });
 
 test("release environment validator requires exact current control metadata", async () => {

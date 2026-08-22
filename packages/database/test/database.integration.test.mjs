@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -289,6 +290,7 @@ test(
             const historySha256 = createHash("sha256")
               .update(
                 history.rows
+                  // serialize exact ledger rows
                   .map((migration) => `${migration.name}:${migration.checksum}\n`)
                   .join(""),
               )

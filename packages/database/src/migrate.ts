@@ -275,7 +275,7 @@ async function validateMigrationHistory(
   for (const [index, applied] of result.rows.entries()) {
     const artifact = migrations[index];
 
-    // allow newer migrations during old-binary readiness
+    // allow only authorized compatibility history
     if (artifact === undefined && allowTrailingApplied) {
       continue;
     }

@@ -25,11 +25,86 @@ releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
 control_plane_version=1
+migration_authorization_version=1
 
 # locate one validated release environment
 release_env() {
   validate_release "$1"
   printf '%s/%s.env\n' "$releases_dir" "$1"
+}
+
+# locate one schema-release authorization
+migration_authorization() {
+  validate_release "$1"
+  printf '%s/%s.migration-authorization\n' "$releases_dir" "$1"
+}
+
+# validate one exact private authorization
+validate_migration_authorization() {
+  local path=$1
+  local expected_runtime=$2
+  local expected_schema=$3
+  local mode version runtime_release schema_release history_sha256
+  local meaningful_lines allowed_fields
+  require_canonical_descendant "$path" "$releases_dir" "migration authorization"
+  require_file "$path"
+  mode=$(stat -c '%a' "$path")
+  [[ "$mode" == 600 ]] || die "migration authorization must be private"
+  meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
+  [[ "$meaningful_lines" -eq 4 ]] ||
+    die "migration authorization must contain the exact current format"
+  allowed_fields='^(WEATHER_MIGRATION_AUTHORIZATION_VERSION|WEATHER_MIGRATION_AUTHORIZATION_RELEASE|WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE|WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256)='
+  grep -qEv "$allowed_fields" "$path" &&
+    die "migration authorization contains an unknown or malformed value"
+  version=$(env_value "$path" WEATHER_MIGRATION_AUTHORIZATION_VERSION)
+  runtime_release=$(env_value "$path" WEATHER_MIGRATION_AUTHORIZATION_RELEASE)
+  schema_release=$(env_value "$path" WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE)
+  history_sha256=$(env_value "$path" WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256)
+  validate_release "$runtime_release"
+  validate_release "$schema_release"
+
+  # bind the authorization to both releases
+  if [[ "$runtime_release" != "$expected_runtime" || "$schema_release" != "$expected_schema" ]]; then
+    die "migration authorization release mismatch"
+  fi
+
+  [[ "$version" == "$migration_authorization_version" ]] ||
+    die "unsupported migration authorization version"
+  [[ "$history_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+    die "invalid migration authorization history digest"
+}
+
+# publish one immutable authorization payload
+write_migration_authorization() {
+  local path=$1
+  local runtime_release=$2
+  local schema_release=$3
+  local history_sha256=$4
+  validate_release "$runtime_release"
+  validate_release "$schema_release"
+  [[ "$history_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+    die "invalid migration authorization history digest"
+  require_canonical_descendant "$path" "$releases_dir" "migration authorization"
+  umask 077
+  printf '%s\n' \
+    "WEATHER_MIGRATION_AUTHORIZATION_VERSION=$migration_authorization_version" \
+    "WEATHER_MIGRATION_AUTHORIZATION_RELEASE=$runtime_release" \
+    "WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE=$schema_release" \
+    "WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=$history_sha256" >"$path"
+  chmod 600 "$path"
+  validate_migration_authorization "$path" "$runtime_release" "$schema_release"
+}
+
+# hash one exact ordered migration ledger
+migration_history_sha256() {
+  local env_file=$1
+  local database_name=$2
+  validate_database_name "$database_name"
+  WEATHER_ENV_FILE=$env_file compose exec -T postgres \
+    psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$database_name" \
+      --tuples-only --no-align --field-separator=: \
+      --command "SELECT name, checksum FROM schema_migrations ORDER BY name" |
+    sha256sum | awk '{print $1}'
 }
 
 # remove a mutable tag or digest
@@ -224,8 +299,9 @@ record_release_success() {
 verify_previous_image_compatibility() (
   local target_env=$1
   local previous_env=$2
+  local authorization_path=$3
   local candidate api_container provider_container provider_image active_database provider_network
-  local previous_release
+  local previous_release target_release history_sha256
   local candidate_created=false
   local api_started=false
   local provider_started=false
@@ -236,6 +312,7 @@ verify_previous_image_compatibility() (
   provider_image=$(env_value "$target_env" WEATHER_SERVER_IMAGE)
   active_database=$(env_value "$previous_env" WEATHER_DATABASE_NAME)
   previous_release=$(env_value "$previous_env" WEATHER_RELEASE)
+  target_release=$(env_value "$target_env" WEATHER_RELEASE)
   provider_network="${WEATHER_COMPOSE_PROJECT_NAME:-weather}_provider_egress"
 
   # clean every disposable compatibility resource
@@ -279,6 +356,7 @@ verify_previous_image_compatibility() (
 
   WEATHER_ENV_FILE=$target_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" migration
+  history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
   apply_runtime_database_acl "$previous_env" "$candidate"
   verify_runtime_database_acl "$previous_env" "$candidate"
   WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
@@ -306,6 +384,8 @@ verify_previous_image_compatibility() (
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
   WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
+    --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
+    --env WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256="$history_sha256" \
     --env WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN="http://$provider_container:3002" \
     worker node apps/worker/dist/worker.js --once
   after_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
@@ -314,7 +394,10 @@ verify_previous_image_compatibility() (
   (( after_successes > before_successes )) || die "previous worker compatibility failed"
 
   WEATHER_ENV_FILE=$previous_env compose run --detach --name "$api_container" --no-deps \
-    --env WEATHER_DATABASE_NAME="$candidate" api node apps/api/dist/main.js >/dev/null
+    --env WEATHER_DATABASE_NAME="$candidate" \
+    --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
+    --env WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256="$history_sha256" \
+    api node apps/api/dist/main.js >/dev/null
   api_started=true
 
   # wait for every previous API read contract
@@ -322,12 +405,16 @@ verify_previous_image_compatibility() (
     # accept only complete read success
     if docker exec "$api_container" node -e \
       "const origin='http://127.0.0.1:3001';Promise.all([fetch(origin+'/api/v1/health'),fetch(origin+'/api/v1/sites')]).then(async([health,sites])=>{if(!health.ok||!sites.ok)process.exit(1);const healthBody=await health.json();const sitesBody=await sites.json();const site=sitesBody.data?.[0]?.slug;if(healthBody.data?.ready!==true||healthBody.data?.version!=='$previous_release'||typeof site!=='string')process.exit(1);const sitePath=origin+'/api/v1/sites/'+encodeURIComponent(site);const [current,history]=await Promise.all([fetch(sitePath+'/current'),fetch(sitePath+'/history?limit=1')]);if(!current.ok||!history.ok)process.exit(1);const currentBody=await current.json();const historyBody=await history.json();if(!Array.isArray(currentBody.data)||!Array.isArray(historyBody.data))process.exit(1)}).catch(()=>process.exit(1))"; then
-      exit 0
+      break
     fi
     sleep 1
   done
 
-  die "previous API compatibility failed"
+  ((_attempt < 30)) || die "previous API compatibility failed"
+
+  # publish only after every real compatibility check
+  write_migration_authorization \
+    "$authorization_path" "$previous_release" "$target_release" "$history_sha256"
 )
 
 # reconcile retained PostgreSQL administrator authority
@@ -337,16 +424,47 @@ start_postgres() {
 }
 
 # restore one exact image set without migration
-restore_images() {
+restore_images() (
   local env_file=$1
+  local runtime_release=${2:-}
+  local schema_release=${3:-}
+  local authorization_path
+  unset WEATHER_MIGRATION_AUTHORIZATION_RELEASE
+  unset WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256
+
+  # reject partial lifecycle identity
+  if [[ -n "$runtime_release" || -n "$schema_release" ]]; then
+    [[ -n "$runtime_release" && -n "$schema_release" ]] ||
+      die "runtime and schema releases must be provided together"
+  fi
+
+  # inject only a validated older-release authorization
+  if [[ -n "$runtime_release" && "$runtime_release" != "$schema_release" ]]; then
+    authorization_path=$(migration_authorization "$schema_release")
+    validate_migration_authorization \
+      "$authorization_path" "$runtime_release" "$schema_release"
+    export WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$runtime_release"
+    export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256
+    WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=$(env_value \
+      "$authorization_path" WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256)
+  fi
+
   start_postgres "$env_file"
   WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait api worker web cloudflared
-}
+)
+
+# start an exact release without compatibility state
+start_exact_release() (
+  local env_file=$1
+  unset WEATHER_MIGRATION_AUTHORIZATION_RELEASE
+  unset WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256
+  WEATHER_ENV_FILE=$env_file compose up -d --remove-orphans --wait
+)
 
 # activate one forward release
 start_release() (
   local target=$1
-  local activation_env current current_env backup_env
+  local activation_env current current_env backup_env authorization_path
   local initial_started=false
 
   # clean a partially started first activation
@@ -388,13 +506,16 @@ start_release() (
 
   printf 'Applying candidate migrations...\n'
   WEATHER_ENV_FILE=$activation_env compose run --rm migration
+  write_private_state "$state_dir/schema-release" "$target"
 
   printf 'Starting release %s...\n' "$target"
-  if ! WEATHER_ENV_FILE=$activation_env compose up -d --remove-orphans --wait; then
+  if ! start_exact_release "$activation_env"; then
     # restore only the prior exact image configuration
     if [[ -n "$current" && "$current" != "$target" ]]; then
       printf 'Activation failed; restoring Weather release %s...\n' "$current" >&2
-      restore_images "$current_env" ||
+      authorization_path=$(migration_authorization "$target")
+      validate_migration_authorization "$authorization_path" "$current" "$target"
+      restore_images "$current_env" "$current" "$target" ||
         die "activation and Weather image rollback both failed"
     fi
     die "release $target failed health checks"
@@ -409,7 +530,7 @@ start_release() (
 
 # roll back images without migration
 rollback_release() {
-  local current previous current_env previous_env
+  local current previous schema_release current_env previous_env
   current=$(read_release_state "$state_dir/current-release")
   previous=$(read_release_state "$state_dir/previous-release")
   [[ "$current" != "$previous" ]] || die "previous release matches the active release"
@@ -420,10 +541,17 @@ rollback_release() {
   require_control_plane_compatibility "$current_env"
   require_control_plane_compatibility "$previous_env"
   require_deployment_secrets
+  schema_release=$(read_optional_release_state "$state_dir/schema-release")
+
+  # default legacy state to the active release
+  if [[ -z "$schema_release" ]]; then
+    schema_release=$current
+  fi
 
   # switch only immutable runtime images
-  if ! restore_images "$previous_env"; then
-    restore_images "$current_env" || die "rollback and current-image recovery both failed"
+  if ! restore_images "$previous_env" "$previous" "$schema_release"; then
+    restore_images "$current_env" "$current" "$schema_release" ||
+      die "rollback and current-image recovery both failed"
     die "rollback failed; current Weather images were restored"
   fi
 
@@ -466,7 +594,9 @@ case "$action" in
     require_capacity_gate
     mkdir -p "$releases_dir"
     target=$(release_env "$release")
-    [[ ! -e "$target" && ! -L "$target" ]] || die "release is already staged: $release"
+    authorization=$(migration_authorization "$release")
+    [[ ! -e "$target" && ! -L "$target" && ! -e "$authorization" && ! -L "$authorization" ]] ||
+      die "release is already staged: $release"
     server_source="$(image_repository "$(env_value "$source_env" WEATHER_SERVER_IMAGE)"):$release"
     web_source="$(image_repository "$(env_value "$source_env" WEATHER_WEB_IMAGE)"):$release"
     server_image=$(resolve_arm64_image "$server_source")
@@ -474,9 +604,10 @@ case "$action" in
     postgres_image=$(resolve_arm64_image "$(env_value "$source_env" POSTGRES_IMAGE)")
     cloudflared_image=$(resolve_arm64_image "$(env_value "$source_env" CLOUDFLARED_IMAGE)")
     temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.env.partial")
+    temporary_authorization=
 
     # remove failed stage state
-    trap 'rm -f "$temporary"' EXIT
+    trap 'rm -f "$temporary" ${temporary_authorization:+"$temporary_authorization"}' EXIT
     write_release_env "$source_env" "$temporary" "$release" \
       "$server_image" "$web_image" "$postgres_image" "$cloudflared_image"
     WEATHER_ENV_FILE=$temporary compose config --quiet
@@ -493,12 +624,24 @@ case "$action" in
     # require previous-image compatibility for upgrades
     if [[ -n "$current" ]]; then
       require_deployment_secrets
-      verify_previous_image_compatibility "$temporary" "$previous_env"
+      temporary_authorization=$(mktemp \
+        "$releases_dir/.${release}.XXXXXX.migration-authorization.partial")
+      verify_previous_image_compatibility \
+        "$temporary" "$previous_env" "$temporary_authorization"
     else
       printf 'Initial release: previous-image compatibility is not applicable.\n'
     fi
 
-    mv "$temporary" "$target"
+    # publish authorization before the release commit marker
+    if [[ -n "$temporary_authorization" ]]; then
+      mv "$temporary_authorization" "$authorization"
+      temporary_authorization=
+    fi
+
+    if ! mv "$temporary" "$target"; then
+      rm -f "$authorization"
+      exit 1
+    fi
     trap - EXIT
     printf 'Release %s staged without changing running services or the active database.\n' "$release"
     ;;
@@ -517,12 +660,19 @@ case "$action" in
   recover)
     (($# == 0)) || die "recover takes no arguments"
     current=$(read_release_state "$state_dir/current-release")
+    schema_release=$(read_optional_release_state "$state_dir/schema-release")
+
+    # default legacy state to the active release
+    if [[ -z "$schema_release" ]]; then
+      schema_release=$current
+    fi
+
     current_env=$(release_env "$current")
     validate_release_env "$current_env" "$current"
     require_control_plane_compatibility "$current_env"
     require_command docker
     require_deployment_secrets
-    restore_images "$current_env"
+    restore_images "$current_env" "$current" "$schema_release"
     write_active_symlink "$current"
     ;;
   status)

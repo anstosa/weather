@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -201,6 +202,39 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.deepEqual(unproven.data.migration, {
         status: "outdated",
         version: null,
+      });
+      const migrationHistory = await admin.query(
+        "SELECT name, checksum FROM schema_migrations ORDER BY name",
+      );
+      const historySha256 = createHash("sha256")
+        .update(
+          migrationHistory.rows
+            // serialize exact ledger rows
+            .map((migration) => `${migration.name}:${migration.checksum}\n`)
+            .join(""),
+        )
+        .digest("hex");
+      const authorizedStore = createDatabaseWeatherReadStore(apiPool, {
+        migrationAuthorization: {
+          historySha256,
+          release: "2026.08.22-1",
+        },
+        migrationDirectory,
+        release: "2026.08.22-1",
+      });
+      const authorizedHandler = createWeatherApi(authorizedStore, {
+        // freeze compatibility health time
+        now: () => new Date("2026-08-22T05:00:00.000Z"),
+        version: "2026.08.22-1",
+      });
+      const authorizedResponse = await authorizedHandler(
+        new Request("http://weather.test/api/v1/health"),
+      );
+      const authorized = await authorizedResponse.json();
+      assert.equal(authorizedResponse.status, 200);
+      assert.deepEqual(authorized.data.migration, {
+        status: "current",
+        version: "0002_worker_migration_readiness.sql",
       });
 
       const ledger = await admin.query(

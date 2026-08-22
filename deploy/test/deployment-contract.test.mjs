@@ -396,6 +396,16 @@ test("container commands match the API, worker, and web runtime contracts", () =
   assert.deepEqual(compose.services.worker.command, ["node", "apps/worker/dist/worker.js"]);
   assert.deepEqual(compose.services.web.command, ["node", "deploy/scripts/web-server.mjs"]);
   assert.equal(compose.services.migration.environment.WEATHER_DATABASE_USER, "weather_owner");
+  assert.equal(compose.services.api.environment.WEATHER_MIGRATION_AUTHORIZATION_RELEASE, "");
+  assert.equal(
+    compose.services.api.environment.WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256,
+    "",
+  );
+  assert.equal(compose.services.worker.environment.WEATHER_MIGRATION_AUTHORIZATION_RELEASE, "");
+  assert.equal(
+    compose.services.worker.environment.WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256,
+    "",
+  );
   assert.equal(
     compose.services.migration.environment.WEATHER_SITE_CONFIG_PATH,
     "/opt/weather/config/sites/ballydidean.json",
@@ -629,6 +639,9 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.doesNotMatch(update, /state='success'/u);
   assert.match(update, /last_committed_at/u);
   assert.match(update, /verify_runtime_database_acl/u);
+  assert.match(update, /migration_history_sha256/u);
+  assert.match(update, /write_migration_authorization/u);
+  assert.match(update, /schema-release/u);
   assert.doesNotMatch(update, /pg_dump[^\n]*--no-acl/u);
   assert.match(update, /Creating pre-migration encrypted backup/u);
   assert.match(update, /compose up -d --remove-orphans --wait/u);
