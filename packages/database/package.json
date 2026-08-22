@@ -10,11 +10,15 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test",
+    "test": "npm run build --workspace @weather/domain && npm run build && node --test test/*.unit.test.mjs",
+    "test:integration": "npm run build --workspace @weather/domain && npm run build && node --test --test-concurrency=1 test/*.integration.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@weather/domain": "0.0.0",
     "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.18.0"
   }
 }

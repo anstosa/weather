@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "site": {
+    "key": "ballydidean",
+    "displayName": "Ballydidean",
+    "latitude": 47.950429954185445,
+    "longitude": -122.42797012608193,
+    "timezone": "America/Los_Angeles",
+    "active": true
+  },
+  "station": {
+    "key": "open-meteo-virtual",
+    "displayName": "Open-Meteo virtual station",
+    "kind": "virtual",
+    "vendor": "Open-Meteo",
+    "model": null,
+    "serial": null,
+    "active": true
+  },
+  "provider": {
+    "key": "open-meteo",
+    "displayName": "Open-Meteo",
+    "attributionLabel": "Weather data by Open-Meteo",
+    "attributionUrl": "https://open-meteo.com/",
+    "active": true
+  },
+  "sources": [
+    {
+      "key": "open-meteo-current-v1",
+      "sourceKind": "model_current",
+      "capabilities": [
+        "current"
+      ],
+      "adapterConfig": {
+        "contractVersion": "forecast-current/v1",
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure"
+        ]
+      },
+      "cadenceSeconds": 900,
+      "active": true
+    },
+    {
+      "key": "open-meteo-reanalysis-v1",
+      "sourceKind": "reanalysis",
+      "capabilities": [
+        "historical"
+      ],
+      "adapterConfig": {
+        "contractVersion": "archive-hourly/v1",
+        "maximumChunkDays": 14,
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure"
+        ]
+      },
+      "cadenceSeconds": null,
+      "active": true
+    }
+  ]
+}
