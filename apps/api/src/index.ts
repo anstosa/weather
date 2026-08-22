@@ -187,7 +187,7 @@ export function createWeatherApi(
   store: WeatherReadStore,
   options: ApiOptions = {},
 ): (request: Request) => Promise<Response> {
-  const now = options.now ?? Date;
+  const now = options.now ?? currentDate;
 
   // route one request
   return async function handleWeatherRequest(request: Request): Promise<Response> {
@@ -257,6 +257,11 @@ export function createWeatherApi(
       return errorResponse(error);
     }
   };
+}
+
+// read the current wall clock
+function currentDate(): Date {
+  return new Date();
 }
 
 // adapt the fetch handler to a Node HTTP server
