@@ -126,8 +126,9 @@ The checked station catalog is
 public station/device identity and material source configuration. Keep the API
 key outside Git in `deploy/secrets/weather_tempest_api_key`; the worker mounts
 that file and polls every active Tempest source once per completed UTC hour.
-Each provider range is limited to five days and the adapter retains the first
-actual observation in each UTC hour.
+Each provider range is limited to five days and the adapter retains every
+distinct one-minute provider observation. Hourly polling therefore preserves
+minute-resolution data without increasing the provider request rate.
 
 Build and plan all configured station history without provider or database
 writes:
@@ -155,6 +156,10 @@ The default `--to` is yesterday so the hourly worker owns the partial current
 day. A repository-shell invocation is also available as
 `npm run weather:tempest:backfill -- --site ballydidean ...` when the required
 database and Tempest file environment variables are set.
+
+Open-Meteo reanalysis remains hourly because the Historical Weather API exposes
+native hourly model output. It is not interpolated into artificial one-minute
+points; rerunning that backfill refreshes the complete hourly archive instead.
 
 ## Workspaces
 

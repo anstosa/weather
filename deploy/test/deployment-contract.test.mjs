@@ -727,7 +727,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
   );
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
-  assert.match(read("deploy/test/compose.integration.test.mjs"), /0005_candidate_contract\.sql/u);
+  assert.match(read("deploy/test/compose.integration.test.mjs"), /0006_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
     /allowlists only the exact installed version 1[\s\S]*rejects any other[\s\S]*mismatch before changing/u,

@@ -21,9 +21,9 @@ export const TEMPEST_ATTRIBUTION: ProviderAttribution = {
   url: "https://tempestwx.com/",
 };
 export const TEMPEST_OBSERVATION_ADAPTER_VERSION =
-  "tempest-observations-hourly/v1";
+  "tempest-observations-minute/v1";
 export const TEMPEST_OBSERVATION_CHUNK_PLAN_VERSION =
-  "tempest-observations-five-day-hourly/v1";
+  "tempest-observations-five-day-minute/v1";
 export const TEMPEST_MAXIMUM_RANGE_SECONDS = 5 * 24 * 60 * 60;
 
 const TEMPEST_API_ORIGIN = "https://swd.weatherflow.com";
@@ -177,7 +177,7 @@ export async function resolveTempestStation(
   };
 }
 
-// normalize and hourly-sample one obs_st payload
+// normalize every distinct obs_st report
 export function normalizeTempestObservationPayload(
   payload: unknown,
   input: Omit<TempestObservationRequest, "apiKey">,
@@ -193,9 +193,9 @@ export function normalizeTempestObservationPayload(
 
   const window = validateObservationRequest({ ...input, apiKey: "validation-only" });
   const observations = tempestObservations(root);
-  const hourly = new Map<number, readonly unknown[]>();
+  const distinct = new Map<number, readonly unknown[]>();
 
-  // retain the first actual observation in each UTC hour
+  // retain every distinct provider timestamp
   for (const [index, value] of observations.entries()) {
     const observation = requireArray(value, `obs[${index}]`);
 
@@ -214,15 +214,13 @@ export function normalizeTempestObservationPayload(
       continue;
     }
 
-    const hour = Math.floor(epochSeconds / 3600);
-
-    // preserve the earliest report within the hour
-    if (!hourly.has(hour)) {
-      hourly.set(hour, observation);
+    // preserve the first duplicate report
+    if (!distinct.has(epochSeconds)) {
+      distinct.set(epochSeconds, observation);
     }
   }
 
-  const records = [...hourly.values()].map((observation) =>
+  const records = [...distinct.values()].map((observation) =>
     normalizeTempestObservation(observation, input, receivedAt),
   );
 
@@ -293,7 +291,7 @@ function normalizeTempestObservation(
           "wind sample interval",
         ),
       },
-      quality: { sampling: "first_observation_per_utc_hour" },
+      quality: { sampling: "every_distinct_provider_observation" },
       upstreamTimezone: input.timezone,
     },
     metrics: {
@@ -384,7 +382,7 @@ function tempestResponseMetadata(
 
   return {
     device_id: requirePositiveInteger(root.device_id, "device_id"),
-    hourly_record_count: recordCount,
+    minute_record_count: recordCount,
     raw_observation_count: observations.length,
     ...(typeof root.bucket_step_minutes === "number"
       ? { bucket_step_minutes: root.bucket_step_minutes }

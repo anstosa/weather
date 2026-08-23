@@ -9,7 +9,7 @@ import {
   type JsonValue,
 } from "@weather/domain";
 
-export const TEMPEST_SOURCE_CONTRACT_VERSION = "tempest-observations/v1";
+export const TEMPEST_SOURCE_CONTRACT_VERSION = "tempest-observations/v2";
 
 export interface TempestStationConfiguration {
   readonly active: boolean;
@@ -133,12 +133,14 @@ function parseStation(
   const timezone = validateTimeZone(
     requireString(station.timezone, `${field}.timezone`, 64),
   );
-  const sourceKey = `tempest-${String(locationId)}-observations-v1`;
+  const supersedesSourceKey = `tempest-${String(locationId)}-observations-v1`;
+  const sourceKey = `tempest-${String(locationId)}-observations-v2`;
   const adapterConfig = {
     contractVersion: TEMPEST_SOURCE_CONTRACT_VERSION,
     deviceId,
     locationId,
-    sample: "first-observation-per-utc-hour",
+    sample: "every-distinct-provider-observation",
+    supersedesSourceKey,
   } as const;
   const material = serializeSourceMaterial({
     adapterConfig,

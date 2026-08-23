@@ -193,7 +193,7 @@ test("scheduled Tempest ingestion dispatches an exact one-hour device range", as
     start: "2026-08-22T04:00:00.000Z",
     timezone: station.timezone,
   });
-  assert.equal(repository.startedInput.adapterVersion, "tempest-observations-hourly/v1");
+  assert.equal(repository.startedInput.adapterVersion, "tempest-observations-minute/v1");
 });
 
 // reject every mismatched source identity before external work

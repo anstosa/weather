@@ -35,6 +35,7 @@ test("Tempest request uses an inclusive end one second before the window", () =>
   const plan = buildTempestObservationRequest(request);
 
   assert.equal(plan.sourceKind, "physical_sensor");
+  assert.equal(plan.adapterVersion, "tempest-observations-minute/v1");
   assert.equal(plan.url.searchParams.get("time_start"), "1787184000");
   assert.equal(plan.url.searchParams.get("time_end"), "1787191199");
   assert.equal(plan.url.searchParams.get("api_key"), credential);
@@ -48,15 +49,15 @@ test("Tempest request uses an inclusive end one second before the window", () =>
   );
 });
 
-// normalize one actual observation per UTC hour
-test("Tempest obs_st rows normalize and sample hourly", async () => {
+// normalize every distinct provider observation
+test("Tempest obs_st rows preserve one-minute resolution", async () => {
   const records = normalizeTempestObservationPayload(
     await fixture("observations.json"),
     request,
     receivedAt,
   );
 
-  assert.equal(records.length, 2);
+  assert.equal(records.length, 3);
   assert.equal(records[0].sourceKind, "physical_sensor");
   assert.equal(records[0].validAt, "2026-08-20T00:00:00.000Z");
   assert.equal(records[0].metrics.temperatureC, 24.5);
@@ -71,7 +72,20 @@ test("Tempest obs_st rows normalize and sample hourly", async () => {
     vendor: "WeatherFlow",
   });
   assert.equal(records[0].metadata.provider.illuminance_lux, 23157);
-  assert.equal(records[1].validAt, "2026-08-20T01:00:00.000Z");
+  assert.equal(records[1].validAt, "2026-08-20T00:01:00.000Z");
+  assert.equal(records[2].validAt, "2026-08-20T01:00:00.000Z");
+  assert.equal(
+    records[1].metadata.quality.sampling,
+    "every_distinct_provider_observation",
+  );
+
+  // collapse only exact duplicate timestamps
+  const duplicate = await fixture("observations.json");
+  duplicate.obs.push([...duplicate.obs[1]]);
+  assert.equal(
+    normalizeTempestObservationPayload(duplicate, request, receivedAt).length,
+    3,
+  );
 });
 
 // resolve only the ST weather device
@@ -110,9 +124,9 @@ test("Tempest operation returns bounded batch metadata", async () => {
     now: () => new Date(receivedAt),
   });
 
-  assert.equal(batch.records.length, 2);
+  assert.equal(batch.records.length, 3);
   assert.equal(batch.responseMetadata.raw_observation_count, 3);
-  assert.equal(batch.responseMetadata.hourly_record_count, 2);
+  assert.equal(batch.responseMetadata.minute_record_count, 3);
   assert.deepEqual(batch.providerCursor, {
     valid_at: "2026-08-20T01:00:00.000Z",
   });
@@ -126,7 +140,7 @@ test("Tempest operation returns bounded batch metadata", async () => {
   });
   assert.deepEqual(emptyBatch.records, []);
   assert.equal(emptyBatch.responseMetadata.raw_observation_count, 0);
-  assert.equal(emptyBatch.responseMetadata.hourly_record_count, 0);
+  assert.equal(emptyBatch.responseMetadata.minute_record_count, 0);
   assert.equal(emptyBatch.providerCursor, null);
 });
 

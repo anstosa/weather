@@ -102,6 +102,7 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "weather-migrate-entrypoint-"));
     let server;
     let pool;
+    let apiPool;
     let ingestPool;
     let migrationLockClient;
 
@@ -147,6 +148,7 @@ test(
         "0002_worker_migration_readiness.sql",
         "0003_ecowitt_measurements.sql",
         "0004_tempest_metadata.sql",
+        "0005_source_supersession.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -156,6 +158,7 @@ test(
         "0002_worker_migration_readiness.sql",
         "0003_ecowitt_measurements.sql",
         "0004_tempest_metadata.sql",
+        "0005_source_supersession.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondEvent.tempestBootstrap, firstEvent.tempestBootstrap);
@@ -170,6 +173,7 @@ test(
         { name: "0002_worker_migration_readiness.sql" },
         { name: "0003_ecowitt_measurements.sql" },
         { name: "0004_tempest_metadata.sql" },
+        { name: "0005_source_supersession.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -196,32 +200,32 @@ test(
         { id: firstEvent.bootstrap.sourceIds[0], source_key: "open-meteo-current-v1" },
         { id: firstEvent.bootstrap.sourceIds[1], source_key: "open-meteo-reanalysis-v1" },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-126537-observations-v1"],
-          source_key: "tempest-126537-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-126537-observations-v2"],
+          source_key: "tempest-126537-observations-v2",
         },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-168853-observations-v1"],
-          source_key: "tempest-168853-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-168853-observations-v2"],
+          source_key: "tempest-168853-observations-v2",
         },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-201058-observations-v1"],
-          source_key: "tempest-201058-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-201058-observations-v2"],
+          source_key: "tempest-201058-observations-v2",
         },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-203055-observations-v1"],
-          source_key: "tempest-203055-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-203055-observations-v2"],
+          source_key: "tempest-203055-observations-v2",
         },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-225947-observations-v1"],
-          source_key: "tempest-225947-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-225947-observations-v2"],
+          source_key: "tempest-225947-observations-v2",
         },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-38270-observations-v1"],
-          source_key: "tempest-38270-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-38270-observations-v2"],
+          source_key: "tempest-38270-observations-v2",
         },
         {
-          id: firstEvent.tempestBootstrap.sourceIds["tempest-64255-observations-v1"],
-          source_key: "tempest-64255-observations-v1",
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-64255-observations-v2"],
+          source_key: "tempest-64255-observations-v2",
         },
       ]);
       assert.deepEqual(firstSnapshot.stations, [
@@ -286,6 +290,47 @@ test(
           timeout: 30_000,
         },
       );
+      const tempestSuccessor = await pool.query(
+        `
+          SELECT s.station_id, s.provider_id
+          FROM sources s
+          WHERE s.source_key = 'tempest-203055-observations-v2'
+        `,
+      );
+      const successor = tempestSuccessor.rows[0];
+      assert.ok(successor);
+      await pool.query(
+        `
+          INSERT INTO sources (
+            station_id,
+            provider_id,
+            source_key,
+            source_kind,
+            material_provider_config,
+            source_config_fingerprint,
+            capabilities,
+            cadence_seconds,
+            active
+          )
+          VALUES ($1, $2, 'tempest-203055-observations-v1', 'physical_sensor',
+            '{"contractVersion":"tempest-observations/v1"}'::jsonb,
+            $3, '["current","historical"]'::jsonb, 3600, true)
+        `,
+        [successor.station_id, successor.provider_id, "f".repeat(64)],
+      );
+      apiPool = createTestPool(server, "weather_test", "weather_api", "api-test");
+      const visibleTempestSources = await apiPool.query(
+        `
+          SELECT source_key
+          FROM sources
+          WHERE source_key LIKE 'tempest-203055-%'
+            AND weather_source_is_current(id)
+          ORDER BY source_key
+        `,
+      );
+      assert.deepEqual(visibleTempestSources.rows, [
+        { source_key: "tempest-203055-observations-v2" },
+      ]);
       ingestPool = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
       const ingestMigrations = await ingestPool.query(
         "SELECT name FROM schema_migrations ORDER BY name",
@@ -295,6 +340,7 @@ test(
         { name: "0002_worker_migration_readiness.sql" },
         { name: "0003_ecowitt_measurements.sql" },
         { name: "0004_tempest_metadata.sql" },
+        { name: "0005_source_supersession.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(
@@ -336,6 +382,7 @@ test(
     } finally {
       // clean disposable resources
       migrationLockClient?.release();
+      await apiPool?.end();
       await ingestPool?.end();
       await pool?.end();
       // stop only a started container

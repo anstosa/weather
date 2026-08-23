@@ -51,7 +51,14 @@ test("Tempest configuration derives exact immutable source identities", async ()
     configuration.stations.map((station) => station.locationId),
     [203055, 201058, 126537, 168853, 64255, 38270, 225947],
   );
-  assert.equal(configuration.stations[0].sourceKey, "tempest-203055-observations-v1");
+  assert.equal(configuration.stations[0].sourceKey, "tempest-203055-observations-v2");
+  assert.deepEqual(configuration.stations[0].adapterConfig, {
+    contractVersion: "tempest-observations/v2",
+    deviceId: 470937,
+    locationId: 203055,
+    sample: "every-distinct-provider-observation",
+    supersedesSourceKey: "tempest-203055-observations-v1",
+  });
   assert.match(configuration.stations[0].fingerprint, /^[a-f0-9]{64}$/u);
 });
 

@@ -676,15 +676,19 @@ function requireTempestContract(value: JsonValue): void {
     value === null ||
     Array.isArray(value) ||
     Object.keys(configuration).sort().join(",") !==
-      "contractVersion,deviceId,locationId,sample" ||
-    configuration.contractVersion !== "tempest-observations/v1" ||
-    configuration.sample !== "first-observation-per-utc-hour" ||
+      "contractVersion,deviceId,locationId,sample,supersedesSourceKey" ||
+    configuration.contractVersion !== "tempest-observations/v2" ||
+    configuration.sample !== "every-distinct-provider-observation" ||
+    typeof configuration.supersedesSourceKey !== "string" ||
+    !/^tempest-[1-9][0-9]*-observations-v1$/u.test(
+      configuration.supersedesSourceKey,
+    ) ||
     !Number.isSafeInteger(configuration.deviceId) ||
     Number(configuration.deviceId) < 1 ||
     !Number.isSafeInteger(configuration.locationId) ||
     Number(configuration.locationId) < 1
   ) {
-    throw new Error("source adapter contract must be tempest-observations/v1");
+    throw new Error("source adapter contract must be tempest-observations/v2");
   }
 }
 

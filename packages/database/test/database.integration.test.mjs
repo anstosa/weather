@@ -15,9 +15,11 @@ import {
   bootstrapSiteConfiguration,
   completeBackfillIngestion,
   completeScheduledIngestion,
+  discoverDueSources,
   failIngestionRun,
   getScheduledCheckpoint,
   hasSuccessfulBackfillChunk,
+  listActiveSites,
   loadSiteConfiguration,
   runMigrations,
   startIngestionRun,
@@ -71,9 +73,10 @@ test(
           "0002_worker_migration_readiness.sql",
           "0003_ecowitt_measurements.sql",
           "0004_tempest_metadata.sql",
+          "0005_source_supersession.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 4);
+        assert.equal(ledger.rowCount, 5);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -99,6 +102,7 @@ test(
             "0002_worker_migration_readiness.sql",
             "0003_ecowitt_measurements.sql",
             "0004_tempest_metadata.sql",
+            "0005_source_supersession.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -130,8 +134,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 4);
-          assert.equal(first.current.length + second.current.length, 4);
+          assert.equal(first.applied.length + second.applied.length, 5);
+          assert.equal(first.current.length + second.current.length, 5);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -276,12 +280,12 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0004_tempest_metadata.sql" },
+            { version: "0005_source_supersession.sql" },
           );
           try {
             // reject unproven candidate history
             await pool.query(
-              "INSERT INTO schema_migrations (name, checksum) VALUES ('0005_candidate_only.sql', $1)",
+              "INSERT INTO schema_migrations (name, checksum) VALUES ('0006_candidate_only.sql', $1)",
               ["3".repeat(64)],
             );
             await assert.rejects(
@@ -307,7 +311,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0004_tempest_metadata.sql" },
+              { version: "0005_source_supersession.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
@@ -331,7 +335,7 @@ test(
               [knownMigration.rows[0].checksum],
             );
             await pool.query(
-              "DELETE FROM schema_migrations WHERE name = '0005_candidate_only.sql'",
+              "DELETE FROM schema_migrations WHERE name = '0006_candidate_only.sql'",
             );
           }
           await ingestPool.query(
@@ -410,6 +414,48 @@ test(
         );
       });
 
+      // verify active successor visibility
+      await context.test("versioned successors hide replaced sources", async () => {
+        const inserted = await pool.query(
+          `
+            INSERT INTO sources (
+              station_id,
+              provider_id,
+              source_key,
+              source_kind,
+              material_provider_config,
+              source_config_fingerprint,
+              capabilities,
+              cadence_seconds,
+              active
+            )
+            VALUES ($1, $2, 'open-meteo-current-v2', 'model_current',
+              jsonb_build_object('supersedesSourceKey', 'open-meteo-current-v1'),
+              $3, '["current"]'::jsonb, 900, true)
+            RETURNING id
+          `,
+          [bootstrap.stationId, bootstrap.providerId, "9".repeat(64)],
+        );
+        const successorId = inserted.rows[0].id;
+
+        try {
+          const visible = await listActiveSites(pool);
+          const due = await discoverDueSources(
+            pool,
+            "2099-01-01T00:00:00.000Z",
+          );
+          assert.equal(
+            visible.some((source) => source.sourceId === currentSource.id),
+            false,
+          );
+          assert.equal(due.some((source) => source.id === currentSource.id), false);
+          assert.equal(due.some((source) => source.id === successorId), true);
+        } finally {
+          // remove the isolated successor fixture
+          await pool.query("DELETE FROM sources WHERE id = $1", [successorId]);
+        }
+      });
+
       // verify multi-source storage and first scheduled success
       await context.test("I-DB-10 two sources persist the same valid instant", async () => {
         const currentSession = await requireSession(pool, currentSource.id);
@@ -439,7 +485,7 @@ test(
           successfulBackfillIdentity = makeChunkIdentity(
             reanalysisSource,
             "2026-08-20T00:00:00.000Z",
-            "2026-08-20T01:00:00.000Z",
+            "2026-08-20T09:00:00.000Z",
           );
           const backfillRun = await createRun(
             reanalysisSession,
@@ -449,12 +495,19 @@ test(
             successfulBackfillIdentity.intervalEndExclusive,
           );
           backfillRunId = backfillRun.id;
+          // cross the bounded insert batch boundary
+          const minuteRecords = Array.from({ length: 501 }, (_unused, index) =>
+            makeRecord(
+              reanalysisSource.id,
+              "reanalysis",
+              new Date(Date.parse("2026-08-20T00:00:00.000Z") + index * 60_000)
+                .toISOString(),
+            ),
+          );
           await completeBackfillIngestion(reanalysisSession, {
             attempts: 1,
             identity: successfulBackfillIdentity,
-            records: [
-              makeRecord(reanalysisSource.id, "reanalysis", "2026-08-20T00:00:00.000Z"),
-            ],
+            records: minuteRecords,
             runId: backfillRun.id,
           });
           const rows = await pool.query(

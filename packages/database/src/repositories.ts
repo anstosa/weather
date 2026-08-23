@@ -21,6 +21,11 @@ import type { SiteConfiguration } from "./config.js";
 import { withTransaction } from "./pool.js";
 import type { TempestConfiguration } from "./tempest-config.js";
 
+const WEATHER_RECORD_BATCH_SIZE = 500;
+
+// hide sources replaced by an active material successor
+const CURRENT_SOURCE_PREDICATE = "weather_source_is_current(s.id)";
+
 export interface DueSource extends QueryResultRow {
   readonly active: boolean;
   readonly cadenceSeconds: number;
@@ -525,6 +530,7 @@ export async function discoverDueSources(
         AND st.active
         AND si.active
         AND p.active
+        AND ${CURRENT_SOURCE_PREDICATE}
         AND s.cadence_seconds IS NOT NULL
         AND (
           checkpoint.last_committed_at IS NULL
@@ -939,6 +945,7 @@ export async function listActiveSites(pool: Pool): Promise<readonly ActiveSiteRo
       JOIN sources s ON s.station_id = st.id AND s.active
       JOIN providers p ON p.id = s.provider_id AND p.active
       WHERE si.active
+        AND ${CURRENT_SOURCE_PREDICATE}
       ORDER BY si.slug, st.slug, s.source_key
     `,
   );
@@ -982,6 +989,7 @@ export async function getCurrentWeather(
         AND st.active
         AND s.active
         AND p.active
+        AND ${CURRENT_SOURCE_PREDICATE}
         AND ($2::text IS NULL OR st.slug = $2)
         AND ($3::bigint IS NULL OR wr.source_id = $3)
       ORDER BY wr.source_id, wr.valid_at DESC, wr.id DESC
@@ -1018,6 +1026,7 @@ export async function listWeatherHistory(
     "st.active",
     "s.active",
     "p.active",
+    CURRENT_SOURCE_PREDICATE,
   ];
   const values: unknown[] = [query.siteSlug];
 
@@ -1088,8 +1097,23 @@ async function upsertWeatherRecords(
   runId: string,
   records: readonly NormalizedWeatherRecord[],
 ): Promise<void> {
-  // persist each provider-neutral row
-  for (const record of records) {
+  // persist bounded batches
+  for (let offset = 0; offset < records.length; offset += WEATHER_RECORD_BATCH_SIZE) {
+    const batch = records.slice(offset, offset + WEATHER_RECORD_BATCH_SIZE);
+    await upsertWeatherRecordBatch(session, runId, batch);
+  }
+}
+
+// upsert one bounded provider-neutral batch
+async function upsertWeatherRecordBatch(
+  session: SourceSession,
+  runId: string,
+  records: readonly NormalizedWeatherRecord[],
+): Promise<void> {
+  const values: unknown[] = [];
+
+  // serialize each normalized row
+  const placeholders = records.map((record) => {
     // reject cross-source writes
     if (record.sourceId !== session.sourceId) {
       throw new Error("weather record source does not match the locked source");
@@ -1098,9 +1122,52 @@ async function upsertWeatherRecords(
     const contentHash = createHash("sha256")
       .update(weatherRecordContent(record))
       .digest("hex");
-    await session.client.query(
-      `
-        INSERT INTO weather_records (
+    const firstParameter = values.length + 1;
+    values.push(
+      session.sourceId,
+      record.sourceKind,
+      record.validAt,
+      record.productRunAt,
+      runId,
+      record.receivedAt,
+      record.metadata.upstreamTimezone,
+      record.metadata.model,
+      record.metadata.device?.vendor ?? null,
+      record.metadata.device?.model ?? null,
+      record.metadata.device?.serial ?? null,
+      serializeNullableJson(record.metadata.quality),
+      serializeNullableJson(record.metadata.provider),
+      record.metrics.temperatureC,
+      record.metrics.apparentTemperatureC,
+      record.metrics.precipitationMm,
+      record.metrics.windSpeedMps,
+      record.metrics.windGustMps,
+      record.metrics.pressureHpa,
+      record.metrics.relativeHumidityPercent,
+      record.metrics.cloudCoverPercent,
+      record.metrics.windDirectionDegrees,
+      record.metrics.blackGlobeTemperatureC,
+      record.metrics.pm25MicrogramsPerCubicMeter,
+      record.metrics.precipitationRateMmPerHour,
+      record.metrics.soilElectricalConductivityMicrosiemensPerCm,
+      record.metrics.soilMoisturePercent,
+      record.metrics.solarRadiationWm2,
+      record.metrics.uvIndex,
+      record.metrics.wetBulbGlobeTemperatureC,
+      contentHash,
+    );
+
+    return weatherRecordPlaceholder(firstParameter);
+  });
+
+  // skip empty caller batches
+  if (placeholders.length === 0) {
+    return;
+  }
+
+  await session.client.query(
+    `
+      INSERT INTO weather_records (
           source_id,
           source_kind,
           valid_at,
@@ -1134,77 +1201,53 @@ async function upsertWeatherRecords(
           uv_index,
           wet_bulb_globe_temperature_c,
           content_hash
-        )
-        VALUES (
-          $1, $2, $3, $4, $5, $5, $6, $6, $7, $8, $9, $10, $11,
-          $12::jsonb, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21,
-          $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
-        )
-        ON CONFLICT ON CONSTRAINT weather_records_identity_key DO UPDATE SET
-          last_ingestion_run_id = EXCLUDED.last_ingestion_run_id,
-          last_received_at = EXCLUDED.last_received_at,
-          upstream_timezone = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.upstream_timezone ELSE weather_records.upstream_timezone END,
-          upstream_model = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.upstream_model ELSE weather_records.upstream_model END,
-          device_vendor = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_vendor ELSE weather_records.device_vendor END,
-          device_model = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_model ELSE weather_records.device_model END,
-          device_serial = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_serial ELSE weather_records.device_serial END,
-          quality_metadata = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.quality_metadata ELSE weather_records.quality_metadata END,
-          provider_metadata = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.provider_metadata ELSE weather_records.provider_metadata END,
-          temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.temperature_c ELSE weather_records.temperature_c END,
-          apparent_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.apparent_temperature_c ELSE weather_records.apparent_temperature_c END,
-          precipitation_mm = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_mm ELSE weather_records.precipitation_mm END,
-          wind_speed_mps = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_speed_mps ELSE weather_records.wind_speed_mps END,
-          wind_gust_mps = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_gust_mps ELSE weather_records.wind_gust_mps END,
-          pressure_hpa = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pressure_hpa ELSE weather_records.pressure_hpa END,
-          relative_humidity_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.relative_humidity_percent ELSE weather_records.relative_humidity_percent END,
-          cloud_cover_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.cloud_cover_percent ELSE weather_records.cloud_cover_percent END,
-          wind_direction_degrees = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_direction_degrees ELSE weather_records.wind_direction_degrees END,
-          black_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.black_globe_temperature_c ELSE weather_records.black_globe_temperature_c END,
-          pm25_micrograms_per_cubic_meter = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pm25_micrograms_per_cubic_meter ELSE weather_records.pm25_micrograms_per_cubic_meter END,
-          precipitation_rate_mm_per_hour = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_rate_mm_per_hour ELSE weather_records.precipitation_rate_mm_per_hour END,
-          soil_electrical_conductivity_us_cm = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.soil_electrical_conductivity_us_cm ELSE weather_records.soil_electrical_conductivity_us_cm END,
-          soil_moisture_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.soil_moisture_percent ELSE weather_records.soil_moisture_percent END,
-          solar_radiation_wm2 = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.solar_radiation_wm2 ELSE weather_records.solar_radiation_wm2 END,
-          uv_index = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.uv_index ELSE weather_records.uv_index END,
-          wet_bulb_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wet_bulb_globe_temperature_c ELSE weather_records.wet_bulb_globe_temperature_c END,
-          revision_count = weather_records.revision_count + CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN 1 ELSE 0 END,
-          content_hash = EXCLUDED.content_hash
-      `,
-      [
-        session.sourceId,
-        record.sourceKind,
-        record.validAt,
-        record.productRunAt,
-        runId,
-        record.receivedAt,
-        record.metadata.upstreamTimezone,
-        record.metadata.model,
-        record.metadata.device?.vendor ?? null,
-        record.metadata.device?.model ?? null,
-        record.metadata.device?.serial ?? null,
-        serializeNullableJson(record.metadata.quality),
-        serializeNullableJson(record.metadata.provider),
-        record.metrics.temperatureC,
-        record.metrics.apparentTemperatureC,
-        record.metrics.precipitationMm,
-        record.metrics.windSpeedMps,
-        record.metrics.windGustMps,
-        record.metrics.pressureHpa,
-        record.metrics.relativeHumidityPercent,
-        record.metrics.cloudCoverPercent,
-        record.metrics.windDirectionDegrees,
-        record.metrics.blackGlobeTemperatureC,
-        record.metrics.pm25MicrogramsPerCubicMeter,
-        record.metrics.precipitationRateMmPerHour,
-        record.metrics.soilElectricalConductivityMicrosiemensPerCm,
-        record.metrics.soilMoisturePercent,
-        record.metrics.solarRadiationWm2,
-        record.metrics.uvIndex,
-        record.metrics.wetBulbGlobeTemperatureC,
-        contentHash,
-      ],
-    );
-  }
+      )
+      VALUES ${placeholders.join(",\n        ")}
+      ON CONFLICT ON CONSTRAINT weather_records_identity_key DO UPDATE SET
+        last_ingestion_run_id = EXCLUDED.last_ingestion_run_id,
+        last_received_at = EXCLUDED.last_received_at,
+        upstream_timezone = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.upstream_timezone ELSE weather_records.upstream_timezone END,
+        upstream_model = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.upstream_model ELSE weather_records.upstream_model END,
+        device_vendor = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_vendor ELSE weather_records.device_vendor END,
+        device_model = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_model ELSE weather_records.device_model END,
+        device_serial = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.device_serial ELSE weather_records.device_serial END,
+        quality_metadata = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.quality_metadata ELSE weather_records.quality_metadata END,
+        provider_metadata = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.provider_metadata ELSE weather_records.provider_metadata END,
+        temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.temperature_c ELSE weather_records.temperature_c END,
+        apparent_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.apparent_temperature_c ELSE weather_records.apparent_temperature_c END,
+        precipitation_mm = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_mm ELSE weather_records.precipitation_mm END,
+        wind_speed_mps = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_speed_mps ELSE weather_records.wind_speed_mps END,
+        wind_gust_mps = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_gust_mps ELSE weather_records.wind_gust_mps END,
+        pressure_hpa = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pressure_hpa ELSE weather_records.pressure_hpa END,
+        relative_humidity_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.relative_humidity_percent ELSE weather_records.relative_humidity_percent END,
+        cloud_cover_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.cloud_cover_percent ELSE weather_records.cloud_cover_percent END,
+        wind_direction_degrees = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_direction_degrees ELSE weather_records.wind_direction_degrees END,
+        black_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.black_globe_temperature_c ELSE weather_records.black_globe_temperature_c END,
+        pm25_micrograms_per_cubic_meter = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pm25_micrograms_per_cubic_meter ELSE weather_records.pm25_micrograms_per_cubic_meter END,
+        precipitation_rate_mm_per_hour = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_rate_mm_per_hour ELSE weather_records.precipitation_rate_mm_per_hour END,
+        soil_electrical_conductivity_us_cm = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.soil_electrical_conductivity_us_cm ELSE weather_records.soil_electrical_conductivity_us_cm END,
+        soil_moisture_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.soil_moisture_percent ELSE weather_records.soil_moisture_percent END,
+        solar_radiation_wm2 = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.solar_radiation_wm2 ELSE weather_records.solar_radiation_wm2 END,
+        uv_index = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.uv_index ELSE weather_records.uv_index END,
+        wet_bulb_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wet_bulb_globe_temperature_c ELSE weather_records.wet_bulb_globe_temperature_c END,
+        revision_count = weather_records.revision_count + CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN 1 ELSE 0 END,
+        content_hash = EXCLUDED.content_hash
+    `,
+    values,
+  );
+}
+
+// create one repeated insert tuple
+function weatherRecordPlaceholder(firstParameter: number): string {
+  const parameters = Array.from(
+    { length: 31 },
+    (_unused, index) => `$${String(firstParameter + index)}`,
+  );
+  parameters[11] = `${parameters[11]!}::jsonb`;
+  parameters[12] = `${parameters[12]!}::jsonb`;
+  parameters.splice(5, 0, parameters[4]!);
+  parameters.splice(7, 0, parameters[6]!);
+  return `(${parameters.join(", ")})`;
 }
 
 // compare-and-set a scheduled checkpoint

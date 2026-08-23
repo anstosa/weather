@@ -295,7 +295,7 @@ export async function runScheduledSource(
   if (openMeteoSource) {
     requireContractVersion(sourceConfiguration.adapterConfig, "forecast-current/v1");
   } else if (tempestStation !== undefined) {
-    requireContractVersion(tempestStation.adapterConfig, "tempest-observations/v1");
+    requireContractVersion(tempestStation.adapterConfig, "tempest-observations/v2");
   }
   const session = await options.repository.acquireSourceSession(pool, source.id);
 

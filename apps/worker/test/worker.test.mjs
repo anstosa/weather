@@ -254,6 +254,11 @@ test("Tempest backfill plans five-day-or-smaller UTC chunks", () => {
   });
 
   assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].identity.adapterVersion, "tempest-observations-minute/v1");
+  assert.equal(
+    chunks[0].identity.chunkPlanVersion,
+    "tempest-observations-five-day-minute/v1",
+  );
   assert.equal(chunks[0].identity.intervalStart, "2026-08-01T00:00:00.000Z");
   assert.equal(chunks[0].identity.intervalEndExclusive, "2026-08-06T00:00:00.000Z");
   assert.equal(chunks[1].identity.intervalStart, chunks[0].identity.intervalEndExclusive);
