@@ -45,7 +45,7 @@ test("Tempest request uses an inclusive end one second before the window", () =>
         ...request,
         endExclusive: "2026-08-26T00:00:00.000Z",
       }),
-    /at most five days/u,
+    /at most one day/u,
   );
 });
 

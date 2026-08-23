@@ -21,7 +21,8 @@ import type { SiteConfiguration } from "./config.js";
 import { withTransaction } from "./pool.js";
 import type { TempestConfiguration } from "./tempest-config.js";
 
-const WEATHER_RECORD_BATCH_SIZE = 500;
+// remain below PostgreSQL's parameter limit
+const WEATHER_RECORD_BATCH_SIZE = 2_000;
 
 // hide sources replaced by an active material successor
 const CURRENT_SOURCE_PREDICATE = "weather_source_is_current(s.id)";

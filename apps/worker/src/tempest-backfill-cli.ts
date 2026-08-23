@@ -193,11 +193,11 @@ export function parseTempestBackfillArguments(
     throw new RangeError("--to must be before today");
   }
 
-  const chunkDays = Number(values.get("--chunk-days") ?? "5");
+  const chunkDays = Number(values.get("--chunk-days") ?? "1");
 
-  // enforce WeatherFlow's documented maximum range
-  if (!Number.isSafeInteger(chunkDays) || chunkDays < 1 || chunkDays > 5) {
-    throw new RangeError("--chunk-days must be between 1 and 5");
+  // preserve provider-native minute density
+  if (!Number.isSafeInteger(chunkDays) || chunkDays !== 1) {
+    throw new RangeError("--chunk-days must equal 1");
   }
 
   return {
@@ -212,7 +212,7 @@ export function parseTempestBackfillArguments(
   };
 }
 
-// plan exact five-day-or-smaller UTC chunks
+// plan exact one-day UTC chunks
 export function planTempestBackfillChunks(
   input: Readonly<{
     chunkDays: number;

@@ -496,7 +496,7 @@ test(
           );
           backfillRunId = backfillRun.id;
           // cross the bounded insert batch boundary
-          const minuteRecords = Array.from({ length: 501 }, (_unused, index) =>
+          const minuteRecords = Array.from({ length: 2_001 }, (_unused, index) =>
             makeRecord(
               reanalysisSource.id,
               "reanalysis",

@@ -126,9 +126,10 @@ The checked station catalog is
 public station/device identity and material source configuration. Keep the API
 key outside Git in `deploy/secrets/weather_tempest_api_key`; the worker mounts
 that file and polls every active Tempest source once per completed UTC hour.
-Each provider range is limited to five days and the adapter retains every
-distinct one-minute provider observation. Hourly polling therefore preserves
-minute-resolution data without increasing the provider request rate.
+Each provider range is limited to one day because longer historical requests
+are bucketed by Tempest. The adapter retains every distinct one-minute provider
+observation. Hourly polling therefore preserves minute-resolution data without
+increasing the provider request rate.
 
 Build and plan all configured station history without provider or database
 writes:
@@ -151,7 +152,7 @@ docker compose --env-file deploy/.env.example \
 ```
 
 Repeat `--station LOCATION_ID` to select a subset. `--from`, `--to`,
-`--chunk-days 1..5`, `--resume`, `--dry-run`, and `--report PATH` are supported.
+`--chunk-days 1`, `--resume`, `--dry-run`, and `--report PATH` are supported.
 The default `--to` is yesterday so the hourly worker owns the partial current
 day. A repository-shell invocation is also available as
 `npm run weather:tempest:backfill -- --site ballydidean ...` when the required

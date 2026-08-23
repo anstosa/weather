@@ -23,8 +23,8 @@ export const TEMPEST_ATTRIBUTION: ProviderAttribution = {
 export const TEMPEST_OBSERVATION_ADAPTER_VERSION =
   "tempest-observations-minute/v1";
 export const TEMPEST_OBSERVATION_CHUNK_PLAN_VERSION =
-  "tempest-observations-five-day-minute/v1";
-export const TEMPEST_MAXIMUM_RANGE_SECONDS = 5 * 24 * 60 * 60;
+  "tempest-observations-one-day-minute/v1";
+export const TEMPEST_MAXIMUM_RANGE_SECONDS = 24 * 60 * 60;
 
 const TEMPEST_API_ORIGIN = "https://swd.weatherflow.com";
 const TEMPEST_BUILD = "169";
@@ -363,7 +363,7 @@ function validateObservationRequest(
     start >= endExclusive ||
     endExclusive - start > TEMPEST_MAXIMUM_RANGE_SECONDS * 1000
   ) {
-    throw new RangeError("Tempest observation range must be positive and at most five days");
+    throw new RangeError("Tempest observation range must be positive and at most one day");
   }
 
   return {
