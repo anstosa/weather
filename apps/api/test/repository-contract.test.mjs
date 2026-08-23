@@ -97,13 +97,15 @@ test("history SQL enforces active predicates, frozen filters, order, and bounded
   assert.match(queries[0].text, /s\.active/u);
   assert.match(queries[0].text, /p\.active/u);
   assert.match(queries[0].text, /st\.slug = \$2/u);
-  assert.match(queries[0].text, /wr\.source_id = \$3/u);
-  assert.match(queries[0].text, /wr\.source_kind = \$4/u);
-  assert.match(queries[0].text, /wr\.valid_at >= \$5/u);
-  assert.match(queries[0].text, /wr\.valid_at < \$6/u);
-  assert.match(queries[0].text, /\(wr\.valid_at, wr\.id\) < \(\$7::timestamptz, \$8::bigint\)/u);
+  assert.match(queries[0].text, /s\.id = \$3/u);
+  assert.match(queries[0].text, /s\.source_kind = \$4/u);
+  assert.match(queries[0].text, /candidate\.valid_at >= \$5/u);
+  assert.match(queries[0].text, /candidate\.valid_at < \$6/u);
+  assert.match(queries[0].text, /\(candidate\.valid_at, candidate\.id\) < \(\$7::timestamptz, \$8::bigint\)/u);
+  assert.match(queries[0].text, /JOIN LATERAL/u);
+  assert.match(queries[0].text, /candidate\.source_id = s\.id/u);
+  assert.equal(queries[0].text.match(/LIMIT \$9/gu)?.length, 2);
   assert.match(queries[0].text, /ORDER BY wr\.valid_at DESC, wr\.id DESC/u);
-  assert.match(queries[0].text, /LIMIT \$9/u);
 
   await assert.rejects(
     () =>

@@ -1027,7 +1027,7 @@ export async function listWeatherHistory(
     throw new RangeError("history from must be earlier than to");
   }
 
-  const conditions = [
+  const sourceConditions = [
     "si.slug = $1",
     "si.active",
     "st.active",
@@ -1035,36 +1035,37 @@ export async function listWeatherHistory(
     "p.active",
     CURRENT_SOURCE_PREDICATE,
   ];
+  const recordConditions = ["candidate.source_id = s.id"];
   const values: unknown[] = [query.siteSlug];
 
   // add station filter
   if (query.stationSlug !== undefined) {
     values.push(query.stationSlug);
-    conditions.push(`st.slug = $${values.length}`);
+    sourceConditions.push(`st.slug = $${values.length}`);
   }
 
   // add source filter
   if (query.sourceId !== undefined) {
     values.push(query.sourceId);
-    conditions.push(`wr.source_id = $${values.length}`);
+    sourceConditions.push(`s.id = $${values.length}`);
   }
 
   // add provenance filter
   if (query.sourceKind !== undefined) {
     values.push(query.sourceKind);
-    conditions.push(`wr.source_kind = $${values.length}`);
+    sourceConditions.push(`s.source_kind = $${values.length}`);
   }
 
   // add lower time bound
   if (from !== undefined) {
     values.push(from);
-    conditions.push(`wr.valid_at >= $${values.length}`);
+    recordConditions.push(`candidate.valid_at >= $${values.length}`);
   }
 
   // add upper time bound
   if (to !== undefined) {
     values.push(to);
-    conditions.push(`wr.valid_at < $${values.length}`);
+    recordConditions.push(`candidate.valid_at < $${values.length}`);
   }
 
   // add stable cursor
@@ -1073,24 +1074,31 @@ export async function listWeatherHistory(
     const validAtParameter = values.length;
     values.push(query.cursor.id);
     const idParameter = values.length;
-    conditions.push(
-      `(wr.valid_at, wr.id) < ($${validAtParameter}::timestamptz, $${idParameter}::bigint)`,
+    recordConditions.push(
+      `(candidate.valid_at, candidate.id) < ($${validAtParameter}::timestamptz, $${idParameter}::bigint)`,
     );
   }
 
   values.push(limit);
+  const limitParameter = values.length;
   const result = await pool.query<WeatherRecordRow>(
     `
       SELECT
         ${weatherRecordSelection()}
-      FROM weather_records wr
-      JOIN sources s ON s.id = wr.source_id
+      FROM sources s
       JOIN stations st ON st.id = s.station_id
       JOIN sites si ON si.id = st.site_id
       JOIN providers p ON p.id = s.provider_id
-      WHERE ${conditions.join("\n        AND ")}
+      JOIN LATERAL (
+        SELECT candidate.*
+        FROM weather_records candidate
+        WHERE ${recordConditions.join("\n          AND ")}
+        ORDER BY candidate.valid_at DESC, candidate.id DESC
+        LIMIT $${limitParameter}
+      ) wr ON true
+      WHERE ${sourceConditions.join("\n        AND ")}
       ORDER BY wr.valid_at DESC, wr.id DESC
-      LIMIT $${values.length}
+      LIMIT $${limitParameter}
     `,
     values,
   );
