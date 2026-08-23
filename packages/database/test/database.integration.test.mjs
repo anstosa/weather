@@ -17,6 +17,7 @@ import {
   completeScheduledIngestion,
   discoverDueSources,
   failIngestionRun,
+  getCurrentWeather,
   getScheduledCheckpoint,
   hasSuccessfulBackfillChunk,
   listActiveSites,
@@ -832,6 +833,17 @@ test(
         assert.match(
           plan.rows.map((row) => row["QUERY PLAN"]).join("\n"),
           /weather_records_(?:current|source_valid)_idx/u,
+        );
+        const current = await getCurrentWeather(pool, configuration.site.key);
+        // isolate the populated source
+        const currentRows = current.filter(
+          (record) => record.sourceId === currentSource.id,
+        );
+
+        assert.equal(currentRows.length, 1);
+        assert.equal(
+          new Date(currentRows[0].validAt).toISOString(),
+          "2026-08-20T00:00:00.000Z",
         );
       });
 

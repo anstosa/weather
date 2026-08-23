@@ -46,7 +46,11 @@ test("current SQL enforces active joins and parameterized station/source filters
   assert.match(queries[0].text, /s\.active/u);
   assert.match(queries[0].text, /p\.active/u);
   assert.match(queries[0].text, /st\.slug = \$2/u);
-  assert.match(queries[0].text, /wr\.source_id = \$3/u);
+  assert.match(queries[0].text, /s\.id = \$3/u);
+  assert.match(queries[0].text, /JOIN LATERAL/u);
+  assert.match(queries[0].text, /candidate\.source_id = s\.id/u);
+  assert.match(queries[0].text, /LIMIT 1/u);
+  assert.doesNotMatch(queries[0].text, /DISTINCT ON/u);
   assert.match(queries[0].text, /wr\.upstream_timezone AS "upstreamTimezone"/u);
   assert.match(queries[0].text, /wr\.quality_metadata AS "qualityMetadata"/u);
   assert.match(queries[0].text, /wr\.provider_metadata AS "providerMetadata"/u);

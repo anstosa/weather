@@ -978,13 +978,19 @@ export async function getCurrentWeather(
 ): Promise<readonly WeatherRecordRow[]> {
   const result = await pool.query<WeatherRecordRow>(
     `
-      SELECT DISTINCT ON (wr.source_id)
+      SELECT
         ${weatherRecordSelection()}
-      FROM weather_records wr
-      JOIN sources s ON s.id = wr.source_id
+      FROM sources s
       JOIN stations st ON st.id = s.station_id
       JOIN sites si ON si.id = st.site_id
       JOIN providers p ON p.id = s.provider_id
+      JOIN LATERAL (
+        SELECT candidate.*
+        FROM weather_records candidate
+        WHERE candidate.source_id = s.id
+        ORDER BY candidate.valid_at DESC, candidate.id DESC
+        LIMIT 1
+      ) wr ON true
       WHERE si.slug = $1
         AND si.active
         AND st.active
@@ -992,8 +998,8 @@ export async function getCurrentWeather(
         AND p.active
         AND ${CURRENT_SOURCE_PREDICATE}
         AND ($2::text IS NULL OR st.slug = $2)
-        AND ($3::bigint IS NULL OR wr.source_id = $3)
-      ORDER BY wr.source_id, wr.valid_at DESC, wr.id DESC
+        AND ($3::bigint IS NULL OR s.id = $3)
+      ORDER BY wr.source_id
     `,
     [siteSlug, query.stationSlug ?? null, query.sourceId ?? null],
   );
