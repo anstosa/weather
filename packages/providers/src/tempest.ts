@@ -257,6 +257,12 @@ function normalizeTempestObservation(
           "millimeter_per_hour",
         );
   const windDirection = requireNullableNumber(observation[4], "wind direction");
+  const uvIndex = normalizeTempestUvIndex(observation[10]);
+  // flag only the discarded metric
+  const quality = {
+    sampling: "every_distinct_provider_observation",
+    ...(uvIndex.outOfRange ? { flags: ["uv_index_out_of_range"] } : {}),
+  };
 
   return createNormalizedWeatherRecord({
     metadata: {
@@ -291,7 +297,7 @@ function normalizeTempestObservation(
           "wind sample interval",
         ),
       },
-      quality: { sampling: "every_distinct_provider_observation" },
+      quality,
       upstreamTimezone: input.timezone,
     },
     metrics: {
@@ -315,7 +321,7 @@ function normalizeTempestObservation(
         "watt_per_square_meter",
       ),
       temperatureC: metric("temperatureC", observation[7], "c"),
-      uvIndex: metric("uvIndex", observation[10], "index"),
+      uvIndex: uvIndex.value,
       windDirectionDegrees: normalizeMetricValue(
         "windDirectionDegrees",
         windDirection === 360 ? 0 : windDirection,
@@ -331,6 +337,28 @@ function normalizeTempestObservation(
     sourceKind: "physical_sensor",
     validAt: new Date(epochSeconds * 1000).toISOString(),
   });
+}
+
+// retain observations with an impossible UV reading
+function normalizeTempestUvIndex(
+  value: unknown,
+): Readonly<{ outOfRange: boolean; value: number | null }> {
+  const parsed = requireNullableNumber(value, "uvIndex");
+
+  // preserve provider gaps
+  if (parsed === null) {
+    return { outOfRange: false, value: null };
+  }
+
+  // isolate impossible sensor readings
+  if (parsed < 0 || parsed > 20) {
+    return { outOfRange: true, value: null };
+  }
+
+  return {
+    outOfRange: false,
+    value: normalizeMetricValue("uvIndex", parsed, "index"),
+  };
 }
 
 // normalize one nullable metric

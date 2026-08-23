@@ -86,6 +86,19 @@ test("Tempest obs_st rows preserve one-minute resolution", async () => {
     normalizeTempestObservationPayload(duplicate, request, receivedAt).length,
     3,
   );
+
+  // retain rows with impossible UV readings
+  const invalidUv = await fixture("observations.json");
+  invalidUv.obs[0][10] = 20.01;
+  const invalidUvRecords = normalizeTempestObservationPayload(
+    invalidUv,
+    request,
+    receivedAt,
+  );
+  assert.equal(invalidUvRecords[0].metrics.uvIndex, null);
+  assert.deepEqual(invalidUvRecords[0].metadata.quality.flags, [
+    "uv_index_out_of_range",
+  ]);
 });
 
 // resolve only the ST weather device
