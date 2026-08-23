@@ -192,8 +192,7 @@ export function normalizeTempestObservationPayload(
   }
 
   const window = validateObservationRequest({ ...input, apiKey: "validation-only" });
-  // normalize WeatherFlow's null no-data sentinel
-  const observations = root.obs === null ? [] : requireArray(root.obs, "obs");
+  const observations = tempestObservations(root);
   const hourly = new Map<number, readonly unknown[]>();
 
   // retain the first actual observation in each UTC hour
@@ -381,7 +380,7 @@ function tempestResponseMetadata(
   recordCount: number,
 ): Readonly<Record<string, JsonValue>> {
   const root = requireObject(payload, "Tempest observation response");
-  const observations = requireArray(root.obs, "obs");
+  const observations = tempestObservations(root);
 
   return {
     device_id: requirePositiveInteger(root.device_id, "device_id"),
@@ -391,6 +390,13 @@ function tempestResponseMetadata(
       ? { bucket_step_minutes: root.bucket_step_minutes }
       : {}),
   };
+}
+
+// normalize WeatherFlow's null no-data sentinel
+function tempestObservations(
+  root: Readonly<Record<string, unknown>>,
+): readonly unknown[] {
+  return root.obs === null ? [] : requireArray(root.obs, "obs");
 }
 
 // require provider success metadata

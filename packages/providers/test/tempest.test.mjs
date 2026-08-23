@@ -116,6 +116,18 @@ test("Tempest operation returns bounded batch metadata", async () => {
   assert.deepEqual(batch.providerCursor, {
     valid_at: "2026-08-20T01:00:00.000Z",
   });
+
+  // execute the no-data operation
+  const gap = await fixture("observations.json");
+  gap.obs = null;
+  const emptyBatch = await operation(request, {
+    fetch: async () => new Response(JSON.stringify(gap), { status: 200 }),
+    now: () => new Date(receivedAt),
+  });
+  assert.deepEqual(emptyBatch.records, []);
+  assert.equal(emptyBatch.responseMetadata.raw_observation_count, 0);
+  assert.equal(emptyBatch.responseMetadata.hourly_record_count, 0);
+  assert.equal(emptyBatch.providerCursor, null);
 });
 
 // reject provider-level and shape failures
