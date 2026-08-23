@@ -192,7 +192,8 @@ export function normalizeTempestObservationPayload(
   }
 
   const window = validateObservationRequest({ ...input, apiKey: "validation-only" });
-  const observations = requireArray(root.obs, "obs");
+  // normalize WeatherFlow's null no-data sentinel
+  const observations = root.obs === null ? [] : requireArray(root.obs, "obs");
   const hourly = new Map<number, readonly unknown[]>();
 
   // retain the first actual observation in each UTC hour

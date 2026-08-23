@@ -147,4 +147,11 @@ test("Tempest payload validation accepts an empty successful range", async () =>
     normalizeTempestObservationPayload(empty, request, receivedAt),
     [],
   );
+
+  const nullGap = await fixture("observations.json");
+  nullGap.obs = null;
+  assert.deepEqual(
+    normalizeTempestObservationPayload(nullGap, request, receivedAt),
+    [],
+  );
 });
