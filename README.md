@@ -2,9 +2,14 @@
 
 Weather is a TypeScript and Node.js platform for collecting, normalizing,
 storing, and presenting weather data without coupling the data model to one
-station brand. The current MVP ingests Open-Meteo model-current data, supports
-resumable historical reanalysis backfills, stores normalized records in
-PostgreSQL, and serves an accessible read-only dashboard.
+station brand. The current MVP ingests Open-Meteo model data and seven public
+WeatherFlow Tempest stations, supports resumable historical backfills, stores
+normalized records in PostgreSQL, and serves an accessible read-only dashboard.
+
+The normalized point schema covers the purchased Ecowitt equipment without
+duplicating measurements by sensor model. See the
+[`sensor measurement inventory`](docs/sensor-measurements.md) for the field,
+unit, device, and derived-data boundaries.
 
 ## Requirements
 
@@ -82,6 +87,74 @@ The local Compose override publishes the web app only on loopback at
 isolated deployment lifecycle and
 [`docs/operations/backup-restore.md`](docs/operations/backup-restore.md) for
 encrypted backup and disposable restore verification.
+
+## Runtime targets
+
+Checked, non-secret local and remote targets live in
+[`config/runtime-targets.json`](config/runtime-targets.json). Test URLs prefer
+the configured tunnel and fall back to the local origin only when the tunnel is
+absent:
+
+```bash
+npm run test:urls
+npm run test:urls:remote
+npm run test:urls:local
+npm run remote:tunnel:check
+```
+
+The configured remote stack uses the `weather-pi` host from the ignored
+`deploy/config/ssh_config`. These wrappers preserve the forced-command SSH
+boundary and require a loaded SSH agent:
+
+```bash
+npm run remote:status
+npm run remote:preflight
+npm run remote:backup
+npm run remote:tempest:backfill
+npm run remote:stage -- 2026.08.22-7
+npm run remote:activate -- 2026.08.22-7
+npm run remote:rollback
+npm run remote:recover
+```
+
+The current Weather tunnel origin is <https://weather.santosa.family>.
+
+## Tempest ingestion
+
+The checked station catalog is
+[`config/tempest/stations.json`](config/tempest/stations.json). It records only
+public station/device identity and material source configuration. Keep the API
+key outside Git in `deploy/secrets/weather_tempest_api_key`; the worker mounts
+that file and polls every active Tempest source once per completed UTC hour.
+Each provider range is limited to five days and the adapter retains the first
+actual observation in each UTC hour.
+
+Build and plan all configured station history without provider or database
+writes:
+
+```bash
+docker compose --env-file deploy/.env.example \
+  -f deploy/compose.yaml -f deploy/compose.local.yaml run --rm --no-deps worker \
+  node apps/worker/dist/tempest-backfill-cli.js \
+  --site ballydidean --from 2026-01-01 --to 2026-08-21 --dry-run
+```
+
+Import all configured history using each station's checked start date, skipping
+only exact chunks that already succeeded:
+
+```bash
+docker compose --env-file deploy/.env.example \
+  -f deploy/compose.yaml -f deploy/compose.local.yaml run --rm --no-deps worker \
+  node apps/worker/dist/tempest-backfill-cli.js \
+  --site ballydidean --resume
+```
+
+Repeat `--station LOCATION_ID` to select a subset. `--from`, `--to`,
+`--chunk-days 1..5`, `--resume`, `--dry-run`, and `--report PATH` are supported.
+The default `--to` is yesterday so the hourly worker owns the partial current
+day. A repository-shell invocation is also available as
+`npm run weather:tempest:backfill -- --site ballydidean ...` when the required
+database and Tempest file environment variables are set.
 
 ## Workspaces
 

@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "siteKey": "ballydidean",
+  "provider": {
+    "key": "weatherflow-tempest",
+    "displayName": "WeatherFlow Tempest",
+    "attributionLabel": "Weather data by Tempest",
+    "attributionUrl": "https://tempestwx.com/",
+    "active": true
+  },
+  "stations": [
+    {
+      "key": "tempest-203055",
+      "displayName": "Quade Rd",
+      "locationId": 203055,
+      "deviceId": 470937,
+      "latitude": 47.96505,
+      "longitude": -122.4241,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00198967",
+      "historyStartDate": "2025-12-25",
+      "cadenceSeconds": 3600,
+      "active": true
+    },
+    {
+      "key": "tempest-201058",
+      "displayName": "Dorothys Ln",
+      "locationId": 201058,
+      "deviceId": 466938,
+      "latitude": 47.96244,
+      "longitude": -122.43369,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00194085",
+      "historyStartDate": "2025-12-22",
+      "cadenceSeconds": 3600,
+      "active": true
+    },
+    {
+      "key": "tempest-126537",
+      "displayName": "Sills Rd",
+      "locationId": 126537,
+      "deviceId": 313016,
+      "latitude": 47.9582,
+      "longitude": -122.44274,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00134621",
+      "historyStartDate": "2023-12-17",
+      "cadenceSeconds": 3600,
+      "active": true
+    },
+    {
+      "key": "tempest-168853",
+      "displayName": "Maxwelton Rd",
+      "locationId": 168853,
+      "deviceId": 401592,
+      "latitude": 47.95498,
+      "longitude": -122.44074,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00170845",
+      "historyStartDate": "2025-01-22",
+      "cadenceSeconds": 3600,
+      "active": true
+    },
+    {
+      "key": "tempest-64255",
+      "displayName": "Westie guard",
+      "locationId": 64255,
+      "deviceId": 175727,
+      "latitude": 47.95008,
+      "longitude": -122.43982,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00054713",
+      "historyStartDate": "2021-12-10",
+      "cadenceSeconds": 3600,
+      "active": true
+    },
+    {
+      "key": "tempest-38270",
+      "displayName": "Fiske Rd",
+      "locationId": 38270,
+      "deviceId": 115866,
+      "latitude": 47.95293,
+      "longitude": -122.41414,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00157152",
+      "historyStartDate": "2021-01-04",
+      "cadenceSeconds": 3600,
+      "active": true
+    },
+    {
+      "key": "tempest-225947",
+      "displayName": "WDL",
+      "locationId": 225947,
+      "deviceId": 1239187,
+      "latitude": 47.94215,
+      "longitude": -122.42542,
+      "timezone": "America/Los_Angeles",
+      "serial": "ST-00212830",
+      "historyStartDate": "2026-07-14",
+      "cadenceSeconds": 3600,
+      "active": true
+    }
+  ]
+}

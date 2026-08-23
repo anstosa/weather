@@ -69,9 +69,11 @@ test(
         assert.deepEqual(result.applied, [
           "0001_initial_weather.sql",
           "0002_worker_migration_readiness.sql",
+          "0003_ecowitt_measurements.sql",
+          "0004_tempest_metadata.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 2);
+        assert.equal(ledger.rowCount, 4);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -95,6 +97,8 @@ test(
           assert.deepEqual(rerun.current, [
             "0001_initial_weather.sql",
             "0002_worker_migration_readiness.sql",
+            "0003_ecowitt_measurements.sql",
+            "0004_tempest_metadata.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -126,8 +130,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 2);
-          assert.equal(first.current.length + second.current.length, 2);
+          assert.equal(first.applied.length + second.applied.length, 4);
+          assert.equal(first.current.length + second.current.length, 4);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -272,12 +276,12 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0002_worker_migration_readiness.sql" },
+            { version: "0004_tempest_metadata.sql" },
           );
           try {
             // reject unproven candidate history
             await pool.query(
-              "INSERT INTO schema_migrations (name, checksum) VALUES ('0003_candidate_only.sql', $1)",
+              "INSERT INTO schema_migrations (name, checksum) VALUES ('0005_candidate_only.sql', $1)",
               ["3".repeat(64)],
             );
             await assert.rejects(
@@ -303,7 +307,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0002_worker_migration_readiness.sql" },
+              { version: "0004_tempest_metadata.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
@@ -327,7 +331,7 @@ test(
               [knownMigration.rows[0].checksum],
             );
             await pool.query(
-              "DELETE FROM schema_migrations WHERE name = '0003_candidate_only.sql'",
+              "DELETE FROM schema_migrations WHERE name = '0005_candidate_only.sql'",
             );
           }
           await ingestPool.query(
@@ -454,9 +458,49 @@ test(
             runId: backfillRun.id,
           });
           const rows = await pool.query(
-            "SELECT source_id FROM weather_records WHERE valid_at = '2026-08-20T00:00:00.000Z' ORDER BY source_id",
+            `
+              SELECT
+                source_id,
+                black_globe_temperature_c,
+                pm25_micrograms_per_cubic_meter,
+                precipitation_rate_mm_per_hour,
+                soil_electrical_conductivity_us_cm,
+                soil_moisture_percent,
+                solar_radiation_wm2,
+                uv_index,
+                wet_bulb_globe_temperature_c
+              FROM weather_records
+              WHERE valid_at = '2026-08-20T00:00:00.000Z'
+              ORDER BY source_id
+            `,
           );
           assert.equal(rows.rowCount, 2);
+          assert.deepEqual(
+            {
+              blackGlobeTemperatureC: rows.rows[0].black_globe_temperature_c,
+              pm25MicrogramsPerCubicMeter:
+                rows.rows[0].pm25_micrograms_per_cubic_meter,
+              precipitationRateMmPerHour:
+                rows.rows[0].precipitation_rate_mm_per_hour,
+              soilElectricalConductivityMicrosiemensPerCm:
+                rows.rows[0].soil_electrical_conductivity_us_cm,
+              soilMoisturePercent: rows.rows[0].soil_moisture_percent,
+              solarRadiationWm2: rows.rows[0].solar_radiation_wm2,
+              uvIndex: rows.rows[0].uv_index,
+              wetBulbGlobeTemperatureC:
+                rows.rows[0].wet_bulb_globe_temperature_c,
+            },
+            {
+              blackGlobeTemperatureC: 18,
+              pm25MicrogramsPerCubicMeter: 7,
+              precipitationRateMmPerHour: 0,
+              soilElectricalConductivityMicrosiemensPerCm: 420,
+              soilMoisturePercent: 34,
+              solarRadiationWm2: 320,
+              uvIndex: 2,
+              wetBulbGlobeTemperatureC: 11,
+            },
+          );
         } finally {
           await Promise.all([currentSession.release(), reanalysisSession.release()]);
         }
@@ -492,6 +536,30 @@ test(
               sourceId: currentSource.id,
               sourceKind: "model_current",
               validAt: "2026-08-20T04:00:00.000Z",
+            }),
+          hasDatabaseCode("23514"),
+        );
+        await assert.rejects(
+          () =>
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              soilMoisturePercent: 101,
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              validAt: "2026-08-20T04:10:00.000Z",
+            }),
+          hasDatabaseCode("23514"),
+        );
+        await assert.rejects(
+          () =>
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              uvIndex: 21,
+              validAt: "2026-08-20T04:20:00.000Z",
             }),
           hasDatabaseCode("23514"),
         );
@@ -655,6 +723,14 @@ test(
               pool.query(
                 "UPDATE weather_records SET first_ingestion_run_id = $1 WHERE source_id = $2 AND valid_at = '2026-08-20T00:00:00.000Z'",
                 [revised.id, currentSource.id],
+              ),
+            hasDatabaseCode("23514"),
+          );
+          await assert.rejects(
+            () =>
+              pool.query(
+                "UPDATE weather_records SET soil_moisture_percent = 35 WHERE source_id = $1 AND valid_at = '2026-08-20T00:00:00.000Z'",
+                [currentSource.id],
               ),
             hasDatabaseCode("23514"),
           );
@@ -1181,14 +1257,22 @@ function makeRecord(sourceId, sourceKind, validAt, overrides = {}) {
     },
     metrics: {
       apparentTemperatureC: 9,
+      blackGlobeTemperatureC: 18,
       cloudCoverPercent: 50,
+      pm25MicrogramsPerCubicMeter: 7,
       precipitationMm: 0,
+      precipitationRateMmPerHour: 0,
       pressureHpa: 1013,
       relativeHumidityPercent: 70,
+      soilElectricalConductivityMicrosiemensPerCm: 420,
+      soilMoisturePercent: overrides.soilMoisturePercent ?? 34,
+      solarRadiationWm2: 320,
       temperatureC: overrides.temperatureC ?? 10,
+      uvIndex: 2,
       windDirectionDegrees: 180,
       windGustMps: 7,
       windSpeedMps: 4,
+      wetBulbGlobeTemperatureC: 11,
     },
     productRunAt: overrides.productRunAt ?? null,
     receivedAt: overrides.receivedAt ?? "2026-08-20T00:05:00.000Z",
@@ -1236,9 +1320,11 @@ async function insertRawRecord(pool, input) {
         last_received_at,
         upstream_timezone,
         provider_metadata,
+        soil_moisture_percent,
+        uv_index,
         content_hash
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $3, $3, 'UTC', $7::jsonb, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $3, $3, 'UTC', $7::jsonb, $8, $9, $10)
     `,
     [
       input.sourceId,
@@ -1250,6 +1336,8 @@ async function insertRawRecord(pool, input) {
       input.providerMetadata === undefined
         ? null
         : JSON.stringify(input.providerMetadata),
+      input.soilMoisturePercent ?? null,
+      input.uvIndex ?? null,
       "c".repeat(64),
     ],
   );

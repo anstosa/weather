@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { loadSiteConfiguration } from "@weather/database";
+import { loadSiteConfiguration, loadTempestConfiguration } from "@weather/database";
 import { ProviderFailure } from "@weather/providers";
 
 import {
@@ -13,6 +13,7 @@ import {
 } from "../dist/index.js";
 
 const sitePath = new URL("../../../config/sites/ballydidean.json", import.meta.url).pathname;
+const tempestPath = new URL("../../../config/tempest/stations.json", import.meta.url).pathname;
 const fixturePath = new URL(
   "../../../packages/providers/test/fixtures/open-meteo/current.json",
   import.meta.url,
@@ -85,6 +86,26 @@ function currentDueSource(site, overrides = {}) {
   };
 }
 
+// create one active physical Tempest discovery row
+function tempestDueSource(configuration, overrides = {}) {
+  const station = configuration.stations[0];
+
+  return {
+    active: true,
+    cadenceSeconds: station.cadenceSeconds,
+    id: sourceId,
+    materialProviderConfig: station.adapterConfig,
+    providerKey: configuration.provider.key,
+    siteSlug: configuration.siteKey,
+    sourceConfigFingerprint: station.fingerprint,
+    sourceKey: station.sourceKey,
+    sourceKind: "physical_sensor",
+    stationSlug: station.key,
+    timezone: station.timezone,
+    ...overrides,
+  };
+}
+
 // create an exact historical source identity
 function historicalSource(site, overrides = {}) {
   const configuration = site.sources.find(
@@ -136,6 +157,43 @@ test("I-ING-01 scheduled fetch observes committed running lifecycle", async () =
     Date.parse(repository.startedInput.deadlineAt) - Date.parse("2026-08-22T05:20:00.000Z"),
     120_000,
   );
+});
+
+// prove hourly Tempest ingestion uses the completed UTC hour
+test("scheduled Tempest ingestion dispatches an exact one-hour device range", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const tempest = await loadTempestConfiguration(tempestPath);
+  const station = tempest.stations[0];
+  const repository = scheduledRepository([]);
+  let providerInput;
+  const result = await runScheduledSource({}, tempestDueSource(tempest), {
+    fetchTempest: async (input) => {
+      providerInput = input;
+      return {
+        attempts: 1,
+        checksum: "c".repeat(64),
+        providerCursor: { valid_at: "2026-08-22T04:00:00.000Z" },
+        records: [{ validAt: "2026-08-22T04:00:00.000Z" }],
+        responseMetadata: {},
+      };
+    },
+    now: () => new Date("2026-08-22T05:20:00.000Z"),
+    repository,
+    site,
+    tempest,
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(providerInput, {
+    deviceId: station.deviceId,
+    endExclusive: "2026-08-22T05:00:00.000Z",
+    locationId: station.locationId,
+    serial: station.serial,
+    sourceId,
+    start: "2026-08-22T04:00:00.000Z",
+    timezone: station.timezone,
+  });
+  assert.equal(repository.startedInput.adapterVersion, "tempest-observations-hourly/v1");
 });
 
 // reject every mismatched source identity before external work
@@ -407,14 +465,22 @@ function archiveBatch(input) {
         },
         metrics: {
           apparentTemperatureC: 9,
+          blackGlobeTemperatureC: null,
           cloudCoverPercent: 50,
+          pm25MicrogramsPerCubicMeter: null,
           precipitationMm: 0,
+          precipitationRateMmPerHour: null,
           pressureHpa: 1012,
           relativeHumidityPercent: 75,
+          soilElectricalConductivityMicrosiemensPerCm: null,
+          soilMoisturePercent: null,
+          solarRadiationWm2: null,
           temperatureC: 10,
+          uvIndex: null,
           windDirectionDegrees: 180,
           windGustMps: 4,
           windSpeedMps: 2,
+          wetBulbGlobeTemperatureC: null,
         },
         productRunAt: null,
         receivedAt: "2026-08-22T05:20:00.000Z",

@@ -18,14 +18,22 @@ import {
 
 const baseMetrics = {
   apparentTemperatureC: 8,
+  blackGlobeTemperatureC: 18,
   cloudCoverPercent: 75,
+  pm25MicrogramsPerCubicMeter: 7,
   precipitationMm: 0,
+  precipitationRateMmPerHour: 0,
   pressureHpa: 1012,
   relativeHumidityPercent: 82,
+  soilElectricalConductivityMicrosiemensPerCm: 420,
+  soilMoisturePercent: 34,
+  solarRadiationWm2: 320,
   temperatureC: 9,
+  uvIndex: 2,
   windDirectionDegrees: 270,
   windGustMps: 9,
   windSpeedMps: 4,
+  wetBulbGlobeTemperatureC: 11,
 };
 
 const baseMetadata = {
@@ -69,6 +77,35 @@ test("U-DOM-03 converts canonical units and rejects impossible values", () => {
   assert.equal(normalizeMetricValue("windSpeedMps", 36, "kilometer_per_hour"), 10);
   assert.equal(normalizeMetricValue("pressureHpa", 101_300, "pascal"), 1013);
   assert.equal(normalizeMetricValue("relativeHumidityPercent", 50, "percent"), 50);
+  assert.equal(
+    normalizeMetricValue(
+      "soilElectricalConductivityMicrosiemensPerCm",
+      450,
+      "microsiemens_per_centimeter",
+    ),
+    450,
+  );
+  assert.equal(
+    normalizeMetricValue(
+      "pm25MicrogramsPerCubicMeter",
+      12,
+      "microgram_per_cubic_meter",
+    ),
+    12,
+  );
+  assert.equal(
+    normalizeMetricValue(
+      "precipitationRateMmPerHour",
+      3.5,
+      "millimeter_per_hour",
+    ),
+    3.5,
+  );
+  assert.equal(
+    normalizeMetricValue("solarRadiationWm2", 800, "watt_per_square_meter"),
+    800,
+  );
+  assert.equal(normalizeMetricValue("uvIndex", 5, "index"), 5);
   assert.equal(normalizeMetricValue("windDirectionDegrees", 90, "degree"), 90);
   assert.throws(
     () => normalizeMetricValue("relativeHumidityPercent", 101, "percent"),
@@ -77,6 +114,10 @@ test("U-DOM-03 converts canonical units and rejects impossible values", () => {
   assert.throws(
     () => normalizeMetricValue("windDirectionDegrees", 360, "degree"),
     /less than 360/u,
+  );
+  assert.throws(
+    () => normalizeMetricValue("pm25MicrogramsPerCubicMeter", 1_000, "microgram_per_cubic_meter"),
+    /between 0 and 999/u,
   );
   assert.throws(
     () => normalizeMetricValue("temperatureC", 4, "millimeter"),

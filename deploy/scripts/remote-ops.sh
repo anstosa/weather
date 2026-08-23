@@ -20,12 +20,13 @@ action=$1
 shift
 
 case "$action" in
-  status|rollback|recover|backup|preflight)
+  status|rollback|recover|backup|preflight|tempest-backfill)
     (($# == 0)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
 
     # map non-release operations explicitly
     case "$action" in
       backup) exec "$deploy_dir/scripts/backup.sh" ;;
+      tempest-backfill) exec "$deploy_dir/scripts/tempest-backfill.sh" ;;
       preflight)
         exec "$deploy_dir/scripts/preflight-capacity.sh" --sample-seconds 900 \
           --json "/var/lib/weather/preflight-$(date -u +%Y%m%dT%H%M%SZ).json"

@@ -14,15 +14,19 @@ import {
   type ScheduledCheckpointState,
   type SiteConfiguration,
   type SourceSession,
+  type TempestConfiguration,
 } from "@weather/database";
 import {
   OPEN_METEO_CURRENT_ADAPTER_VERSION,
   ProviderFailure,
+  TEMPEST_OBSERVATION_ADAPTER_VERSION,
   asProviderFailure,
   createOpenMeteoCurrentOperation,
+  createTempestObservationOperation,
   fetchOpenMeteoCurrent,
   type OpenMeteoCurrentOperation,
   type ProviderFetchOptions,
+  type TempestObservationOperation,
 } from "@weather/providers";
 
 import { loadWorkerConfiguration } from "./config.js";
@@ -43,7 +47,10 @@ import {
   WORKER_CADENCE_MS,
   createNonOverlappingScheduler,
 } from "./scheduler.js";
-import { sourceIdentityMatchesConfiguration } from "./source-identity.js";
+import {
+  sourceIdentityMatchesConfiguration,
+  sourceIdentityMatchesTempestConfiguration,
+} from "./source-identity.js";
 
 type DatabasePool = ReturnType<typeof createDatabasePool>;
 
@@ -61,12 +68,14 @@ export interface WorkerRepository {
 export interface WorkerIterationOptions {
   readonly diagnosticWriter?: (diagnostic: WorkerDiagnostic) => void;
   readonly fetchCurrent?: OpenMeteoCurrentOperation;
+  readonly fetchTempest?: TempestObservationOperation;
   readonly fetchOptions?: ProviderFetchOptions;
   readonly instance: string;
   readonly lastSuccessAt: string | null;
   readonly now?: () => Date;
   readonly repository?: WorkerRepository;
   readonly site: SiteConfiguration;
+  readonly tempest?: TempestConfiguration | null;
   readonly version: string;
 }
 
@@ -151,6 +160,10 @@ async function runWorkerIterationWithState(
         ...(options.fetchCurrent === undefined
           ? {}
           : { fetchCurrent: options.fetchCurrent }),
+        ...(options.fetchTempest === undefined
+          ? {}
+          : { fetchTempest: options.fetchTempest }),
+        tempest: options.tempest ?? null,
       });
       results.push(result);
       diagnosticWriter(
@@ -231,34 +244,45 @@ export async function runScheduledSource(
   source: DueSource,
   options: Readonly<{
     fetchCurrent?: OpenMeteoCurrentOperation;
+    fetchTempest?: TempestObservationOperation;
     fetchOptions?: ProviderFetchOptions;
     now: () => Date;
     repository: WorkerRepository;
     site: SiteConfiguration;
+    tempest?: TempestConfiguration | null;
   }>,
 ): Promise<SourceRunResult> {
   const executionStartedAt = options.now().getTime();
+  const tempestConfiguration = options.tempest ?? null;
   const sourceConfiguration = options.site.sources.find(
     (candidate) => candidate.key === source.sourceKey,
   );
-
-  // skip sources outside the configured current capability
-  if (
-    !source.active ||
-    source.providerKey !== "open-meteo" ||
-    source.sourceKind !== "model_current" ||
-    source.siteSlug !== options.site.site.key ||
-    sourceConfiguration === undefined ||
-    !sourceConfiguration.capabilities.includes("current") ||
-    !sourceIdentityMatchesConfiguration(
+  const tempestStation = tempestConfiguration?.stations.find(
+    (candidate) => candidate.sourceKey === source.sourceKey,
+  );
+  const openMeteoSource =
+    source.active &&
+    source.providerKey === "open-meteo" &&
+    source.sourceKind === "model_current" &&
+    source.siteSlug === options.site.site.key &&
+    sourceConfiguration !== undefined &&
+    sourceConfiguration.capabilities.includes("current") &&
+    sourceIdentityMatchesConfiguration(source, options.site, sourceConfiguration);
+  const tempestSource =
+    source.active &&
+    tempestConfiguration !== null &&
+    tempestStation !== undefined &&
+    sourceIdentityMatchesTempestConfiguration(
       source,
-      options.site,
-      sourceConfiguration,
-    )
-  ) {
+      tempestConfiguration,
+      tempestStation,
+    );
+
+  // skip sources outside a loaded exact runtime contract
+  if (!openMeteoSource && !tempestSource) {
     return {
       durationMs: elapsedMilliseconds(executionStartedAt, options.now()),
-      reason: "source is not an active configured Open-Meteo current source",
+      reason: "source is not an active configured scheduled source",
       recordCount: 0,
       runId: null,
       secondaryError: null,
@@ -267,10 +291,12 @@ export async function runScheduledSource(
     };
   }
 
-  requireContractVersion(
-    sourceConfiguration.adapterConfig,
-    "forecast-current/v1",
-  );
+  // verify the selected frozen adapter contract
+  if (openMeteoSource) {
+    requireContractVersion(sourceConfiguration.adapterConfig, "forecast-current/v1");
+  } else if (tempestStation !== undefined) {
+    requireContractVersion(tempestStation.adapterConfig, "tempest-observations/v1");
+  }
   const session = await options.repository.acquireSourceSession(pool, source.id);
 
   // skip a source already owned elsewhere
@@ -296,30 +322,51 @@ export async function runScheduledSource(
     const deadlines = planIngestionDeadlines(now, options.fetchOptions);
     await options.repository.abandonExpiredRuns(session, now.toISOString());
     const checkpoint = await options.repository.getScheduledCheckpoint(session);
-    const window = scheduledWindow(now, source.cadenceSeconds, checkpoint);
+    const window = tempestSource
+      ? scheduledWindow(now, source.cadenceSeconds, null)
+      : scheduledWindow(now, source.cadenceSeconds, checkpoint);
     const started = await options.repository.startIngestionRun(session, {
-      adapterVersion: OPEN_METEO_CURRENT_ADAPTER_VERSION,
+      adapterVersion: tempestSource
+        ? TEMPEST_OBSERVATION_ADAPTER_VERSION
+        : OPEN_METEO_CURRENT_ADAPTER_VERSION,
       deadlineAt: deadlines.runDeadlineAt,
       mode: "scheduled",
-      requestMetadata: { endpoint: "forecast/current" },
+      requestMetadata: {
+        endpoint: tempestSource ? "observations/device" : "forecast/current",
+      },
       requestedEndExclusive: window.endExclusive,
       requestedStart: window.start,
       sourceConfigFingerprint: source.sourceConfigFingerprint,
     });
     runId = started.id;
-    const batch = await (options.fetchCurrent ?? fetchOpenMeteoCurrent)(
-      {
-        latitude: options.site.site.latitude,
-        longitude: options.site.site.longitude,
-        sourceId: source.id,
-        timezone: options.site.site.timezone,
-      },
-      {
-        ...options.fetchOptions,
-        deadlineAt: deadlines.providerDeadlineAt,
-        now: options.now,
-      },
-    );
+    const providerOptions = {
+      ...options.fetchOptions,
+      deadlineAt: deadlines.providerDeadlineAt,
+      now: options.now,
+    };
+    const batch =
+      tempestSource && tempestStation !== undefined
+        ? await requireTempestOperation(options.fetchTempest)(
+            {
+              deviceId: tempestStation.deviceId,
+              endExclusive: window.endExclusive,
+              locationId: tempestStation.locationId,
+              serial: tempestStation.serial,
+              sourceId: source.id,
+              start: window.start,
+              timezone: tempestStation.timezone,
+            },
+            providerOptions,
+          )
+        : await (options.fetchCurrent ?? fetchOpenMeteoCurrent)(
+            {
+              latitude: options.site.site.latitude,
+              longitude: options.site.site.longitude,
+              sourceId: source.id,
+              timezone: options.site.site.timezone,
+            },
+            providerOptions,
+          );
     attempts = batch.attempts;
     recordCount = batch.records.length;
     const lastRecord = batch.records.at(-1);
@@ -468,6 +515,18 @@ function requireContractVersion(
   }
 }
 
+// require a credential-bound Tempest operation
+function requireTempestOperation(
+  operation: TempestObservationOperation | undefined,
+): TempestObservationOperation {
+  // fail before provider I/O when credentials are unavailable
+  if (operation === undefined) {
+    throw new Error("Tempest scheduled ingestion requires a configured API key");
+  }
+
+  return operation;
+}
+
 // start the long-running worker process
 export async function startWorkerProcess(
   options: Readonly<{ once?: boolean }> = {},
@@ -477,6 +536,10 @@ export async function startWorkerProcess(
   const fetchCurrent = createOpenMeteoCurrentOperation(
     configuration.openMeteoCompatibilityOrigin,
   );
+  const fetchTempest =
+    configuration.tempestApiKey === null
+      ? undefined
+      : createTempestObservationOperation(configuration.tempestApiKey);
   await assertWorkerDatabaseReadiness(
     pool,
     configuration.migrationDirectory,
@@ -486,9 +549,11 @@ export async function startWorkerProcess(
   const durableHealth = await readWorkerHealth(pool, configuration.instance);
   const runIteration = createWorkerIterationRunner(pool, {
     fetchCurrent,
+    ...(fetchTempest === undefined ? {} : { fetchTempest }),
     instance: configuration.instance,
     lastSuccessAt: durableHealth.lastSuccessAt,
     site: configuration.site,
+    tempest: configuration.tempest,
     version: configuration.version,
   });
   const scheduler = createNonOverlappingScheduler({

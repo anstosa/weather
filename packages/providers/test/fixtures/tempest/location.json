@@ -1,0 +1,27 @@
+{
+  "locations": [
+    {
+      "devices": [
+        {
+          "device_id": 470935,
+          "device_type": "HB",
+          "serial_number": "HB-00199265"
+        },
+        {
+          "device_id": 470937,
+          "device_type": "ST",
+          "serial_number": "ST-00198967"
+        }
+      ],
+      "latitude": 47.96505,
+      "location_id": 203055,
+      "longitude": -122.4241,
+      "name": "Quade Rd",
+      "timezone": "America/Los_Angeles"
+    }
+  ],
+  "status": {
+    "status_code": 0,
+    "status_message": "SUCCESS"
+  }
+}

@@ -32,6 +32,37 @@ async function fixture(name) {
   );
 }
 
+// create an unambiguous UTC archive payload
+async function utcArchiveFixture(start, hours) {
+  const payload = await fixture("archive-fall-back.json");
+  const startMilliseconds = Date.parse(start);
+
+  // create one continuous UTC series
+  const times = Array.from({ length: hours }, (_unused, index) =>
+    new Date(startMilliseconds + index * 3_600_000).toISOString().slice(0, 16),
+  );
+  // repeat complete metric samples
+  const repeat = (values) =>
+    Array.from({ length: hours }, (_unused, index) => values[index % values.length]);
+
+  payload.hourly = {
+    apparent_temperature: repeat(payload.hourly.apparent_temperature),
+    cloud_cover: repeat(payload.hourly.cloud_cover),
+    precipitation: repeat(payload.hourly.precipitation),
+    relative_humidity_2m: repeat(payload.hourly.relative_humidity_2m),
+    surface_pressure: repeat(payload.hourly.surface_pressure),
+    temperature_2m: repeat(payload.hourly.temperature_2m),
+    time: times,
+    wind_direction_10m: repeat(payload.hourly.wind_direction_10m),
+    wind_gusts_10m: repeat(payload.hourly.wind_gusts_10m),
+    wind_speed_10m: repeat(payload.hourly.wind_speed_10m),
+  };
+  payload.timezone = "UTC";
+  payload.timezone_abbreviation = "UTC";
+  payload.utc_offset_seconds = 0;
+  return payload;
+}
+
 // prove modern current request parameters
 test("U-OM-01 current URL uses modern variables and explicit controls", () => {
   const plan = buildOpenMeteoCurrentRequest(location);
@@ -57,7 +88,8 @@ test("U-OM-02 archive URL uses inclusive dates and hourly variables", () => {
   );
   assert.match(plan.url.searchParams.get("hourly"), /surface_pressure/u);
   assert.equal(plan.url.searchParams.get("start_date"), "2026-08-01");
-  assert.equal(plan.url.searchParams.get("end_date"), "2026-08-03");
+  assert.equal(plan.url.searchParams.get("end_date"), "2026-08-04");
+  assert.equal(plan.url.searchParams.get("timezone"), "UTC");
 });
 
 // prove current normalization and provenance
@@ -77,6 +109,44 @@ test("U-OM-03 current fixture normalizes to model_current", async () => {
     elevation_m: 32,
     grid_cell: "47.941,-122.438",
   });
+});
+
+// collapse Open-Meteo's duplicate north direction
+test("Open-Meteo wind direction 360 normalizes to zero", async () => {
+  const payload = await fixture("current.json");
+  payload.current.wind_direction_10m = 360;
+
+  const record = normalizeCurrentPayload(payload, location.sourceId, receivedAt);
+
+  assert.equal(record.metrics.windDirectionDegrees, 0);
+});
+
+// preserve exact hourly coverage across DST changes
+test("archive operations query UTC and filter exact local calendar days", async () => {
+  const operation = createOpenMeteoHistoricalOperation("http://provider-stub:8080");
+  const spring = await operation(
+    { ...location, endDate: "2019-03-10", startDate: "2019-03-10" },
+    {
+      fetch: async () =>
+        new Response(JSON.stringify(await utcArchiveFixture("2019-03-10T00:00:00Z", 48))),
+      now: () => new Date(receivedAt),
+    },
+  );
+  const fall = await operation(
+    { ...location, endDate: "2019-11-03", startDate: "2019-11-03" },
+    {
+      fetch: async () =>
+        new Response(JSON.stringify(await utcArchiveFixture("2019-11-03T00:00:00Z", 48))),
+      now: () => new Date(receivedAt),
+    },
+  );
+
+  assert.equal(spring.records.length, 23);
+  assert.equal(spring.records[0].validAt, "2019-03-10T08:00:00.000Z");
+  assert.equal(spring.records.at(-1).validAt, "2019-03-11T06:00:00.000Z");
+  assert.equal(fall.records.length, 25);
+  assert.equal(fall.records[0].validAt, "2019-11-03T07:00:00.000Z");
+  assert.equal(fall.records.at(-1).validAt, "2019-11-04T07:00:00.000Z");
 });
 
 // prove the first repeated hour follows the provider offset

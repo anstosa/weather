@@ -57,6 +57,7 @@ const currentRecord = makeRecord({
 function makeRecord(overrides = {}) {
   return {
     apparentTemperatureC: 15.5,
+    blackGlobeTemperatureC: 18.4,
     cloudCoverPercent: 42,
     deviceModel: "virtual-grid",
     deviceSerial: null,
@@ -64,7 +65,9 @@ function makeRecord(overrides = {}) {
     firstReceivedAt: "2026-08-22T04:51:00.000Z",
     id: "100",
     lastReceivedAt: "2026-08-22T04:51:00.000Z",
+    pm25MicrogramsPerCubicMeter: 7,
     precipitationMm: 0.2,
+    precipitationRateMmPerHour: 0.4,
     pressureHpa: 1014.2,
     productRunAt: null,
     providerKey: "open-meteo",
@@ -87,13 +90,18 @@ function makeRecord(overrides = {}) {
     sourceKey: "open-meteo-reanalysis-v1",
     sourceKind: "reanalysis",
     stationSlug: "open-meteo-virtual",
+    soilElectricalConductivityMicrosiemensPerCm: 420,
+    soilMoisturePercent: 34,
+    solarRadiationWm2: 320,
     temperatureC: 16.2,
     upstreamModel: "best_match",
     upstreamTimezone: "America/Los_Angeles",
+    uvIndex: 2,
     validAt: "2026-08-21T04:00:00.000Z",
     windDirectionDegrees: 225,
     windGustMps: 7.2,
     windSpeedMps: 4.1,
+    wetBulbGlobeTemperatureC: 14.1,
     ...overrides,
   };
 }
@@ -243,6 +251,11 @@ test("current accepts station and source and returns bounded public metadata", a
   });
   assert.equal(body.data[0].freshness.status, "fresh");
   assert.equal(body.data[0].provenance.label, "model-derived current conditions");
+  assert.equal(body.data[0].metrics.pm25MicrogramsPerCubicMeter, 7);
+  assert.equal(
+    body.data[0].metrics.soilElectricalConductivityMicrosiemensPerCm,
+    420,
+  );
   assert.deepEqual(body.data[0].metadata, {
     device: { model: "virtual-grid", serial: null, vendor: "Open-Meteo" },
     provider: {

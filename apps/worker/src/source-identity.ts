@@ -1,6 +1,8 @@
 import type {
   SiteConfiguration,
   SiteConfigurationSource,
+  TempestConfiguration,
+  TempestStationConfiguration,
 } from "@weather/database";
 import {
   canonicalizeJson,
@@ -17,6 +19,36 @@ export interface RuntimeSourceIdentity {
   readonly sourceKind: SourceKind;
   readonly stationSlug: string;
   readonly timezone: string;
+}
+
+// bind a database source to one configured Tempest station
+export function sourceIdentityMatchesTempestConfiguration(
+  source: RuntimeSourceIdentity,
+  configuration: TempestConfiguration,
+  station: TempestStationConfiguration,
+): boolean {
+  // require exact durable and configured identity fields
+  if (
+    source.siteSlug !== configuration.siteKey ||
+    source.stationSlug !== station.key ||
+    source.providerKey !== configuration.provider.key ||
+    source.sourceKey !== station.sourceKey ||
+    source.sourceKind !== "physical_sensor" ||
+    source.sourceConfigFingerprint !== station.fingerprint ||
+    source.timezone !== station.timezone
+  ) {
+    return false;
+  }
+
+  try {
+    return (
+      canonicalizeJson(source.materialProviderConfig) ===
+      canonicalizeJson(station.adapterConfig)
+    );
+  } catch {
+    // fail closed on malformed database JSON
+    return false;
+  }
 }
 
 // bind a database source to the loaded material configuration

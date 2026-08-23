@@ -56,14 +56,22 @@ export interface WeatherRecord {
   };
   readonly metrics: {
     readonly apparentTemperatureC: number | null;
+    readonly blackGlobeTemperatureC: number | null;
     readonly cloudCoverPercent: number | null;
+    readonly pm25MicrogramsPerCubicMeter: number | null;
     readonly precipitationMm: number | null;
+    readonly precipitationRateMmPerHour: number | null;
     readonly pressureHpa: number | null;
     readonly relativeHumidityPercent: number | null;
+    readonly soilElectricalConductivityMicrosiemensPerCm: number | null;
+    readonly soilMoisturePercent: number | null;
+    readonly solarRadiationWm2: number | null;
     readonly temperatureC: number | null;
+    readonly uvIndex: number | null;
     readonly windDirectionDegrees: number | null;
     readonly windGustMps: number | null;
     readonly windSpeedMps: number | null;
+    readonly wetBulbGlobeTemperatureC: number | null;
   };
   readonly productRunAt: string | null;
   readonly provenance: {

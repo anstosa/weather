@@ -103,14 +103,22 @@ export interface ApiWeatherRecord {
   };
   readonly metrics: {
     readonly apparentTemperatureC: number | null;
+    readonly blackGlobeTemperatureC: number | null;
     readonly cloudCoverPercent: number | null;
+    readonly pm25MicrogramsPerCubicMeter: number | null;
     readonly precipitationMm: number | null;
+    readonly precipitationRateMmPerHour: number | null;
     readonly pressureHpa: number | null;
     readonly relativeHumidityPercent: number | null;
+    readonly soilElectricalConductivityMicrosiemensPerCm: number | null;
+    readonly soilMoisturePercent: number | null;
+    readonly solarRadiationWm2: number | null;
     readonly temperatureC: number | null;
+    readonly uvIndex: number | null;
     readonly windDirectionDegrees: number | null;
     readonly windGustMps: number | null;
     readonly windSpeedMps: number | null;
+    readonly wetBulbGlobeTemperatureC: number | null;
   };
   readonly productRunAt: string | null;
   readonly provenance: {
@@ -731,14 +739,23 @@ function mapWeatherRecords(
       metadata: projectMetadata(row),
       metrics: {
         apparentTemperatureC: row.apparentTemperatureC,
+        blackGlobeTemperatureC: row.blackGlobeTemperatureC,
         cloudCoverPercent: row.cloudCoverPercent,
+        pm25MicrogramsPerCubicMeter: row.pm25MicrogramsPerCubicMeter,
         precipitationMm: row.precipitationMm,
+        precipitationRateMmPerHour: row.precipitationRateMmPerHour,
         pressureHpa: row.pressureHpa,
         relativeHumidityPercent: row.relativeHumidityPercent,
+        soilElectricalConductivityMicrosiemensPerCm:
+          row.soilElectricalConductivityMicrosiemensPerCm,
+        soilMoisturePercent: row.soilMoisturePercent,
+        solarRadiationWm2: row.solarRadiationWm2,
         temperatureC: row.temperatureC,
+        uvIndex: row.uvIndex,
         windDirectionDegrees: row.windDirectionDegrees,
         windGustMps: row.windGustMps,
         windSpeedMps: row.windSpeedMps,
+        wetBulbGlobeTemperatureC: row.wetBulbGlobeTemperatureC,
       },
       productRunAt:
         row.productRunAt === null ? null : toIsoInstant(row.productRunAt),
@@ -860,7 +877,7 @@ function toIsoInstant(value: Date | string): string {
   return date.toISOString();
 }
 
-// describe recency without implying a physical observation
+// describe recency without implying one source type
 function describeFreshness(
   validAt: string,
   generatedAt: string,
@@ -872,15 +889,15 @@ function describeFreshness(
 
   // mark values within two source cadences as fresh
   if (ageSeconds <= 1_800) {
-    return { ageSeconds, label: "Model value is current", status: "fresh" };
+    return { ageSeconds, label: "Weather value is current", status: "fresh" };
   }
 
   // call out a moderate delay explicitly
   if (ageSeconds <= 7_200) {
-    return { ageSeconds, label: "Model value is delayed", status: "delayed" };
+    return { ageSeconds, label: "Weather value is delayed", status: "delayed" };
   }
 
-  return { ageSeconds, label: "Model value may be stale", status: "stale" };
+  return { ageSeconds, label: "Weather value may be stale", status: "stale" };
 }
 
 // parse and validate history filters

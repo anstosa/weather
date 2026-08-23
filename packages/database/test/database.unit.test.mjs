@@ -10,14 +10,17 @@ import {
   assertSupportedPostgres,
   loadDatabaseConfiguration,
   loadSiteConfiguration,
+  loadTempestConfiguration,
   listWeatherHistory,
   parseSiteConfiguration,
+  parseTempestConfiguration,
   toPoolConfiguration,
 } from "../dist/index.js";
 
 const executeFile = promisify(execFile);
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const ballydideanPath = join(repositoryRoot, "config/sites/ballydidean.json");
+const tempestPath = join(repositoryRoot, "config/tempest/stations.json");
 
 // verify the approved site configuration
 test("configuration preserves exact Ballydidean identity and distinct sources", async () => {
@@ -34,6 +37,35 @@ test("configuration preserves exact Ballydidean identity and distinct sources", 
   assert.notEqual(
     configuration.sources[0].fingerprint,
     configuration.sources[1].fingerprint,
+  );
+});
+
+// verify the checked physical station catalog
+test("Tempest configuration derives exact immutable source identities", async () => {
+  const configuration = await loadTempestConfiguration(tempestPath);
+
+  assert.equal(configuration.siteKey, "ballydidean");
+  assert.equal(configuration.provider.key, "weatherflow-tempest");
+  assert.equal(configuration.stations.length, 7);
+  assert.deepEqual(
+    configuration.stations.map((station) => station.locationId),
+    [203055, 201058, 126537, 168853, 64255, 38270, 225947],
+  );
+  assert.equal(configuration.stations[0].sourceKey, "tempest-203055-observations-v1");
+  assert.match(configuration.stations[0].fingerprint, /^[a-f0-9]{64}$/u);
+});
+
+// reject duplicate physical device identities
+test("Tempest configuration rejects duplicate station identities", async () => {
+  const raw = JSON.parse(await readFile(tempestPath, "utf8"));
+
+  assert.throws(
+    () =>
+      parseTempestConfiguration({
+        ...raw,
+        stations: [raw.stations[0], { ...raw.stations[1], deviceId: raw.stations[0].deviceId }],
+      }),
+    /deviceId values must be unique/u,
   );
 });
 

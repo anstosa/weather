@@ -24,7 +24,9 @@ EOF
 releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
-control_plane_version=1
+control_plane_version=2
+legacy_control_plane_version=1
+legacy_control_plane_sha256=13a52a540d55196168d74f7fd9b298748b391a2bbd87fedf86f59da51c0f75a2
 migration_authorization_version=1
 
 # locate one validated release environment
@@ -208,11 +210,18 @@ require_control_plane_compatibility() {
   expected_version=$(env_value "$env_file" WEATHER_CONTROL_PLANE_VERSION)
   expected_digest=$(env_value "$env_file" WEATHER_CONTROL_PLANE_SHA256)
   current_digest=$(control_plane_digest)
-  # reject unallowlisted control-plane handoffs
-  [[ "$expected_version" == "$control_plane_version" ]] ||
-    die "deployment control-plane version is unsupported without a versioned allowlisted handoff"
-  [[ "$expected_digest" == "$current_digest" ]] ||
-    die "deployment control-plane digest is unsupported without a versioned allowlisted handoff"
+
+  # accept the exact installed contract
+  if [[ "$expected_version" == "$control_plane_version" && "$expected_digest" == "$current_digest" ]]; then
+    return
+  fi
+
+  # accept only the proven version-one production handoff
+  if [[ "$expected_version" == "$legacy_control_plane_version" && "$expected_digest" == "$legacy_control_plane_sha256" ]]; then
+    return
+  fi
+
+  die "deployment control-plane identity is unsupported without an exact versioned allowlisted handoff"
 }
 
 # write one deterministic release environment
@@ -294,6 +303,7 @@ require_deployment_secrets() {
   require_secret_source "$deploy_dir/secrets/weather_migration_owner_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_api_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_worker_ingest_password" 10002 10002
+  require_secret_source "$deploy_dir/secrets/weather_tempest_api_key" 10002 10002
   require_secret_source "$deploy_dir/secrets/cloudflare_tunnel_token" 65532 65532
   ! cmp -s "$deploy_dir/secrets/weather_postgres_admin_password" \
     "$deploy_dir/secrets/weather_postgres_owner_password" ||
@@ -331,6 +341,7 @@ verify_previous_image_compatibility() (
   local active_database provider_network previous_release target_release history_sha256
   local previous_history_sha256
   local invalid_history_sha256 unproven_status
+  local non_compatibility_source_ids compatibility_source_count
   local candidate_created=false
   local api_started=false
   local unproven_api_started=false
@@ -395,11 +406,29 @@ verify_previous_image_compatibility() (
   WEATHER_ENV_FILE=$target_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" migration
   history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
+  non_compatibility_source_ids=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+      --command "SELECT COALESCE(string_agg(s.id::text, ',' ORDER BY s.id), '') FROM sources s JOIN providers p ON p.id = s.provider_id WHERE s.active AND p.provider_key <> 'open-meteo'")
+  [[ -z "$non_compatibility_source_ids" ||
+    "$non_compatibility_source_ids" =~ ^[0-9]+(,[0-9]+)*$ ]] ||
+    die "non-compatibility source identity is invalid"
+  compatibility_source_count=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+      --command "SELECT count(*) FROM sources s JOIN providers p ON p.id = s.provider_id WHERE s.active AND p.provider_key = 'open-meteo'")
+  [[ "$compatibility_source_count" =~ ^[1-9][0-9]*$ ]] ||
+    die "Open-Meteo compatibility source is missing"
   apply_runtime_database_acl "$previous_env" "$candidate"
   verify_runtime_database_acl "$previous_env" "$candidate"
   WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
       --command "UPDATE ingestion_checkpoints SET last_committed_at = TIMESTAMPTZ '1970-01-01 00:00:00+00'; UPDATE sources SET cadence_seconds = 60 WHERE active"
+
+  # isolate the worker to the deterministic provider stub
+  if [[ -n "$non_compatibility_source_ids" ]]; then
+    WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
+        --command "UPDATE sources SET active = false WHERE id IN ($non_compatibility_source_ids)"
+  fi
 
   docker run --detach --rm --name "$provider_container" \
     --network "$provider_network" --network-alias "$provider_container" \
@@ -430,7 +459,21 @@ verify_previous_image_compatibility() (
   after_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
-  (( after_successes > before_successes )) || die "previous worker compatibility failed"
+
+  # expose only the bounded persisted failure diagnosis
+  if (( after_successes <= before_successes )); then
+    WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT COALESCE(error_code, 'unknown') || ': ' || COALESCE(error_message, 'no detail') FROM ingestion_runs WHERE state = 'failed' ORDER BY completed_at DESC NULLS LAST, id DESC LIMIT 1" >&2
+    die "previous worker compatibility failed"
+  fi
+
+  # restore other providers for previous API reads
+  if [[ -n "$non_compatibility_source_ids" ]]; then
+    WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
+        --command "UPDATE sources SET active = true WHERE id IN ($non_compatibility_source_ids)"
+  fi
 
   # prove authorization only for trailing history
   if [[ "$history_sha256" != "$previous_history_sha256" ]]; then

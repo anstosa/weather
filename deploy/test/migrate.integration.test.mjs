@@ -17,6 +17,7 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const migrationDirectory = join(repoRoot, "packages/database/migrations");
 const runtimeAclPath = join(repoRoot, "deploy/postgres/runtime-acl-v1.sql");
 const siteConfigurationPath = join(repoRoot, "config/sites/ballydidean.json");
+const tempestConfigurationPath = join(repoRoot, "config/tempest/stations.json");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 
 // require PostgreSQL privilege denial
@@ -122,6 +123,7 @@ test(
         WEATHER_DATABASE_USER: "weather_owner",
         WEATHER_MIGRATION_DIRECTORY: migrationDirectory,
         WEATHER_SITE_CONFIG_PATH: configuredSitePath,
+        WEATHER_TEMPEST_CONFIG_PATH: tempestConfigurationPath,
       };
       const first = await executeFile(process.execPath, ["deploy/scripts/migrate.mjs"], {
         cwd: repoRoot,
@@ -143,6 +145,8 @@ test(
       assert.deepEqual(firstEvent.applied, [
         "0001_initial_weather.sql",
         "0002_worker_migration_readiness.sql",
+        "0003_ecowitt_measurements.sql",
+        "0004_tempest_metadata.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -150,8 +154,11 @@ test(
       assert.deepEqual(secondEvent.current, [
         "0001_initial_weather.sql",
         "0002_worker_migration_readiness.sql",
+        "0003_ecowitt_measurements.sql",
+        "0004_tempest_metadata.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
+      assert.deepEqual(secondEvent.tempestBootstrap, firstEvent.tempestBootstrap);
       assert.deepEqual(secondSnapshot, firstSnapshot);
       assert.deepEqual(firstSnapshot.identity, {
         current_user: "weather_owner",
@@ -161,6 +168,8 @@ test(
       assert.deepEqual(firstSnapshot.migrations, [
         { name: "0001_initial_weather.sql" },
         { name: "0002_worker_migration_readiness.sql" },
+        { name: "0003_ecowitt_measurements.sql" },
+        { name: "0004_tempest_metadata.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -171,6 +180,10 @@ test(
       ]);
       assert.deepEqual(firstSnapshot.providers, [
         { id: firstEvent.bootstrap.providerId, provider_key: "open-meteo" },
+        {
+          id: firstEvent.tempestBootstrap.providerId,
+          provider_key: "weatherflow-tempest",
+        },
       ]);
       assert.deepEqual(firstSnapshot.sites, [
         {
@@ -182,9 +195,44 @@ test(
       assert.deepEqual(firstSnapshot.sources, [
         { id: firstEvent.bootstrap.sourceIds[0], source_key: "open-meteo-current-v1" },
         { id: firstEvent.bootstrap.sourceIds[1], source_key: "open-meteo-reanalysis-v1" },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-126537-observations-v1"],
+          source_key: "tempest-126537-observations-v1",
+        },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-168853-observations-v1"],
+          source_key: "tempest-168853-observations-v1",
+        },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-201058-observations-v1"],
+          source_key: "tempest-201058-observations-v1",
+        },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-203055-observations-v1"],
+          source_key: "tempest-203055-observations-v1",
+        },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-225947-observations-v1"],
+          source_key: "tempest-225947-observations-v1",
+        },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-38270-observations-v1"],
+          source_key: "tempest-38270-observations-v1",
+        },
+        {
+          id: firstEvent.tempestBootstrap.sourceIds["tempest-64255-observations-v1"],
+          source_key: "tempest-64255-observations-v1",
+        },
       ]);
       assert.deepEqual(firstSnapshot.stations, [
         { id: firstEvent.bootstrap.stationId, slug: "open-meteo-virtual" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-126537"], slug: "tempest-126537" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-168853"], slug: "tempest-168853" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-201058"], slug: "tempest-201058" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-203055"], slug: "tempest-203055" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-225947"], slug: "tempest-225947" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-38270"], slug: "tempest-38270" },
+        { id: firstEvent.tempestBootstrap.stationIds["tempest-64255"], slug: "tempest-64255" },
       ]);
 
       // hold the production migration lock
@@ -245,7 +293,31 @@ test(
       assert.deepEqual(ingestMigrations.rows, [
         { name: "0001_initial_weather.sql" },
         { name: "0002_worker_migration_readiness.sql" },
+        { name: "0003_ecowitt_measurements.sql" },
+        { name: "0004_tempest_metadata.sql" },
       ]);
+      // retain all normalized metric update grants
+      const metricUpdatePrivileges = await ingestPool.query(
+        `
+          SELECT bool_and(has_column_privilege(
+            'weather_ingest',
+            'weather_records',
+            column_name,
+            'UPDATE'
+          )) AS allowed
+          FROM unnest(ARRAY[
+            'black_globe_temperature_c',
+            'pm25_micrograms_per_cubic_meter',
+            'precipitation_rate_mm_per_hour',
+            'soil_electrical_conductivity_us_cm',
+            'soil_moisture_percent',
+            'solar_radiation_wm2',
+            'uv_index',
+            'wet_bulb_globe_temperature_c'
+          ]) AS metric_columns(column_name)
+        `,
+      );
+      assert.equal(metricUpdatePrivileges.rows[0].allowed, true);
       await assertPrivilegeDenied(
         ingestPool.query(
           "INSERT INTO schema_migrations (name, checksum) VALUES ('forbidden.sql', repeat('0', 64))",

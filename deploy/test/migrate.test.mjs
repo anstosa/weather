@@ -70,6 +70,51 @@ test("migration entrypoint bootstraps the configured site after migrations", asy
   assert.deepEqual(result.migrations.applied, ["0001_initial_weather.sql"]);
 });
 
+// verify optional connector bootstrap ordering
+test("migration entrypoint bootstraps Tempest after the owning site", async () => {
+  const events = [];
+  const dependencies = {
+    async bootstrapSiteConfiguration() {
+      events.push("bootstrap-site");
+      return { siteId: "site-id" };
+    },
+    async bootstrapTempestConfiguration() {
+      events.push("bootstrap-tempest");
+      return { providerId: "tempest-provider-id" };
+    },
+    async loadSiteConfiguration() {
+      events.push("load-site");
+      return { site: { key: "ballydidean" } };
+    },
+    async loadTempestConfiguration() {
+      events.push("load-tempest");
+      return { siteKey: "ballydidean" };
+    },
+    async runMigrations() {
+      events.push("migrate");
+      return { applied: [], current: [], serverVersionNum: 170_010 };
+    },
+  };
+  const result = await migrateAndBootstrap(
+    createPool("owner", events),
+    "/migrations",
+    "/config/ballydidean.json",
+    dependencies,
+    {},
+    "/config/tempest.json",
+  );
+
+  assert.deepEqual(events, [
+    "migrate",
+    "load-site",
+    "bootstrap-site",
+    "load-tempest",
+    "bootstrap-tempest",
+    ["end", "owner"],
+  ]);
+  assert.equal(result.tempestBootstrap.providerId, "tempest-provider-id");
+});
+
 test("migration entrypoint passes configured lock and statement timeouts", async () => {
   const events = [];
   const dependencies = {

@@ -188,13 +188,13 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0002_worker_migration_readiness.sql",
+        version: "0004_tempest_metadata.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
       await admin.query(
         "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
-        ["0003_future.sql", "1".repeat(64)],
+        ["0005_future.sql", "1".repeat(64)],
       );
       const unprovenResponse = await fetch(`${origin}/api/v1/health`);
       const unproven = await unprovenResponse.json();
@@ -234,7 +234,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0002_worker_migration_readiness.sql",
+        version: "0004_tempest_metadata.sql",
       });
 
       const ledger = await admin.query(
@@ -257,7 +257,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         [ledger.rows[0].checksum],
       );
       await admin.query(
-        "DELETE FROM schema_migrations WHERE name = '0003_future.sql'",
+        "DELETE FROM schema_migrations WHERE name = '0005_future.sql'",
       );
     });
 

@@ -35,20 +35,20 @@ any other connector token.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
-   This release allowlists no cross-version or cross-digest control-plane
-   handoff. Any control-plane change is therefore unsupported until the already
-   installed version contains an explicit versioned allowlist for that exact
-   source and target. Do not rewrite release metadata or use wildcard handoffs:
-   every mutating lifecycle action rejects the mismatch before changing images,
-   containers, the database, or release state.
+   Control-plane version 2 allowlists only the exact installed version 1
+   production digest as its predecessor. All other cross-version or
+   cross-digest handoffs are unsupported. Do not rewrite release metadata or
+   use wildcard handoffs: every mutating lifecycle action rejects any other
+   mismatch before changing images, containers, the database, or release state.
 4. Generate separate long random administrator, owner, API, and ingestion
    passwords. The administrator and owner values must differ. Install the four
    `weather_postgres_*` sources for `999:999`; the administrator source is
    mounted only into PostgreSQL. Install matching owner, API, and ingestion
    application copies as `weather_migration_owner_password`,
    `weather_api_password`, and `weather_worker_ingest_password` for
-   `10002:10002`. Install the tunnel token for `65532:65532`. Every source must
-   be mode `0400`; Compose file secrets cannot repair host ownership or modes.
+   `10002:10002`. Install `weather_tempest_api_key` for `10002:10002` and the
+   tunnel token for `65532:65532`. Every source must be mode `0400`; Compose
+   file secrets cannot repair host ownership or modes.
 5. Copy `deploy/config/backup.env.example` to ignored `backup.env` and set only
    a public age recipient. Enforce off-host retention outside this repository.
 6. Install root-owned scripts as `/usr/local/bin/weather-ssh-dispatch` and
@@ -89,6 +89,27 @@ deploy/scripts/ssh-run.sh stage 2026.08.22-1
 deploy/scripts/ssh-run.sh activate 2026.08.22-1
 deploy/scripts/ssh-run.sh status
 ```
+
+The equivalent repository commands are:
+
+```bash
+npm run remote:status
+npm run remote:preflight
+npm run remote:stage -- 2026.08.22-7
+npm run remote:activate -- 2026.08.22-7
+npm run remote:tunnel:check
+npm run remote:tempest:backfill
+```
+
+The SSH-backed commands require a loaded agent containing the deployment key.
+The HTTPS tunnel check and test URL commands do not require SSH access.
+The Tempest backfill command imports every active configured station through
+yesterday, resumes only exact successful chunks, and stores its private report
+under `/var/lib/weather` on the server.
+
+The non-secret remote host and tunnel origin are recorded in
+`config/runtime-targets.json`. `npm run test:urls` prefers that tunnel;
+`npm run test:urls:local` is the explicit loopback override.
 
 Stage requires a passing 15-minute capacity result from the prior hour, resolves
 and records all four exact ARM64 manifest digests, validates the complete Compose

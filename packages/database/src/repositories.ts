@@ -19,6 +19,7 @@ import type { Pool, PoolClient, QueryResultRow } from "pg";
 
 import type { SiteConfiguration } from "./config.js";
 import { withTransaction } from "./pool.js";
+import type { TempestConfiguration } from "./tempest-config.js";
 
 export interface DueSource extends QueryResultRow {
   readonly active: boolean;
@@ -133,6 +134,7 @@ export interface LatestWorkerHeartbeat extends QueryResultRow {
 
 export interface WeatherRecordRow extends QueryResultRow {
   readonly apparentTemperatureC: number | null;
+  readonly blackGlobeTemperatureC: number | null;
   readonly cloudCoverPercent: number | null;
   readonly deviceModel: string | null;
   readonly deviceSerial: string | null;
@@ -140,7 +142,9 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly firstReceivedAt: Date | string;
   readonly id: string;
   readonly lastReceivedAt: Date | string;
+  readonly pm25MicrogramsPerCubicMeter: number | null;
   readonly precipitationMm: number | null;
+  readonly precipitationRateMmPerHour: number | null;
   readonly pressureHpa: number | null;
   readonly productRunAt: Date | string | null;
   readonly providerKey: string;
@@ -153,13 +157,18 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly sourceKey: string;
   readonly sourceKind: SourceKind;
   readonly stationSlug: string;
+  readonly soilElectricalConductivityMicrosiemensPerCm: number | null;
+  readonly soilMoisturePercent: number | null;
+  readonly solarRadiationWm2: number | null;
   readonly temperatureC: number | null;
   readonly upstreamModel: string | null;
   readonly upstreamTimezone: string;
+  readonly uvIndex: number | null;
   readonly validAt: Date | string;
   readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
+  readonly wetBulbGlobeTemperatureC: number | null;
 }
 
 // retain one source-scoped advisory lock
@@ -345,6 +354,135 @@ export async function bootstrapSiteConfiguration(
       }
 
       return { providerId, siteId, sourceIds, stationId };
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// bootstrap the configured physical Tempest sources
+export async function bootstrapTempestConfiguration(
+  pool: Pool,
+  configuration: TempestConfiguration,
+): Promise<Readonly<{
+  providerId: string;
+  sourceIds: Readonly<Record<string, string>>;
+  stationIds: Readonly<Record<string, string>>;
+}>> {
+  const client = await pool.connect();
+
+  try {
+    return await withTransaction(client, async () => {
+      const site = await client.query<{ id: string }>(
+        "SELECT id FROM sites WHERE slug = $1 AND active",
+        [configuration.siteKey],
+      );
+      const siteId = requireRow(site.rows[0], "Tempest site bootstrap").id;
+      const provider = await client.query<{ id: string }>(
+        `
+          INSERT INTO providers (
+            provider_key,
+            display_name,
+            attribution_label,
+            attribution_url,
+            active
+          )
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (provider_key) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            attribution_label = EXCLUDED.attribution_label,
+            attribution_url = EXCLUDED.attribution_url,
+            active = EXCLUDED.active,
+            updated_at = clock_timestamp()
+          RETURNING id
+        `,
+        [
+          configuration.provider.key,
+          configuration.provider.displayName,
+          configuration.provider.attributionLabel,
+          configuration.provider.attributionUrl,
+          configuration.provider.active,
+        ],
+      );
+      const providerId = requireRow(provider.rows[0], "Tempest provider bootstrap").id;
+      const stationIds: Record<string, string> = {};
+      const sourceIds: Record<string, string> = {};
+
+      // bootstrap every configured station and source
+      for (const station of configuration.stations) {
+        const stationResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO stations (
+              site_id,
+              slug,
+              display_name,
+              station_kind,
+              vendor,
+              model,
+              serial,
+              active
+            )
+            VALUES ($1, $2, $3, 'physical', 'WeatherFlow', 'Tempest', $4, $5)
+            ON CONFLICT (site_id, slug) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              station_kind = EXCLUDED.station_kind,
+              vendor = EXCLUDED.vendor,
+              model = EXCLUDED.model,
+              serial = EXCLUDED.serial,
+              active = EXCLUDED.active,
+              updated_at = clock_timestamp()
+            RETURNING id
+          `,
+          [siteId, station.key, station.displayName, station.serial, station.active],
+        );
+        const stationId = requireRow(
+          stationResult.rows[0],
+          `Tempest station ${station.key} bootstrap`,
+        ).id;
+        const sourceResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO sources (
+              station_id,
+              provider_id,
+              source_key,
+              source_kind,
+              material_provider_config,
+              source_config_fingerprint,
+              capabilities,
+              cadence_seconds,
+              active
+            )
+            VALUES ($1, $2, $3, 'physical_sensor', $4::jsonb, $5, $6::jsonb, $7, $8)
+            ON CONFLICT (station_id, source_key) DO UPDATE SET
+              cadence_seconds = EXCLUDED.cadence_seconds,
+              active = EXCLUDED.active
+            WHERE sources.source_config_fingerprint = EXCLUDED.source_config_fingerprint
+            RETURNING id
+          `,
+          [
+            stationId,
+            providerId,
+            station.sourceKey,
+            JSON.stringify(station.adapterConfig),
+            station.fingerprint,
+            JSON.stringify(["current", "historical"]),
+            station.cadenceSeconds,
+            station.active,
+          ],
+        );
+
+        // reject silent immutable-source drift
+        if (sourceResult.rowCount !== 1 || sourceResult.rows[0] === undefined) {
+          throw new Error(
+            `Tempest source ${station.sourceKey} changed material configuration; create a new source key`,
+          );
+        }
+
+        stationIds[station.key] = stationId;
+        sourceIds[station.sourceKey] = sourceResult.rows[0].id;
+      }
+
+      return { providerId, sourceIds, stationIds };
     });
   } finally {
     client.release();
@@ -987,12 +1125,20 @@ async function upsertWeatherRecords(
           relative_humidity_percent,
           cloud_cover_percent,
           wind_direction_degrees,
+          black_globe_temperature_c,
+          pm25_micrograms_per_cubic_meter,
+          precipitation_rate_mm_per_hour,
+          soil_electrical_conductivity_us_cm,
+          soil_moisture_percent,
+          solar_radiation_wm2,
+          uv_index,
+          wet_bulb_globe_temperature_c,
           content_hash
         )
         VALUES (
           $1, $2, $3, $4, $5, $5, $6, $6, $7, $8, $9, $10, $11,
           $12::jsonb, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21,
-          $22, $23
+          $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
         )
         ON CONFLICT ON CONSTRAINT weather_records_identity_key DO UPDATE SET
           last_ingestion_run_id = EXCLUDED.last_ingestion_run_id,
@@ -1013,6 +1159,14 @@ async function upsertWeatherRecords(
           relative_humidity_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.relative_humidity_percent ELSE weather_records.relative_humidity_percent END,
           cloud_cover_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.cloud_cover_percent ELSE weather_records.cloud_cover_percent END,
           wind_direction_degrees = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_direction_degrees ELSE weather_records.wind_direction_degrees END,
+          black_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.black_globe_temperature_c ELSE weather_records.black_globe_temperature_c END,
+          pm25_micrograms_per_cubic_meter = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pm25_micrograms_per_cubic_meter ELSE weather_records.pm25_micrograms_per_cubic_meter END,
+          precipitation_rate_mm_per_hour = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_rate_mm_per_hour ELSE weather_records.precipitation_rate_mm_per_hour END,
+          soil_electrical_conductivity_us_cm = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.soil_electrical_conductivity_us_cm ELSE weather_records.soil_electrical_conductivity_us_cm END,
+          soil_moisture_percent = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.soil_moisture_percent ELSE weather_records.soil_moisture_percent END,
+          solar_radiation_wm2 = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.solar_radiation_wm2 ELSE weather_records.solar_radiation_wm2 END,
+          uv_index = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.uv_index ELSE weather_records.uv_index END,
+          wet_bulb_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wet_bulb_globe_temperature_c ELSE weather_records.wet_bulb_globe_temperature_c END,
           revision_count = weather_records.revision_count + CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN 1 ELSE 0 END,
           content_hash = EXCLUDED.content_hash
       `,
@@ -1039,6 +1193,14 @@ async function upsertWeatherRecords(
         record.metrics.relativeHumidityPercent,
         record.metrics.cloudCoverPercent,
         record.metrics.windDirectionDegrees,
+        record.metrics.blackGlobeTemperatureC,
+        record.metrics.pm25MicrogramsPerCubicMeter,
+        record.metrics.precipitationRateMmPerHour,
+        record.metrics.soilElectricalConductivityMicrosiemensPerCm,
+        record.metrics.soilMoisturePercent,
+        record.metrics.solarRadiationWm2,
+        record.metrics.uvIndex,
+        record.metrics.wetBulbGlobeTemperatureC,
         contentHash,
       ],
     );
@@ -1354,6 +1516,14 @@ function weatherRecordSelection(): string {
     wr.relative_humidity_percent AS "relativeHumidityPercent",
     wr.cloud_cover_percent AS "cloudCoverPercent",
     wr.wind_direction_degrees AS "windDirectionDegrees",
+    wr.black_globe_temperature_c AS "blackGlobeTemperatureC",
+    wr.pm25_micrograms_per_cubic_meter AS "pm25MicrogramsPerCubicMeter",
+    wr.precipitation_rate_mm_per_hour AS "precipitationRateMmPerHour",
+    wr.soil_electrical_conductivity_us_cm AS "soilElectricalConductivityMicrosiemensPerCm",
+    wr.soil_moisture_percent AS "soilMoisturePercent",
+    wr.solar_radiation_wm2 AS "solarRadiationWm2",
+    wr.uv_index AS "uvIndex",
+    wr.wet_bulb_globe_temperature_c AS "wetBulbGlobeTemperatureC",
     st.slug AS "stationSlug",
     si.slug AS "siteSlug",
     p.provider_key AS "providerKey"

@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # print SSH usage
 usage() {
   cat <<'EOF'
-Usage: ssh-run.sh [--config SSH_CONFIG] status|stage RELEASE|activate RELEASE|rollback|recover|backup|preflight
+Usage: ssh-run.sh [--config SSH_CONFIG] status|stage RELEASE|activate RELEASE|rollback|recover|backup|preflight|tempest-backfill
 
 Runs one allowlisted operation through a loaded SSH agent and the isolated
 weather-ssh forced-command account.
@@ -28,7 +28,7 @@ action=$1
 shift
 
 case "$action" in
-  status|rollback|recover|backup|preflight)
+  status|rollback|recover|backup|preflight|tempest-backfill)
     (($# == 0)) || die "$action takes no arguments"
     ;;
   stage|activate)

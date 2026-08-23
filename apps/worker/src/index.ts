@@ -5,4 +5,5 @@ export * from "./health.js";
 export * from "./run-deadline.js";
 export * from "./scheduler.js";
 export * from "./source-identity.js";
+export * from "./tempest-backfill-cli.js";
 export * from "./worker.js";

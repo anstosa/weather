@@ -220,7 +220,10 @@ test("services are non-root, read-only, bounded, ordered, and healthy", () => {
 test("database and connector secrets are scoped to least-privilege consumers", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
   assert.deepEqual(secretSources(compose.services.api), ["weather_api_password"]);
-  assert.deepEqual(secretSources(compose.services.worker), ["weather_worker_ingest_password"]);
+  assert.deepEqual(secretSources(compose.services.worker), [
+    "weather_tempest_api_key",
+    "weather_worker_ingest_password",
+  ]);
   assert.deepEqual(secretSources(compose.services.migration), ["weather_migration_owner_password"]);
   assert.deepEqual(secretSources(compose.services.cloudflared), ["cloudflare_tunnel_token"]);
   assert.deepEqual(secretSources(compose.services.web), []);
@@ -246,7 +249,7 @@ test("database and connector secrets are scoped to least-privilege consumers", (
   const passwordSecretFiles = Object.entries(compose.secrets)
     .filter(([name]) => name !== "cloudflare_tunnel_token")
     .map(([, secret]) => secret.file);
-  assert.equal(passwordSecretFiles.length, 7);
+  assert.equal(passwordSecretFiles.length, 8);
   assert.equal(new Set(passwordSecretFiles).size, passwordSecretFiles.length);
 
   // reject ignored compose ownership metadata
@@ -596,6 +599,7 @@ test("backup is encrypted and restore is disposable verification only", () => {
   const runtimeAcl = read("deploy/postgres/runtime-acl-v1.sql");
   assert.match(runtimeAcl, /REVOKE ALL ON ALL TABLES[^;]*weather_api, weather_ingest/u);
   assert.match(runtimeAcl, /GRANT SELECT ON schema_migrations TO weather_ingest/u);
+  assert.match(runtimeAcl, /black_globe_temperature_c[\s\S]*wet_bulb_globe_temperature_c/u);
   assert.match(runtimeAcl, /ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner/u);
   assert.match(
     common,
@@ -697,6 +701,11 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /apps\/api\/dist\/main\.js/u);
   assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
   assert.match(update, /state='succeeded'/u);
+  assert.match(update, /non_compatibility_source_ids/u);
+  assert.match(update, /provider_key = 'open-meteo'/u);
+  assert.match(update, /provider_key <> 'open-meteo'/u);
+  assert.match(update, /UPDATE sources SET active = false/u);
+  assert.match(update, /UPDATE sources SET active = true/u);
   assert.doesNotMatch(update, /state='success'/u);
   assert.match(update, /last_committed_at/u);
   assert.match(update, /verify_runtime_database_acl/u);
@@ -718,10 +727,10 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
   );
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
-  assert.match(read("deploy/test/compose.integration.test.mjs"), /0003_candidate_contract\.sql/u);
+  assert.match(read("deploy/test/compose.integration.test.mjs"), /0005_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
-    /allowlists no cross-version or cross-digest control-plane[\s\S]*rejects the mismatch before changing/u,
+    /allowlists only the exact installed version 1[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
   );
 });
 
@@ -969,6 +978,7 @@ test("all deployment shell entrypoints have stable names", () => {
     "ssh-dispatch.sh",
     "ssh-run.sh",
     "status.sh",
+    "tempest-backfill.sh",
     "update.sh",
     "verify-static.sh",
   ]);

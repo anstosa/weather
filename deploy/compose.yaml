@@ -97,6 +97,7 @@ services:
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_owner_password
       WEATHER_MIGRATION_DIRECTORY: /opt/weather/packages/database/migrations
       WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
+      WEATHER_TEMPEST_CONFIG_PATH: /opt/weather/config/tempest/stations.json
     secrets:
       - source: weather_migration_owner_password
         target: weather_owner_password
@@ -165,11 +166,15 @@ services:
       WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256: ${WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256:-}
       WEATHER_MIGRATION_AUTHORIZATION_RELEASE: ${WEATHER_MIGRATION_AUTHORIZATION_RELEASE:-}
       WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
+      WEATHER_TEMPEST_API_KEY_FILE: /run/secrets/weather_tempest_api_key
+      WEATHER_TEMPEST_CONFIG_PATH: /opt/weather/config/tempest/stations.json
       WEATHER_WORKER_INSTANCE: weather-worker
       WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
     secrets:
       - source: weather_worker_ingest_password
         target: weather_ingest_password
+      - source: weather_tempest_api_key
+        target: weather_tempest_api_key
     networks: [data, provider_egress]
     depends_on:
       migration:
@@ -311,5 +316,7 @@ secrets:
     file: ./secrets/weather_postgres_ingest_password
   weather_worker_ingest_password:
     file: ./secrets/weather_worker_ingest_password
+  weather_tempest_api_key:
+    file: ./secrets/weather_tempest_api_key
   cloudflare_tunnel_token:
     file: ./secrets/cloudflare_tunnel_token

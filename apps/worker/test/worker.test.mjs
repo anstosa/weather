@@ -5,20 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { loadSiteConfiguration } from "@weather/database";
+import { loadSiteConfiguration, loadTempestConfiguration } from "@weather/database";
 
 import {
   assertWorkerDatabaseReadiness,
   boundedWorkerError,
   createNonOverlappingScheduler,
   executeBackfill,
+  executeTempestBulkBackfill,
   nextScheduledAt,
   parseBackfillArguments,
+  parseTempestBackfillArguments,
   planBackfillChunks,
+  planTempestBackfillChunks,
   workerHealth,
 } from "../dist/index.js";
 
 const sitePath = new URL("../../../config/sites/ballydidean.json", import.meta.url).pathname;
+const tempestPath = new URL("../../../config/tempest/stations.json", import.meta.url).pathname;
 const fingerprint = "a".repeat(64);
 const source = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -207,6 +211,104 @@ test("U-WRK-06 CLI rejects missing, reversed, future, and oversized chunks", () 
         today,
       ),
     /between 1 and 14/u,
+  );
+});
+
+// prove repeated station selectors and five-day bounds
+test("Tempest CLI parses bulk station selection and bounded defaults", () => {
+  const parsed = parseTempestBackfillArguments(
+    [
+      "--site",
+      "ballydidean",
+      "--station",
+      "203055",
+      "--station",
+      "tempest-38270",
+      "--resume",
+    ],
+    new Date("2026-08-22T12:00:00.000Z"),
+  );
+
+  assert.deepEqual(parsed.stationIds, [203055, 38270]);
+  assert.equal(parsed.to, "2026-08-21");
+  assert.equal(parsed.chunkDays, 5);
+  assert.equal(parsed.resume, true);
+  assert.throws(
+    () =>
+      parseTempestBackfillArguments(
+        ["--site", "ballydidean", "--chunk-days", "6"],
+        new Date("2026-08-22T12:00:00.000Z"),
+      ),
+    /between 1 and 5/u,
+  );
+});
+
+// prove exact UTC chunk identities
+test("Tempest backfill plans five-day-or-smaller UTC chunks", () => {
+  const chunks = planTempestBackfillChunks({
+    chunkDays: 5,
+    from: "2026-08-01",
+    sourceConfigFingerprint: fingerprint,
+    sourceId: source.id,
+    to: "2026-08-07",
+  });
+
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0].identity.intervalStart, "2026-08-01T00:00:00.000Z");
+  assert.equal(chunks[0].identity.intervalEndExclusive, "2026-08-06T00:00:00.000Z");
+  assert.equal(chunks[1].identity.intervalStart, chunks[0].identity.intervalEndExclusive);
+});
+
+// prove the bulk dry-run uses each station's configured history floor
+test("Tempest bulk dry-run plans all stations without provider writes", async () => {
+  const configuration = await loadTempestConfiguration(tempestPath);
+  const station = configuration.stations[0];
+  const runtimeSource = {
+    id: source.id,
+    materialProviderConfig: station.adapterConfig,
+    providerKey: configuration.provider.key,
+    siteSlug: configuration.siteKey,
+    sourceConfigFingerprint: station.fingerprint,
+    sourceKey: station.sourceKey,
+    sourceKind: "physical_sensor",
+    station,
+    stationSlug: station.key,
+    timezone: station.timezone,
+  };
+  const forbidden = async () => {
+    throw new Error("provider or write call was not expected");
+  };
+  const report = await executeTempestBulkBackfill(
+    {},
+    {
+      chunkDays: 5,
+      dryRun: true,
+      from: "2026-08-01",
+      reportPath: null,
+      resume: false,
+      site: "ballydidean",
+      stationIds: [station.locationId],
+      to: "2026-08-07",
+    },
+    configuration,
+    [runtimeSource],
+    {
+      fetchObservations: forbidden,
+      repository: {
+        abandonExpiredRuns: forbidden,
+        acquireSourceSession: forbidden,
+        completeBackfillIngestion: forbidden,
+        failIngestionRun: forbidden,
+        hasSuccessfulBackfillChunk: forbidden,
+        startIngestionRun: forbidden,
+      },
+    },
+  );
+
+  assert.equal(report.exitCode, 0);
+  assert.deepEqual(
+    report.stations[0].chunks.map((chunk) => chunk.status),
+    ["planned", "planned"],
   );
 });
 

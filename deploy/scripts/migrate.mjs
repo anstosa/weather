@@ -7,6 +7,7 @@ export async function migrateAndBootstrap(
   siteConfigurationPath,
   dependencies,
   migrationOptions = {},
+  tempestConfigurationPath = null,
 ) {
   try {
     // apply checked migrations first
@@ -19,8 +20,20 @@ export async function migrateAndBootstrap(
     const siteConfiguration = await dependencies.loadSiteConfiguration(siteConfigurationPath);
     // bootstrap through the owner pool
     const bootstrap = await dependencies.bootstrapSiteConfiguration(pool, siteConfiguration);
+    let tempestBootstrap = null;
 
-    return { bootstrap, migrations };
+    // bootstrap the optional Tempest catalog
+    if (tempestConfigurationPath !== null) {
+      const tempestConfiguration = await dependencies.loadTempestConfiguration(
+        tempestConfigurationPath,
+      );
+      tempestBootstrap = await dependencies.bootstrapTempestConfiguration(
+        pool,
+        tempestConfiguration,
+      );
+    }
+
+    return { bootstrap, migrations, tempestBootstrap };
   } finally {
     // close pooled sessions
     await pool.end();
@@ -35,9 +48,11 @@ const isEntrypoint =
 if (isEntrypoint) {
   const {
     bootstrapSiteConfiguration,
+    bootstrapTempestConfiguration,
     createDatabasePool,
     loadDatabaseConfiguration,
     loadSiteConfiguration,
+    loadTempestConfiguration,
     runMigrations,
   } = await import("@weather/database");
   const configuration = await loadDatabaseConfiguration();
@@ -48,24 +63,31 @@ if (isEntrypoint) {
   const siteConfigurationPath =
     process.env.WEATHER_SITE_CONFIG_PATH ??
     "/opt/weather/config/sites/ballydidean.json";
+  const tempestConfigurationPath =
+    process.env.WEATHER_TEMPEST_CONFIG_PATH ??
+    "/opt/weather/config/tempest/stations.json";
   const result = await migrateAndBootstrap(
     pool,
     migrationDirectory,
     siteConfigurationPath,
     {
       bootstrapSiteConfiguration,
+      bootstrapTempestConfiguration,
       loadSiteConfiguration,
+      loadTempestConfiguration,
       runMigrations,
     },
     {
       lockTimeoutMs: configuration.lockTimeoutMs,
       statementTimeoutMs: configuration.statementTimeoutMs,
     },
+    tempestConfigurationPath,
   );
   console.log(
     JSON.stringify({
       bootstrap: result.bootstrap,
       event: "migrations_complete",
+      tempestBootstrap: result.tempestBootstrap,
       ...result.migrations,
     }),
   );

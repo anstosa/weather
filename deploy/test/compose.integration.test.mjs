@@ -36,7 +36,7 @@ async function buildReleaseImage(directory, baseImage, targetImage, release, mig
   const buildRoot = join(directory, `image-${release}-${imageKey}`);
   const dockerfile = join(buildRoot, "Dockerfile");
   await executeFile("mkdir", ["-p", buildRoot]);
-  const migrationName = "0003_candidate_contract.sql";
+  const migrationName = "0005_candidate_contract.sql";
   let dockerfileBody = `FROM ${baseImage}\nLABEL weather.test.release=${release}\n`;
 
   // add only the candidate migration contract
@@ -149,6 +149,7 @@ async function provisionSecrets(directory) {
     writeFile(join(directory, "weather_api_password"), api),
     writeFile(join(directory, "weather_postgres_ingest_password"), ingest),
     writeFile(join(directory, "weather_worker_ingest_password"), ingest),
+    writeFile(join(directory, "weather_tempest_api_key"), "test-tempest-api-key\n"),
     writeFile(join(directory, "cloudflare_tunnel_token"), "local-disabled-token\n"),
   ]);
   await executeFile(
@@ -165,7 +166,7 @@ async function provisionSecrets(directory) {
       [
         "chown 999:999 /secrets/weather_postgres_admin_password",
         "chown 999:999 /secrets/weather_postgres_*",
-        "chown 10002:10002 /secrets/weather_migration_owner_password /secrets/weather_api_password /secrets/weather_worker_ingest_password",
+        "chown 10002:10002 /secrets/weather_migration_owner_password /secrets/weather_api_password /secrets/weather_worker_ingest_password /secrets/weather_tempest_api_key",
         "chown 65532:65532 /secrets/cloudflare_tunnel_token",
         "chmod 0400 /secrets/*",
       ].join(" && "),
@@ -221,7 +222,7 @@ async function writeOverride(path, secretsRoot) {
       compatibility-provider:
         condition: service_started
 secrets:
-  ${secret("weather_postgres_admin_password")}  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_worker_ingest_password")}  ${secret("cloudflare_tunnel_token")}`,
+  ${secret("weather_postgres_admin_password")}  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_worker_ingest_password")}  ${secret("weather_tempest_api_key")}  ${secret("cloudflare_tunnel_token")}`,
   );
 }
 
@@ -340,7 +341,7 @@ test(
         "sh",
         previousServerImage,
         "-c",
-        "test ! -f /opt/weather/packages/database/migrations/0003_candidate_contract.sql",
+        "test ! -f /opt/weather/packages/database/migrations/0005_candidate_contract.sql",
       ]);
       await executeFile("docker", [
         "run",
@@ -349,7 +350,7 @@ test(
         "sh",
         targetServerImage,
         "-c",
-        "test -f /opt/weather/packages/database/migrations/0003_candidate_contract.sql",
+        "test -f /opt/weather/packages/database/migrations/0005_candidate_contract.sql",
       ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
@@ -841,7 +842,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
             "WEATHER_DATABASE_NAME=weather_deploy_test",
             "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
             `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
-            "WEATHER_CONTROL_PLANE_VERSION=1",
+            "WEATHER_CONTROL_PLANE_VERSION=2",
             "",
           ].join("\n"),
           { mode: 0o600 },

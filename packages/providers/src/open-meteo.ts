@@ -119,8 +119,9 @@ function buildArchiveRequest(
 
   const url = new URL(endpoint);
   appendCommonParameters(url, location, "hourly", HOURLY_VARIABLES);
+  url.searchParams.set("timezone", "UTC");
   url.searchParams.set("start_date", input.startDate);
-  url.searchParams.set("end_date", input.endDate);
+  url.searchParams.set("end_date", addCalendarDays(input.endDate, 1));
 
   return {
     adapterVersion: OPEN_METEO_ARCHIVE_ADAPTER_VERSION,
@@ -184,14 +185,42 @@ async function fetchHistorical(
     input.sourceId,
     receivedAt,
   );
+  const requestedRecords = filterArchiveWindow(records, input);
 
   return {
     attempts: response.attempts,
     checksum: response.checksum,
     providerCursor: null,
-    records,
+    records: requestedRecords,
     responseMetadata: responseMetadata(response.payload, response.status),
   };
+}
+
+// retain the exact local-calendar archive window
+function filterArchiveWindow(
+  records: readonly NormalizedWeatherRecord[],
+  input: OpenMeteoArchiveRequest,
+): readonly NormalizedWeatherRecord[] {
+  const intervalStart = providerTimeToUtc(
+    `${input.startDate}T00:00`,
+    input.timezone,
+    0,
+  );
+  const intervalEnd = providerTimeToUtc(
+    `${addCalendarDays(input.endDate, 1)}T00:00`,
+    input.timezone,
+    0,
+  );
+  const requestedRecords = records.filter(
+    (record) => record.validAt >= intervalStart && record.validAt < intervalEnd,
+  );
+
+  // reject provider responses outside the requested window
+  if (requestedRecords.length === 0) {
+    throw invalidPayload("archive payload contained no requested records");
+  }
+
+  return requestedRecords;
 }
 
 // create an injected current operation
@@ -406,16 +435,19 @@ function normalizeMetrics(
       requireNullableNumber(values.apparent_temperature, "apparent_temperature"),
       requireUnit(units.apparent_temperature, "°C", "apparent_temperature", "c"),
     ),
+    blackGlobeTemperatureC: null,
     cloudCoverPercent: normalizeMetricValue(
       "cloudCoverPercent",
       requireNullableNumber(values.cloud_cover, "cloud_cover"),
       requireUnit(units.cloud_cover, "%", "cloud_cover", "percent"),
     ),
+    pm25MicrogramsPerCubicMeter: null,
     precipitationMm: normalizeMetricValue(
       "precipitationMm",
       requireNullableNumber(values.precipitation, "precipitation"),
       requireUnit(units.precipitation, "mm", "precipitation", "millimeter"),
     ),
+    precipitationRateMmPerHour: null,
     pressureHpa: normalizeMetricValue(
       "pressureHpa",
       requireNullableNumber(values.surface_pressure, "surface_pressure"),
@@ -426,15 +458,18 @@ function normalizeMetrics(
       requireNullableNumber(values.relative_humidity_2m, "relative_humidity_2m"),
       requireUnit(units.relative_humidity_2m, "%", "relative_humidity_2m", "percent"),
     ),
+    soilElectricalConductivityMicrosiemensPerCm: null,
+    soilMoisturePercent: null,
+    solarRadiationWm2: null,
     temperatureC: normalizeMetricValue(
       "temperatureC",
       requireNullableNumber(values.temperature_2m, "temperature_2m"),
       requireUnit(units.temperature_2m, "°C", "temperature_2m", "c"),
     ),
-    windDirectionDegrees: normalizeMetricValue(
-      "windDirectionDegrees",
-      requireNullableNumber(values.wind_direction_10m, "wind_direction_10m"),
-      requireUnit(units.wind_direction_10m, "°", "wind_direction_10m", "degree"),
+    uvIndex: null,
+    windDirectionDegrees: normalizeOpenMeteoWindDirection(
+      values.wind_direction_10m,
+      units.wind_direction_10m,
     ),
     windGustMps: normalizeMetricValue(
       "windGustMps",
@@ -446,7 +481,23 @@ function normalizeMetrics(
       requireNullableNumber(values.wind_speed_10m, "wind_speed_10m"),
       requireUnit(units.wind_speed_10m, "m/s", "wind_speed_10m", "meter_per_second"),
     ),
+    wetBulbGlobeTemperatureC: null,
   };
+}
+
+// collapse the circular north duplicate
+function normalizeOpenMeteoWindDirection(
+  value: unknown,
+  unit: unknown,
+): number | null {
+  const direction = requireNullableNumber(value, "wind_direction_10m");
+  const canonicalDirection = direction === 360 ? 0 : direction;
+
+  return normalizeMetricValue(
+    "windDirectionDegrees",
+    canonicalDirection,
+    requireUnit(unit, "°", "wind_direction_10m", "degree"),
+  );
 }
 
 // validate all parallel archive arrays
@@ -739,6 +790,13 @@ function validateDate(value: string, fieldName: string): string {
   }
 
   return value;
+}
+
+// add one UTC calendar-day offset
+function addCalendarDays(value: string, days: number): string {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 // create a non-retryable payload failure

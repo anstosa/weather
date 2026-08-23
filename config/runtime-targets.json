@@ -1,0 +1,15 @@
+{
+  "defaultSiteSlug": "ballydidean",
+  "local": {
+    "origin": "http://127.0.0.1:3000"
+  },
+  "remote": {
+    "stack": {
+      "sshConfig": "deploy/config/ssh_config",
+      "sshHost": "weather-pi"
+    },
+    "tunnel": {
+      "origin": "https://weather.santosa.family"
+    }
+  }
+}

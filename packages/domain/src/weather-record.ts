@@ -7,28 +7,45 @@ import {
 
 export const CANONICAL_UNITS = {
   apparentTemperatureC: "celsius",
+  blackGlobeTemperatureC: "celsius",
   cloudCoverPercent: "percent",
+  pm25MicrogramsPerCubicMeter: "microgram_per_cubic_meter",
   precipitationMm: "millimeter",
+  precipitationRateMmPerHour: "millimeter_per_hour",
   pressureHpa: "hectopascal",
   relativeHumidityPercent: "percent",
+  soilElectricalConductivityMicrosiemensPerCm:
+    "microsiemens_per_centimeter",
+  soilMoisturePercent: "percent",
+  solarRadiationWm2: "watt_per_square_meter",
   temperatureC: "celsius",
+  uvIndex: "index",
   windDirectionDegrees: "degree",
   windGustMps: "meter_per_second",
   windSpeedMps: "meter_per_second",
+  wetBulbGlobeTemperatureC: "celsius",
 } as const;
 
 export type MetricName = keyof typeof CANONICAL_UNITS;
 
 export interface CanonicalWeatherMetrics {
   readonly apparentTemperatureC: number | null;
+  readonly blackGlobeTemperatureC: number | null;
   readonly cloudCoverPercent: number | null;
+  readonly pm25MicrogramsPerCubicMeter: number | null;
   readonly precipitationMm: number | null;
+  readonly precipitationRateMmPerHour: number | null;
   readonly pressureHpa: number | null;
   readonly relativeHumidityPercent: number | null;
+  readonly soilElectricalConductivityMicrosiemensPerCm: number | null;
+  readonly soilMoisturePercent: number | null;
+  readonly solarRadiationWm2: number | null;
   readonly temperatureC: number | null;
+  readonly uvIndex: number | null;
   readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
+  readonly wetBulbGlobeTemperatureC: number | null;
 }
 
 export interface DeviceMetadata {
@@ -71,24 +88,41 @@ type SupportedUnit =
   | "f"
   | "hectopascal"
   | "inch"
+  | "index"
   | "kilometer_per_hour"
   | "knot"
+  | "microgram_per_cubic_meter"
+  | "microsiemens_per_centimeter"
   | "meter_per_second"
   | "millimeter"
+  | "millimeter_per_hour"
   | "pascal"
-  | "percent";
+  | "percent"
+  | "watt_per_square_meter";
 
 const QUALITY_KEYS = new Set([
   "confidence_percent",
   "flags",
   "interpolation",
+  "sampling",
   "status",
 ]);
 const PROVIDER_KEYS = new Set([
+  "battery_volts",
   "dataset",
+  "device_id",
   "elevation_m",
   "grid_cell",
+  "illuminance_lux",
+  "lightning_average_distance_km",
+  "lightning_strike_count",
+  "location_id",
+  "precipitation_type",
+  "rain_accumulation_nc_mm",
+  "report_interval_minutes",
   "request_id",
+  "wind_lull_mps",
+  "wind_sample_interval_seconds",
 ]);
 const METRIC_NAMES = Object.keys(CANONICAL_UNITS) as MetricName[];
 const METADATA_KEYS = new Set([
@@ -260,7 +294,12 @@ function convertMetricValue(
   unit: SupportedUnit,
 ): number {
   // convert temperatures
-  if (metric === "temperatureC" || metric === "apparentTemperatureC") {
+  if (
+    metric === "temperatureC" ||
+    metric === "apparentTemperatureC" ||
+    metric === "blackGlobeTemperatureC" ||
+    metric === "wetBulbGlobeTemperatureC"
+  ) {
     // accept celsius
     if (unit === "c") {
       return value;
@@ -283,6 +322,14 @@ function convertMetricValue(
     if (unit === "inch") {
       return value * 25.4;
     }
+  }
+
+  // accept precipitation rates
+  if (
+    metric === "precipitationRateMmPerHour" &&
+    unit === "millimeter_per_hour"
+  ) {
+    return value;
   }
 
   // convert wind speed
@@ -318,9 +365,37 @@ function convertMetricValue(
 
   // accept percentages
   if (
-    (metric === "relativeHumidityPercent" || metric === "cloudCoverPercent") &&
+    (metric === "relativeHumidityPercent" ||
+      metric === "cloudCoverPercent" ||
+      metric === "soilMoisturePercent") &&
     unit === "percent"
   ) {
+    return value;
+  }
+
+  // accept particulate concentration
+  if (
+    metric === "pm25MicrogramsPerCubicMeter" &&
+    unit === "microgram_per_cubic_meter"
+  ) {
+    return value;
+  }
+
+  // accept soil conductivity
+  if (
+    metric === "soilElectricalConductivityMicrosiemensPerCm" &&
+    unit === "microsiemens_per_centimeter"
+  ) {
+    return value;
+  }
+
+  // accept solar radiation
+  if (metric === "solarRadiationWm2" && unit === "watt_per_square_meter") {
+    return value;
+  }
+
+  // accept UV index
+  if (metric === "uvIndex" && unit === "index") {
     return value;
   }
 
@@ -358,14 +433,31 @@ function metricRange(
     return { maximum: 70, minimum: -100 };
   }
 
+  // map heat stress temperatures
+  if (
+    metric === "blackGlobeTemperatureC" ||
+    metric === "wetBulbGlobeTemperatureC"
+  ) {
+    return { maximum: 125, minimum: -100 };
+  }
+
   // map percentage range
-  if (metric === "relativeHumidityPercent" || metric === "cloudCoverPercent") {
+  if (
+    metric === "relativeHumidityPercent" ||
+    metric === "cloudCoverPercent" ||
+    metric === "soilMoisturePercent"
+  ) {
     return { maximum: 100, minimum: 0 };
   }
 
   // map precipitation range
   if (metric === "precipitationMm") {
     return { maximum: 2_000, minimum: 0 };
+  }
+
+  // map precipitation rate range
+  if (metric === "precipitationRateMmPerHour") {
+    return { maximum: 10_000, minimum: 0 };
   }
 
   // map wind range
@@ -376,6 +468,26 @@ function metricRange(
   // map pressure range
   if (metric === "pressureHpa") {
     return { maximum: 1_200, minimum: 100 };
+  }
+
+  // map particulate range
+  if (metric === "pm25MicrogramsPerCubicMeter") {
+    return { maximum: 999, minimum: 0 };
+  }
+
+  // map soil conductivity range
+  if (metric === "soilElectricalConductivityMicrosiemensPerCm") {
+    return { maximum: 10_000, minimum: 0 };
+  }
+
+  // map solar radiation range
+  if (metric === "solarRadiationWm2") {
+    return { maximum: 2_500, minimum: 0 };
+  }
+
+  // map UV range
+  if (metric === "uvIndex") {
+    return { maximum: 20, minimum: 0 };
   }
 
   return { maximum: 360, minimum: 0 };
