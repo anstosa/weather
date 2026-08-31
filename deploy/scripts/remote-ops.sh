@@ -20,13 +20,16 @@ action=$1
 shift
 
 case "$action" in
-  status|rollback|recover|backup|preflight|tempest-backfill)
+  status|rollback|recover|backup|backup-stream|preflight|tempest-backfill|public-stations-backfill|tide-backfill)
     (($# == 0)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
 
     # map non-release operations explicitly
     case "$action" in
       backup) exec "$deploy_dir/scripts/backup.sh" ;;
+      backup-stream) exec "$deploy_dir/scripts/backup-stream.sh" ;;
+      public-stations-backfill) exec "$deploy_dir/scripts/public-stations-backfill.sh" ;;
       tempest-backfill) exec "$deploy_dir/scripts/tempest-backfill.sh" ;;
+      tide-backfill) exec "$deploy_dir/scripts/tide-backfill.sh" ;;
       preflight)
         exec "$deploy_dir/scripts/preflight-capacity.sh" --sample-seconds 900 \
           --json "/var/lib/weather/preflight-$(date -u +%Y%m%dT%H%M%SZ).json"
@@ -34,7 +37,7 @@ case "$action" in
       *) exec "$deploy_dir/scripts/update.sh" "$action" ;;
     esac
     ;;
-  stage|activate)
+  yolo|stage|activate)
     (($# == 1)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
     [[ "$1" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?$ ]] || {
       printf 'error: invalid release\n' >&2

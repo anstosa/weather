@@ -11,7 +11,7 @@
   "stations": [
     {
       "key": "tempest-203055",
-      "displayName": "Quade Rd",
+      "displayName": "Maxwelton Rd & Quade Rd",
       "locationId": 203055,
       "deviceId": 470937,
       "latitude": 47.96505,
@@ -24,7 +24,7 @@
     },
     {
       "key": "tempest-201058",
-      "displayName": "Dorothys Ln",
+      "displayName": "Maxwelton Rd & Dorothys Ln",
       "locationId": 201058,
       "deviceId": 466938,
       "latitude": 47.96244,
@@ -37,7 +37,7 @@
     },
     {
       "key": "tempest-126537",
-      "displayName": "Sills Rd",
+      "displayName": "Sills Rd & Eaglecrest Ln",
       "locationId": 126537,
       "deviceId": 313016,
       "latitude": 47.9582,
@@ -50,7 +50,7 @@
     },
     {
       "key": "tempest-168853",
-      "displayName": "Maxwelton Rd",
+      "displayName": "Sills Rd & French Rd",
       "locationId": 168853,
       "deviceId": 401592,
       "latitude": 47.95498,
@@ -63,7 +63,7 @@
     },
     {
       "key": "tempest-64255",
-      "displayName": "Westie guard",
+      "displayName": "Maxwelton Rd & Mill Beach Ln",
       "locationId": 64255,
       "deviceId": 175727,
       "latitude": 47.95008,
@@ -76,7 +76,7 @@
     },
     {
       "key": "tempest-38270",
-      "displayName": "Fiske Rd",
+      "displayName": "Fiske Rd & Paris Pl",
       "locationId": 38270,
       "deviceId": 115866,
       "latitude": 47.95293,
@@ -89,7 +89,7 @@
     },
     {
       "key": "tempest-225947",
-      "displayName": "WDL",
+      "displayName": "Montgomery Ln & Thomas Ln",
       "locationId": 225947,
       "deviceId": 1239187,
       "latitude": 47.94215,

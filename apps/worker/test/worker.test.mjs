@@ -18,6 +18,7 @@ import {
   parseTempestBackfillArguments,
   planBackfillChunks,
   planTempestBackfillChunks,
+  scheduledWindow,
   workerHealth,
 } from "../dist/index.js";
 
@@ -31,6 +32,24 @@ const source = {
   longitude: -122.42797012608193,
   timezone: "America/Los_Angeles",
 };
+
+test("scheduled windows cap stale checkpoints to provider limits", () => {
+  const window = scheduledWindow(
+    new Date("2026-08-24T23:17:00.000Z"),
+    120,
+    {
+      lastValidAt: "2026-08-01T00:00:00.000Z",
+      version: 1,
+      windowEndExclusive: "2026-08-01T00:00:00.000Z",
+    },
+    2 * 86_400,
+  );
+
+  assert.deepEqual(window, {
+    endExclusive: "2026-08-24T23:16:00.000Z",
+    start: "2026-08-22T23:16:00.000Z",
+  });
+});
 
 // create a worker readiness query double
 function workerReadinessPool(appliedMigrations) {
@@ -88,13 +107,13 @@ function backfillArguments(overrides = {}) {
 }
 
 // prove anchored cadence and deterministic jitter
-test("U-WRK-01 15-minute scheduling is stable and drift-free", () => {
+test("U-WRK-01 one-minute scheduling is stable and drift-free", () => {
   const now = new Date("2026-08-22T05:07:00.000Z");
   const first = nextScheduledAt(now, "worker-a");
   const second = nextScheduledAt(now, "worker-a");
   assert.equal(first.toISOString(), second.toISOString());
-  assert.ok(first.getTime() >= Date.parse("2026-08-22T05:15:00.000Z"));
-  assert.ok(first.getTime() < Date.parse("2026-08-22T05:15:30.001Z"));
+  assert.ok(first.getTime() >= Date.parse("2026-08-22T05:07:00.000Z"));
+  assert.ok(first.getTime() < Date.parse("2026-08-22T05:07:30.001Z"));
 });
 
 // prove the in-process overlap guard

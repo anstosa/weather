@@ -3,9 +3,11 @@ import { once } from "node:events";
 import test from "node:test";
 
 import {
+  calendarTrendWindow,
   createWeatherApi,
   createWeatherApiServer,
   readApiRelease,
+  siteForecastDayWindow,
 } from "../dist/index.js";
 
 const siteRows = [
@@ -22,6 +24,8 @@ const siteRows = [
     sourceKey: "open-meteo-current-v1",
     sourceKind: "model_current",
     stationKind: "virtual",
+    stationLatitude: 47.950429954185445,
+    stationLongitude: -122.42797012608193,
     stationName: "Open-Meteo virtual station",
     stationSlug: "open-meteo-virtual",
     timezone: "America/Los_Angeles",
@@ -39,6 +43,27 @@ const siteRows = [
     sourceKey: "open-meteo-reanalysis-v1",
     sourceKind: "reanalysis",
     stationKind: "virtual",
+    stationLatitude: 47.950429954185445,
+    stationLongitude: -122.42797012608193,
+    stationName: "Open-Meteo virtual station",
+    stationSlug: "open-meteo-virtual",
+    timezone: "America/Los_Angeles",
+  },
+  {
+    attributionLabel: "Weather data by Open-Meteo",
+    attributionUrl: "https://open-meteo.com/",
+    latitude: 47.950429954185445,
+    longitude: -122.42797012608193,
+    providerKey: "open-meteo",
+    providerName: "Open-Meteo",
+    siteName: "Ballydidean",
+    siteSlug: "ballydidean",
+    sourceId: "12",
+    sourceKey: "open-meteo-forecast-v1",
+    sourceKind: "forecast",
+    stationKind: "virtual",
+    stationLatitude: 47.950429954185445,
+    stationLongitude: -122.42797012608193,
     stationName: "Open-Meteo virtual station",
     stationSlug: "open-meteo-virtual",
     timezone: "America/Los_Angeles",
@@ -51,6 +76,14 @@ const currentRecord = makeRecord({
   sourceKind: "model_current",
   sourceKey: "open-meteo-current-v1",
   validAt: "2026-08-22T04:50:00.000Z",
+});
+const forecastRecord = makeRecord({
+  id: "201",
+  productRunAt: "2026-08-22T05:00:00.000Z",
+  sourceId: "12",
+  sourceKind: "forecast",
+  sourceKey: "open-meteo-forecast-v1",
+  validAt: "2026-08-22T06:00:00.000Z",
 });
 
 // create a deterministic storage record
@@ -109,17 +142,35 @@ function makeRecord(overrides = {}) {
 // create an isolated API fixture
 function createFixture(overrides = {}, options = {}) {
   const currentQueries = [];
+  const dailyPrecipitationQueries = [];
+  const forecastQueries = [];
   const historyQueries = [];
+  const trendQueries = [];
   const historyRows = [
     makeRecord({ id: "103", validAt: "2026-08-21T03:00:00.000Z" }),
     makeRecord({ id: "102", validAt: "2026-08-21T02:00:00.000Z" }),
     makeRecord({ id: "101", validAt: "2026-08-21T01:00:00.000Z" }),
   ];
   const store = {
+    // return today's nearest-gauge accumulation
+    async getDailyPrecipitation(siteSlug, from, to) {
+      dailyPrecipitationQueries.push({ from, siteSlug, to });
+      return {
+        accumulationMm: 2.54,
+        sourceId: "13",
+        stationSlug: "tempest-64255",
+        validThrough: "2026-08-22T04:59:00.000Z",
+      };
+    },
     // return current records
     async getCurrent(siteSlug, filters) {
       currentQueries.push({ filters, siteSlug });
       return [currentRecord];
+    },
+    // return normalized forecast rows
+    async getForecast(siteSlug, asOf, hours) {
+      forecastQueries.push({ asOf, hours, siteSlug });
+      return [forecastRecord];
     },
     // return safe health state
     async getHealth() {
@@ -138,6 +189,35 @@ function createFixture(overrides = {}, options = {}) {
     async listSites() {
       return siteRows;
     },
+    // return observed and predicted tide levels
+    async listTides() {
+      return [{
+        attributionLabel: "NOAA Tides & Currents",
+        attributionUrl: "https://tidesandcurrents.noaa.gov/",
+        predictionType: "H",
+        providerKey: "noaa-co-ops",
+        sourceId: "42",
+        sourceKind: "tide_prediction",
+        stationName: "Glendale Tide Predictions",
+        stationSlug: "glendale-tide-predictions",
+        validAt: "2026-08-22T11:27:00.000Z",
+        waterLevelM: 3.271,
+      }];
+    },
+    // return normalized trend buckets
+    async listTrends(siteSlug, from, to) {
+      trendQueries.push({ from, siteSlug, to });
+      return [{
+        apparentTemperatureC: 15.5,
+        precipitationMm: 0.2,
+        pressureHpa: 1014.2,
+        relativeHumidityPercent: 78,
+        temperatureC: 16.2,
+        validAt: new Date("2026-08-22T04:00:00.000Z"),
+        windGustMps: 7.2,
+        windSpeedMps: 4.1,
+      }];
+    },
     ...overrides,
   };
   const handler = createWeatherApi(store, {
@@ -146,7 +226,14 @@ function createFixture(overrides = {}, options = {}) {
     version: "2026.08.22-1",
     ...options,
   });
-  return { currentQueries, handler, historyQueries };
+  return {
+    currentQueries,
+    dailyPrecipitationQueries,
+    forecastQueries,
+    handler,
+    historyQueries,
+    trendQueries,
+  };
 }
 
 test("only exact versioned GET and HEAD routes are public", async () => {
@@ -154,7 +241,11 @@ test("only exact versioned GET and HEAD routes are public", async () => {
   const accepted = [
     "/api/v1/sites",
     "/api/v1/sites/ballydidean/current",
+    "/api/v1/sites/ballydidean/daily-precipitation",
+    "/api/v1/sites/ballydidean/forecast",
     "/api/v1/sites/ballydidean/history",
+    "/api/v1/sites/ballydidean/trends",
+    "/api/v1/sites/ballydidean/tides",
     "/api/v1/health",
   ];
 
@@ -198,7 +289,10 @@ test("mutation methods fail on every documented route without store writes", asy
   const paths = [
     "/api/v1/sites",
     "/api/v1/sites/ballydidean/current",
+    "/api/v1/sites/ballydidean/forecast",
     "/api/v1/sites/ballydidean/history",
+    "/api/v1/sites/ballydidean/trends",
+    "/api/v1/sites/ballydidean/tides",
     "/api/v1/health",
   ];
 
@@ -224,7 +318,9 @@ test("GET sites groups active sources and retains direct attribution", async () 
 
   assert.equal(response.status, 200);
   assert.equal(body.data[0].slug, "ballydidean");
-  assert.equal(body.data[0].stations[0].sources.length, 2);
+  assert.equal(body.data[0].stations[0].sources.length, 3);
+  assert.equal(body.data[0].stations[0].latitude, 47.950429954185445);
+  assert.equal(body.data[0].stations[0].longitude, -122.42797012608193);
   assert.equal(
     body.data[0].stations[0].sources[0].attribution.label,
     "Weather data by Open-Meteo",
@@ -262,6 +358,7 @@ test("current accepts station and source and returns bounded public metadata", a
       dataset: "era5",
       elevationM: 17,
       gridCell: "47.95,-122.43",
+      propertySensors: null,
     },
     quality: {
       confidencePercent: 93,
@@ -275,6 +372,48 @@ test("current accepts station and source and returns bounded public metadata", a
     },
   });
   assert.doesNotMatch(JSON.stringify(body), /private-request-id|request_id/u);
+});
+
+test("current exposes only bounded EcoWitt property sensor snapshots", async () => {
+  const { handler } = createFixture({
+    // return one record with provider-private sensor snapshots
+    async getCurrent() {
+      return [makeRecord({
+        providerMetadata: {
+          dataset: "get_livedata_info",
+          property_sensors: [
+            {
+              channel: 1,
+              key: "soil-1",
+              model: "WH52",
+              readings: {
+                soilMoisturePercent: 42,
+                temperatureC: 17.7,
+                unsafe: "not-a-number",
+              },
+            },
+            { key: "../invalid", model: "Unknown", readings: {} },
+          ],
+        },
+      })];
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/current"),
+  );
+  const body = await response.json();
+
+  assert.deepEqual(body.data[0].metadata.provider.propertySensors, [
+    {
+      channel: 1,
+      key: "soil-1",
+      model: "WH52",
+      readings: {
+        soilMoisturePercent: 42,
+        temperatureC: 17.7,
+      },
+    },
+  ]);
 });
 
 test("history uses frozen filter names, defaults, maximum, and opaque cursor", async () => {
@@ -323,6 +462,153 @@ test("history uses frozen filter names, defaults, maximum, and opaque cursor", a
   assert.equal(oldName.status, 400);
 });
 
+test("forecast returns the latest normalized product within the fixed horizon", async () => {
+  const { forecastQueries, handler } = createFixture();
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(forecastQueries, [{
+    asOf: "2026-08-21T07:00:00.000Z",
+    hours: 24,
+    siteSlug: "ballydidean",
+  }]);
+  assert.equal(body.data[0].provenance.sourceKind, "forecast");
+  assert.equal(body.data[0].productRunAt, "2026-08-22T05:00:00.000Z");
+  assert.equal(body.days, 1);
+
+  const extendedResponse = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast?days=10"),
+  );
+  const extendedBody = await extendedResponse.json();
+  assert.equal(extendedResponse.status, 200);
+  assert.equal(extendedBody.days, 10);
+  assert.deepEqual(forecastQueries.at(-1), {
+    asOf: "2026-08-21T07:00:00.000Z",
+    hours: 240,
+    siteSlug: "ballydidean",
+  });
+});
+
+test("daily precipitation uses the site-local day and nearest physical gauge", async () => {
+  const { dailyPrecipitationQueries, handler } = createFixture();
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/daily-precipitation"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(dailyPrecipitationQueries, [{
+    from: "2026-08-21T07:00:00.000Z",
+    siteSlug: "ballydidean",
+    to: "2026-08-22T05:00:00.000Z",
+  }]);
+  assert.deepEqual(body.data, {
+    accumulationMm: 2.54,
+    source: {
+      sourceId: "13",
+      stationSlug: "tempest-64255",
+    },
+    validThrough: "2026-08-22T04:59:00.000Z",
+  });
+});
+
+test("forecast day windows follow site midnight through DST changes", () => {
+  assert.deepEqual(
+    siteForecastDayWindow(
+      "2026-08-22T05:00:00.000Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-08-21T07:00:00.000Z", hours: 24 },
+  );
+  assert.deepEqual(
+    siteForecastDayWindow(
+      "2026-03-08T20:00:00.000Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-03-08T08:00:00.000Z", hours: 23 },
+  );
+  assert.deepEqual(
+    siteForecastDayWindow(
+      "2026-11-01T20:00:00.000Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-11-01T07:00:00.000Z", hours: 25 },
+  );
+  assert.deepEqual(
+    siteForecastDayWindow(
+      "2026-08-22T05:00:00.000Z",
+      "America/Los_Angeles",
+      10,
+    ),
+    { asOf: "2026-08-21T07:00:00.000Z", hours: 240 },
+  );
+  assert.deepEqual(
+    siteForecastDayWindow(
+      "2026-03-06T20:00:00.000Z",
+      "America/Los_Angeles",
+      5,
+    ),
+    { asOf: "2026-03-06T08:00:00.000Z", hours: 119 },
+  );
+});
+
+
+test("tides expose normalized NOAA levels and local event types", async () => {
+  const { handler } = createFixture();
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/tides"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.data[0], {
+    eventType: "high",
+    kind: "prediction",
+    source: {
+      attribution: {
+        label: "NOAA Tides & Currents",
+        url: "https://tidesandcurrents.noaa.gov/",
+      },
+      providerKey: "noaa-co-ops",
+      stationName: "Glendale Tide Predictions",
+      stationSlug: "glendale-tide-predictions",
+    },
+    validAt: "2026-08-22T11:27:00.000Z",
+    waterLevelM: 3.271,
+  });
+});
+
+test("trends expose daily local-calendar history from 2019", async () => {
+  const { handler, trendQueries } = createFixture();
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/trends"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.generatedAt, "2026-08-22T05:00:00.000Z");
+  assert.deepEqual(trendQueries, [{
+    from: "2019-01-01T08:00:00.000Z",
+    siteSlug: "ballydidean",
+    to: "2026-08-22T05:00:00.000Z",
+  }]);
+  assert.equal(body.data[0].validAt, "2026-08-22T04:00:00.000Z");
+  assert.equal(body.data[0].metrics.temperatureC, 16.2);
+
+  assert.deepEqual(
+    calendarTrendWindow("2026-08-22T05:00:00.000Z", "America/Los_Angeles"),
+    { from: "2019-01-01T08:00:00.000Z" },
+  );
+
+  const invalid = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/trends?range=90d"),
+  );
+  assert.equal(invalid.status, 400);
+});
+
 test("invalid ranges, cursors, duplicate filters, sites, stations, and sources are bounded", async () => {
   const { handler } = createFixture();
   const cases = [
@@ -333,6 +619,7 @@ test("invalid ranges, cursors, duplicate filters, sites, stations, and sources a
     ["/api/v1/sites/ballydidean/current?station=missing", 404],
     ["/api/v1/sites/ballydidean/current?source=999", 404],
     ["/api/v1/sites/ballydidean/current?unsupported=true", 400],
+    ["/api/v1/sites/ballydidean/forecast?days=7", 400],
   ];
 
   // verify each structured failure

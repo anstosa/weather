@@ -8,12 +8,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 usage() {
   cat <<'EOF'
 Usage:
+  update.sh yolo RELEASE [--from ENV_FILE]
   update.sh stage RELEASE [--from ENV_FILE]
   update.sh activate RELEASE
   update.sh rollback
   update.sh recover
   update.sh status
 
+yolo resolves the exact ARM64 images, applies migrations, and starts the release
+directly without a capacity gate, compatibility clone, or deployment-time backup.
 stage resolves and persists four exact ARM64 image digests without changing
 running services or the active database. Upgrade staging uses only a disposable
 compatibility database. activate backs up before migration and records success
@@ -24,9 +27,9 @@ EOF
 releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
-control_plane_version=2
-legacy_control_plane_version=1
-legacy_control_plane_sha256=13a52a540d55196168d74f7fd9b298748b391a2bbd87fedf86f59da51c0f75a2
+control_plane_version=6
+legacy_control_plane_version=5
+legacy_control_plane_sha256=4fb0af02b5a03e782cd08e7c643cafce79b2c1fa1becf87dcef447274f54fb57
 migration_authorization_version=1
 
 # locate one validated release environment
@@ -216,7 +219,7 @@ require_control_plane_compatibility() {
     return
   fi
 
-  # accept only the proven version-one production handoff
+  # accept only the proven version-five production handoff
   if [[ "$expected_version" == "$legacy_control_plane_version" && "$expected_digest" == "$legacy_control_plane_sha256" ]]; then
     return
   fi
@@ -304,6 +307,8 @@ require_deployment_secrets() {
   require_secret_source "$deploy_dir/secrets/weather_api_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_worker_ingest_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_tempest_api_key" 10002 10002
+  require_secret_source "$deploy_dir/secrets/weather_xweather_client_id" 10002 10002
+  require_secret_source "$deploy_dir/secrets/weather_xweather_client_secret" 10002 10002
   require_secret_source "$deploy_dir/secrets/cloudflare_tunnel_token" 65532 65532
   ! cmp -s "$deploy_dir/secrets/weather_postgres_admin_password" \
     "$deploy_dir/secrets/weather_postgres_owner_password" ||
@@ -538,6 +543,11 @@ start_postgres() {
   WEATHER_ENV_FILE=$env_file compose up -d --no-deps --force-recreate --wait postgres
 }
 
+# provision the persistent Xweather usage ledger
+prepare_xweather_usage_directory() {
+  install -d -m 0750 -o 10002 -g 10002 /var/lib/weather/xweather
+}
+
 # restore one exact image set without migration
 restore_images() (
   local env_file=$1
@@ -564,6 +574,7 @@ restore_images() (
       "$authorization_path" WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256)
   fi
 
+  prepare_xweather_usage_directory
   start_postgres "$env_file"
   WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait api worker web cloudflared
 )
@@ -573,8 +584,70 @@ start_exact_release() (
   local env_file=$1
   unset WEATHER_MIGRATION_AUTHORIZATION_RELEASE
   unset WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256
+  prepare_xweather_usage_directory
   WEATHER_ENV_FILE=$env_file compose up -d --remove-orphans --wait
 )
+
+# prepare one direct release without clone-based staging
+prepare_yolo_release() {
+  local release=$1
+  local source_env=$2
+  local target server_source web_source server_image web_image postgres_image
+  local cloudflared_image temporary image
+  local -a images
+  target=$(release_env "$release")
+
+  # reuse an exact previously rendered release
+  if [[ -e "$target" || -L "$target" ]]; then
+    validate_release_env "$target" "$release"
+    printf '%s\n' "$target"
+    return
+  fi
+
+  server_source="$(image_repository "$(env_value "$source_env" WEATHER_SERVER_IMAGE)"):$release"
+  web_source="$(image_repository "$(env_value "$source_env" WEATHER_WEB_IMAGE)"):$release"
+  server_image=$(resolve_arm64_image "$server_source")
+  web_image=$(resolve_arm64_image "$web_source")
+  postgres_image=$(resolve_arm64_image "$(env_value "$source_env" POSTGRES_IMAGE)")
+  cloudflared_image=$(resolve_arm64_image "$(env_value "$source_env" CLOUDFLARED_IMAGE)")
+  temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.env.partial")
+
+  # remove an interrupted render
+  trap 'rm -f "$temporary"' EXIT
+  write_release_env "$source_env" "$temporary" "$release" \
+    "$server_image" "$web_image" "$postgres_image" "$cloudflared_image"
+  WEATHER_ENV_FILE=$temporary compose config --quiet
+  mapfile -t images < <(WEATHER_ENV_FILE=$temporary compose config --images | sort -u)
+  ((${#images[@]} == 4)) || die "release must contain exactly four images"
+
+  # reject any tag-only rendered image
+  for image in "${images[@]}"; do
+    validate_image_reference "$image"
+  done
+
+  WEATHER_ENV_FILE=$temporary compose pull >&2
+  mv "$temporary" "$target"
+  trap - EXIT
+  printf '%s\n' "$target"
+}
+
+# apply one direct release without deployment-time backup
+yolo_release() {
+  local release=$1
+  local source_env=$2
+  local target current
+  target=$(prepare_yolo_release "$release" "$source_env")
+  current=$(read_optional_release_state "$state_dir/current-release")
+  require_deployment_secrets
+
+  printf 'Applying release %s directly...\n' "$release"
+  WEATHER_ENV_FILE=$target compose up -d --no-deps --wait postgres
+  WEATHER_ENV_FILE=$target compose run --rm migration
+  write_private_state "$state_dir/schema-release" "$release"
+  start_exact_release "$target"
+  record_release_success "$release" "$current"
+  printf 'Release %s is active after direct deployment.\n' "$release"
+}
 
 # activate one forward release
 start_release() (
@@ -700,6 +773,24 @@ action=$1
 shift
 
 case "$action" in
+  yolo)
+    (($# >= 1)) || die "yolo requires a release"
+    release=$1
+    shift
+    validate_release "$release"
+    source_env="$deploy_dir/.env"
+
+    # accept one explicit source environment
+    if (($# > 0)); then
+      [[ "$1" == --from && $# -eq 2 ]] || die "expected --from ENV_FILE"
+      source_env=$2
+    fi
+
+    require_file "$source_env"
+    require_command docker
+    require_command node
+    yolo_release "$release" "$source_env"
+    ;;
   stage)
     (($# >= 1)) || die "stage requires a release"
     release=$1

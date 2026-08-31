@@ -8,11 +8,13 @@ import { test } from "node:test";
 
 import {
   assertSupportedPostgres,
+  loadEcowittConfiguration,
   loadDatabaseConfiguration,
   loadSiteConfiguration,
   loadTempestConfiguration,
   listWeatherHistory,
   parseSiteConfiguration,
+  parseEcowittConfiguration,
   parseTempestConfiguration,
   toPoolConfiguration,
 } from "../dist/index.js";
@@ -20,6 +22,7 @@ import {
 const executeFile = promisify(execFile);
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const ballydideanPath = join(repositoryRoot, "config/sites/ballydidean.json");
+const ecowittPath = join(repositoryRoot, "config/ecowitt/gateways.json");
 const tempestPath = join(repositoryRoot, "config/tempest/stations.json");
 
 // verify the approved site configuration
@@ -32,11 +35,27 @@ test("configuration preserves exact Ballydidean identity and distinct sources", 
   assert.equal(configuration.site.timezone, "America/Los_Angeles");
   assert.deepEqual(
     configuration.sources.map((source) => source.sourceKind),
-    ["model_current", "reanalysis"],
+    ["model_current", "reanalysis", "forecast", "forecast", "forecast", "forecast"],
   );
   assert.notEqual(
     configuration.sources[0].fingerprint,
     configuration.sources[1].fingerprint,
+  );
+  assert.notEqual(
+    configuration.sources[1].fingerprint,
+    configuration.sources[2].fingerprint,
+  );
+  assert.notEqual(
+    configuration.sources[2].fingerprint,
+    configuration.sources[3].fingerprint,
+  );
+  assert.notEqual(
+    configuration.sources[3].fingerprint,
+    configuration.sources[4].fingerprint,
+  );
+  assert.notEqual(
+    configuration.sources[4].fingerprint,
+    configuration.sources[5].fingerprint,
   );
 });
 
@@ -51,6 +70,21 @@ test("Tempest configuration derives exact immutable source identities", async ()
     configuration.stations.map((station) => station.locationId),
     [203055, 201058, 126537, 168853, 64255, 38270, 225947],
   );
+  assert.deepEqual(
+    configuration.stations.map(
+      // retain each checked road label
+      (station) => station.displayName,
+    ),
+    [
+      "Maxwelton Rd & Quade Rd",
+      "Maxwelton Rd & Dorothys Ln",
+      "Sills Rd & Eaglecrest Ln",
+      "Sills Rd & French Rd",
+      "Maxwelton Rd & Mill Beach Ln",
+      "Fiske Rd & Paris Pl",
+      "Montgomery Ln & Thomas Ln",
+    ],
+  );
   assert.equal(configuration.stations[0].sourceKey, "tempest-203055-observations-v2");
   assert.deepEqual(configuration.stations[0].adapterConfig, {
     contractVersion: "tempest-observations/v2",
@@ -60,6 +94,42 @@ test("Tempest configuration derives exact immutable source identities", async ()
     supersedesSourceKey: "tempest-203055-observations-v1",
   });
   assert.match(configuration.stations[0].fingerprint, /^[a-f0-9]{64}$/u);
+});
+
+// verify the checked first-party gateway catalog
+test("Ecowitt configuration binds the farm gateway by private IP and MAC", async () => {
+  const configuration = await loadEcowittConfiguration(ecowittPath);
+  const station = configuration.stations[0];
+
+  assert.equal(configuration.siteKey, "ballydidean");
+  assert.equal(configuration.provider.key, "ecowitt-local");
+  assert.equal(station.displayName, "Ballydídean Farm");
+  assert.equal(station.gatewayHost, "192.168.11.137");
+  assert.equal(station.expectedMac, "88:F1:55:05:D8:9F");
+  assert.equal(station.sourceKey, "ecowitt-88f15505d89f-local-live-v1");
+  assert.equal(station.cadenceSeconds, 60);
+  assert.deepEqual(station.adapterConfig, {
+    contractVersion: "ecowitt-local-live/v1",
+    endpointPath: "/get_livedata_info",
+    expectedMac: "88:F1:55:05:D8:9F",
+    gatewayHost: "192.168.11.137",
+    measurementSet: "canonical-primary",
+    rainGauge: "traditional-preferred",
+  });
+  assert.match(station.fingerprint, /^[a-f0-9]{64}$/u);
+});
+
+// reject an Ecowitt target outside the private LAN
+test("Ecowitt configuration rejects public gateway targets", async () => {
+  const raw = JSON.parse(await readFile(ecowittPath, "utf8"));
+
+  assert.throws(
+    () => parseEcowittConfiguration({
+      ...raw,
+      stations: [{ ...raw.stations[0], gatewayHost: "8.8.8.8" }],
+    }),
+    /private IPv4/u,
+  );
 });
 
 // reject duplicate physical device identities

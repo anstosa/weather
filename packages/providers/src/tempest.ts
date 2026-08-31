@@ -322,6 +322,7 @@ function normalizeTempestObservation(
       ),
       temperatureC: metric("temperatureC", observation[7], "c"),
       uvIndex: uvIndex.value,
+      waterLevelM: null,
       windDirectionDegrees: normalizeMetricValue(
         "windDirectionDegrees",
         windDirection === 360 ? 0 : windDirection,

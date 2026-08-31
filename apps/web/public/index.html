@@ -3,17 +3,31 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Nearby model-derived weather for Ballydidean">
-    <title>Ballydidean Weather</title>
-    <link rel="stylesheet" href="/styles.css">
+    <meta name="description" content="Current and historical weather conditions for Ballydídean Farm Sanctuary on Whidbey Island.">
+    <meta name="theme-color" content="#f0e696">
+    <meta name="weather-release" content="__WEATHER_ASSET_VERSION__">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Ballydídean Weather">
+    <link rel="canonical" href="https://weather.ballydidean.farm/">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/brand/ballydidean-weather-icon-32.png" sizes="32x32" type="image/png">
+    <link rel="apple-touch-icon" href="/brand/ballydidean-weather-icon-180.png" sizes="180x180">
+    <link rel="preload" href="/fonts/google-sans-flex-latin.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/fonts/material-symbols-rounded-v4.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="modulepreload" href="/assets/__WEATHER_ASSET_VERSION__/index.js">
+    <link rel="modulepreload" href="/assets/__WEATHER_ASSET_VERSION__/units.js">
+    __WEATHER_ROUTE_PRELOAD__
+    <title>Ballydídean Farm Weather</title>
+    <link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">
   </head>
   <body>
     <div id="weather-app">
       <main class="shell">
-        <p class="notice" role="status">Loading Ballydidean weather…</p>
+        <p class="notice" role="status">Loading Ballydídean weather…</p>
       </main>
     </div>
     <noscript>This weather dashboard requires JavaScript to load current and historical data.</noscript>
-    <script type="module" src="/client.js"></script>
+    <script type="module" src="/assets/__WEATHER_ASSET_VERSION__/client.js"></script>
   </body>
 </html>

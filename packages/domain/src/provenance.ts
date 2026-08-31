@@ -3,6 +3,8 @@ export const SOURCE_KINDS = [
   "model_current",
   "reanalysis",
   "forecast",
+  "tide_observation",
+  "tide_prediction",
 ] as const;
 
 export type SourceKind = (typeof SOURCE_KINDS)[number];
@@ -46,6 +48,8 @@ const SOURCE_KIND_LABELS: Readonly<Record<SourceKind, string>> = {
   model_current: "model-derived current conditions",
   physical_sensor: "physical sensor measurement",
   reanalysis: "gridded historical reanalysis",
+  tide_observation: "observed tide level",
+  tide_prediction: "tide prediction",
 };
 
 // parse a closed source kind

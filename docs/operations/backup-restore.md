@@ -1,4 +1,4 @@
-# Encrypted backup and disposable restore verification
+# Encrypted local backup and disposable restore verification
 
 Weather backup streams a PostgreSQL custom-format dump directly into `age`,
 publishes the encrypted artifact and adjacent SHA-256 checksum as a cleaned-up
@@ -6,18 +6,43 @@ pair, synchronizes their durable directory entries, and sets both files to mode
 `0600`. It never writes a plaintext dump. The ignored
 `deploy/config/backup.env` contains a public recipient, not a private identity.
 
-## Create a backup
+## Pull the production backup locally
 
 ```bash
-deploy/scripts/backup.sh \
-  --recipient "$AGE_RECIPIENT" \
-  --output-dir /var/lib/weather/backups
+npm run remote:backup:pull
 ```
 
-The default destination is `/var/lib/weather/backups`. A successful run leaves
-only `weather-*.dump.age` and matching `.sha256` files. Interrupted partial or
-half-published pairs are removed. Copy encrypted artifacts off-host under an
-operator-reviewed retention policy.
+The forced-command SSH boundary runs `backup-stream.sh`, which sends only the
+age ciphertext on stdout. The local pull writes a temporary ciphertext under
+the gitignored `deploy/backups/` directory, fully decrypts it, validates its
+PostgreSQL archive table of contents without a plaintext file, and atomically
+publishes these rolling files only after verification:
+
+```text
+deploy/backups/weather-nightly.dump.age
+deploy/backups/weather-nightly.dump.age.sha256
+```
+
+The private age identity defaults to
+`~/.config/weather/backup-age-key.txt` and remains outside Git. The public
+recipient remains in the server's ignored `deploy/config/backup.env`.
+
+## Nightly timer
+
+Install and enable the local user timer:
+
+```bash
+install -Dm644 deploy/systemd/weather-backup-local.service \
+  "$HOME/.config/systemd/user/weather-backup-local.service"
+install -Dm644 deploy/systemd/weather-backup-local.timer \
+  "$HOME/.config/systemd/user/weather-backup-local.timer"
+systemctl --user daemon-reload
+systemctl --user enable --now weather-backup-local.timer
+```
+
+The timer runs at 02:30 in the host timezone and is persistent across downtime.
+`pull-backup.sh` restores the deployment SSH agent from
+`~/.ssh/agent/weather.env` for unattended execution.
 
 Backup, verification restore, and status use `WEATHER_DATABASE_NAME` from the
 selected deployment environment.
@@ -28,8 +53,8 @@ Keep the age identity outside the repository and run:
 
 ```bash
 deploy/scripts/restore.sh verify \
-  /var/lib/weather/backups/weather-<timestamp>-<nonce>.dump.age \
-  --identity /secure/operator/weather-backup-key.txt
+  deploy/backups/weather-nightly.dump.age \
+  --identity "$HOME/.config/weather/backup-age-key.txt"
 ```
 
 Verification checks the ciphertext checksum, decrypts directly into

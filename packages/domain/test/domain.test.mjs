@@ -30,6 +30,7 @@ const baseMetrics = {
   solarRadiationWm2: 320,
   temperatureC: 9,
   uvIndex: 2,
+  waterLevelM: null,
   windDirectionDegrees: 270,
   windGustMps: 9,
   windSpeedMps: 4,
@@ -75,7 +76,14 @@ test("U-DOM-03 converts canonical units and rejects impossible values", () => {
   assert.equal(normalizeMetricValue("temperatureC", 32, "f"), 0);
   assert.equal(normalizeMetricValue("precipitationMm", 1, "inch"), 25.4);
   assert.equal(normalizeMetricValue("windSpeedMps", 36, "kilometer_per_hour"), 10);
+  assert.equal(normalizeMetricValue("windSpeedMps", 10, "mile_per_hour"), 4.4704);
   assert.equal(normalizeMetricValue("pressureHpa", 101_300, "pascal"), 1013);
+  assert.ok(
+    Math.abs(
+      normalizeMetricValue("pressureHpa", 29.92, "inch_of_mercury") -
+        1013.207489067664,
+    ) < 1e-9,
+  );
   assert.equal(normalizeMetricValue("relativeHumidityPercent", 50, "percent"), 50);
   assert.equal(
     normalizeMetricValue(
@@ -100,6 +108,10 @@ test("U-DOM-03 converts canonical units and rejects impossible values", () => {
       "millimeter_per_hour",
     ),
     3.5,
+  );
+  assert.equal(
+    normalizeMetricValue("precipitationRateMmPerHour", 1, "inch_per_hour"),
+    25.4,
   );
   assert.equal(
     normalizeMetricValue("solarRadiationWm2", 800, "watt_per_square_meter"),

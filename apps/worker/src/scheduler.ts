@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const WORKER_CADENCE_MS = 15 * 60 * 1_000;
+export const WORKER_CADENCE_MS = 60 * 1_000;
 export const MAX_SCHEDULE_JITTER_MS = 30_000;
 
 export interface NonOverlappingScheduler {

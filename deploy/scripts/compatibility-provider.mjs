@@ -57,6 +57,42 @@ const archivePayload = {
   timezone_abbreviation: "GMT-7",
   utc_offset_seconds: -25_200,
 };
+const forecastPayload = {
+  elevation: 32,
+  generationtime_ms: 0,
+  hourly: {
+    apparent_temperature: [11.7, 12.4, 13.1],
+    cloud_cover: [72, 68, 61],
+    precipitation: [0.1, 0.2, 0.3],
+    relative_humidity_2m: [83, 80, 77],
+    surface_pressure: [1018.1, 1018.3, 1018.5],
+    temperature_2m: [12.1, 12.8, 13.4],
+    time: ["2026-08-22T05:00", "2026-08-22T06:00", "2026-08-22T07:00"],
+    uv_index: [0.2, 0.5, 0.9],
+    wind_direction_10m: [180, 185, 190],
+    wind_gusts_10m: [3.1, 3.6, 4.2],
+    wind_speed_10m: [1.8, 2.1, 2.4],
+  },
+  hourly_units: { ...metricUnits, uv_index: "" },
+  latitude: 47.95043,
+  longitude: -122.42797,
+  timezone: "GMT",
+  timezone_abbreviation: "GMT",
+  utc_offset_seconds: 0,
+};
+const airQualityPayload = {
+  generationtime_ms: 0,
+  hourly: {
+    pm2_5: [5, 8, 12],
+    time: ["2026-08-22T05:00", "2026-08-22T06:00", "2026-08-22T07:00"],
+  },
+  hourly_units: { pm2_5: "μg/m³", time: "iso8601" },
+  latitude: 47.95043,
+  longitude: -122.42797,
+  timezone: "GMT",
+  timezone_abbreviation: "GMT",
+  utc_offset_seconds: 0,
+};
 const host = process.env.HOST ?? "0.0.0.0";
 const port = Number(process.env.PORT ?? "3002");
 
@@ -97,9 +133,20 @@ const server = createServer((request, response) => {
     return;
   }
 
-  // serve the current fixture
+  // serve the selected weather fixture
   if (url.pathname === "/v1/forecast") {
-    sendJson(request, response, 200, currentPayload);
+    sendJson(
+      request,
+      response,
+      200,
+      url.searchParams.has("hourly") ? forecastPayload : currentPayload,
+    );
+    return;
+  }
+
+  // serve the air-quality forecast fixture
+  if (url.pathname === "/v1/air-quality") {
+    sendJson(request, response, 200, airQualityPayload);
     return;
   }
 

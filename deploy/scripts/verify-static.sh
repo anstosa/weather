@@ -41,6 +41,8 @@ if command -v systemd-analyze >/dev/null; then
 fi
 
 deploy/scripts/backup.sh --help >/dev/null
+deploy/scripts/backup-stream.sh --help >/dev/null
+deploy/scripts/pull-backup.sh --help >/dev/null
 deploy/scripts/restore.sh --help >/dev/null
 deploy/scripts/update.sh --help >/dev/null
 deploy/scripts/ssh-run.sh --help >/dev/null

@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   ProviderFailure,
+  buildOpenMeteoAirQualityForecastRequest,
   buildOpenMeteoArchiveRequest,
   buildOpenMeteoCurrentRequest,
+  buildOpenMeteoForecastRequest,
   createOpenMeteoCurrentOperation,
+  createOpenMeteoForecastOperation,
   createOpenMeteoHistoricalOperation,
   fetchJsonWithRetry,
   fetchOpenMeteoCurrent,
+  fetchOpenMeteoForecast,
   normalizeArchivePayload,
   normalizeCurrentPayload,
+  normalizeForecastPayload,
   openMeteoCapabilities,
   parseOpenMeteoCompatibilityOrigin,
   providerRequestBudgetMilliseconds,
@@ -90,6 +96,32 @@ test("U-OM-02 archive URL uses inclusive dates and hourly variables", () => {
   assert.equal(plan.url.searchParams.get("start_date"), "2026-08-01");
   assert.equal(plan.url.searchParams.get("end_date"), "2026-08-04");
   assert.equal(plan.url.searchParams.get("timezone"), "UTC");
+});
+
+test("hourly forecast uses ten weather days and the complete air-quality horizon", () => {
+  const weatherPlan = buildOpenMeteoForecastRequest(location);
+  const airQualityPlan = buildOpenMeteoAirQualityForecastRequest(location);
+
+  assert.equal(weatherPlan.capability, "forecast");
+  assert.equal(weatherPlan.sourceKind, "forecast");
+  assert.equal(weatherPlan.adapterVersion, "open-meteo-forecast-daily/v4");
+  assert.equal(
+    weatherPlan.url.origin + weatherPlan.url.pathname,
+    "https://api.open-meteo.com/v1/forecast",
+  );
+  assert.match(weatherPlan.url.searchParams.get("hourly"), /temperature_2m/u);
+  assert.match(weatherPlan.url.searchParams.get("hourly"), /uv_index/u);
+  assert.equal(weatherPlan.url.searchParams.get("forecast_days"), "10");
+  assert.equal(weatherPlan.url.searchParams.get("forecast_hours"), null);
+  assert.equal(weatherPlan.url.searchParams.get("timezone"), "America/Los_Angeles");
+  assert.equal(
+    airQualityPlan.url.origin + airQualityPlan.url.pathname,
+    "https://air-quality-api.open-meteo.com/v1/air-quality",
+  );
+  assert.equal(airQualityPlan.url.searchParams.get("hourly"), "pm2_5");
+  assert.equal(airQualityPlan.url.searchParams.get("forecast_days"), "7");
+  assert.equal(airQualityPlan.url.searchParams.get("forecast_hours"), null);
+  assert.equal(airQualityPlan.url.searchParams.get("timezone"), "America/Los_Angeles");
 });
 
 // prove current normalization and provenance
@@ -189,6 +221,76 @@ test("U-OM-04 archive fixture normalizes distinct reanalysis instants", async ()
   );
   assert.equal(records[0].sourceKind, "reanalysis");
   assert.equal(records[1].metrics.precipitationMm, null);
+});
+
+test("hourly forecast normalization retains product identity", async () => {
+  const weather = await fixture("forecast.json");
+  const airQuality = await fixture("air-quality.json");
+  const records = normalizeForecastPayload(
+    weather,
+    airQuality,
+    "source-forecast",
+    receivedAt,
+  );
+
+  assert.equal(records.length, 3);
+  assert.equal(records[0].sourceKind, "forecast");
+  assert.equal(records[0].productRunAt, receivedAt);
+  assert.equal(records[0].validAt, "2026-08-22T05:00:00.000Z");
+  assert.equal(records.at(-1).validAt, "2026-08-22T07:00:00.000Z");
+  assert.equal(records[0].metrics.precipitationRateMmPerHour, 0.1);
+  assert.equal(records[0].metrics.uvIndex, 0.2);
+  assert.equal(records[0].metrics.pm25MicrogramsPerCubicMeter, 5);
+  assert.equal(records[1].metrics.pm25MicrogramsPerCubicMeter, 8);
+  assert.equal(records[2].metrics.pm25MicrogramsPerCubicMeter, 12);
+});
+
+// prove paired requests run together and retain combined provenance
+test("forecast fetch combines weather and air-quality products", async () => {
+  const weather = await fixture("forecast.json");
+  const airQuality = await fixture("air-quality.json");
+  const requests = [];
+  let active = 0;
+  let maximumActive = 0;
+  const responseChecksums = [];
+  const injectedFetch = async (url) => {
+    active += 1;
+    maximumActive = Math.max(maximumActive, active);
+    requests.push(String(url));
+    const payload = new URL(url).pathname === "/v1/air-quality"
+      ? airQuality
+      : weather;
+    const body = JSON.stringify(payload);
+    responseChecksums.push(
+      createHash("sha256").update(body).digest("hex"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+    return new Response(body, { status: 200 });
+  };
+  const batch = await fetchOpenMeteoForecast(location, {
+    fetch: injectedFetch,
+    now: () => new Date(receivedAt),
+  });
+  const checksum = createHash("sha256");
+
+  // retain request-order checksum boundaries
+  for (const responseChecksum of responseChecksums) {
+    checksum.update(`${responseChecksum}\n`);
+  }
+
+  assert.equal(maximumActive, 2);
+  assert.equal(requests.length, 2);
+  assert.equal(batch.attempts, 2);
+  assert.equal(batch.checksum, checksum.digest("hex"));
+  assert.equal(batch.records.length, 3);
+  assert.deepEqual(batch.responseMetadata, {
+    air_quality_generation_ms: 0.08,
+    air_quality_http_status: 200,
+    http_status: 200,
+    upstream_response_count: 2,
+    weather_generation_ms: 0.12,
+  });
 });
 
 // prove malformed and mismatched arrays fail closed
@@ -463,15 +565,20 @@ test("provider response reasons are bounded and redacted", async () => {
 
 // prove capability boundary stays narrow
 test("U-OM-10 capability report is exact", () => {
-  assert.deepEqual(openMeteoCapabilities(), ["current", "historical"]);
+  assert.deepEqual(openMeteoCapabilities(), ["current", "historical", "forecast"]);
 });
 
 // prove executable operations and safe endpoint selection
 test("Open-Meteo operations default official and allow a safe compatibility origin", async () => {
   const current = await fixture("current.json");
   const archive = await fixture("archive-fall-back.json");
+  const forecast = await fixture("forecast.json");
+  const airQuality = await fixture("air-quality.json");
   const requests = [];
   const currentOperation = createOpenMeteoCurrentOperation();
+  const forecastOperation = createOpenMeteoForecastOperation(
+    "http://provider-stub:8080",
+  );
   const historicalOperation = createOpenMeteoHistoricalOperation(
     "http://provider-stub:8080",
   );
@@ -492,11 +599,30 @@ test("Open-Meteo operations default official and allow a safe compatibility orig
       now: () => new Date(receivedAt),
     },
   );
+  await forecastOperation(location, {
+    fetch: async (url) => {
+      requests.push(String(url));
+      const payload = new URL(url).pathname === "/v1/air-quality"
+        ? airQuality
+        : forecast;
+      return new Response(JSON.stringify(payload), { status: 200 });
+    },
+    now: () => new Date(receivedAt),
+  });
 
   assert.equal(new URL(requests[0]).origin, "https://api.open-meteo.com");
   assert.equal(
     new URL(requests[1]).origin + new URL(requests[1]).pathname,
     "http://provider-stub:8080/v1/archive",
+  );
+  assert.deepEqual(
+    requests.slice(2).map((request) => new URL(request).pathname).sort(),
+    ["/v1/air-quality", "/v1/forecast"],
+  );
+  assert.ok(
+    requests.slice(2).every(
+      (request) => new URL(request).origin === "http://provider-stub:8080",
+    ),
   );
 });
 

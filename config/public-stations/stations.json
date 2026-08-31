@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "siteKey": "ballydidean",
+  "providers": [
+    {
+      "key": "ambient-weather-network",
+      "displayName": "Ambient Weather Network",
+      "attributionLabel": "Weather data by Ambient Weather Network",
+      "attributionUrl": "https://ambientweather.net/",
+      "active": true
+    },
+    {
+      "key": "weather-underground",
+      "displayName": "Weather Underground",
+      "attributionLabel": "Weather data by Weather Underground",
+      "attributionUrl": "https://www.wunderground.com/",
+      "active": true
+    },
+    {
+      "key": "netatmo-weathermap",
+      "displayName": "Netatmo Weathermap",
+      "attributionLabel": "Weather data by Netatmo Weathermap",
+      "attributionUrl": "https://weathermap.netatmo.com/",
+      "active": true
+    },
+    {
+      "key": "purpleair",
+      "displayName": "PurpleAir",
+      "attributionLabel": "Air quality data by PurpleAir",
+      "attributionUrl": "https://map.purpleair.com/",
+      "active": true
+    }
+  ],
+  "stations": [
+    {
+      "key": "ambient-merlin",
+      "displayName": "French Rd & Lapis Ln",
+      "vendor": "Ambient Weather",
+      "model": "AMBWeatherV4.3.6",
+      "serial": "5fe7d16a25083b000171f8e5",
+      "latitude": 47.9551126,
+      "longitude": -122.4179341,
+      "timezone": "America/Los_Angeles",
+      "active": true,
+      "sources": [
+        {
+          "key": "ambient-merlin-observations-v1",
+          "providerKey": "ambient-weather-network",
+          "adapter": "ambient-weather",
+          "capabilities": [
+            "current",
+            "historical"
+          ],
+          "cadenceSeconds": 3600,
+          "historyStartDate": "2021-01-01",
+          "historyEndDate": null,
+          "maximumChunkDays": 7,
+          "adapterConfig": {
+            "contractVersion": "ambient-device-data/v1",
+            "deviceId": "5fe7d16a25083b000171f8e5",
+            "macAddress": "F0:08:D1:07:B3:9E",
+            "sample": "every-distinct-provider-observation"
+          },
+          "active": true
+        }
+      ]
+    },
+    {
+      "key": "ambient-maxweather",
+      "displayName": "Maxwelton Rd & Swede Hill Rd",
+      "vendor": "Ambient Weather",
+      "model": "WS1965B_V1.2.8",
+      "serial": "67480bb609b40ae447d31654",
+      "latitude": 47.9438,
+      "longitude": -122.4404,
+      "timezone": "America/Los_Angeles",
+      "active": true,
+      "sources": [
+        {
+          "key": "ambient-maxweather-observations-v1",
+          "providerKey": "ambient-weather-network",
+          "adapter": "ambient-weather",
+          "capabilities": [
+            "current"
+          ],
+          "cadenceSeconds": 3600,
+          "historyStartDate": null,
+          "historyEndDate": null,
+          "maximumChunkDays": 7,
+          "adapterConfig": {
+            "contractVersion": "ambient-device-data/v1",
+            "deviceId": "67480bb609b40ae447d31654",
+            "macAddress": "CC:8D:A2:75:41:F8",
+            "sample": "every-distinct-provider-observation"
+          },
+          "active": true
+        },
+        {
+          "key": "wunderground-maxweather-history-v1",
+          "providerKey": "weather-underground",
+          "adapter": "weather-underground",
+          "capabilities": [
+            "historical"
+          ],
+          "cadenceSeconds": null,
+          "historyStartDate": "2024-11-29",
+          "historyEndDate": "2026-08-23",
+          "maximumChunkDays": 1,
+          "adapterConfig": {
+            "contractVersion": "wunderground-pws-history/v1",
+            "stationId": "KWACLINT112",
+            "publicApiKey": "e1f10a1e78da46f5b10a1e78da96f525",
+            "sample": "five-minute-provider-observations",
+            "deduplicatesSourceKey": "ambient-maxweather-observations-v1"
+          },
+          "active": true
+        }
+      ]
+    },
+    {
+      "key": "netatmo-nearby",
+      "displayName": "Sills Rd & Twilight Ln",
+      "vendor": "Netatmo",
+      "model": "Weather Station",
+      "serial": "70:ee:50:71:3f:c4",
+      "latitude": 47.964228,
+      "longitude": -122.442459,
+      "timezone": "America/Los_Angeles",
+      "active": true,
+      "sources": [
+        {
+          "key": "netatmo-nearby-observations-v1",
+          "providerKey": "netatmo-weathermap",
+          "adapter": "netatmo",
+          "capabilities": [
+            "current",
+            "historical"
+          ],
+          "cadenceSeconds": 3600,
+          "historyStartDate": "2022-06-21",
+          "historyEndDate": null,
+          "maximumChunkDays": 7,
+          "adapterConfig": {
+            "contractVersion": "netatmo-public-measures/v1",
+            "deviceId": "70:ee:50:71:3f:c4",
+            "outdoorModuleId": "02:00:00:69:34:4e",
+            "rainModuleId": "05:00:00:08:97:7e",
+            "windModuleId": "06:00:00:06:45:7c",
+            "sample": "five-minute-provider-buckets"
+          },
+          "active": true
+        }
+      ]
+    },
+    {
+      "key": "purpleair-samara",
+      "displayName": "Headlands Way",
+      "vendor": "PurpleAir",
+      "model": "PA-II BME280 dual PMSX003",
+      "serial": "32489",
+      "latitude": 47.91435,
+      "longitude": -122.421394,
+      "timezone": "America/Los_Angeles",
+      "active": true,
+      "sources": [
+        {
+          "key": "purpleair-samara-observations-v1",
+          "providerKey": "purpleair",
+          "adapter": "purpleair",
+          "capabilities": [
+            "current",
+            "historical"
+          ],
+          "cadenceSeconds": 120,
+          "historyStartDate": "2019-01-01",
+          "historyEndDate": null,
+          "maximumChunkDays": 2,
+          "adapterConfig": {
+            "contractVersion": "purpleair-map-history/v1",
+            "mapVersion": "3.2.3",
+            "sensorIndex": 32489,
+            "sample": "every-two-minute-dual-channel-average"
+          },
+          "active": true
+        }
+      ]
+    }
+  ]
+}

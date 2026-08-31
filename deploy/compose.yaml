@@ -21,6 +21,9 @@ x-application: &application
   security_opt: [no-new-privileges:true]
   tmpfs:
     - /tmp:size=32m,mode=1777
+  # enforce limits in ordinary Compose
+  mem_limit: 256M
+  mem_reservation: 96M
   logging: *bounded-logs
   stop_grace_period: 45s
 
@@ -46,6 +49,9 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
       - /var/run/postgresql:size=16m,mode=0755,uid=999,gid=999
+    # enforce limits in ordinary Compose
+    mem_limit: 512M
+    mem_reservation: 256M
     environment:
       POSTGRES_DB: ${WEATHER_DATABASE_NAME:-weather}
       POSTGRES_USER: postgres
@@ -96,8 +102,10 @@ services:
       WEATHER_DATABASE_USER: weather_owner
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_owner_password
       WEATHER_MIGRATION_DIRECTORY: /opt/weather/packages/database/migrations
+      WEATHER_PUBLIC_STATIONS_CONFIG_PATH: /opt/weather/config/public-stations/stations.json
       WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
       WEATHER_TEMPEST_CONFIG_PATH: /opt/weather/config/tempest/stations.json
+      WEATHER_TIDE_CONFIG_PATH: /opt/weather/config/tides/noaa.json
     secrets:
       - source: weather_migration_owner_password
         target: weather_owner_password
@@ -125,6 +133,7 @@ services:
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_api_password
       WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256: ${WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256:-}
       WEATHER_MIGRATION_AUTHORIZATION_RELEASE: ${WEATHER_MIGRATION_AUTHORIZATION_RELEASE:-}
+      WEATHER_PUBLIC_STATIONS_CONFIG_PATH: /opt/weather/config/public-stations/stations.json
       WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
     secrets:
       - source: weather_api_password
@@ -168,6 +177,7 @@ services:
       WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
       WEATHER_TEMPEST_API_KEY_FILE: /run/secrets/weather_tempest_api_key
       WEATHER_TEMPEST_CONFIG_PATH: /opt/weather/config/tempest/stations.json
+      WEATHER_TIDE_CONFIG_PATH: /opt/weather/config/tides/noaa.json
       WEATHER_WORKER_INSTANCE: weather-worker
       WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
     secrets:
@@ -212,11 +222,26 @@ services:
     command: [node, deploy/scripts/web-server.mjs]
     tmpfs:
       - /tmp:size=16m,mode=1777
+    # enforce limits in ordinary Compose
+    mem_limit: 384M
+    mem_reservation: 64M
     environment:
       HOST: 0.0.0.0
       PORT: "3000"
       WEATHER_API_ORIGIN: http://api:3001
-    networks: [edge, web_api]
+      WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
+      WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
+      WEATHER_XWEATHER_USAGE_PATH: /var/lib/weather/xweather/usage.json
+      WEATHER_XWEATHER_CLIENT_ID_FILE: /run/secrets/weather_xweather_client_id
+      WEATHER_XWEATHER_CLIENT_SECRET_FILE: /run/secrets/weather_xweather_client_secret
+    secrets:
+      - source: weather_xweather_client_id
+        target: weather_xweather_client_id
+      - source: weather_xweather_client_secret
+        target: weather_xweather_client_secret
+    volumes:
+      - /var/lib/weather/xweather:/var/lib/weather/xweather
+    networks: [edge, web_api, map_egress]
     depends_on:
       api:
         condition: service_healthy
@@ -239,10 +264,10 @@ services:
       resources:
         limits:
           cpus: "0.25"
-          memory: 128M
+          memory: 384M
           pids: 64
         reservations:
-          memory: 32M
+          memory: 64M
 
   cloudflared:
     image: ${CLOUDFLARED_IMAGE:?set digest-pinned CLOUDFLARED_IMAGE}
@@ -272,6 +297,9 @@ services:
       retries: 5
       start_period: 20s
     read_only: true
+    # enforce limits in ordinary Compose
+    mem_limit: 128M
+    mem_reservation: 32M
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 64
@@ -298,6 +326,8 @@ networks:
     internal: true
   provider_egress:
     driver: bridge
+  map_egress:
+    driver: bridge
   tunnel_egress:
     driver: bridge
 
@@ -318,5 +348,9 @@ secrets:
     file: ./secrets/weather_worker_ingest_password
   weather_tempest_api_key:
     file: ./secrets/weather_tempest_api_key
+  weather_xweather_client_id:
+    file: ./secrets/weather_xweather_client_id
+  weather_xweather_client_secret:
+    file: ./secrets/weather_xweather_client_secret
   cloudflare_tunnel_token:
     file: ./secrets/cloudflare_tunnel_token

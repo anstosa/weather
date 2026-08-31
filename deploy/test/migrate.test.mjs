@@ -115,6 +115,54 @@ test("migration entrypoint bootstraps Tempest after the owning site", async () =
   assert.equal(result.tempestBootstrap.providerId, "tempest-provider-id");
 });
 
+// verify the first-party gateway catalog is included in production bootstrap
+test("migration entrypoint bootstraps Ecowitt after the owning site", async () => {
+  const events = [];
+  const dependencies = {
+    async bootstrapEcowittConfiguration() {
+      events.push("bootstrap-ecowitt");
+      return { providerId: "ecowitt-provider-id" };
+    },
+    async bootstrapSiteConfiguration() {
+      events.push("bootstrap-site");
+      return { siteId: "site-id" };
+    },
+    async loadEcowittConfiguration() {
+      events.push("load-ecowitt");
+      return { siteKey: "ballydidean" };
+    },
+    async loadSiteConfiguration() {
+      events.push("load-site");
+      return { site: { key: "ballydidean" } };
+    },
+    async runMigrations() {
+      events.push("migrate");
+      return { applied: [], current: [], serverVersionNum: 170_010 };
+    },
+  };
+  const result = await migrateAndBootstrap(
+    createPool("owner", events),
+    "/migrations",
+    "/config/ballydidean.json",
+    dependencies,
+    {},
+    null,
+    null,
+    null,
+    "/config/ecowitt.json",
+  );
+
+  assert.deepEqual(events, [
+    "migrate",
+    "load-site",
+    "bootstrap-site",
+    "load-ecowitt",
+    "bootstrap-ecowitt",
+    ["end", "owner"],
+  ]);
+  assert.equal(result.ecowittBootstrap.providerId, "ecowitt-provider-id");
+});
+
 test("migration entrypoint passes configured lock and statement timeouts", async () => {
   const events = [];
   const dependencies = {

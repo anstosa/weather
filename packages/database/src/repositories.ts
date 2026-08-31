@@ -18,11 +18,16 @@ import {
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 
 import type { SiteConfiguration } from "./config.js";
+import type { EcowittConfiguration } from "./ecowitt-config.js";
 import { withTransaction } from "./pool.js";
+import type { PublicStationConfiguration } from "./public-stations-config.js";
 import type { TempestConfiguration } from "./tempest-config.js";
+import type { TideConfiguration } from "./tides-config.js";
 
 // remain below PostgreSQL's parameter limit
 const WEATHER_RECORD_BATCH_SIZE = 2_000;
+// bound ten civil forecast days with daylight-saving headroom
+const MAX_FORECAST_HOURS = 264;
 
 // hide sources replaced by an active material successor
 const CURRENT_SOURCE_PREDICATE = "weather_source_is_current(s.id)";
@@ -55,6 +60,8 @@ export interface ActiveSiteRow extends QueryResultRow {
   readonly sourceKey: string;
   readonly sourceKind: SourceKind;
   readonly stationKind: StationKind;
+  readonly stationLatitude: number;
+  readonly stationLongitude: number;
   readonly stationName: string;
   readonly stationSlug: string;
   readonly timezone: string;
@@ -134,6 +141,49 @@ export interface CurrentQuery {
   readonly stationSlug?: string;
 }
 
+export interface ForecastQuery {
+  readonly asOf: string;
+  readonly hours: number;
+  readonly siteSlug: string;
+}
+
+export interface TrendQuery {
+  readonly from: string;
+  readonly siteSlug: string;
+  readonly to: string;
+}
+
+export interface DailyPrecipitationQuery {
+  readonly from: string;
+  readonly siteSlug: string;
+  readonly to: string;
+}
+
+export interface DailyPrecipitationRow extends QueryResultRow {
+  readonly accumulationMm: number;
+  readonly sourceId: string;
+  readonly stationSlug: string;
+  readonly validThrough: Date | string;
+}
+
+export interface TideQuery {
+  readonly from: string;
+  readonly limit?: number;
+  readonly siteSlug: string;
+  readonly to: string;
+}
+
+export interface TrendPointRow extends QueryResultRow {
+  readonly apparentTemperatureC: number | null;
+  readonly precipitationMm: number | null;
+  readonly pressureHpa: number | null;
+  readonly relativeHumidityPercent: number | null;
+  readonly temperatureC: number | null;
+  readonly validAt: Date;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
+}
+
 export interface LatestWorkerHeartbeat extends QueryResultRow {
   readonly lastLoopAt: Date | string;
 }
@@ -171,10 +221,24 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly upstreamTimezone: string;
   readonly uvIndex: number | null;
   readonly validAt: Date | string;
+  readonly waterLevelM: number | null;
   readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
   readonly wetBulbGlobeTemperatureC: number | null;
+}
+
+export interface TideRecordRow extends QueryResultRow {
+  readonly attributionLabel: string;
+  readonly attributionUrl: string;
+  readonly predictionType: string | null;
+  readonly providerKey: string;
+  readonly sourceId: string;
+  readonly sourceKind: "tide_observation" | "tide_prediction";
+  readonly stationName: string;
+  readonly stationSlug: string;
+  readonly validAt: Date | string;
+  readonly waterLevelM: number;
 }
 
 // retain one source-scoped advisory lock
@@ -284,15 +348,19 @@ export async function bootstrapSiteConfiguration(
             slug,
             display_name,
             station_kind,
+            latitude,
+            longitude,
             vendor,
             model,
             serial,
             active
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           ON CONFLICT (site_id, slug) DO UPDATE SET
             display_name = EXCLUDED.display_name,
             station_kind = EXCLUDED.station_kind,
+            latitude = EXCLUDED.latitude,
+            longitude = EXCLUDED.longitude,
             vendor = EXCLUDED.vendor,
             model = EXCLUDED.model,
             serial = EXCLUDED.serial,
@@ -305,6 +373,8 @@ export async function bootstrapSiteConfiguration(
           configuration.station.key,
           configuration.station.displayName,
           configuration.station.kind,
+          configuration.station.latitude,
+          configuration.station.longitude,
           configuration.station.vendor,
           configuration.station.model,
           configuration.station.serial,
@@ -423,15 +493,19 @@ export async function bootstrapTempestConfiguration(
               slug,
               display_name,
               station_kind,
+              latitude,
+              longitude,
               vendor,
               model,
               serial,
               active
             )
-            VALUES ($1, $2, $3, 'physical', 'WeatherFlow', 'Tempest', $4, $5)
+            VALUES ($1, $2, $3, 'physical', $4, $5, 'WeatherFlow', 'Tempest', $6, $7)
             ON CONFLICT (site_id, slug) DO UPDATE SET
               display_name = EXCLUDED.display_name,
               station_kind = EXCLUDED.station_kind,
+              latitude = EXCLUDED.latitude,
+              longitude = EXCLUDED.longitude,
               vendor = EXCLUDED.vendor,
               model = EXCLUDED.model,
               serial = EXCLUDED.serial,
@@ -439,7 +513,15 @@ export async function bootstrapTempestConfiguration(
               updated_at = clock_timestamp()
             RETURNING id
           `,
-          [siteId, station.key, station.displayName, station.serial, station.active],
+          [
+            siteId,
+            station.key,
+            station.displayName,
+            station.latitude,
+            station.longitude,
+            station.serial,
+            station.active,
+          ],
         );
         const stationId = requireRow(
           stationResult.rows[0],
@@ -486,6 +568,457 @@ export async function bootstrapTempestConfiguration(
 
         stationIds[station.key] = stationId;
         sourceIds[station.sourceKey] = sourceResult.rows[0].id;
+      }
+
+      return { providerId, sourceIds, stationIds };
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// bootstrap configured first-party Ecowitt gateways
+export async function bootstrapEcowittConfiguration(
+  pool: Pool,
+  configuration: EcowittConfiguration,
+): Promise<Readonly<{
+  providerId: string;
+  sourceIds: Readonly<Record<string, string>>;
+  stationIds: Readonly<Record<string, string>>;
+}>> {
+  const client = await pool.connect();
+
+  try {
+    return await withTransaction(client, async () => {
+      const site = await client.query<{ id: string }>(
+        "SELECT id FROM sites WHERE slug = $1 AND active",
+        [configuration.siteKey],
+      );
+      const siteId = requireRow(site.rows[0], "Ecowitt site bootstrap").id;
+      const provider = await client.query<{ id: string }>(
+        `
+          INSERT INTO providers (
+            provider_key,
+            display_name,
+            attribution_label,
+            attribution_url,
+            active
+          )
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (provider_key) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            attribution_label = EXCLUDED.attribution_label,
+            attribution_url = EXCLUDED.attribution_url,
+            active = EXCLUDED.active,
+            updated_at = clock_timestamp()
+          RETURNING id
+        `,
+        [
+          configuration.provider.key,
+          configuration.provider.displayName,
+          configuration.provider.attributionLabel,
+          configuration.provider.attributionUrl,
+          configuration.provider.active,
+        ],
+      );
+      const providerId = requireRow(provider.rows[0], "Ecowitt provider bootstrap").id;
+      const stationIds: Record<string, string> = {};
+      const sourceIds: Record<string, string> = {};
+
+      // bootstrap every configured gateway and source
+      for (const station of configuration.stations) {
+        const stationResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO stations (
+              site_id,
+              slug,
+              display_name,
+              station_kind,
+              latitude,
+              longitude,
+              vendor,
+              model,
+              serial,
+              active
+            )
+            VALUES ($1, $2, $3, 'physical', $4, $5, 'Ecowitt', $6, $7, $8)
+            ON CONFLICT (site_id, slug) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              station_kind = EXCLUDED.station_kind,
+              latitude = EXCLUDED.latitude,
+              longitude = EXCLUDED.longitude,
+              vendor = EXCLUDED.vendor,
+              model = EXCLUDED.model,
+              serial = EXCLUDED.serial,
+              active = EXCLUDED.active,
+              updated_at = clock_timestamp()
+            RETURNING id
+          `,
+          [
+            siteId,
+            station.key,
+            station.displayName,
+            station.latitude,
+            station.longitude,
+            station.model,
+            station.expectedMac,
+            station.active,
+          ],
+        );
+        const stationId = requireRow(
+          stationResult.rows[0],
+          `Ecowitt station ${station.key} bootstrap`,
+        ).id;
+        const sourceResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO sources (
+              station_id,
+              provider_id,
+              source_key,
+              source_kind,
+              material_provider_config,
+              source_config_fingerprint,
+              capabilities,
+              cadence_seconds,
+              active
+            )
+            VALUES ($1, $2, $3, 'physical_sensor', $4::jsonb, $5, $6::jsonb, $7, $8)
+            ON CONFLICT (station_id, source_key) DO UPDATE SET
+              cadence_seconds = EXCLUDED.cadence_seconds,
+              active = EXCLUDED.active
+            WHERE sources.source_config_fingerprint = EXCLUDED.source_config_fingerprint
+            RETURNING id
+          `,
+          [
+            stationId,
+            providerId,
+            station.sourceKey,
+            JSON.stringify(station.adapterConfig),
+            station.fingerprint,
+            JSON.stringify(["current"]),
+            station.cadenceSeconds,
+            station.active,
+          ],
+        );
+
+        // reject silent immutable-source drift
+        if (sourceResult.rowCount !== 1 || sourceResult.rows[0] === undefined) {
+          throw new Error(
+            `Ecowitt source ${station.sourceKey} changed material configuration; create a new source key`,
+          );
+        }
+
+        stationIds[station.key] = stationId;
+        sourceIds[station.sourceKey] = sourceResult.rows[0].id;
+      }
+
+      return { providerId, sourceIds, stationIds };
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// bootstrap configured public physical-station sources
+export async function bootstrapPublicStationConfiguration(
+  pool: Pool,
+  configuration: PublicStationConfiguration,
+): Promise<Readonly<{
+  providerIds: Readonly<Record<string, string>>;
+  sourceIds: Readonly<Record<string, string>>;
+  stationIds: Readonly<Record<string, string>>;
+}>> {
+  const client = await pool.connect();
+
+  try {
+    return await withTransaction(client, async () => {
+      const site = await client.query<{ id: string }>(
+        "SELECT id FROM sites WHERE slug = $1 AND active",
+        [configuration.siteKey],
+      );
+      const siteId = requireRow(site.rows[0], "public-station site bootstrap").id;
+      const providerIds: Record<string, string> = {};
+
+      // bootstrap every declared provider
+      for (const provider of configuration.providers) {
+        const result = await client.query<{ id: string }>(
+          `
+            INSERT INTO providers (
+              provider_key,
+              display_name,
+              attribution_label,
+              attribution_url,
+              active
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (provider_key) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              attribution_label = EXCLUDED.attribution_label,
+              attribution_url = EXCLUDED.attribution_url,
+              active = EXCLUDED.active,
+              updated_at = clock_timestamp()
+            RETURNING id
+          `,
+          [
+            provider.key,
+            provider.displayName,
+            provider.attributionLabel,
+            provider.attributionUrl,
+            provider.active,
+          ],
+        );
+        providerIds[provider.key] = requireRow(
+          result.rows[0],
+          `public-station provider ${provider.key} bootstrap`,
+        ).id;
+      }
+
+      const stationIds: Record<string, string> = {};
+      const sourceIds: Record<string, string> = {};
+
+      // bootstrap every configured station
+      for (const station of configuration.stations) {
+        const stationResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO stations (
+              site_id,
+              slug,
+              display_name,
+              station_kind,
+              latitude,
+              longitude,
+              vendor,
+              model,
+              serial,
+              active
+            )
+            VALUES ($1, $2, $3, 'physical', $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (site_id, slug) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              station_kind = EXCLUDED.station_kind,
+              latitude = EXCLUDED.latitude,
+              longitude = EXCLUDED.longitude,
+              vendor = EXCLUDED.vendor,
+              model = EXCLUDED.model,
+              serial = EXCLUDED.serial,
+              active = EXCLUDED.active,
+              updated_at = clock_timestamp()
+            RETURNING id
+          `,
+          [
+            siteId,
+            station.key,
+            station.displayName,
+            station.latitude,
+            station.longitude,
+            station.vendor,
+            station.model,
+            station.serial,
+            station.active,
+          ],
+        );
+        const stationId = requireRow(
+          stationResult.rows[0],
+          `public station ${station.key} bootstrap`,
+        ).id;
+        stationIds[station.key] = stationId;
+
+        // bootstrap every immutable source
+        for (const source of station.sources) {
+          const providerId = providerIds[source.providerKey];
+
+          // require the parsed provider mapping
+          if (providerId === undefined) {
+            throw new Error(`public-station provider ${source.providerKey} is missing`);
+          }
+
+          const sourceResult = await client.query<{ id: string }>(
+            `
+              INSERT INTO sources (
+                station_id,
+                provider_id,
+                source_key,
+                source_kind,
+                material_provider_config,
+                source_config_fingerprint,
+                capabilities,
+                cadence_seconds,
+                active
+              )
+              VALUES ($1, $2, $3, 'physical_sensor', $4::jsonb, $5, $6::jsonb, $7, $8)
+              ON CONFLICT (station_id, source_key) DO UPDATE SET
+                cadence_seconds = EXCLUDED.cadence_seconds,
+                active = EXCLUDED.active
+              WHERE sources.source_config_fingerprint = EXCLUDED.source_config_fingerprint
+              RETURNING id
+            `,
+            [
+              stationId,
+              providerId,
+              source.key,
+              JSON.stringify(source.adapterConfig),
+              source.fingerprint,
+              JSON.stringify(source.capabilities),
+              source.cadenceSeconds,
+              source.active,
+            ],
+          );
+
+          // reject silent immutable-source drift
+          if (sourceResult.rowCount !== 1 || sourceResult.rows[0] === undefined) {
+            throw new Error(
+              `public-station source ${source.key} changed material configuration; create a new source key`,
+            );
+          }
+
+          sourceIds[source.key] = sourceResult.rows[0].id;
+        }
+      }
+
+      return { providerIds, sourceIds, stationIds };
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// bootstrap configured NOAA tide sources
+export async function bootstrapTideConfiguration(
+  pool: Pool,
+  configuration: TideConfiguration,
+): Promise<Readonly<{
+  providerId: string;
+  sourceIds: Readonly<Record<string, string>>;
+  stationIds: Readonly<Record<string, string>>;
+}>> {
+  const client = await pool.connect();
+
+  try {
+    return await withTransaction(client, async () => {
+      const site = await client.query<{ id: string }>(
+        "SELECT id FROM sites WHERE slug = $1 AND active",
+        [configuration.siteKey],
+      );
+      const siteId = requireRow(site.rows[0], "tide site bootstrap").id;
+      const provider = await client.query<{ id: string }>(
+        `
+          INSERT INTO providers (
+            provider_key,
+            display_name,
+            attribution_label,
+            attribution_url,
+            active
+          )
+          VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT (provider_key) DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            attribution_label = EXCLUDED.attribution_label,
+            attribution_url = EXCLUDED.attribution_url,
+            active = EXCLUDED.active,
+            updated_at = clock_timestamp()
+          RETURNING id
+        `,
+        [
+          configuration.provider.key,
+          configuration.provider.displayName,
+          configuration.provider.attributionLabel,
+          configuration.provider.attributionUrl,
+          configuration.provider.active,
+        ],
+      );
+      const providerId = requireRow(provider.rows[0], "tide provider bootstrap").id;
+      const stationIds: Record<string, string> = {};
+      const sourceIds: Record<string, string> = {};
+
+      // bootstrap every tide station and source
+      for (const station of configuration.stations) {
+        const stationResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO stations (
+              site_id,
+              slug,
+              display_name,
+              station_kind,
+              latitude,
+              longitude,
+              vendor,
+              model,
+              serial,
+              active
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (site_id, slug) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              station_kind = EXCLUDED.station_kind,
+              latitude = EXCLUDED.latitude,
+              longitude = EXCLUDED.longitude,
+              vendor = EXCLUDED.vendor,
+              model = EXCLUDED.model,
+              serial = EXCLUDED.serial,
+              active = EXCLUDED.active,
+              updated_at = clock_timestamp()
+            RETURNING id
+          `,
+          [
+            siteId,
+            station.key,
+            station.displayName,
+            station.kind,
+            station.latitude,
+            station.longitude,
+            station.vendor,
+            station.model,
+            station.serial,
+            station.active,
+          ],
+        );
+        const stationId = requireRow(
+          stationResult.rows[0],
+          `tide station ${station.key} bootstrap`,
+        ).id;
+        const source = station.source;
+        const sourceResult = await client.query<{ id: string }>(
+          `
+            INSERT INTO sources (
+              station_id,
+              provider_id,
+              source_key,
+              source_kind,
+              material_provider_config,
+              source_config_fingerprint,
+              capabilities,
+              cadence_seconds,
+              active
+            )
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9)
+            ON CONFLICT (station_id, source_key) DO UPDATE SET
+              cadence_seconds = EXCLUDED.cadence_seconds,
+              active = EXCLUDED.active
+            WHERE sources.source_config_fingerprint = EXCLUDED.source_config_fingerprint
+            RETURNING id
+          `,
+          [
+            stationId,
+            providerId,
+            source.key,
+            source.sourceKind,
+            JSON.stringify(source.adapterConfig),
+            source.fingerprint,
+            JSON.stringify(source.capabilities),
+            source.cadenceSeconds,
+            station.active && source.active,
+          ],
+        );
+
+        // reject silent immutable-source drift
+        if (sourceResult.rowCount !== 1 || sourceResult.rows[0] === undefined) {
+          throw new Error(
+            `tide source ${source.key} changed material configuration; create a new source key`,
+          );
+        }
+
+        stationIds[station.key] = stationId;
+        sourceIds[source.key] = sourceResult.rows[0].id;
       }
 
       return { providerId, sourceIds, stationIds };
@@ -934,6 +1467,8 @@ export async function listActiveSites(pool: Pool): Promise<readonly ActiveSiteRo
         st.slug AS "stationSlug",
         st.display_name AS "stationName",
         st.station_kind AS "stationKind",
+        st.latitude AS "stationLatitude",
+        st.longitude AS "stationLongitude",
         s.id AS "sourceId",
         s.source_key AS "sourceKey",
         s.source_kind AS "sourceKind",
@@ -996,12 +1531,255 @@ export async function getCurrentWeather(
         AND st.active
         AND s.active
         AND p.active
+        AND s.source_kind IN ('physical_sensor', 'model_current', 'reanalysis')
         AND ${CURRENT_SOURCE_PREDICATE}
         AND ($2::text IS NULL OR st.slug = $2)
         AND ($3::bigint IS NULL OR s.id = $3)
       ORDER BY wr.source_id
     `,
     [siteSlug, query.stationSlug ?? null, query.sourceId ?? null],
+  );
+
+  return result.rows;
+}
+
+// read the latest bounded forecast product
+export async function getWeatherForecast(
+  pool: Pool,
+  query: ForecastQuery,
+): Promise<readonly WeatherRecordRow[]> {
+  const asOf = validateUtcInstant(query.asOf, "asOf");
+
+  // require a bounded public horizon
+  if (!Number.isSafeInteger(query.hours) || query.hours < 1 || query.hours > MAX_FORECAST_HOURS) {
+    throw new RangeError(`forecast hours must be between 1 and ${String(MAX_FORECAST_HOURS)}`);
+  }
+
+  const endExclusive = new Date(
+    Date.parse(asOf) + query.hours * 3_600_000,
+  ).toISOString();
+  const result = await pool.query<WeatherRecordRow>(
+    `
+      SELECT
+        ${weatherRecordSelection()}
+      FROM sources s
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      JOIN LATERAL (
+        SELECT candidate.*
+        FROM weather_records candidate
+        WHERE candidate.source_id = s.id
+          AND candidate.product_run_at = (
+            SELECT MAX(product.product_run_at)
+            FROM weather_records product
+            WHERE product.source_id = s.id
+          )
+          AND candidate.valid_at >= $2
+          AND candidate.valid_at < $3
+        ORDER BY candidate.valid_at ASC, candidate.id ASC
+        LIMIT ${String(MAX_FORECAST_HOURS)}
+      ) wr ON true
+      WHERE si.slug = $1
+        AND si.active
+        AND st.active
+        AND s.active
+        AND p.active
+        AND s.source_kind = 'forecast'
+        AND ${CURRENT_SOURCE_PREDICATE}
+      ORDER BY wr.valid_at ASC, wr.id ASC
+    `,
+    [query.siteSlug, asOf, endExclusive],
+  );
+
+  return result.rows;
+}
+
+// sum today's nearest physical rain gauge
+export async function getDailyPrecipitation(
+  pool: Pool,
+  query: DailyPrecipitationQuery,
+): Promise<DailyPrecipitationRow | null> {
+  const from = validateUtcInstant(query.from, "from");
+  const to = validateUtcInstant(query.to, "to");
+
+  // require an ordered local-day window
+  if (from >= to) {
+    throw new RangeError("daily precipitation from must be earlier than to");
+  }
+
+  const result = await pool.query<DailyPrecipitationRow>(
+    `
+      WITH nearest_source AS (
+        SELECT
+          s.id AS source_id,
+          st.slug AS station_slug
+        FROM sources s
+        JOIN stations st ON st.id = s.station_id
+        JOIN sites si ON si.id = st.site_id
+        JOIN providers p ON p.id = s.provider_id
+        WHERE si.slug = $1
+          AND si.active
+          AND st.active
+          AND s.active
+          AND p.active
+          AND s.source_kind = 'physical_sensor'
+          AND ${CURRENT_SOURCE_PREDICATE}
+          AND EXISTS (
+            SELECT 1
+            FROM weather_records candidate
+            WHERE candidate.source_id = s.id
+              AND candidate.valid_at >= $2
+              AND candidate.valid_at < $3
+              AND candidate.precipitation_mm IS NOT NULL
+          )
+        ORDER BY
+          POWER(st.latitude - si.latitude, 2) +
+            POWER((st.longitude - si.longitude) * COS(RADIANS(si.latitude)), 2),
+          st.slug ASC,
+          s.id ASC
+        LIMIT 1
+      )
+      SELECT
+        SUM(wr.precipitation_mm)::double precision AS "accumulationMm",
+        nearest_source.source_id AS "sourceId",
+        nearest_source.station_slug AS "stationSlug",
+        MAX(wr.valid_at) AS "validThrough"
+      FROM nearest_source
+      JOIN weather_records wr ON wr.source_id = nearest_source.source_id
+      WHERE wr.valid_at >= $2
+        AND wr.valid_at < $3
+        AND wr.precipitation_mm IS NOT NULL
+      GROUP BY nearest_source.source_id, nearest_source.station_slug
+    `,
+    [query.siteSlug, from, to],
+  );
+
+  return result.rows[0] ?? null;
+}
+
+// aggregate normalized recent conditions into chart buckets
+export async function listWeatherTrends(
+  pool: Pool,
+  query: TrendQuery,
+): Promise<readonly TrendPointRow[]> {
+  const from = validateUtcInstant(query.from, "from");
+  const to = validateUtcInstant(query.to, "to");
+
+  // require an ordered trend window
+  if (from >= to) {
+    throw new RangeError("trend from must be earlier than to");
+  }
+
+  const result = await pool.query<TrendPointRow>(
+    `
+      WITH daily_sources AS (
+        SELECT
+          date_trunc('day', wr.valid_at AT TIME ZONE si.timezone) AT TIME ZONE si.timezone AS valid_at,
+          s.source_kind,
+          AVG(wr.temperature_c) AS temperature_c,
+          AVG(wr.apparent_temperature_c) AS apparent_temperature_c,
+          SUM(wr.precipitation_mm) AS precipitation_mm,
+          AVG(wr.wind_speed_mps) AS wind_speed_mps,
+          MAX(wr.wind_gust_mps) AS wind_gust_mps,
+          AVG(wr.pressure_hpa) AS pressure_hpa,
+          AVG(wr.relative_humidity_percent) AS relative_humidity_percent
+        FROM weather_records wr
+        JOIN sources s ON s.id = wr.source_id
+        JOIN stations st ON st.id = s.station_id
+        JOIN sites si ON si.id = st.site_id
+        JOIN providers p ON p.id = s.provider_id
+        WHERE si.slug = $1
+          AND wr.valid_at >= $2
+          AND wr.valid_at < $3
+          AND si.active
+          AND st.active
+          AND s.active
+          AND p.active
+          AND s.source_kind IN ('model_current', 'reanalysis')
+          AND ${CURRENT_SOURCE_PREDICATE}
+        GROUP BY 1, s.source_kind
+      ),
+      preferred_days AS (
+        SELECT
+          daily_sources.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY valid_at
+            ORDER BY CASE source_kind WHEN 'reanalysis' THEN 0 ELSE 1 END
+          ) AS source_priority
+        FROM daily_sources
+      )
+      SELECT
+        valid_at AS "validAt",
+        temperature_c AS "temperatureC",
+        apparent_temperature_c AS "apparentTemperatureC",
+        precipitation_mm AS "precipitationMm",
+        wind_speed_mps AS "windSpeedMps",
+        wind_gust_mps AS "windGustMps",
+        pressure_hpa AS "pressureHpa",
+        relative_humidity_percent AS "relativeHumidityPercent"
+      FROM preferred_days
+      WHERE source_priority = 1
+      ORDER BY valid_at ASC
+    `,
+    [query.siteSlug, from, to],
+  );
+
+  return result.rows;
+}
+
+// read bounded observed and predicted tide levels
+export async function listTideRecords(
+  pool: Pool,
+  query: TideQuery,
+): Promise<readonly TideRecordRow[]> {
+  const from = validateUtcInstant(query.from, "from");
+  const to = validateUtcInstant(query.to, "to");
+  const limit = query.limit ?? 10_000;
+
+  // require one bounded ordered public range
+  if (
+    from >= to ||
+    Date.parse(to) - Date.parse(from) > 31 * 86_400_000 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > 10_000
+  ) {
+    throw new RangeError("tide query range or limit is invalid");
+  }
+
+  const result = await pool.query<TideRecordRow>(
+    `
+      SELECT
+        wr.source_id AS "sourceId",
+        wr.source_kind AS "sourceKind",
+        wr.valid_at AS "validAt",
+        wr.water_level_m AS "waterLevelM",
+        wr.provider_metadata ->> 'prediction_type' AS "predictionType",
+        st.slug AS "stationSlug",
+        st.display_name AS "stationName",
+        p.provider_key AS "providerKey",
+        p.attribution_label AS "attributionLabel",
+        p.attribution_url AS "attributionUrl"
+      FROM weather_records wr
+      JOIN sources s ON s.id = wr.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      WHERE si.slug = $1
+        AND wr.valid_at >= $2
+        AND wr.valid_at < $3
+        AND wr.water_level_m IS NOT NULL
+        AND s.source_kind IN ('tide_observation', 'tide_prediction')
+        AND si.active
+        AND st.active
+        AND s.active
+        AND p.active
+        AND ${CURRENT_SOURCE_PREDICATE}
+      ORDER BY wr.valid_at ASC, wr.id ASC
+      LIMIT $4
+    `,
+    [query.siteSlug, from, to, limit],
   );
 
   return result.rows;
@@ -1033,6 +1811,7 @@ export async function listWeatherHistory(
     "st.active",
     "s.active",
     "p.active",
+    "s.source_kind IN ('physical_sensor', 'model_current', 'reanalysis')",
     CURRENT_SOURCE_PREDICATE,
   ];
   const recordConditions = ["candidate.source_id = s.id"];
@@ -1169,6 +1948,7 @@ async function upsertWeatherRecordBatch(
       record.metrics.solarRadiationWm2,
       record.metrics.uvIndex,
       record.metrics.wetBulbGlobeTemperatureC,
+      record.metrics.waterLevelM,
       contentHash,
     );
 
@@ -1215,6 +1995,7 @@ async function upsertWeatherRecordBatch(
           solar_radiation_wm2,
           uv_index,
           wet_bulb_globe_temperature_c,
+          water_level_m,
           content_hash
       )
       VALUES ${placeholders.join(",\n        ")}
@@ -1245,6 +2026,7 @@ async function upsertWeatherRecordBatch(
         solar_radiation_wm2 = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.solar_radiation_wm2 ELSE weather_records.solar_radiation_wm2 END,
         uv_index = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.uv_index ELSE weather_records.uv_index END,
         wet_bulb_globe_temperature_c = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wet_bulb_globe_temperature_c ELSE weather_records.wet_bulb_globe_temperature_c END,
+        water_level_m = CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.water_level_m ELSE weather_records.water_level_m END,
         revision_count = weather_records.revision_count + CASE WHEN weather_records.content_hash <> EXCLUDED.content_hash THEN 1 ELSE 0 END,
         content_hash = EXCLUDED.content_hash
     `,
@@ -1255,7 +2037,7 @@ async function upsertWeatherRecordBatch(
 // create one repeated insert tuple
 function weatherRecordPlaceholder(firstParameter: number): string {
   const parameters = Array.from(
-    { length: 31 },
+    { length: 32 },
     (_unused, index) => `$${String(firstParameter + index)}`,
   );
   parameters[11] = `${parameters[11]!}::jsonb`;
@@ -1582,6 +2364,7 @@ function weatherRecordSelection(): string {
     wr.solar_radiation_wm2 AS "solarRadiationWm2",
     wr.uv_index AS "uvIndex",
     wr.wet_bulb_globe_temperature_c AS "wetBulbGlobeTemperatureC",
+    wr.water_level_m AS "waterLevelM",
     st.slug AS "stationSlug",
     si.slug AS "siteSlug",
     p.provider_key AS "providerKey"

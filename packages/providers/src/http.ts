@@ -19,11 +19,59 @@ export interface JsonResponse {
   readonly status: number;
 }
 
+export interface TextResponse {
+  readonly attempts: number;
+  readonly checksum: string;
+  readonly text: string;
+  readonly status: number;
+}
+
+export interface ProviderJsonRequest {
+  readonly accept?: string;
+  readonly body?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly method?: "GET" | "POST";
+}
+
 // fetch JSON with bounded retry controls
 export async function fetchJsonWithRetry(
   url: URL,
   options: ProviderFetchOptions = {},
+  request: ProviderJsonRequest = {},
 ): Promise<JsonResponse> {
+  const response = await fetchTextWithRetry(url, options, {
+    accept: "application/json",
+    ...request,
+  });
+  let payload: unknown;
+
+  try {
+    payload = JSON.parse(response.text) as unknown;
+  } catch (error) {
+    throw new ProviderFailure(
+      {
+        classification: "invalid_payload",
+        code: "invalid_json",
+        message: "provider returned invalid JSON",
+      },
+      { attempts: response.attempts, cause: error, status: response.status },
+    );
+  }
+
+  return {
+    attempts: response.attempts,
+    checksum: response.checksum,
+    payload,
+    status: response.status,
+  };
+}
+
+// fetch text with bounded retry controls
+export async function fetchTextWithRetry(
+  url: URL,
+  options: ProviderFetchOptions = {},
+  request: ProviderJsonRequest = {},
+): Promise<TextResponse> {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   const maxAttempts = options.maxAttempts ?? DEFAULT_PROVIDER_MAX_ATTEMPTS;
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_PROVIDER_MAX_BODY_BYTES;
@@ -51,6 +99,7 @@ export async function fetchJsonWithRetry(
         attemptTimeoutMs,
         maxBodyBytes,
         attempt,
+        request,
       );
 
       // classify non-success responses before parsing
@@ -58,25 +107,10 @@ export async function fetchJsonWithRetry(
         throw classifyHttpFailure(response, body, attempt, clock);
       }
 
-      let payload: unknown;
-
-      try {
-        payload = JSON.parse(body) as unknown;
-      } catch (error) {
-        throw new ProviderFailure(
-          {
-            classification: "invalid_payload",
-            code: "invalid_json",
-            message: "provider returned invalid JSON",
-          },
-          { attempts: attempt, cause: error, status: response.status },
-        );
-      }
-
       return {
         attempts: attempt,
         checksum: createHash("sha256").update(body).digest("hex"),
-        payload,
+        text: body,
         status: response.status,
       };
     } catch (error) {
@@ -155,6 +189,7 @@ async function fetchAttempt(
   timeoutMs: number,
   maxBodyBytes: number,
   attempt: number,
+  request: ProviderJsonRequest,
 ): Promise<Readonly<{ body: string; response: Response }>> {
   const controller = new AbortController();
   let timeout: NodeJS.Timeout | undefined;
@@ -167,9 +202,19 @@ async function fetchAttempt(
   });
 
   try {
+    const headers = request.headers === undefined
+      ? { accept: request.accept ?? "text/plain" }
+      : new Headers(request.headers);
+
+    // add the response media type to custom headers
+    if (headers instanceof Headers) {
+      headers.set("accept", request.accept ?? "text/plain");
+    }
     const response = await Promise.race([
       fetchImplementation(url, {
-        headers: { accept: "application/json" },
+        ...(request.body === undefined ? {} : { body: request.body }),
+        headers,
+        method: request.method ?? "GET",
         signal: controller.signal,
       }),
       timeoutFailure,

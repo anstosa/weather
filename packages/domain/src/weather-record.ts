@@ -20,6 +20,7 @@ export const CANONICAL_UNITS = {
   solarRadiationWm2: "watt_per_square_meter",
   temperatureC: "celsius",
   uvIndex: "index",
+  waterLevelM: "meter",
   windDirectionDegrees: "degree",
   windGustMps: "meter_per_second",
   windSpeedMps: "meter_per_second",
@@ -42,6 +43,7 @@ export interface CanonicalWeatherMetrics {
   readonly solarRadiationWm2: number | null;
   readonly temperatureC: number | null;
   readonly uvIndex: number | null;
+  readonly waterLevelM: number | null;
   readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
@@ -88,12 +90,16 @@ type SupportedUnit =
   | "f"
   | "hectopascal"
   | "inch"
+  | "inch_of_mercury"
+  | "inch_per_hour"
   | "index"
   | "kilometer_per_hour"
   | "knot"
   | "microgram_per_cubic_meter"
   | "microsiemens_per_centimeter"
+  | "meter"
   | "meter_per_second"
+  | "mile_per_hour"
   | "millimeter"
   | "millimeter_per_hour"
   | "pascal"
@@ -121,6 +127,11 @@ const PROVIDER_KEYS = new Set([
   "rain_accumulation_nc_mm",
   "report_interval_minutes",
   "request_id",
+  "station_id",
+  "datum",
+  "product",
+  "prediction_type",
+  "property_sensors",
   "wind_lull_mps",
   "wind_sample_interval_seconds",
 ]);
@@ -327,9 +338,9 @@ function convertMetricValue(
   // accept precipitation rates
   if (
     metric === "precipitationRateMmPerHour" &&
-    unit === "millimeter_per_hour"
+    (unit === "millimeter_per_hour" || unit === "inch_per_hour")
   ) {
-    return value;
+    return unit === "inch_per_hour" ? value * 25.4 : value;
   }
 
   // convert wind speed
@@ -348,6 +359,11 @@ function convertMetricValue(
     if (unit === "knot") {
       return value * 0.514444;
     }
+
+    // convert miles per hour
+    if (unit === "mile_per_hour") {
+      return value * 0.44704;
+    }
   }
 
   // convert pressure
@@ -360,6 +376,11 @@ function convertMetricValue(
     // convert pascals
     if (unit === "pascal") {
       return value / 100;
+    }
+
+    // convert inches of mercury
+    if (unit === "inch_of_mercury") {
+      return value * 33.8638866667;
     }
   }
 
@@ -396,6 +417,11 @@ function convertMetricValue(
 
   // accept UV index
   if (metric === "uvIndex" && unit === "index") {
+    return value;
+  }
+
+  // accept water levels
+  if (metric === "waterLevelM" && unit === "meter") {
     return value;
   }
 
@@ -490,6 +516,11 @@ function metricRange(
     return { maximum: 20, minimum: 0 };
   }
 
+  // map coastal water-level range
+  if (metric === "waterLevelM") {
+    return { maximum: 30, minimum: -20 };
+  }
+
   return { maximum: 360, minimum: 0 };
 }
 
@@ -508,11 +539,13 @@ function validateWeatherRecordMetadata(
     metadata.quality,
     QUALITY_KEYS,
     "quality",
+    2_048,
   );
   const provider = validateMetadataFragment(
     metadata.provider,
     PROVIDER_KEYS,
     "provider",
+    8_192,
   );
 
   return {
@@ -581,6 +614,7 @@ function validateMetadataFragment(
   fragment: Readonly<Record<string, JsonValue>> | null,
   allowedKeys: ReadonlySet<string>,
   fieldName: string,
+  maximumBytes: number,
 ): Readonly<Record<string, JsonValue>> | null {
   // preserve missing fragments
   if (fragment === null) {
@@ -598,7 +632,7 @@ function validateMetadataFragment(
   const serialized = canonicalizeJson(fragment);
 
   // enforce bounded storage
-  if (serialized.length > 2_048) {
+  if (serialized.length > maximumBytes) {
     throw new RangeError(`${fieldName} metadata is too large`);
   }
 

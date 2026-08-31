@@ -59,6 +59,8 @@ export interface SiteConfiguration {
     readonly displayName: string;
     readonly key: string;
     readonly kind: StationKind;
+    readonly latitude: number;
+    readonly longitude: number;
     readonly model: string | null;
     readonly serial: string | null;
     readonly vendor: string | null;
@@ -242,6 +244,8 @@ export function parseSiteConfiguration(raw: unknown): SiteConfiguration {
       ),
       key: stationKey,
       kind: stationKind,
+      latitude: coordinates.latitude,
+      longitude: coordinates.longitude,
       model: optionalBoundedString(station.model, "station.model", 128),
       serial: optionalBoundedString(station.serial, "station.serial", 128),
       vendor: optionalBoundedString(station.vendor, "station.vendor", 128),

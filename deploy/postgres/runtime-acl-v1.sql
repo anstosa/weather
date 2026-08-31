@@ -62,6 +62,7 @@ GRANT UPDATE (
   solar_radiation_wm2,
   uv_index,
   wet_bulb_globe_temperature_c,
+  water_level_m,
   content_hash,
   revision_count
 ) ON weather_records TO weather_ingest;

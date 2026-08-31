@@ -12,16 +12,21 @@ import { createNormalizedWeatherRecord } from "@weather/domain";
 import {
   abandonExpiredRuns,
   acquireSourceSession,
+  bootstrapEcowittConfiguration,
   bootstrapSiteConfiguration,
+  bootstrapTempestConfiguration,
   completeBackfillIngestion,
   completeScheduledIngestion,
   discoverDueSources,
   failIngestionRun,
   getCurrentWeather,
+  getDailyPrecipitation,
   getScheduledCheckpoint,
   hasSuccessfulBackfillChunk,
   listActiveSites,
+  loadEcowittConfiguration,
   loadSiteConfiguration,
+  loadTempestConfiguration,
   runMigrations,
   startIngestionRun,
   updateWorkerHeartbeat,
@@ -35,13 +40,15 @@ import {
 } from "./postgres-harness.mjs";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
+const ecowittConfigurationPath = join(repositoryRoot, "config/ecowitt/gateways.json");
 const migrationDirectory = join(repositoryRoot, "packages/database/migrations");
 const siteConfigurationPath = join(repositoryRoot, "config/sites/ballydidean.json");
+const tempestConfigurationPath = join(repositoryRoot, "config/tempest/stations.json");
 const executeFile = promisify(execFile);
 
 // exercise the complete Phase 2 PostgreSQL contract
 test(
-  "I-DB-01 through I-DB-26 PostgreSQL foundation",
+  "I-DB-01 through I-DB-27 PostgreSQL foundation",
   { timeout: 600_000 },
   async (context) => {
     const server = await startPostgres(17, "main");
@@ -75,9 +82,12 @@ test(
           "0003_ecowitt_measurements.sql",
           "0004_tempest_metadata.sql",
           "0005_source_supersession.sql",
+          "0006_station_coordinates.sql",
+          "0007_tide_sources.sql",
+          "0008_ecowitt_property_sensors.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 5);
+        assert.equal(ledger.rowCount, 8);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -104,6 +114,9 @@ test(
             "0003_ecowitt_measurements.sql",
             "0004_tempest_metadata.sql",
             "0005_source_supersession.sql",
+            "0006_station_coordinates.sql",
+            "0007_tide_sources.sql",
+            "0008_ecowitt_property_sensors.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -135,8 +148,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 5);
-          assert.equal(first.current.length + second.current.length, 5);
+          assert.equal(first.applied.length + second.applied.length, 8);
+          assert.equal(first.current.length + second.current.length, 8);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -160,8 +173,16 @@ test(
         assert.deepEqual(counts.rows[0], {
           providers: 1,
           sites: 1,
-          sources: 2,
+          sources: 6,
           stations: 1,
+        });
+        const station = await pool.query(
+          "SELECT latitude, longitude FROM stations WHERE id = $1",
+          [bootstrap.stationId],
+        );
+        assert.deepEqual(station.rows[0], {
+          latitude: 47.950429954185445,
+          longitude: -122.42797012608193,
         });
         const sources = await pool.query(
           "SELECT id, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind",
@@ -214,7 +235,7 @@ test(
         await assert.rejects(
           () =>
             pool.query(
-              "INSERT INTO stations (site_id, slug, display_name, station_kind) VALUES (999999, 'missing', 'missing', 'virtual')",
+              "INSERT INTO stations (site_id, slug, display_name, station_kind, latitude, longitude) VALUES (999999, 'missing', 'missing', 'virtual', 0, 0)",
             ),
           hasDatabaseCode("23503"),
         );
@@ -281,12 +302,12 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0005_source_supersession.sql" },
+            { version: "0008_ecowitt_property_sensors.sql" },
           );
           try {
             // reject unproven candidate history
             await pool.query(
-              "INSERT INTO schema_migrations (name, checksum) VALUES ('0006_candidate_only.sql', $1)",
+              "INSERT INTO schema_migrations (name, checksum) VALUES ('0009_candidate_only.sql', $1)",
               ["3".repeat(64)],
             );
             await assert.rejects(
@@ -312,7 +333,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0005_source_supersession.sql" },
+              { version: "0008_ecowitt_property_sensors.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
@@ -336,7 +357,7 @@ test(
               [knownMigration.rows[0].checksum],
             );
             await pool.query(
-              "DELETE FROM schema_migrations WHERE name = '0006_candidate_only.sql'",
+              "DELETE FROM schema_migrations WHERE name = '0009_candidate_only.sql'",
             );
           }
           await ingestPool.query(
@@ -349,7 +370,7 @@ test(
               VALUES ('role-test', clock_timestamp(), 'test/v1')
             `,
           );
-          assert.equal((await ingestPool.query("SELECT * FROM sources")).rowCount, 2);
+          assert.equal((await ingestPool.query("SELECT * FROM sources")).rowCount, 6);
           await assert.rejects(
             () => ingestPool.query("ALTER TABLE weather_records ADD COLUMN escaped text"),
             hasDatabaseCode("42501"),
@@ -522,6 +543,7 @@ test(
                 soil_moisture_percent,
                 solar_radiation_wm2,
                 uv_index,
+                water_level_m,
                 wet_bulb_globe_temperature_c
               FROM weather_records
               WHERE valid_at = '2026-08-20T00:00:00.000Z'
@@ -541,6 +563,7 @@ test(
               soilMoisturePercent: rows.rows[0].soil_moisture_percent,
               solarRadiationWm2: rows.rows[0].solar_radiation_wm2,
               uvIndex: rows.rows[0].uv_index,
+              waterLevelM: rows.rows[0].water_level_m,
               wetBulbGlobeTemperatureC:
                 rows.rows[0].wet_bulb_globe_temperature_c,
             },
@@ -552,6 +575,7 @@ test(
               soilMoisturePercent: 34,
               solarRadiationWm2: 320,
               uvIndex: 2,
+              waterLevelM: null,
               wetBulbGlobeTemperatureC: 11,
             },
           );
@@ -1227,6 +1251,109 @@ test(
         );
         assert.equal(heartbeat.rows[0].current_activity, "idle");
       });
+
+      // verify nearest-gauge daily accumulation
+      await context.test("I-DB-27 daily precipitation selects one nearest physical source", async () => {
+        const tempestConfiguration = await loadTempestConfiguration(tempestConfigurationPath);
+        const tempestBootstrap = await bootstrapTempestConfiguration(
+          pool,
+          tempestConfiguration,
+        );
+        const precipitationFixtures = [
+          {
+            accumulation: [0.3, 0.7],
+            sourceId: tempestBootstrap.sourceIds["tempest-64255-observations-v2"],
+          },
+          {
+            accumulation: [9],
+            sourceId: tempestBootstrap.sourceIds["tempest-225947-observations-v2"],
+          },
+        ];
+
+        // populate two competing physical gauges
+        for (const fixture of precipitationFixtures) {
+          assert.notEqual(fixture.sourceId, undefined);
+          const sourceResult = await pool.query(
+            "SELECT id, source_kind, source_config_fingerprint FROM sources WHERE id = $1",
+            [fixture.sourceId],
+          );
+          const source = sourceResult.rows[0];
+          const session = await requireSession(pool, source.id);
+
+          try {
+            const run = await createRun(
+              session,
+              source,
+              "scheduled",
+              "2026-08-28T07:00:00.000Z",
+              "2026-08-28T08:00:00.000Z",
+            );
+            await completeScheduledIngestion(session, {
+              attempts: 1,
+              expectedCheckpointVersion: null,
+              lastValidAt: `2026-08-28T07:0${String(fixture.accumulation.length)}:00.000Z`,
+              providerCursor: null,
+              records: fixture.accumulation.map(
+                // create one interval accumulation
+                (precipitationMm, index) => makeRecord(
+                  source.id,
+                  "physical_sensor",
+                  `2026-08-28T07:0${String(index + 1)}:00.000Z`,
+                  { precipitationMm },
+                ),
+              ),
+              runId: run.id,
+              windowEndExclusive: "2026-08-28T08:00:00.000Z",
+              windowStart: "2026-08-28T07:00:00.000Z",
+            });
+          } finally {
+            await session.release();
+          }
+        }
+
+        const daily = await getDailyPrecipitation(pool, {
+          from: "2026-08-28T07:00:00.000Z",
+          siteSlug: configuration.site.key,
+          to: "2026-08-28T18:00:00.000Z",
+        });
+        assert.equal(daily?.sourceId, precipitationFixtures[0].sourceId);
+        assert.equal(daily?.stationSlug, "tempest-64255");
+        assert.equal(daily?.accumulationMm, 1);
+        assert.equal(
+          new Date(daily?.validThrough).toISOString(),
+          "2026-08-28T07:02:00.000Z",
+        );
+      });
+
+      // verify idempotent first-party gateway bootstrap after baseline contracts
+      await context.test("Ecowitt gateway bootstrap preserves its LAN identity", async () => {
+        const ecowittConfiguration = await loadEcowittConfiguration(
+          ecowittConfigurationPath,
+        );
+        const first = await bootstrapEcowittConfiguration(pool, ecowittConfiguration);
+        const second = await bootstrapEcowittConfiguration(pool, ecowittConfiguration);
+        const station = await pool.query(
+          `
+            SELECT st.slug, st.vendor, st.model, st.serial,
+                   s.source_key, s.source_kind, s.cadence_seconds
+            FROM stations st
+            JOIN sources s ON s.station_id = st.id
+            WHERE st.id = $1
+          `,
+          [first.stationIds["ballydidean-ecowitt"]],
+        );
+
+        assert.deepEqual(second, first);
+        assert.deepEqual(station.rows[0], {
+          cadence_seconds: 60,
+          model: "GW3000",
+          serial: "88:F1:55:05:D8:9F",
+          slug: "ballydidean-ecowitt",
+          source_key: "ecowitt-88f15505d89f-local-live-v1",
+          source_kind: "physical_sensor",
+          vendor: "Ecowitt",
+        });
+      });
     } finally {
       await Promise.all([pool.end(), adminPool.end()]);
       await stopPostgres(server);
@@ -1325,7 +1452,7 @@ function makeRecord(sourceId, sourceKind, validAt, overrides = {}) {
       blackGlobeTemperatureC: 18,
       cloudCoverPercent: 50,
       pm25MicrogramsPerCubicMeter: 7,
-      precipitationMm: 0,
+      precipitationMm: overrides.precipitationMm ?? 0,
       precipitationRateMmPerHour: 0,
       pressureHpa: 1013,
       relativeHumidityPercent: 70,
@@ -1334,6 +1461,7 @@ function makeRecord(sourceId, sourceKind, validAt, overrides = {}) {
       solarRadiationWm2: 320,
       temperatureC: overrides.temperatureC ?? 10,
       uvIndex: 2,
+      waterLevelM: null,
       windDirectionDegrees: 180,
       windGustMps: 7,
       windSpeedMps: 4,

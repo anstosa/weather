@@ -71,6 +71,109 @@
       },
       "cadenceSeconds": null,
       "active": true
+    },
+    {
+      "key": "open-meteo-forecast-v1",
+      "sourceKind": "forecast",
+      "capabilities": [
+        "forecast"
+      ],
+      "adapterConfig": {
+        "contractVersion": "forecast-hourly/v1",
+        "forecastHours": 49,
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure"
+        ]
+      },
+      "cadenceSeconds": 3600,
+      "active": false
+    },
+    {
+      "key": "open-meteo-forecast-v2",
+      "sourceKind": "forecast",
+      "capabilities": [
+        "forecast"
+      ],
+      "adapterConfig": {
+        "contractVersion": "forecast-hourly/v2",
+        "forecastHours": 49,
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure",
+          "uv_index",
+          "pm2_5"
+        ]
+      },
+      "cadenceSeconds": 3600,
+      "active": false
+    },
+    {
+      "key": "open-meteo-forecast-v3",
+      "sourceKind": "forecast",
+      "capabilities": [
+        "forecast"
+      ],
+      "adapterConfig": {
+        "contractVersion": "forecast-daily/v3",
+        "forecastDays": 1,
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure",
+          "uv_index",
+          "pm2_5"
+        ]
+      },
+      "cadenceSeconds": 3600,
+      "active": false
+    },
+    {
+      "key": "open-meteo-forecast-v4",
+      "sourceKind": "forecast",
+      "capabilities": [
+        "forecast"
+      ],
+      "adapterConfig": {
+        "contractVersion": "forecast-daily/v4",
+        "forecastDays": 10,
+        "airQualityForecastDays": 7,
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure",
+          "uv_index",
+          "pm2_5"
+        ]
+      },
+      "cadenceSeconds": 3600,
+      "active": true
     }
   ]
 }

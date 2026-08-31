@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly local Weather database backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+Unit=weather-backup-local.service
+
+[Install]
+WantedBy=timers.target

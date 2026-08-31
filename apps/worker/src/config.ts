@@ -2,14 +2,20 @@ import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 
 import {
+  loadEcowittConfiguration,
   loadDatabaseConfiguration,
+  loadPublicStationConfiguration,
   loadSiteConfiguration,
   loadTempestConfiguration,
+  loadTideConfiguration,
   readMigrationReadinessAuthorization,
   type DatabaseConfiguration,
+  type EcowittConfiguration,
   type MigrationReadinessAuthorization,
+  type PublicStationConfiguration,
   type SiteConfiguration,
   type TempestConfiguration,
+  type TideConfiguration,
 } from "@weather/database";
 import {
   OPEN_METEO_COMPATIBILITY_ORIGIN_ENV,
@@ -18,14 +24,17 @@ import {
 
 export interface WorkerConfiguration {
   readonly database: DatabaseConfiguration;
+  readonly ecowitt: EcowittConfiguration | null;
   readonly instance: string;
   readonly migrationAuthorization: MigrationReadinessAuthorization | null;
   readonly migrationDirectory: string;
   readonly openMeteoCompatibilityOrigin: string | null;
+  readonly publicStations: PublicStationConfiguration | null;
   readonly site: SiteConfiguration;
   readonly siteConfigurationPath: string;
   readonly tempest: TempestConfiguration | null;
   readonly tempestApiKey: string | null;
+  readonly tides: TideConfiguration | null;
   readonly version: string;
 }
 
@@ -37,6 +46,10 @@ export async function loadWorkerConfiguration(
     environment,
     "WEATHER_SITE_CONFIG_PATH",
   );
+  const ecowittConfigurationPath = optionalEnvironment(
+    environment.WEATHER_ECOWITT_CONFIG_PATH ?? "config/ecowitt/gateways.json",
+    "WEATHER_ECOWITT_CONFIG_PATH",
+  );
   const tempestConfigurationPath = optionalEnvironment(
     environment.WEATHER_TEMPEST_CONFIG_PATH,
     "WEATHER_TEMPEST_CONFIG_PATH",
@@ -44,6 +57,15 @@ export async function loadWorkerConfiguration(
   const tempestApiKeyPath = optionalEnvironment(
     environment.WEATHER_TEMPEST_API_KEY_FILE,
     "WEATHER_TEMPEST_API_KEY_FILE",
+  );
+  const publicStationConfigurationPath = optionalEnvironment(
+    environment.WEATHER_PUBLIC_STATIONS_CONFIG_PATH ??
+      "config/public-stations/stations.json",
+    "WEATHER_PUBLIC_STATIONS_CONFIG_PATH",
+  );
+  const tideConfigurationPath = optionalEnvironment(
+    environment.WEATHER_TIDE_CONFIG_PATH ?? "config/tides/noaa.json",
+    "WEATHER_TIDE_CONFIG_PATH",
   );
 
   // require the catalog and credential together
@@ -55,6 +77,10 @@ export async function loadWorkerConfiguration(
 
   return {
     database: await loadDatabaseConfiguration(environment),
+    ecowitt:
+      ecowittConfigurationPath === null
+        ? null
+        : await loadEcowittConfiguration(ecowittConfigurationPath),
     instance: boundedEnvironment(
       environment.WEATHER_WORKER_INSTANCE ?? "weather-worker",
       "WEATHER_WORKER_INSTANCE",
@@ -67,6 +93,10 @@ export async function loadWorkerConfiguration(
     openMeteoCompatibilityOrigin: parseOpenMeteoCompatibilityOrigin(
       environment[OPEN_METEO_COMPATIBILITY_ORIGIN_ENV],
     ),
+    publicStations:
+      publicStationConfigurationPath === null
+        ? null
+        : await loadPublicStationConfiguration(publicStationConfigurationPath),
     site: await loadSiteConfiguration(siteConfigurationPath),
     siteConfigurationPath,
     tempest:
@@ -77,6 +107,10 @@ export async function loadWorkerConfiguration(
       tempestApiKeyPath === null
         ? null
         : await readOneLineSecret(tempestApiKeyPath, "Tempest API key"),
+    tides:
+      tideConfigurationPath === null
+        ? null
+        : await loadTideConfiguration(tideConfigurationPath),
     version: boundedEnvironment(
       environment.WEATHER_RELEASE ?? "development",
       "WEATHER_RELEASE",

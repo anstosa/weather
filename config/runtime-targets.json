@@ -9,7 +9,7 @@
       "sshHost": "weather-pi"
     },
     "tunnel": {
-      "origin": "https://weather.santosa.family"
+      "origin": "https://weather.ballydidean.farm"
     }
   }
 }

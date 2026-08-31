@@ -85,9 +85,16 @@ function buildTestUrls(origin, siteSlug) {
 
   return [
     ["Weather dashboard", new URL("/", origin).href],
+    ["Weather station map", new URL("/map", origin).href],
+    ["Weather forecast", new URL("/forecast", origin).href],
+    ["Weather trends", new URL("/trends", origin).href],
     ["Deployment health and migration status", new URL("/api/v1/health", origin).href],
     ["Current normalized measurements", new URL(`${sitePath}/current`, origin).href],
+    ["Next 48 forecast hours", new URL(`${sitePath}/forecast`, origin).href],
+    ["Recent 24-hour trends", new URL(`${sitePath}/trends?range=24h`, origin).href],
     ["Recent historical measurements", new URL(`${sitePath}/history?limit=25`, origin).href],
+    ["Weather logs", new URL("/logs", origin).href],
+    ["Property sensor admin", new URL("/admin", origin).href],
   ];
 }
 
@@ -98,14 +105,14 @@ async function checkUrls(urls) {
       const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
 
       // reject an unavailable route
-      if (!response.ok) {
+      if (!response.ok && !(description === "Property sensor admin" && response.status === 401)) {
         throw new Error(`${description} returned HTTP ${response.status}`);
       }
 
       return response;
     }),
   );
-  const health = await responses[1].json();
+  const health = await responses[4].json();
 
   // require ready application health
   if (health?.data?.live !== true || health?.data?.ready !== true) {

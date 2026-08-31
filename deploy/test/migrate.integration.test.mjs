@@ -17,7 +17,13 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const migrationDirectory = join(repoRoot, "packages/database/migrations");
 const runtimeAclPath = join(repoRoot, "deploy/postgres/runtime-acl-v1.sql");
 const siteConfigurationPath = join(repoRoot, "config/sites/ballydidean.json");
+const ecowittConfigurationPath = join(repoRoot, "config/ecowitt/gateways.json");
+const publicStationConfigurationPath = join(
+  repoRoot,
+  "config/public-stations/stations.json",
+);
 const tempestConfigurationPath = join(repoRoot, "config/tempest/stations.json");
+const tideConfigurationPath = join(repoRoot, "config/tides/noaa.json");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 
 // require PostgreSQL privilege denial
@@ -122,9 +128,12 @@ test(
         WEATHER_DATABASE_PORT: String(server.port),
         WEATHER_DATABASE_SSL: "false",
         WEATHER_DATABASE_USER: "weather_owner",
+        WEATHER_ECOWITT_CONFIG_PATH: ecowittConfigurationPath,
         WEATHER_MIGRATION_DIRECTORY: migrationDirectory,
+        WEATHER_PUBLIC_STATIONS_CONFIG_PATH: publicStationConfigurationPath,
         WEATHER_SITE_CONFIG_PATH: configuredSitePath,
         WEATHER_TEMPEST_CONFIG_PATH: tempestConfigurationPath,
+        WEATHER_TIDE_CONFIG_PATH: tideConfigurationPath,
       };
       const first = await executeFile(process.execPath, ["deploy/scripts/migrate.mjs"], {
         cwd: repoRoot,
@@ -149,6 +158,9 @@ test(
         "0003_ecowitt_measurements.sql",
         "0004_tempest_metadata.sql",
         "0005_source_supersession.sql",
+        "0006_station_coordinates.sql",
+        "0007_tide_sources.sql",
+        "0008_ecowitt_property_sensors.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -159,9 +171,18 @@ test(
         "0003_ecowitt_measurements.sql",
         "0004_tempest_metadata.sql",
         "0005_source_supersession.sql",
+        "0006_station_coordinates.sql",
+        "0007_tide_sources.sql",
+        "0008_ecowitt_property_sensors.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
+      assert.deepEqual(secondEvent.ecowittBootstrap, firstEvent.ecowittBootstrap);
+      assert.deepEqual(
+        secondEvent.publicStationBootstrap,
+        firstEvent.publicStationBootstrap,
+      );
       assert.deepEqual(secondEvent.tempestBootstrap, firstEvent.tempestBootstrap);
+      assert.deepEqual(secondEvent.tideBootstrap, firstEvent.tideBootstrap);
       assert.deepEqual(secondSnapshot, firstSnapshot);
       assert.deepEqual(firstSnapshot.identity, {
         current_user: "weather_owner",
@@ -174,6 +195,9 @@ test(
         { name: "0003_ecowitt_measurements.sql" },
         { name: "0004_tempest_metadata.sql" },
         { name: "0005_source_supersession.sql" },
+        { name: "0006_station_coordinates.sql" },
+        { name: "0007_tide_sources.sql" },
+        { name: "0008_ecowitt_property_sensors.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -183,10 +207,40 @@ test(
         { tableowner: "weather_owner", tablename: "stations" },
       ]);
       assert.deepEqual(firstSnapshot.providers, [
+        {
+          id: firstEvent.publicStationBootstrap.providerIds[
+            "ambient-weather-network"
+          ],
+          provider_key: "ambient-weather-network",
+        },
+        {
+          id: firstEvent.ecowittBootstrap.providerId,
+          provider_key: "ecowitt-local",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.providerIds[
+            "netatmo-weathermap"
+          ],
+          provider_key: "netatmo-weathermap",
+        },
+        {
+          id: firstEvent.tideBootstrap.providerId,
+          provider_key: "noaa-co-ops",
+        },
         { id: firstEvent.bootstrap.providerId, provider_key: "open-meteo" },
+        {
+          id: firstEvent.publicStationBootstrap.providerIds.purpleair,
+          provider_key: "purpleair",
+        },
         {
           id: firstEvent.tempestBootstrap.providerId,
           provider_key: "weatherflow-tempest",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.providerIds[
+            "weather-underground"
+          ],
+          provider_key: "weather-underground",
         },
       ]);
       assert.deepEqual(firstSnapshot.sites, [
@@ -197,8 +251,54 @@ test(
         },
       ]);
       assert.deepEqual(firstSnapshot.sources, [
+        {
+          id: firstEvent.publicStationBootstrap.sourceIds[
+            "ambient-maxweather-observations-v1"
+          ],
+          source_key: "ambient-maxweather-observations-v1",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.sourceIds[
+            "ambient-merlin-observations-v1"
+          ],
+          source_key: "ambient-merlin-observations-v1",
+        },
+        {
+          id: firstEvent.ecowittBootstrap.sourceIds[
+            "ecowitt-88f15505d89f-local-live-v1"
+          ],
+          source_key: "ecowitt-88f15505d89f-local-live-v1",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.sourceIds[
+            "netatmo-nearby-observations-v1"
+          ],
+          source_key: "netatmo-nearby-observations-v1",
+        },
+        {
+          id: firstEvent.tideBootstrap.sourceIds[
+            "noaa-glendale-tide-predictions-v1"
+          ],
+          source_key: "noaa-glendale-tide-predictions-v1",
+        },
+        {
+          id: firstEvent.tideBootstrap.sourceIds[
+            "noaa-port-townsend-water-level-v1"
+          ],
+          source_key: "noaa-port-townsend-water-level-v1",
+        },
         { id: firstEvent.bootstrap.sourceIds[0], source_key: "open-meteo-current-v1" },
+        { id: firstEvent.bootstrap.sourceIds[2], source_key: "open-meteo-forecast-v1" },
+        { id: firstEvent.bootstrap.sourceIds[3], source_key: "open-meteo-forecast-v2" },
+        { id: firstEvent.bootstrap.sourceIds[4], source_key: "open-meteo-forecast-v3" },
+        { id: firstEvent.bootstrap.sourceIds[5], source_key: "open-meteo-forecast-v4" },
         { id: firstEvent.bootstrap.sourceIds[1], source_key: "open-meteo-reanalysis-v1" },
+        {
+          id: firstEvent.publicStationBootstrap.sourceIds[
+            "purpleair-samara-observations-v1"
+          ],
+          source_key: "purpleair-samara-observations-v1",
+        },
         {
           id: firstEvent.tempestBootstrap.sourceIds["tempest-126537-observations-v2"],
           source_key: "tempest-126537-observations-v2",
@@ -227,9 +327,45 @@ test(
           id: firstEvent.tempestBootstrap.sourceIds["tempest-64255-observations-v2"],
           source_key: "tempest-64255-observations-v2",
         },
+        {
+          id: firstEvent.publicStationBootstrap.sourceIds[
+            "wunderground-maxweather-history-v1"
+          ],
+          source_key: "wunderground-maxweather-history-v1",
+        },
       ]);
       assert.deepEqual(firstSnapshot.stations, [
+        {
+          id: firstEvent.publicStationBootstrap.stationIds[
+            "ambient-maxweather"
+          ],
+          slug: "ambient-maxweather",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.stationIds["ambient-merlin"],
+          slug: "ambient-merlin",
+        },
+        {
+          id: firstEvent.ecowittBootstrap.stationIds["ballydidean-ecowitt"],
+          slug: "ballydidean-ecowitt",
+        },
+        {
+          id: firstEvent.tideBootstrap.stationIds["glendale-tide-predictions"],
+          slug: "glendale-tide-predictions",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.stationIds["netatmo-nearby"],
+          slug: "netatmo-nearby",
+        },
         { id: firstEvent.bootstrap.stationId, slug: "open-meteo-virtual" },
+        {
+          id: firstEvent.tideBootstrap.stationIds["port-townsend-tide-gauge"],
+          slug: "port-townsend-tide-gauge",
+        },
+        {
+          id: firstEvent.publicStationBootstrap.stationIds["purpleair-samara"],
+          slug: "purpleair-samara",
+        },
         { id: firstEvent.tempestBootstrap.stationIds["tempest-126537"], slug: "tempest-126537" },
         { id: firstEvent.tempestBootstrap.stationIds["tempest-168853"], slug: "tempest-168853" },
         { id: firstEvent.tempestBootstrap.stationIds["tempest-201058"], slug: "tempest-201058" },
@@ -341,6 +477,9 @@ test(
         { name: "0003_ecowitt_measurements.sql" },
         { name: "0004_tempest_metadata.sql" },
         { name: "0005_source_supersession.sql" },
+        { name: "0006_station_coordinates.sql" },
+        { name: "0007_tide_sources.sql" },
+        { name: "0008_ecowitt_property_sensors.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(

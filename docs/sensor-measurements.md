@@ -5,6 +5,12 @@ the purchased Ecowitt sensor set. A measurement has one canonical field even
 when several devices report it; the source record identifies the originating
 gateway or sensor.
 
+The first-party GW3000 is polled from its local LAN API once per minute. The
+normalized live record selects the primary outdoor readings and the first soil
+channel so repeated measurements from the purchased multi-channel sensors do
+not become duplicate fields. Additional channel-aware storage is a separate
+telemetry/modeling concern.
+
 ## Canonical point measurements
 
 | API field | Database column | Canonical unit | Supplied by |
@@ -50,3 +56,9 @@ gateway or sensor.
 - [WN31 temperature and humidity sensor](https://shop.ecowitt.com/products/wn31)
 - [WN38 black globe thermometer](https://shop.ecowitt.com/products/wn38)
 - [WH40H rain gauge](https://shop.ecowitt.com/products/wh40h)
+
+## Tide data
+
+| Measurement | Canonical unit | Source |
+| --- | --- | --- |
+| Water level relative to MLLW | meter | NOAA CO-OPS observed water levels and tide predictions |

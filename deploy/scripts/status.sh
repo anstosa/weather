@@ -45,6 +45,21 @@ if [[ "$current" != none ]]; then
       'stale_run', (SELECT row_to_json(run) FROM (SELECT id, deadline_at FROM ingestion_runs WHERE state='running' AND deadline_at < clock_timestamp() ORDER BY deadline_at ASC, id ASC LIMIT 1) run),
       'chunk_outcome', (SELECT row_to_json(chunk) FROM (SELECT id, ingestion_run_id, outcome, completed_at, error_code FROM backfill_chunk_outcomes ORDER BY completed_at DESC, id DESC LIMIT 1) chunk),
       'failure_evidence', (SELECT row_to_json(failure) FROM (SELECT id, error_classification, error_code, completed_at FROM ingestion_runs WHERE state='failed' ORDER BY completed_at DESC NULLS LAST, id DESC LIMIT 1) failure),
-      'weather_records', (SELECT count(*) FROM weather_records)
+      'weather_records', (SELECT count(*) FROM weather_records),
+      'tide_coverage', (
+        SELECT json_agg(coverage ORDER BY coverage.source_key)
+        FROM (
+          SELECT
+            s.source_key,
+            s.source_kind,
+            count(wr.id) AS record_count,
+            min(wr.valid_at) AS earliest_valid_at,
+            max(wr.valid_at) AS latest_valid_at
+          FROM sources s
+          LEFT JOIN weather_records wr ON wr.source_id = s.id
+          WHERE s.source_kind IN ('tide_observation', 'tide_prediction')
+          GROUP BY s.source_key, s.source_kind
+        ) coverage
+      )
     )"
 fi

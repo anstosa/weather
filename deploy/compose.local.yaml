@@ -14,8 +14,11 @@ services:
     networks: [edge, web_api, local_web_ingress]
     build:
       platforms: ["${WEATHER_LOCAL_PLATFORM:-linux/amd64}"]
+    environment:
+      WEATHER_XWEATHER_USAGE_PATH: /tmp/xweather-usage.json
     ports:
       - "127.0.0.1:${WEATHER_LOCAL_WEB_PORT:-3000}:3000"
+    volumes: !reset []
 
   cloudflared:
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}

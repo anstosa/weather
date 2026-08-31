@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "siteKey": "ballydidean",
+  "provider": {
+    "key": "noaa-co-ops",
+    "displayName": "NOAA Center for Operational Oceanographic Products and Services",
+    "attributionLabel": "NOAA Tides & Currents",
+    "attributionUrl": "https://tidesandcurrents.noaa.gov/",
+    "active": true
+  },
+  "stations": [
+    {
+      "key": "port-townsend-tide-gauge",
+      "displayName": "Port Townsend Tide Gauge",
+      "kind": "physical",
+      "latitude": 48.1112,
+      "longitude": -122.7597,
+      "timezone": "America/Los_Angeles",
+      "vendor": "NOAA CO-OPS",
+      "model": "Water Level Station",
+      "serial": "9444900",
+      "active": true,
+      "source": {
+        "key": "noaa-port-townsend-water-level-v1",
+        "sourceKind": "tide_observation",
+        "cadenceSeconds": 360,
+        "historyStartDate": "2019-01-01",
+        "maximumChunkDays": 31,
+        "active": true
+      }
+    },
+    {
+      "key": "glendale-tide-predictions",
+      "displayName": "Glendale Tide Predictions",
+      "kind": "virtual",
+      "latitude": 47.9399,
+      "longitude": -122.3574,
+      "timezone": "America/Los_Angeles",
+      "vendor": "NOAA CO-OPS",
+      "model": "Tide Prediction Station",
+      "serial": "9447814",
+      "active": true,
+      "source": {
+        "key": "noaa-glendale-tide-predictions-v1",
+        "sourceKind": "tide_prediction",
+        "cadenceSeconds": 21600,
+        "historyStartDate": "2019-01-01",
+        "maximumChunkDays": 366,
+        "active": true
+      }
+    }
+  ]
+}

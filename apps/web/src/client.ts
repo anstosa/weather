@@ -1,8 +1,137 @@
-import { mountWeatherDashboard } from "./index.js";
+import {
+  mountWeatherDashboard,
+  type WeatherDashboardController,
+  type WeatherView,
+} from "./index.js";
 
 const root = document.querySelector<HTMLElement>("#weather-app");
 
+// register the installable offline shell
+async function registerServiceWorker(): Promise<void> {
+  // skip unsupported browsers
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  const release = document.querySelector<HTMLMetaElement>('meta[name="weather-release"]')?.content ?? "development";
+  const controlled = navigator.serviceWorker.controller !== null;
+  let reloading = false;
+
+  // reload one installed app after its replacement worker takes control
+  if (controlled) {
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      // avoid one browser emitting duplicate ownership events
+      if (reloading) {
+        return;
+      }
+
+      reloading = true;
+      window.location.reload();
+    }, { once: true });
+  }
+
+  const registration = await navigator.serviceWorker.register(
+    `/service-worker.js?release=${encodeURIComponent(release)}`,
+    { scope: "/", updateViaCache: "none" },
+  );
+  await registration.update();
+}
+
+// resolve one supported browser route
+function resolveView(pathname: string): WeatherView {
+  // open the protected property sensor editor
+  if (pathname === "/admin" || pathname === "/admin/") {
+    return "admin";
+  }
+
+  // open the historical log
+  if (pathname === "/logs" || pathname === "/logs/") {
+    return "logs";
+  }
+
+  // open the station map
+  if (pathname === "/map" || pathname === "/map/") {
+    return "map";
+  }
+
+  // open the daily forecast
+  if (pathname === "/forecast" || pathname === "/forecast/") {
+    return "forecast";
+  }
+
+  // open historical trends
+  if (pathname === "/trends" || pathname === "/trends/") {
+    return "trends";
+  }
+
+  // open device display preferences
+  if (pathname === "/settings" || pathname === "/settings/") {
+    return "settings";
+  }
+
+  return "home";
+}
+
+// connect public page links to browser history
+function bindBrowserNavigation(
+  root: HTMLElement,
+  controller: WeatherDashboardController,
+): void {
+  root.addEventListener("click", (event) => {
+    // preserve modified clicks and previously handled events
+    if (
+      event.defaultPrevented ||
+      event.button !== 0 ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.shiftKey ||
+      event.altKey
+    ) {
+      return;
+    }
+
+    const target = event.target instanceof Element ? event.target : null;
+    const link = target?.closest<HTMLAnchorElement>("a[data-weather-route]") ?? null;
+
+    // preserve unrelated and external links
+    if (link === null) {
+      return;
+    }
+
+    const destination = new URL(link.href, window.location.href);
+
+    // retain native navigation across origins
+    if (destination.origin !== window.location.origin) {
+      return;
+    }
+
+    event.preventDefault();
+    const nextLocation = `${destination.pathname}${destination.search}${destination.hash}`;
+
+    // avoid duplicate history entries for the active route
+    if (nextLocation === `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+      return;
+    }
+
+    window.history.pushState(null, "", nextLocation);
+    void controller.setView(resolveView(destination.pathname));
+  });
+
+  window.addEventListener("popstate", () => {
+    // restore content when browser history changes
+    void controller.setView(resolveView(window.location.pathname));
+  });
+}
+
+const view = resolveView(window.location.pathname);
+
 // mount only when the application shell is present
 if (root !== null) {
-  mountWeatherDashboard(root);
+  const controller = mountWeatherDashboard(root, { view });
+  bindBrowserNavigation(root, controller);
 }
+
+registerServiceWorker().catch(
+  // keep optional install support from interrupting weather rendering
+  () => undefined,
+);

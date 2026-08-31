@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { loadSiteConfiguration, loadTempestConfiguration } from "@weather/database";
+import {
+  loadEcowittConfiguration,
+  loadPublicStationConfiguration,
+  loadSiteConfiguration,
+  loadTempestConfiguration,
+} from "@weather/database";
 import { ProviderFailure } from "@weather/providers";
 
 import {
@@ -13,7 +18,12 @@ import {
 } from "../dist/index.js";
 
 const sitePath = new URL("../../../config/sites/ballydidean.json", import.meta.url).pathname;
+const ecowittPath = new URL("../../../config/ecowitt/gateways.json", import.meta.url).pathname;
 const tempestPath = new URL("../../../config/tempest/stations.json", import.meta.url).pathname;
+const publicStationsPath = new URL(
+  "../../../config/public-stations/stations.json",
+  import.meta.url,
+).pathname;
 const fixturePath = new URL(
   "../../../packages/providers/test/fixtures/open-meteo/current.json",
   import.meta.url,
@@ -45,8 +55,10 @@ function scheduledRepository(log) {
     },
     completeScheduledIngestion: async (_session, input) => {
       log.push(`complete:${input.records.length}`);
+      repository.completedInput = input;
     },
     discoverDueSources: async () => [],
+    completedInput: null,
     failIngestionRun: async () => {
       log.push("fail");
     },
@@ -86,6 +98,30 @@ function currentDueSource(site, overrides = {}) {
   };
 }
 
+// create an active forecast discovery row
+function forecastDueSource(site, overrides = {}) {
+  const configuration = site.sources.find(
+    // select the active extended daily forecast
+    (candidate) => candidate.key === "open-meteo-forecast-v4",
+  );
+  assert.ok(configuration);
+
+  return {
+    active: true,
+    cadenceSeconds: 3600,
+    id: sourceId,
+    materialProviderConfig: configuration.adapterConfig,
+    providerKey: site.provider.key,
+    siteSlug: site.site.key,
+    sourceConfigFingerprint: configuration.fingerprint,
+    sourceKey: configuration.key,
+    sourceKind: configuration.sourceKind,
+    stationSlug: site.station.key,
+    timezone: site.site.timezone,
+    ...overrides,
+  };
+}
+
 // create one active physical Tempest discovery row
 function tempestDueSource(configuration, overrides = {}) {
   const station = configuration.stations[0];
@@ -99,6 +135,72 @@ function tempestDueSource(configuration, overrides = {}) {
     siteSlug: configuration.siteKey,
     sourceConfigFingerprint: station.fingerprint,
     sourceKey: station.sourceKey,
+    sourceKind: "physical_sensor",
+    stationSlug: station.key,
+    timezone: station.timezone,
+    ...overrides,
+  };
+}
+
+// create one active first-party Ecowitt discovery row
+function ecowittDueSource(configuration, overrides = {}) {
+  const station = configuration.stations[0];
+
+  return {
+    active: true,
+    cadenceSeconds: station.cadenceSeconds,
+    id: sourceId,
+    materialProviderConfig: station.adapterConfig,
+    providerKey: configuration.provider.key,
+    siteSlug: configuration.siteKey,
+    sourceConfigFingerprint: station.fingerprint,
+    sourceKey: station.sourceKey,
+    sourceKind: "physical_sensor",
+    stationSlug: station.key,
+    timezone: station.timezone,
+    ...overrides,
+  };
+}
+
+// create one active public-station discovery row
+function publicStationDueSource(configuration, overrides = {}) {
+  const station = configuration.stations[0];
+  const stationSource = station.sources[0];
+
+  return {
+    active: true,
+    cadenceSeconds: stationSource.cadenceSeconds,
+    id: sourceId,
+    materialProviderConfig: stationSource.adapterConfig,
+    providerKey: stationSource.providerKey,
+    siteSlug: configuration.siteKey,
+    sourceConfigFingerprint: stationSource.fingerprint,
+    sourceKey: stationSource.key,
+    sourceKind: "physical_sensor",
+    stationSlug: station.key,
+    timezone: station.timezone,
+    ...overrides,
+  };
+}
+
+// create one selected public-station discovery row
+function selectedPublicStationDueSource(configuration, sourceKey, overrides = {}) {
+  const station = configuration.stations.find((candidate) =>
+    candidate.sources.some((source) => source.key === sourceKey),
+  );
+  assert.ok(station);
+  const stationSource = station.sources.find((source) => source.key === sourceKey);
+  assert.ok(stationSource);
+
+  return {
+    active: true,
+    cadenceSeconds: stationSource.cadenceSeconds,
+    id: sourceId,
+    materialProviderConfig: stationSource.adapterConfig,
+    providerKey: stationSource.providerKey,
+    siteSlug: configuration.siteKey,
+    sourceConfigFingerprint: stationSource.fingerprint,
+    sourceKey: stationSource.key,
     sourceKind: "physical_sensor",
     stationSlug: station.key,
     timezone: station.timezone,
@@ -159,6 +261,62 @@ test("I-ING-01 scheduled fetch observes committed running lifecycle", async () =
   );
 });
 
+test("scheduled forecast ingestion retains the cadence checkpoint", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const forecastV1 = site.sources.find(
+    (candidate) => candidate.key === "open-meteo-forecast-v1",
+  );
+  const forecastV2 = site.sources.find(
+    (candidate) => candidate.key === "open-meteo-forecast-v2",
+  );
+  const forecastV3 = site.sources.find(
+    (candidate) => candidate.key === "open-meteo-forecast-v3",
+  );
+  const forecastV4 = site.sources.find(
+    // locate the active extended forecast contract
+    (candidate) => candidate.key === "open-meteo-forecast-v4",
+  );
+  const repository = scheduledRepository([]);
+  let providerInput;
+  const result = await runScheduledSource({}, forecastDueSource(site), {
+    fetchForecast: async (input) => {
+      providerInput = input;
+      return {
+        attempts: 1,
+        checksum: "f".repeat(64),
+        providerCursor: { product_run_at: "2026-08-22T05:20:00.000Z" },
+        records: [
+          { validAt: "2026-08-22T06:00:00.000Z" },
+          { validAt: "2026-08-24T05:00:00.000Z" },
+        ],
+        responseMetadata: {},
+      };
+    },
+    now: () => new Date("2026-08-22T05:20:00.000Z"),
+    repository,
+    site,
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.equal(forecastV1?.active, false);
+  assert.equal(forecastV1?.adapterConfig.contractVersion, "forecast-hourly/v1");
+  assert.equal(forecastV2?.active, false);
+  assert.equal(forecastV2?.adapterConfig.contractVersion, "forecast-hourly/v2");
+  assert.equal(forecastV3?.active, false);
+  assert.equal(forecastV3?.adapterConfig.contractVersion, "forecast-daily/v3");
+  assert.equal(forecastV4?.active, true);
+  assert.equal(forecastV4?.adapterConfig.contractVersion, "forecast-daily/v4");
+  assert.deepEqual(providerInput, {
+    latitude: site.site.latitude,
+    longitude: site.site.longitude,
+    sourceId,
+    timezone: site.site.timezone,
+  });
+  assert.equal(repository.startedInput.adapterVersion, "open-meteo-forecast-daily/v4");
+  assert.equal(repository.startedInput.requestMetadata.endpoint, "forecast/hourly");
+  assert.equal(repository.completedInput.lastValidAt, "2026-08-22T05:00:00.000Z");
+});
+
 // prove hourly Tempest ingestion uses the completed UTC hour
 test("scheduled Tempest ingestion dispatches an exact one-hour device range", async () => {
   const site = await loadSiteConfiguration(sitePath);
@@ -194,6 +352,141 @@ test("scheduled Tempest ingestion dispatches an exact one-hour device range", as
     timezone: station.timezone,
   });
   assert.equal(repository.startedInput.adapterVersion, "tempest-observations-minute/v1");
+});
+
+// prove first-party scheduling dispatches the exact checked LAN identity
+test("scheduled Ecowitt ingestion dispatches one current gateway snapshot", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const ecowitt = await loadEcowittConfiguration(ecowittPath);
+  const station = ecowitt.stations[0];
+  const repository = scheduledRepository([]);
+  let providerInput;
+  const result = await runScheduledSource({}, ecowittDueSource(ecowitt), {
+    ecowitt,
+    fetchEcowitt: async (input) => {
+      providerInput = input;
+      return {
+        attempts: 2,
+        checksum: "e".repeat(64),
+        providerCursor: {
+          rain_daily_total_mm: 3.81,
+          rain_day: "2026-08-22",
+          valid_at: "2026-08-22T05:20:00.000Z",
+        },
+        records: [{ validAt: "2026-08-22T05:20:00.000Z" }],
+        responseMetadata: { gateway_mac: station.expectedMac },
+      };
+    },
+    now: () => new Date("2026-08-22T05:20:00.000Z"),
+    repository,
+    site,
+  });
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(providerInput, {
+    expectedMac: station.expectedMac,
+    gatewayHost: station.gatewayHost,
+    model: station.model,
+    previousCursor: null,
+    sourceId,
+    timezone: station.timezone,
+  });
+  assert.equal(repository.startedInput.adapterVersion, "ecowitt-local-live/v1");
+  assert.equal(repository.startedInput.requestMetadata.endpoint, "get_livedata_info");
+  assert.equal(repository.completedInput.providerCursor.rain_daily_total_mm, 3.81);
+});
+
+// prove public-station scheduling dispatches checked material
+test("scheduled public-station ingestion dispatches an exact provider range", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const publicStations = await loadPublicStationConfiguration(publicStationsPath);
+  const station = publicStations.stations[0];
+  const stationSource = station.sources[0];
+  const repository = scheduledRepository([]);
+  let providerInput;
+  const result = await runScheduledSource(
+    {},
+    publicStationDueSource(publicStations),
+    {
+      fetchPublicStation: async (input) => {
+        providerInput = input;
+        return {
+          attempts: 1,
+          checksum: "d".repeat(64),
+          providerCursor: { valid_at: "2026-08-22T04:55:00.000Z" },
+          records: [{ validAt: "2026-08-22T04:55:00.000Z" }],
+          responseMetadata: {},
+        };
+      },
+      now: () => new Date("2026-08-22T05:20:00.000Z"),
+      publicStations,
+      repository,
+      site,
+    },
+  );
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(providerInput, {
+    adapter: "ambient-weather",
+    deviceId: stationSource.adapterConfig.deviceId,
+    endExclusive: "2026-08-22T05:00:00.000Z",
+    macAddress: stationSource.adapterConfig.macAddress,
+    model: station.model,
+    serial: station.serial,
+    sourceId,
+    start: "2026-08-22T04:00:00.000Z",
+    timezone: station.timezone,
+  });
+  assert.equal(repository.startedInput.adapterVersion, "ambient-device-data/v1");
+});
+
+test("scheduled PurpleAir ingestion dispatches checked two-minute material", async () => {
+  const site = await loadSiteConfiguration(sitePath);
+  const publicStations = await loadPublicStationConfiguration(publicStationsPath);
+  const station = publicStations.stations.find(
+    (candidate) => candidate.key === "purpleair-samara",
+  );
+  assert.ok(station);
+  const stationSource = station.sources[0];
+  const repository = scheduledRepository([]);
+  let providerInput;
+  const result = await runScheduledSource(
+    {},
+    selectedPublicStationDueSource(
+      publicStations,
+      "purpleair-samara-observations-v1",
+    ),
+    {
+      fetchPublicStation: async (input) => {
+        providerInput = input;
+        return {
+          attempts: 1,
+          checksum: "e".repeat(64),
+          providerCursor: { valid_at: "2026-08-24T23:15:30.000Z" },
+          records: [{ validAt: "2026-08-24T23:15:30.000Z" }],
+          responseMetadata: {},
+        };
+      },
+      now: () => new Date("2026-08-24T23:17:00.000Z"),
+      publicStations,
+      repository,
+      site,
+    },
+  );
+
+  assert.equal(result.status, "succeeded");
+  assert.deepEqual(providerInput, {
+    adapter: "purpleair",
+    endExclusive: "2026-08-24T23:16:00.000Z",
+    mapVersion: stationSource.adapterConfig.mapVersion,
+    model: station.model,
+    sensorIndex: stationSource.adapterConfig.sensorIndex,
+    serial: station.serial,
+    sourceId,
+    start: "2026-08-24T23:14:00.000Z",
+    timezone: station.timezone,
+  });
+  assert.equal(repository.startedInput.adapterVersion, "purpleair-map-history/v1");
 });
 
 // reject every mismatched source identity before external work

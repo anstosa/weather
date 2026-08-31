@@ -5,7 +5,7 @@ import type {
   SourceKind,
 } from "@weather/domain";
 
-export const PROVIDER_CAPABILITIES = ["current", "historical"] as const;
+export const PROVIDER_CAPABILITIES = ["current", "historical", "forecast"] as const;
 export type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number];
 
 export interface ProviderAttribution {
@@ -46,6 +46,11 @@ export type CurrentProviderOperation<Input> = (
 ) => Promise<ProviderBatch>;
 
 export type HistoricalProviderOperation<Input> = (
+  input: Input,
+  options?: ProviderFetchOptions,
+) => Promise<ProviderBatch>;
+
+export type ForecastProviderOperation<Input> = (
   input: Input,
   options?: ProviderFetchOptions,
 ) => Promise<ProviderBatch>;

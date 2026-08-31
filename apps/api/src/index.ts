@@ -1,15 +1,22 @@
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 
 import {
+  getDailyPrecipitation,
   getCurrentWeather,
+  getWeatherForecast,
   getLatestWorkerHeartbeat,
   listActiveSites,
+  listTideRecords,
   listWeatherHistory,
+  listWeatherTrends,
   verifyMigrationReadiness,
   type ActiveSiteRow,
   type CurrentQuery,
+  type DailyPrecipitationRow,
   type HistoryQuery,
   type MigrationReadinessAuthorization,
+  type TrendPointRow,
+  type TideRecordRow,
   type WeatherRecordRow,
 } from "@weather/database";
 import {
@@ -34,13 +41,33 @@ export interface HealthSnapshot {
 }
 
 export interface WeatherReadStore {
+  getDailyPrecipitation(
+    siteSlug: string,
+    from: string,
+    to: string,
+  ): Promise<DailyPrecipitationRow | null>;
   getCurrent(
     siteSlug: string,
     query: CurrentQuery,
   ): Promise<readonly WeatherRecordRow[]>;
+  getForecast(
+    siteSlug: string,
+    asOf: string,
+    hours: number,
+  ): Promise<readonly WeatherRecordRow[]>;
   getHealth(): Promise<HealthSnapshot>;
   listHistory(query: HistoryQuery): Promise<readonly WeatherRecordRow[]>;
   listSites(): Promise<readonly ActiveSiteRow[]>;
+  listTides(
+    siteSlug: string,
+    from: string,
+    to: string,
+  ): Promise<readonly TideRecordRow[]>;
+  listTrends(
+    siteSlug: string,
+    from: string,
+    to: string,
+  ): Promise<readonly TrendPointRow[]>;
 }
 
 export interface ApiSource {
@@ -58,6 +85,8 @@ export interface ApiSource {
 
 export interface ApiStation {
   readonly kind: StationKind;
+  readonly latitude: number;
+  readonly longitude: number;
   readonly name: string;
   readonly slug: string;
   readonly sources: readonly ApiSource[];
@@ -89,6 +118,7 @@ export interface ApiWeatherRecord {
       readonly dataset: string | null;
       readonly elevationM: number | null;
       readonly gridCell: string | null;
+      readonly propertySensors: readonly ApiPropertySensorSnapshot[] | null;
     } | null;
     readonly quality: {
       readonly confidencePercent: number | null;
@@ -138,11 +168,55 @@ export interface ApiWeatherRecord {
   readonly validAt: string;
 }
 
+export interface ApiPropertySensorSnapshot {
+  readonly channel: number | null;
+  readonly key: string;
+  readonly model: string;
+  readonly readings: Readonly<Record<string, number>>;
+}
+
+export interface ApiTideRecord {
+  readonly eventType: "high" | "low" | null;
+  readonly kind: "observation" | "prediction";
+  readonly source: {
+    readonly attribution: { readonly label: string; readonly url: string };
+    readonly providerKey: string;
+    readonly stationName: string;
+    readonly stationSlug: string;
+  };
+  readonly validAt: string;
+  readonly waterLevelM: number;
+}
+
+export interface ApiTrendPoint {
+  readonly metrics: {
+    readonly apparentTemperatureC: number | null;
+    readonly precipitationMm: number | null;
+    readonly pressureHpa: number | null;
+    readonly relativeHumidityPercent: number | null;
+    readonly temperatureC: number | null;
+    readonly windGustMps: number | null;
+    readonly windSpeedMps: number | null;
+  };
+  readonly validAt: string;
+}
+
+export interface ApiDailyPrecipitation {
+  readonly accumulationMm: number;
+  readonly source: {
+    readonly sourceId: string;
+    readonly stationSlug: string;
+  };
+  readonly validThrough: string;
+}
+
 export interface ApiOptions {
   readonly logDiagnostic?: (diagnostic: ApiDiagnostic) => void;
   readonly now?: () => Date;
   readonly version?: string;
 }
+
+export type ForecastDays = 1 | 5 | 10;
 
 export interface ApiDiagnostic {
   readonly errorCode: string | null;
@@ -164,6 +238,8 @@ export interface DatabaseStoreOptions {
 
 interface MutableStation {
   readonly kind: StationKind;
+  readonly latitude: number;
+  readonly longitude: number;
   readonly name: string;
   readonly slug: string;
   readonly sources: ApiSource[];
@@ -194,11 +270,19 @@ type Route =
   | Readonly<{ kind: "health" }>
   | Readonly<{ kind: "sites" }>
   | Readonly<{ kind: "current"; siteSlug: string }>
-  | Readonly<{ kind: "history"; siteSlug: string }>;
+  | Readonly<{ kind: "dailyPrecipitation"; siteSlug: string }>
+  | Readonly<{ kind: "forecast"; siteSlug: string }>
+  | Readonly<{ kind: "history"; siteSlug: string }>
+  | Readonly<{ kind: "tides"; siteSlug: string }>
+  | Readonly<{ kind: "trends"; siteSlug: string }>;
+
+type TrendRange = "24h" | "7d" | "30d";
 
 const HISTORY_DEFAULT_LIMIT = 100;
 const HISTORY_MAX_LIMIT = 250;
 const WORKER_FRESH_SECONDS = 1_800;
+const TIMEZONE_OFFSET_SAMPLE_MS = 6 * 60 * 60 * 1_000;
+const TIMEZONE_OFFSET_WINDOW_MS = 48 * 60 * 60 * 1_000;
 const DIAGNOSTIC_TOKEN = /^[a-zA-Z0-9_:-]{1,64}$/u;
 const JSON_HEADERS = {
   "cache-control": "no-store",
@@ -244,9 +328,17 @@ export function createDatabaseWeatherReadStore(
   options: DatabaseStoreOptions,
 ): WeatherReadStore {
   return {
+    // sum the nearest physical gauge for one local day
+    async getDailyPrecipitation(siteSlug, from, to) {
+      return await getDailyPrecipitation(pool, { from, siteSlug, to });
+    },
     // read the newest rows
     async getCurrent(siteSlug, query) {
       return await getCurrentWeather(pool, siteSlug, query);
+    },
+    // read the newest forecast product
+    async getForecast(siteSlug, asOf, hours) {
+      return await getWeatherForecast(pool, { asOf, hours, siteSlug });
     },
     // classify readiness without raw errors
     async getHealth() {
@@ -291,6 +383,18 @@ export function createDatabaseWeatherReadStore(
     // read active metadata
     async listSites() {
       return await listActiveSites(pool);
+    },
+    // read bounded tide observations and predictions
+    async listTides(siteSlug, from, to) {
+      return await listTideRecords(pool, { from, siteSlug, to });
+    },
+    // read normalized chart buckets
+    async listTrends(siteSlug, from, to) {
+      return await listWeatherTrends(pool, {
+        from,
+        siteSlug,
+        to,
+      });
     },
   };
 }
@@ -341,6 +445,162 @@ export function createWeatherApi(
 // read the current wall clock
 function currentDate(): Date {
   return new Date();
+}
+
+interface SiteDateTimeParts {
+  readonly day: number;
+  readonly hour: number;
+  readonly minute: number;
+  readonly month: number;
+  readonly year: number;
+}
+
+// calculate one exact site-local midnight-to-midnight forecast window
+export function siteForecastDayWindow(
+  value: string,
+  timezone: string,
+  days: ForecastDays = 1,
+): Readonly<{ asOf: string; hours: number }> {
+  const instant = new Date(value);
+
+  // reject invalid reference instants
+  if (!Number.isFinite(instant.getTime())) {
+    throw new RangeError("forecast reference must be a valid instant");
+  }
+
+  // reject unreviewed forecast lengths
+  if (![1, 5, 10].includes(days)) {
+    throw new RangeError("forecast days must be 1, 5, or 10");
+  }
+
+  const today = formatSiteDateTimeParts(instant, timezone);
+  const nextDate = new Date(Date.UTC(today.year, today.month - 1, today.day + days));
+  const endDate = {
+    day: nextDate.getUTCDate(),
+    hour: 0,
+    minute: 0,
+    month: nextDate.getUTCMonth() + 1,
+    year: nextDate.getUTCFullYear(),
+  };
+  const start = siteMidnightEpoch({ ...today, hour: 0, minute: 0 }, timezone);
+  const end = siteMidnightEpoch(endDate, timezone);
+  const hours = (end - start) / 3_600_000;
+
+  // require a reviewed range and realistic civil-hour duration
+  if (
+    !Number.isSafeInteger(hours) ||
+    hours < days * 24 - 1 ||
+    hours > days * 24 + 1
+  ) {
+    throw new RangeError("site forecast range has an unsupported duration");
+  }
+
+  return { asOf: new Date(start).toISOString(), hours };
+}
+
+// resolve one local midnight without assuming a fixed UTC offset
+function siteMidnightEpoch(
+  requested: SiteDateTimeParts,
+  timezone: string,
+): number {
+  const requestedEpoch = siteDateTimeEpoch(requested);
+  const matches = new Set<number>();
+
+  // sample every plausible offset around the calendar date
+  for (
+    let delta = -TIMEZONE_OFFSET_WINDOW_MS;
+    delta <= TIMEZONE_OFFSET_WINDOW_MS;
+    delta += TIMEZONE_OFFSET_SAMPLE_MS
+  ) {
+    const sampleEpoch = requestedEpoch + delta;
+    const represented = formatSiteDateTimeParts(new Date(sampleEpoch), timezone);
+    const offset = siteDateTimeEpoch(represented) - sampleEpoch;
+    const candidateEpoch = requestedEpoch - offset;
+    const candidate = formatSiteDateTimeParts(new Date(candidateEpoch), timezone);
+
+    // retain exact local-midnight matches
+    if (siteDateTimeEquals(candidate, requested)) {
+      matches.add(candidateEpoch);
+    }
+  }
+
+  // require one unambiguous midnight
+  if (matches.size !== 1) {
+    throw new RangeError("site forecast midnight is not uniquely representable");
+  }
+
+  return [...matches][0]!;
+}
+
+// format one instant in the requested site timezone
+function formatSiteDateTimeParts(
+  instant: Date,
+  timezone: string,
+): SiteDateTimeParts {
+  const values = new Map<string, string>();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    timeZone: timezone,
+    year: "numeric",
+  });
+
+  // collect named calendar fields
+  for (const part of formatter.formatToParts(instant)) {
+    // ignore locale punctuation
+    if (part.type !== "literal") {
+      values.set(part.type, part.value);
+    }
+  }
+
+  return {
+    day: requireSiteDateTimePart(values, "day"),
+    hour: requireSiteDateTimePart(values, "hour"),
+    minute: requireSiteDateTimePart(values, "minute"),
+    month: requireSiteDateTimePart(values, "month"),
+    year: requireSiteDateTimePart(values, "year"),
+  };
+}
+
+// require one formatted site-calendar field
+function requireSiteDateTimePart(
+  values: ReadonlyMap<string, string>,
+  name: string,
+): number {
+  const value = values.get(name);
+
+  // fail closed on incomplete timezone formatting
+  if (value === undefined) {
+    throw new RangeError(`site timezone omitted ${name}`);
+  }
+
+  return Number(value);
+}
+
+// compare two minute-precision site wall clocks
+function siteDateTimeEquals(
+  left: SiteDateTimeParts,
+  right: SiteDateTimeParts,
+): boolean {
+  return left.year === right.year &&
+    left.month === right.month &&
+    left.day === right.day &&
+    left.hour === right.hour &&
+    left.minute === right.minute;
+}
+
+// project site-calendar fields onto a UTC epoch
+function siteDateTimeEpoch(parts: SiteDateTimeParts): number {
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+  );
 }
 
 // adapt the fetch handler to a Node HTTP server
@@ -422,6 +682,84 @@ async function handleReadRoute(
     const generatedAt = now().toISOString();
     const records = mapWeatherRecords(rows, indexSources(site), generatedAt);
     return jsonResponse({ data: records, generatedAt, site });
+  }
+
+  // serve today's nearest physical rain accumulation
+  if (route.kind === "dailyPrecipitation") {
+    rejectUnexpectedParameters(url.searchParams, new Set());
+    const generatedAt = now().toISOString();
+    const window = siteForecastDayWindow(generatedAt, site.timezone);
+    const row = await store.getDailyPrecipitation(
+      route.siteSlug,
+      window.asOf,
+      generatedAt,
+    );
+    const data: ApiDailyPrecipitation | null = row === null
+      ? null
+      : {
+        accumulationMm: row.accumulationMm,
+        source: {
+          sourceId: row.sourceId,
+          stationSlug: row.stationSlug,
+        },
+        validThrough: toIsoInstant(row.validThrough),
+      };
+    return jsonResponse({ data, generatedAt, site });
+  }
+
+  // serve the latest normalized forecast product
+  if (route.kind === "forecast") {
+    rejectUnexpectedParameters(url.searchParams, new Set(["days"]));
+    const generatedAt = now().toISOString();
+    const days = parsePublicQuery(
+      // parse only the reviewed forecast horizon
+      () => parseForecastDays(url.searchParams),
+    );
+    const window = siteForecastDayWindow(generatedAt, site.timezone, days);
+    const rows = await store.getForecast(
+      route.siteSlug,
+      window.asOf,
+      window.hours,
+    );
+    const records = mapWeatherRecords(rows, indexSources(site), generatedAt);
+    return jsonResponse({ data: records, days, generatedAt, site });
+  }
+
+  // serve daily calendar-year trend buckets
+  if (route.kind === "trends") {
+    rejectUnexpectedParameters(url.searchParams, new Set(["range"]));
+    parsePublicQuery(
+      // retain bounded compatibility with cached range clients
+      () => parseLegacyTrendRange(url.searchParams),
+    );
+    const generatedAt = now().toISOString();
+    const window = calendarTrendWindow(generatedAt, site.timezone);
+    const rows = await store.listTrends(
+      route.siteSlug,
+      window.from,
+      generatedAt,
+    );
+    return jsonResponse({
+      data: mapTrendPoints(rows),
+      generatedAt,
+      site,
+    });
+  }
+
+  // serve recent observations and the local tide forecast
+  if (route.kind === "tides") {
+    rejectUnexpectedParameters(url.searchParams, new Set(["from", "to"]));
+    const generatedAt = now().toISOString();
+    const range = parsePublicQuery(
+      // parse only the bounded tide range
+      () => parseTideRange(url.searchParams, generatedAt),
+    );
+    const rows = await store.listTides(route.siteSlug, range.from, range.to);
+    return jsonResponse({
+      data: mapTideRecords(rows),
+      generatedAt,
+      site,
+    });
   }
 
   const parsed = parsePublicQuery(
@@ -551,9 +889,29 @@ function matchRoute(pathname: string): Route {
       return { kind: "current", siteSlug };
     }
 
+    // match daily precipitation
+    if (resource === "daily-precipitation") {
+      return { kind: "dailyPrecipitation", siteSlug };
+    }
+
     // match history rows
     if (resource === "history") {
       return { kind: "history", siteSlug };
+    }
+
+    // match forecast rows
+    if (resource === "forecast") {
+      return { kind: "forecast", siteSlug };
+    }
+
+    // match trend buckets
+    if (resource === "trends") {
+      return { kind: "trends", siteSlug };
+    }
+
+    // match tide observations and predictions
+    if (resource === "tides") {
+      return { kind: "tides", siteSlug };
     }
   }
 
@@ -587,6 +945,8 @@ function groupSites(rows: readonly ActiveSiteRow[]): readonly ApiSite[] {
     if (station === undefined) {
       station = {
         kind: row.stationKind,
+        latitude: row.stationLatitude,
+        longitude: row.stationLongitude,
         name: row.stationName,
         slug: row.stationSlug,
         sources: [],
@@ -777,6 +1137,114 @@ function mapWeatherRecords(
   return records;
 }
 
+// map aggregate storage rows into the public chart contract
+function mapTrendPoints(rows: readonly TrendPointRow[]): readonly ApiTrendPoint[] {
+  return rows.map((row) => ({
+    metrics: {
+      apparentTemperatureC: row.apparentTemperatureC,
+      precipitationMm: row.precipitationMm,
+      pressureHpa: row.pressureHpa,
+      relativeHumidityPercent: row.relativeHumidityPercent,
+      temperatureC: row.temperatureC,
+      windGustMps: row.windGustMps,
+      windSpeedMps: row.windSpeedMps,
+    },
+    validAt: toIsoInstant(row.validAt),
+  }));
+}
+
+// map tide storage rows into the public contract
+function mapTideRecords(rows: readonly TideRecordRow[]): readonly ApiTideRecord[] {
+  return rows.map((row) => ({
+    eventType:
+      row.predictionType === "H"
+        ? "high"
+        : row.predictionType === "L"
+          ? "low"
+          : null,
+    kind: row.sourceKind === "tide_observation" ? "observation" : "prediction",
+    source: {
+      attribution: {
+        label: row.attributionLabel,
+        url: row.attributionUrl,
+      },
+      providerKey: row.providerKey,
+      stationName: row.stationName,
+      stationSlug: row.stationSlug,
+    },
+    validAt: toIsoInstant(row.validAt),
+    waterLevelM: row.waterLevelM,
+  }));
+}
+
+// parse one reviewed forecast horizon
+function parseForecastDays(parameters: URLSearchParams): ForecastDays {
+  const value = getOptionalParameter(parameters, "days") ?? "1";
+
+  // accept only product-supported horizons
+  if (value !== "1" && value !== "5" && value !== "10") {
+    throw new RangeError("forecast days must be 1, 5, or 10");
+  }
+
+  return Number(value) as ForecastDays;
+}
+
+// parse one bounded tide API range
+function parseTideRange(
+  parameters: URLSearchParams,
+  generatedAt: string,
+): Readonly<{ from: string; to: string }> {
+  const fromValue = getOptionalParameter(parameters, "from");
+  const toValue = getOptionalParameter(parameters, "to");
+  const from = fromValue === undefined
+    ? new Date(Date.parse(generatedAt) - 24 * 3_600_000).toISOString()
+    : validateUtcInstant(fromValue, "from");
+  const to = toValue === undefined
+    ? new Date(Date.parse(generatedAt) + 10 * 86_400_000).toISOString()
+    : validateUtcInstant(toValue, "to");
+
+  // require an ordered range no longer than 31 days
+  if (from >= to || Date.parse(to) - Date.parse(from) > 31 * 86_400_000) {
+    throw new RangeError("tide range must be ordered and no longer than 31 days");
+  }
+
+  return { from, to };
+}
+
+// parse one legacy reviewed trend range
+function parseLegacyTrendRange(parameters: URLSearchParams): TrendRange | null {
+  const value = getOptionalParameter(parameters, "range");
+
+  // accept the parameter-free calendar contract
+  if (value === undefined) {
+    return null;
+  }
+
+  // reject unbounded query windows
+  if (value !== "24h" && value !== "7d" && value !== "30d") {
+    throw new RangeError("trend range is unsupported");
+  }
+
+  return value;
+}
+
+// calculate the fixed local-calendar trend history
+export function calendarTrendWindow(
+  generatedAt: string,
+  timezone: string,
+): Readonly<{ from: string }> {
+  const instant = new Date(generatedAt);
+
+  // reject invalid reference instants
+  if (!Number.isFinite(instant.getTime())) {
+    throw new RangeError("trend reference must be a valid instant");
+  }
+
+  return {
+    from: new Date(siteMidnightEpoch({ day: 1, hour: 0, minute: 0, month: 1, year: 2019 }, timezone)).toISOString(),
+  };
+}
+
 // project only public metadata fields
 function projectMetadata(row: WeatherRecordRow): ApiWeatherRecord["metadata"] {
   const device =
@@ -832,7 +1300,77 @@ function projectProvider(
     dataset: boundedString(metadata.dataset),
     elevationM: boundedNumber(metadata.elevation_m),
     gridCell: boundedString(metadata.grid_cell),
+    propertySensors: boundedPropertySensors(metadata.property_sensors),
   };
+}
+
+// project bounded EcoWitt property sensor snapshots
+function boundedPropertySensors(
+  value: JsonValue | undefined,
+): readonly ApiPropertySensorSnapshot[] | null {
+  // require one sensor array
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  const sensors: ApiPropertySensorSnapshot[] = [];
+
+  // retain only bounded sensor objects
+  for (const candidate of value.slice(0, 32)) {
+    // omit malformed entries
+    if (
+      candidate === null ||
+      Array.isArray(candidate) ||
+      typeof candidate !== "object"
+    ) {
+      continue;
+    }
+
+    const key = boundedString(candidate.key);
+    const model = boundedString(candidate.model);
+    const channel = candidate.channel === null
+      ? null
+      : boundedNumber(candidate.channel);
+
+    // require stable public sensor identity
+    if (
+      key === null ||
+      model === null ||
+      !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(key) ||
+      (channel !== null && (!Number.isSafeInteger(channel) || channel < 1 || channel > 32))
+    ) {
+      continue;
+    }
+
+    sensors.push({
+      channel,
+      key,
+      model,
+      readings: boundedSensorReadings(candidate.readings),
+    });
+  }
+
+  return sensors;
+}
+
+// project finite numeric readings only
+function boundedSensorReadings(value: JsonValue | undefined): Readonly<Record<string, number>> {
+  // discard malformed reading objects
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    return {};
+  }
+
+  const readings: Record<string, number> = {};
+
+  // retain bounded camel-case metric keys
+  for (const [key, reading] of Object.entries(value).slice(0, 24)) {
+    // omit unknown shapes and unbounded keys
+    if (/^[a-z][A-Za-z0-9]{0,63}$/u.test(key) && typeof reading === "number" && Number.isFinite(reading)) {
+      readings[key] = reading;
+    }
+  }
+
+  return readings;
 }
 
 // retain one bounded public string

@@ -1,0 +1,21 @@
+{
+  "latitude": 47.95,
+  "longitude": -122.43,
+  "generationtime_ms": 0.08,
+  "utc_offset_seconds": 0,
+  "timezone": "GMT",
+  "timezone_abbreviation": "GMT",
+  "hourly_units": {
+    "time": "iso8601",
+    "pm2_5": "μg/m³"
+  },
+  "hourly": {
+    "time": [
+      "2026-08-22T04:00",
+      "2026-08-22T05:00",
+      "2026-08-22T06:00",
+      "2026-08-22T07:00"
+    ],
+    "pm2_5": [99, 5, 8, 12]
+  }
+}

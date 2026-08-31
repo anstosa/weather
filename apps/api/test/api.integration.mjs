@@ -38,7 +38,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     const configuration = await loadSiteConfiguration(siteConfigurationPath);
     await bootstrapSiteConfiguration(admin, configuration);
     const sources = await admin.query(
-      "SELECT id, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind",
+      "SELECT active, id, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind",
     );
     const currentSource = sources.rows.find(
       // select the current source
@@ -48,11 +48,17 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       // select the history source
       (source) => source.source_kind === "reanalysis",
     );
+    const forecastSource = sources.rows.find(
+      // select the forecast source
+      (source) => source.source_kind === "forecast" && source.active,
+    );
 
     assert.ok(currentSource);
     assert.ok(historySource);
+    assert.ok(forecastSource);
     const currentRun = await insertSucceededRun(admin, currentSource, "scheduled");
     const historyRun = await insertSucceededRun(admin, historySource, "backfill");
+    const forecastRun = await insertSucceededRun(admin, forecastSource, "scheduled");
     await insertRecord(admin, currentSource, currentRun, {
       idSuffix: "current-new",
       temperatureC: 16.2,
@@ -67,6 +73,18 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       idSuffix: "history-tied",
       temperatureC: 14.9,
       validAt: "2026-08-22T04:50:00.000Z",
+    });
+    await insertRecord(admin, forecastSource, forecastRun, {
+      idSuffix: "forecast-first",
+      productRunAt: "2026-08-22T05:00:00.000Z",
+      temperatureC: 16.8,
+      validAt: "2026-08-21T07:00:00.000Z",
+    });
+    await insertRecord(admin, forecastSource, forecastRun, {
+      idSuffix: "forecast-second",
+      productRunAt: "2026-08-22T05:00:00.000Z",
+      temperatureC: 17.1,
+      validAt: "2026-08-22T06:00:00.000Z",
     });
     await admin.query(
       `
@@ -106,7 +124,9 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(response.status, 200);
       assert.deepEqual(body.data.map((site) => site.slug), ["ballydidean"]);
       assert.equal(body.data[0].stations.length, 1);
-      assert.equal(body.data[0].stations[0].sources.length, 2);
+      assert.equal(body.data[0].stations[0].sources.length, 3);
+      assert.equal(body.data[0].stations[0].latitude, 47.950429954185445);
+      assert.equal(body.data[0].stations[0].longitude, -122.42797012608193);
       assert.doesNotMatch(JSON.stringify(body), /inactive|material_provider_config/u);
     });
 
@@ -155,6 +175,29 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(filtered.data[0].provenance.sourceKind, "reanalysis");
     });
 
+    await context.test("forecast and trend products expose normalized read models", async () => {
+      const forecastResponse = await fetch(
+        `${origin}/api/v1/sites/ballydidean/forecast`,
+      );
+      const forecast = await forecastResponse.json();
+      const trendResponse = await fetch(
+        `${origin}/api/v1/sites/ballydidean/trends`,
+      );
+      const trend = await trendResponse.json();
+
+      assert.equal(forecastResponse.status, 200);
+      assert.deepEqual(
+        forecast.data.map((entry) => entry.metrics.temperatureC),
+        [16.8, 17.1],
+      );
+      assert.equal(forecast.data[0].provenance.sourceKind, "forecast");
+      assert.equal(trendResponse.status, 200);
+      assert.equal(typeof trend.generatedAt, "string");
+      assert.equal(trend.data.length > 0, true);
+      // prefer complete reanalysis days over current-model fallback
+      assert.equal(trend.data.at(-1).metrics.temperatureC, 14.9);
+    });
+
     await context.test("deactivated sources disappear from current and history", async () => {
       await admin.query("UPDATE sources SET active = false WHERE id = $1", [
         currentSource.id,
@@ -188,13 +231,13 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0005_source_supersession.sql",
+        version: "0008_ecowitt_property_sensors.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
       await admin.query(
         "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
-        ["0006_future.sql", "1".repeat(64)],
+        ["0009_future.sql", "1".repeat(64)],
       );
       const unprovenResponse = await fetch(`${origin}/api/v1/health`);
       const unproven = await unprovenResponse.json();
@@ -234,7 +277,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0005_source_supersession.sql",
+        version: "0008_ecowitt_property_sensors.sql",
       });
 
       const ledger = await admin.query(
@@ -257,7 +300,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         [ledger.rows[0].checksum],
       );
       await admin.query(
-        "DELETE FROM schema_migrations WHERE name = '0005_future.sql'",
+        "DELETE FROM schema_migrations WHERE name = '0009_future.sql'",
       );
     });
 
@@ -337,6 +380,7 @@ async function insertRecord(pool, source, runId, input) {
         source_id,
         source_kind,
         valid_at,
+        product_run_at,
         first_ingestion_run_id,
         last_ingestion_run_id,
         first_received_at,
@@ -354,6 +398,7 @@ async function insertRecord(pool, source, runId, input) {
         $1,
         $2,
         $3,
+        $7,
         $4,
         $4,
         $3::timestamptz + interval '1 minute',
@@ -368,7 +413,15 @@ async function insertRecord(pool, source, runId, input) {
         $6
       )
     `,
-    [source.id, source.source_kind, input.validAt, runId, input.temperatureC, contentHash],
+    [
+      source.id,
+      source.source_kind,
+      input.validAt,
+      runId,
+      input.temperatureC,
+      contentHash,
+      input.productRunAt ?? null,
+    ],
   );
 }
 
@@ -382,8 +435,16 @@ async function insertInactiveMetadata(pool) {
         RETURNING id
       ),
       inserted_station AS (
-        INSERT INTO stations (site_id, slug, display_name, station_kind, active)
-        SELECT id, 'inactive-station', 'Inactive station', 'virtual', false
+        INSERT INTO stations (
+          site_id,
+          slug,
+          display_name,
+          station_kind,
+          latitude,
+          longitude,
+          active
+        )
+        SELECT id, 'inactive-station', 'Inactive station', 'virtual', 47, -122, false
         FROM inserted_site
         RETURNING id
       ),

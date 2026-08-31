@@ -130,7 +130,7 @@ control_plane_digest() {
   local -a files
   mapfile -d '' -t files < <(
     find "$deploy_dir/scripts" "$deploy_dir/postgres" "$deploy_dir/systemd" \
-      "$deploy_dir/sudoers" -type f -print0 | sort -z
+      "$deploy_dir/sudoers" -type f -print0 | LC_ALL=C sort -z
   )
   files+=("$deploy_dir/compose.yaml")
   (
@@ -182,6 +182,7 @@ verify_runtime_database_acl() {
         AND has_table_privilege('weather_ingest', 'ingestion_runs', 'INSERT')
         AND has_table_privilege('weather_ingest', 'ingestion_runs', 'UPDATE')
         AND NOT has_table_privilege('weather_ingest', 'ingestion_runs', 'DELETE')
+        AND has_column_privilege('weather_ingest', 'weather_records', 'water_level_m', 'UPDATE')
         AND has_sequence_privilege('weather_ingest', 'weather_records_id_seq', 'USAGE')")
   [[ "$verified" == t ]] || die "runtime database ACL verification failed"
 }

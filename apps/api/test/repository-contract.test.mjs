@@ -9,6 +9,7 @@ import {
   getCurrentWeather,
   listActiveSites,
   listWeatherHistory,
+  listWeatherTrends,
   readMigrationReadinessAuthorization,
   verifyMigrationReadiness,
 } from "@weather/database";
@@ -115,6 +116,26 @@ test("history SQL enforces active predicates, frozen filters, order, and bounded
       }),
     /between 1 and 251/u,
   );
+});
+
+test("trend SQL prefers local-calendar reanalysis days with current-model fallback", async () => {
+  const { pool, queries } = createCapturingPool();
+  await listWeatherTrends(pool, {
+    from: "2019-01-01T08:00:00.000Z",
+    siteSlug: "ballydidean",
+    to: "2026-08-22T05:00:00.000Z",
+  });
+
+  assert.equal(queries.length, 1);
+  assert.deepEqual(queries[0].values, [
+    "ballydidean",
+    "2019-01-01T08:00:00.000Z",
+    "2026-08-22T05:00:00.000Z",
+  ]);
+  assert.match(queries[0].text, /date_trunc\('day', wr\.valid_at AT TIME ZONE si\.timezone\) AT TIME ZONE si\.timezone/u);
+  assert.match(queries[0].text, /s\.source_kind IN \('model_current', 'reanalysis'\)/u);
+  assert.match(queries[0].text, /CASE source_kind WHEN 'reanalysis' THEN 0 ELSE 1 END/u);
+  assert.match(queries[0].text, /WHERE source_priority = 1/u);
 });
 
 test("migration readiness verifies the complete ledger with SELECT-only SQL", async () => {

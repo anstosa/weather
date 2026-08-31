@@ -10,24 +10,27 @@ deliberately static and does not perform a production deployment.
 
 - Compose project: `weather`
 - release root: `/opt/weather/current`
-- durable data: `/var/lib/weather/postgres`
-- encrypted backups: `/var/lib/weather/backups`
+- durable data: `/var/lib/weather/postgres` and `/var/lib/weather/xweather/usage.json`
+- encrypted rolling backup: local `deploy/backups/weather-nightly.dump.age`
 - application UID/GID: `10002:10002`
 - SSH account: `weather-ssh`
 - systemd unit: `weather-compose.service`
-- public origin after the private gates: `https://weather.santosa.family`
+- public origin after the private gates: `https://weather.ballydidean.farm`
 
 The production Compose file publishes no host ports. `edge`, `web_api`, and
-`data` are internal. Only the worker joins `provider_egress`; only cloudflared
-joins `tunnel_egress`. The Weather connector token is not interchangeable with
-any other connector token.
+`data` are internal. Only the worker joins `provider_egress`, only the web edge
+joins `map_egress`, and only cloudflared joins `tunnel_egress`. The Weather
+connector token is not interchangeable with any other connector token.
+The service-level `mem_limit` values are authoritative on ordinary Compose;
+do not run a host policy that widens those limits after container creation.
 
 ## Provisioning
 
-1. Create `/opt/weather`, `/var/lib/weather/postgres`, and
-   `/var/lib/weather/backups` without touching neighboring application paths.
-2. Provision the PostgreSQL directory for the pinned image's `999:999` user and
-   make `/opt/weather/current` root-owned after release extraction.
+1. Create `/opt/weather`, `/var/lib/weather/postgres`, `/var/lib/weather/xweather`,
+   and `/var/lib/weather/backups` without touching neighboring application paths.
+2. Provision the PostgreSQL directory for the pinned image's `999:999` user,
+   provision the Xweather directory for `10002:10002`, and make
+   `/opt/weather/current` root-owned after release extraction.
 3. Copy `deploy/.env.example` to ignored `deploy/.env`. Set the server and web
    repositories, the pinned PostgreSQL tag, and the pinned cloudflared tag used
    as staging inputs. Staging replaces all four with exact Linux ARM64
@@ -35,7 +38,7 @@ any other connector token.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
-   Control-plane version 2 allowlists only the exact installed version 1
+   Control-plane version 6 allowlists only the exact installed version 5
    production digest as its predecessor. All other cross-version or
    cross-digest handoffs are unsupported. Do not rewrite release metadata or
    use wildcard handoffs: every mutating lifecycle action rejects any other
@@ -46,11 +49,13 @@ any other connector token.
    mounted only into PostgreSQL. Install matching owner, API, and ingestion
    application copies as `weather_migration_owner_password`,
    `weather_api_password`, and `weather_worker_ingest_password` for
-   `10002:10002`. Install `weather_tempest_api_key` for `10002:10002` and the
-   tunnel token for `65532:65532`. Every source must be mode `0400`; Compose
-   file secrets cannot repair host ownership or modes.
+   `10002:10002`. Install `weather_tempest_api_key`,
+   `weather_xweather_client_id`, and `weather_xweather_client_secret` for
+   `10002:10002`, and the tunnel token for `65532:65532`. Every source must be
+   mode `0400`; Compose file secrets cannot repair host ownership or modes.
 5. Copy `deploy/config/backup.env.example` to ignored `backup.env` and set only
-   a public age recipient. Enforce off-host retention outside this repository.
+   the public age recipient matching the local identity. The nightly pull stores
+   only ciphertext in the repository's ignored `deploy/backups/` directory.
 6. Install root-owned scripts as `/usr/local/bin/weather-ssh-dispatch` and
    `/usr/local/sbin/weather-remote-ops`; validate the sudoers rule with
    `visudo -cf deploy/sudoers/weather-ops`.
@@ -61,10 +66,10 @@ any other connector token.
 8. Install and enable the root-owned `weather-compose.service`. It has no
    dependency on another application unit.
 
-## Capacity and coexistence gate
+## Optional capacity diagnostics
 
-Before production mutation, prove the Weather identifiers are unused, capture
-the neighboring application's health/restart/config baseline, and run:
+The direct deployment path does not require a capacity sample. Run the retained
+diagnostic manually when investigating host pressure:
 
 ```bash
 sudo /opt/weather/current/deploy/scripts/preflight-capacity.sh \
@@ -76,17 +81,16 @@ The gate requires `aarch64`, at least four CPUs, 15-minute load no greater than
 `0.50 * CPUs`, minimum available memory of 1,792 MiB, swap traffic no greater
 than 1 MiB/minute, at least 10 GiB and `3 * database bytes + 5 GiB` free under
 `/var/lib`, at least 4 GiB free in Docker's data root, and at least 10% free
-inodes. A failure blocks Weather; it does not authorize pruning Docker, changing
-other services, or weakening limits.
+inodes. A failed diagnostic does not authorize pruning Docker or changing
+neighboring services.
 
-## Stage and activate
+## Direct deployment
 
 Use the key-based client wrapper:
 
 ```bash
 deploy/scripts/ssh-run.sh status
-deploy/scripts/ssh-run.sh stage 2026.08.22-1
-deploy/scripts/ssh-run.sh activate 2026.08.22-1
+deploy/scripts/ssh-run.sh yolo 2026.08.25-1
 deploy/scripts/ssh-run.sh status
 ```
 
@@ -94,11 +98,11 @@ The equivalent repository commands are:
 
 ```bash
 npm run remote:status
-npm run remote:preflight
-npm run remote:stage -- 2026.08.22-7
-npm run remote:activate -- 2026.08.22-7
+npm run remote:deploy -- 2026.08.25-1
 npm run remote:tunnel:check
 npm run remote:tempest:backfill
+npm run remote:public-stations:backfill
+npm run remote:backup:pull
 ```
 
 The SSH-backed commands require a loaded agent containing the deployment key.
@@ -107,9 +111,35 @@ The Tempest backfill command imports every active configured station through
 yesterday, resumes only exact successful chunks, and stores its private report
 under `/var/lib/weather` on the server.
 
+## Xweather map budget
+
+The forecast map requests one 256×168 single-layer static image per provider
+frame, which Xweather counts as one raster map unit. The browser permanently
+caches historical frames, retains forecast frames for one hour, and warms only
+the seven frames nearest the selected time for the selected layer. The server
+coalesces concurrent misses, retains historical frames for its process lifetime,
+and refreshes forecast frames on demand after one hour. There is no scheduled
+all-layer refresh and no public manual refresh operation.
+
+The server reserves every provider miss in
+`/var/lib/weather/xweather/usage.json` before issuing it. The persisted ceiling
+is 300 map units per UTC day and 10,000 per UTC month, leaving at least 5,000 of
+Xweather's shared 15,000-access free tier for other account activity. The ledger
+survives deploys and container restarts. When enabling the ledger after earlier
+account use, seed its current `monthUnits` and `dayUnits` from the Xweather
+dashboard before starting the web service; never reset it to recover capacity.
+
 The non-secret remote host and tunnel origin are recorded in
 `config/runtime-targets.json`. `npm run test:urls` prefers that tunnel;
 `npm run test:urls:local` is the explicit loopback override.
+
+`yolo` resolves and records all four exact ARM64 manifest digests, validates the
+Compose render, pulls images, applies checked forward migrations, starts the
+Weather stack with Compose health gates, and records release state last. It does
+not require capacity evidence, create a compatibility database, or create a
+deployment-time backup. The nightly local encrypted backup is the recovery copy.
+
+## Legacy staged diagnostics
 
 Stage requires a passing 15-minute capacity result from the prior hour, resolves
 and records all four exact ARM64 manifest digests, validates the complete Compose
@@ -140,6 +170,14 @@ schema release is rejected before capacity checks, backup, Compose, migration,
 or state mutation while the runtime trails that schema. Use `recover` to restore
 the recorded runtime against that retained schema authorization. The public
 hostname route remains a separate, leader-authorized post-activation operation.
+
+## Nightly local backup
+
+The local user timer runs `deploy/scripts/pull-backup.sh` at 02:30. It requests
+an age-encrypted PostgreSQL custom dump through the forced-command Weather SSH
+account, verifies complete decryption and `pg_restore --list` locally, and then
+atomically replaces the gitignored rolling backup and checksum. No plaintext
+database dump is written on either host.
 
 After a 15-minute ingestion soak, require at least 512 MiB available memory,
 load no greater than `0.75 * CPUs`, no OOM/restart/limit breach, swap no greater

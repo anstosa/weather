@@ -30,13 +30,19 @@ async function executeWithConfiguration(configuration, argumentsList = []) {
 const configuredTargets = {
   defaultSiteSlug: "ballydidean",
   local: { origin: "http://127.0.0.1:3000" },
-  remote: { tunnel: { origin: "https://weather.santosa.family" } },
+  remote: { tunnel: { origin: "https://weather.ballydidean.farm" } },
 };
 
 test("test URLs prefer the configured tunnel", async () => {
   const result = await executeWithConfiguration(configuredTargets);
 
-  assert.match(result.stdout, /https:\/\/weather\.santosa\.family\//u);
+  assert.match(result.stdout, /https:\/\/weather\.ballydidean\.farm\//u);
+  assert.match(result.stdout, /Weather station map\nhttps:\/\/weather\.ballydidean\.farm\/map/u);
+  assert.match(result.stdout, /Weather forecast\nhttps:\/\/weather\.ballydidean\.farm\/forecast/u);
+  assert.match(result.stdout, /Weather trends\nhttps:\/\/weather\.ballydidean\.farm\/trends/u);
+  assert.match(result.stdout, /Property sensor admin\nhttps:\/\/weather\.ballydidean\.farm\/admin/u);
+  assert.match(result.stdout, /\/forecast/u);
+  assert.match(result.stdout, /\/trends\?range=24h/u);
   assert.doesNotMatch(result.stdout, /127\.0\.0\.1/u);
 });
 
@@ -44,7 +50,7 @@ test("local test URLs remain explicitly selectable", async () => {
   const result = await executeWithConfiguration(configuredTargets, ["--local"]);
 
   assert.match(result.stdout, /http:\/\/127\.0\.0\.1:3000\//u);
-  assert.doesNotMatch(result.stdout, /weather\.santosa\.family/u);
+  assert.doesNotMatch(result.stdout, /weather\.ballydidean\.farm/u);
 });
 
 test("automatic URLs fall back locally when no tunnel is configured", async () => {

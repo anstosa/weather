@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   createNormalizedWeatherRecord,
   normalizeMetricValue,
@@ -12,6 +14,7 @@ import {
 import {
   ProviderFailure,
   type CurrentProviderOperation,
+  type ForecastProviderOperation,
   type HistoricalProviderOperation,
   type ProviderAttribution,
   type ProviderBatch,
@@ -19,6 +22,7 @@ import {
   type ProviderRequestPlan,
 } from "./contract.js";
 import { fetchJsonWithRetry } from "./http.js";
+import type { JsonResponse } from "./http.js";
 
 export const OPEN_METEO_ATTRIBUTION: ProviderAttribution = {
   label: "Weather data by Open-Meteo",
@@ -28,14 +32,19 @@ export const OPEN_METEO_CURRENT_ADAPTER_VERSION =
   "open-meteo-forecast-current/v1";
 export const OPEN_METEO_ARCHIVE_ADAPTER_VERSION =
   "open-meteo-archive-hourly/v1";
+export const OPEN_METEO_FORECAST_ADAPTER_VERSION =
+  "open-meteo-forecast-daily/v4";
 export const OPEN_METEO_ARCHIVE_CHUNK_PLAN_VERSION =
   "open-meteo-archive-hourly/v1";
 export const OPEN_METEO_COMPATIBILITY_ORIGIN_ENV =
   "WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN";
 
 const CURRENT_ENDPOINT = "https://api.open-meteo.com/v1/forecast";
+const AIR_QUALITY_ENDPOINT =
+  "https://air-quality-api.open-meteo.com/v1/air-quality";
 const ARCHIVE_ENDPOINT = "https://archive-api.open-meteo.com/v1/archive";
 const CURRENT_PATH = "/v1/forecast";
+const AIR_QUALITY_PATH = "/v1/air-quality";
 const ARCHIVE_PATH = "/v1/archive";
 const CURRENT_VARIABLES = [
   "temperature_2m",
@@ -49,6 +58,11 @@ const CURRENT_VARIABLES = [
   "surface_pressure",
 ] as const;
 const HOURLY_VARIABLES = CURRENT_VARIABLES;
+const FORECAST_VARIABLES = [...HOURLY_VARIABLES, "uv_index"] as const;
+const AIR_QUALITY_FORECAST_VARIABLES = ["pm2_5"] as const;
+// retain full weather and provider-limited air-quality horizons
+const FORECAST_AIR_QUALITY_DAYS = 7;
+const FORECAST_WEATHER_DAYS = 10;
 
 export interface OpenMeteoLocation {
   readonly latitude: number;
@@ -64,12 +78,14 @@ export interface OpenMeteoArchiveRequest extends OpenMeteoLocation {
 
 export type OpenMeteoCurrentOperation =
   CurrentProviderOperation<OpenMeteoLocation>;
+export type OpenMeteoForecastOperation =
+  ForecastProviderOperation<OpenMeteoLocation>;
 export type OpenMeteoHistoricalOperation =
   HistoricalProviderOperation<OpenMeteoArchiveRequest>;
 
 // expose the implemented capability set
-export function openMeteoCapabilities(): readonly ["current", "historical"] {
-  return ["current", "historical"];
+export function openMeteoCapabilities(): readonly ["current", "historical", "forecast"] {
+  return ["current", "historical", "forecast"];
 }
 
 // build the modern current request
@@ -92,6 +108,59 @@ function buildCurrentRequest(
     adapterVersion: OPEN_METEO_CURRENT_ADAPTER_VERSION,
     capability: "current",
     sourceKind: "model_current",
+    url,
+  };
+}
+
+// build the bounded hourly forecast request
+export function buildOpenMeteoForecastRequest(
+  input: OpenMeteoLocation,
+): ProviderRequestPlan {
+  return buildForecastRequest(input, CURRENT_ENDPOINT);
+}
+
+// build one forecast endpoint request
+function buildForecastRequest(
+  input: OpenMeteoLocation,
+  endpoint: string,
+): ProviderRequestPlan {
+  const location = validateLocation(input);
+  const url = new URL(endpoint);
+  appendCommonParameters(url, location, "hourly", FORECAST_VARIABLES);
+  url.searchParams.set("forecast_days", String(FORECAST_WEATHER_DAYS));
+
+  return {
+    adapterVersion: OPEN_METEO_FORECAST_ADAPTER_VERSION,
+    capability: "forecast",
+    sourceKind: "forecast",
+    url,
+  };
+}
+
+// build the paired air-quality forecast request
+export function buildOpenMeteoAirQualityForecastRequest(
+  input: OpenMeteoLocation,
+): ProviderRequestPlan {
+  return buildAirQualityForecastRequest(input, AIR_QUALITY_ENDPOINT);
+}
+
+// build one air-quality endpoint request
+function buildAirQualityForecastRequest(
+  input: OpenMeteoLocation,
+  endpoint: string,
+): ProviderRequestPlan {
+  const location = validateLocation(input);
+  const url = new URL(endpoint);
+  url.searchParams.set("latitude", String(location.latitude));
+  url.searchParams.set("longitude", String(location.longitude));
+  url.searchParams.set("hourly", AIR_QUALITY_FORECAST_VARIABLES.join(","));
+  url.searchParams.set("forecast_days", String(FORECAST_AIR_QUALITY_DAYS));
+  url.searchParams.set("timezone", location.timezone);
+
+  return {
+    adapterVersion: OPEN_METEO_FORECAST_ADAPTER_VERSION,
+    capability: "forecast",
+    sourceKind: "forecast",
     url,
   };
 }
@@ -160,6 +229,57 @@ async function fetchCurrent(
     providerCursor: { valid_at: record.validAt },
     records: [record],
     responseMetadata: responseMetadata(response.payload, response.status),
+  };
+}
+
+// fetch and normalize the latest hourly forecast
+export async function fetchOpenMeteoForecast(
+  input: OpenMeteoLocation,
+  options: ProviderFetchOptions = {},
+): Promise<ProviderBatch> {
+  return fetchForecast(
+    input,
+    options,
+    CURRENT_ENDPOINT,
+    AIR_QUALITY_ENDPOINT,
+  );
+}
+
+// execute one hourly forecast endpoint
+async function fetchForecast(
+  input: OpenMeteoLocation,
+  options: ProviderFetchOptions,
+  weatherEndpoint: string,
+  airQualityEndpoint: string,
+): Promise<ProviderBatch> {
+  const weatherPlan = buildForecastRequest(input, weatherEndpoint);
+  const airQualityPlan = buildAirQualityForecastRequest(
+    input,
+    airQualityEndpoint,
+  );
+
+  // run both bounded products concurrently
+  const [weatherResponse, airQualityResponse] = await Promise.all([
+    fetchJsonWithRetry(weatherPlan.url, options),
+    fetchJsonWithRetry(airQualityPlan.url, options),
+  ]);
+  const receivedAt = (options.now ?? defaultNow)().toISOString();
+  const records = normalizeForecastPayload(
+    weatherResponse.payload,
+    airQualityResponse.payload,
+    input.sourceId,
+    receivedAt,
+  );
+
+  return {
+    attempts: weatherResponse.attempts + airQualityResponse.attempts,
+    checksum: combinedForecastChecksum(weatherResponse, airQualityResponse),
+    providerCursor: { product_run_at: receivedAt },
+    records,
+    responseMetadata: forecastResponseMetadata(
+      weatherResponse,
+      airQualityResponse,
+    ),
   };
 }
 
@@ -233,6 +353,22 @@ export function createOpenMeteoCurrentOperation(
     : new URL(CURRENT_PATH, `${origin}/`).toString();
 
   return async (input, options = {}) => fetchCurrent(input, options, endpoint);
+}
+
+// create an injected forecast operation
+export function createOpenMeteoForecastOperation(
+  compatibilityOrigin?: string | null,
+): OpenMeteoForecastOperation {
+  const origin = parseOpenMeteoCompatibilityOrigin(compatibilityOrigin);
+  const endpoint = origin === null
+    ? CURRENT_ENDPOINT
+    : new URL(CURRENT_PATH, `${origin}/`).toString();
+  const airQualityEndpoint = origin === null
+    ? AIR_QUALITY_ENDPOINT
+    : new URL(AIR_QUALITY_PATH, `${origin}/`).toString();
+
+  return async (input, options = {}) =>
+    fetchForecast(input, options, endpoint, airQualityEndpoint);
 }
 
 // create an injected historical operation
@@ -358,6 +494,62 @@ export function normalizeArchivePayload(
   return records;
 }
 
+// normalize one hourly forecast product
+export function normalizeForecastPayload(
+  weatherPayload: unknown,
+  airQualityPayload: unknown,
+  sourceId: string,
+  receivedAt: string,
+): readonly NormalizedWeatherRecord[] {
+  const root = requireObject(weatherPayload, "Open-Meteo response");
+  const hourly = requireObject(root.hourly, "hourly");
+  const units = requireObject(root.hourly_units, "hourly_units");
+  const envelope = parseEnvelope(root);
+  const times = requireArray(hourly.time, "hourly.time");
+  const airQuality = airQualityForecastByValidAt(airQualityPayload);
+
+  // reject successful empty products
+  if (times.length === 0) {
+    throw invalidPayload("hourly.time must not be empty");
+  }
+
+  const metricArrays = forecastMetricArrays(hourly, times.length);
+  const records: NormalizedWeatherRecord[] = [];
+  let previousValidAt: string | null = null;
+
+  // retain every ordered forecast hour
+  for (let index = 0; index < times.length; index += 1) {
+    const localTime = requireString(times[index], `hourly.time[${index}]`);
+    const validAt = providerTimeToUtc(
+      localTime,
+      envelope.timezone,
+      envelope.utcOffsetSeconds,
+      { previousValidAt },
+    );
+    const values = Object.fromEntries(
+      Object.entries(metricArrays).map(([key, value]) => [key, value[index]]),
+    );
+    records.push(
+      createNormalizedWeatherRecord({
+        metadata: createMetadata(envelope, "forecast", "best_match"),
+        metrics: normalizeForecastMetrics(
+          values,
+          units,
+          airQuality.get(validAt) ?? null,
+        ),
+        productRunAt: receivedAt,
+        receivedAt,
+        sourceId,
+        sourceKind: "forecast",
+        validAt,
+      }),
+    );
+    previousValidAt = validAt;
+  }
+
+  return records;
+}
+
 // append the provider-neutral request controls
 function appendCommonParameters(
   url: URL,
@@ -467,6 +659,7 @@ function normalizeMetrics(
       requireUnit(units.temperature_2m, "°C", "temperature_2m", "c"),
     ),
     uvIndex: null,
+    waterLevelM: null,
     windDirectionDegrees: normalizeOpenMeteoWindDirection(
       values.wind_direction_10m,
       units.wind_direction_10m,
@@ -483,6 +676,88 @@ function normalizeMetrics(
     ),
     wetBulbGlobeTemperatureC: null,
   };
+}
+
+// normalize the extended forecast metric set
+function normalizeForecastMetrics(
+  values: Record<string, unknown>,
+  units: Record<string, unknown>,
+  pm25MicrogramsPerCubicMeter: number | null,
+): CanonicalWeatherMetrics {
+  const metrics = normalizeMetrics(values, units);
+
+  return {
+    ...metrics,
+    pm25MicrogramsPerCubicMeter,
+    precipitationRateMmPerHour: normalizeMetricValue(
+      "precipitationRateMmPerHour",
+      requireNullableNumber(values.precipitation, "precipitation"),
+      requireUnit(
+        units.precipitation,
+        "mm",
+        "precipitation",
+        "millimeter_per_hour",
+      ),
+    ),
+    uvIndex: normalizeMetricValue(
+      "uvIndex",
+      requireNullableNumber(values.uv_index, "uv_index"),
+      requireUnit(units.uv_index, "", "uv_index", "index"),
+    ),
+  };
+}
+
+// index the paired air-quality forecast by UTC instant
+function airQualityForecastByValidAt(
+  payload: unknown,
+): ReadonlyMap<string, number | null> {
+  const root = requireObject(payload, "Open-Meteo air-quality response");
+  const hourly = requireObject(root.hourly, "air-quality hourly");
+  const units = requireObject(root.hourly_units, "air-quality hourly_units");
+  const envelope = parseEnvelope(root);
+  const times = requireArray(hourly.time, "air-quality hourly.time");
+  const values = requireArray(hourly.pm2_5, "air-quality hourly.pm2_5");
+
+  // reject empty or misaligned air-quality products
+  if (times.length === 0 || values.length !== times.length) {
+    throw invalidPayload("air-quality hourly arrays must be non-empty and aligned");
+  }
+
+  const unit = requireUnit(
+    units.pm2_5,
+    "μg/m³",
+    "air-quality pm2_5",
+    "microgram_per_cubic_meter",
+  );
+  const indexed = new Map<string, number | null>();
+  let previousValidAt: string | null = null;
+
+  // retain each unique ordered air-quality hour
+  for (let index = 0; index < times.length; index += 1) {
+    const validAt = providerTimeToUtc(
+      requireString(times[index], `air-quality hourly.time[${index}]`),
+      envelope.timezone,
+      envelope.utcOffsetSeconds,
+      { previousValidAt },
+    );
+
+    // reject ambiguous duplicate instants
+    if (indexed.has(validAt)) {
+      throw invalidPayload("air-quality hourly.time contains duplicate instants");
+    }
+
+    indexed.set(
+      validAt,
+      normalizeMetricValue(
+        "pm25MicrogramsPerCubicMeter",
+        requireNullableNumber(values[index], `air-quality hourly.pm2_5[${index}]`),
+        unit,
+      ),
+    );
+    previousValidAt = validAt;
+  }
+
+  return indexed;
 }
 
 // collapse the circular north duplicate
@@ -509,6 +784,28 @@ function archiveMetricArrays(
 
   // collect every required variable
   for (const variable of HOURLY_VARIABLES) {
+    const value = requireArray(hourly[variable], `hourly.${variable}`);
+
+    // reject positional misalignment
+    if (value.length !== expectedLength) {
+      throw invalidPayload(`hourly.${variable} length does not match hourly.time`);
+    }
+
+    arrays[variable] = value;
+  }
+
+  return arrays;
+}
+
+// validate all parallel forecast arrays
+function forecastMetricArrays(
+  hourly: Record<string, unknown>,
+  expectedLength: number,
+): Readonly<Record<string, readonly unknown[]>> {
+  const arrays: Record<string, readonly unknown[]> = {};
+
+  // collect every required forecast variable
+  for (const variable of FORECAST_VARIABLES) {
     const value = requireArray(hourly[variable], `hourly.${variable}`);
 
     // reject positional misalignment
@@ -554,6 +851,48 @@ function responseMetadata(
     ...(typeof generation === "number" && Number.isFinite(generation)
       ? { generation_ms: generation }
       : {}),
+  };
+}
+
+// combine the paired forecast response checksums
+function combinedForecastChecksum(
+  weatherResponse: JsonResponse,
+  airQualityResponse: JsonResponse,
+): string {
+  const checksum = createHash("sha256");
+
+  // retain exact upstream checksum boundaries
+  for (const response of [weatherResponse, airQualityResponse]) {
+    checksum.update(`${response.checksum}\n`);
+  }
+
+  return checksum.digest("hex");
+}
+
+// expose metadata for both forecast products
+function forecastResponseMetadata(
+  weatherResponse: JsonResponse,
+  airQualityResponse: JsonResponse,
+): Readonly<Record<string, JsonValue>> {
+  const weather = responseMetadata(
+    weatherResponse.payload,
+    weatherResponse.status,
+  );
+  const airQuality = responseMetadata(
+    airQualityResponse.payload,
+    airQualityResponse.status,
+  );
+
+  return {
+    air_quality_http_status: airQualityResponse.status,
+    ...(airQuality.generation_ms === undefined
+      ? {}
+      : { air_quality_generation_ms: airQuality.generation_ms }),
+    http_status: weatherResponse.status,
+    upstream_response_count: 2,
+    ...(weather.generation_ms === undefined
+      ? {}
+      : { weather_generation_ms: weather.generation_ms }),
   };
 }
 
@@ -815,7 +1154,12 @@ function defaultNow(): Date {
 
 // preserve the declared source kind constraint
 export function openMeteoSourceKind(
-  capability: "current" | "historical",
+  capability: "current" | "historical" | "forecast",
 ): SourceKind {
+  // preserve the provider-neutral provenance class
+  if (capability === "forecast") {
+    return "forecast";
+  }
+
   return capability === "current" ? "model_current" : "reanalysis";
 }

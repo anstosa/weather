@@ -15,7 +15,9 @@
     "start": "npm run build && node dist/worker.js",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:integration": "npm run build && node --test --test-concurrency=1 test/*.integration.test.mjs",
+    "weather:tides:backfill": "npm run build && node dist/tide-backfill-cli.js",
     "weather:tempest:backfill": "npm run build && node dist/tempest-backfill-cli.js",
+    "weather:public-stations:backfill": "npm run build && node dist/public-stations-backfill-cli.js",
     "weather:backfill": "npm run build && node dist/backfill-cli.js",
     "typecheck": "npm run build:dependencies && tsc -p tsconfig.json --noEmit"
   },

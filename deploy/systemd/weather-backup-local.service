@@ -1,0 +1,12 @@
+[Unit]
+Description=Pull and verify encrypted Weather database backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/weather
+ExecStart=%h/weather/deploy/scripts/pull-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

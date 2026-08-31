@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "siteKey": "ballydidean",
+  "provider": {
+    "key": "ecowitt-local",
+    "displayName": "Ecowitt",
+    "attributionLabel": "Weather data by Ecowitt",
+    "attributionUrl": "https://www.ecowitt.com/",
+    "active": true
+  },
+  "stations": [
+    {
+      "key": "ballydidean-ecowitt",
+      "displayName": "Ballydídean Farm",
+      "gatewayHost": "192.168.11.137",
+      "expectedMac": "88:F1:55:05:D8:9F",
+      "model": "GW3000",
+      "latitude": 47.950429954185445,
+      "longitude": -122.42797012608193,
+      "timezone": "America/Los_Angeles",
+      "cadenceSeconds": 60,
+      "active": true
+    }
+  ]
+}
