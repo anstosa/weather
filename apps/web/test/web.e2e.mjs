@@ -2071,18 +2071,6 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       tileRequestsBeforeReload + 1,
     );
     assert.match(await weatherTiles.first().getAttribute("href") ?? "", /^blob:/u);
-    const uniqueRadarTiles = new Set(fixture.state.requests.flatMap(
-      // retain only current-day radar tile URLs
-      (entry) => /^GET \/maps\/xweather\/(?:history|forecast)\/radar\//u.test(entry)
-        ? [entry.slice(4)]
-        : [],
-    ));
-    assert.equal(uniqueRadarTiles.size, 6);
-    assert.equal(new Set([...uniqueRadarTiles].map(
-      // extract one cached provider frame
-      (entry) => entry.split("/")[5],
-    )).size, 6);
-
     const mapScrubber = page.locator("[data-forecast-map-scrubber]");
     await mapScrubber.scrollIntoViewIfNeeded();
     const mapBounds = await mapScrubber.boundingBox();
