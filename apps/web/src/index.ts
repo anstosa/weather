@@ -2585,6 +2585,15 @@ const TREND_CHART_OPTIONS: readonly TrendChartOption[] = [
   { format: "pressure", label: "Pressure", metric: "pressureHpa" },
 ];
 
+// define the destination-state toggle glyphs
+const TREND_TOGGLE_ICON_PATHS = {
+  aggregate: '<path class="trend-toggle-icon-fill" d="m1.5 5.5 3-2.3 2.7 1.9 3.2-2.3 6.1 3v6.4l-6.1-1.7L7.2 13l-2.7-2.2-3 1.7Z"/><path d="m1.5 9 3-2 2.7 2 3.2-2.5 6.1 2.5"/>',
+  daily: '<path d="M2 12V8m2.3 4V4.5m2.3 7.5V7m2.4 5V3m2.4 9V6m2.3 6V5m2.3 7V8.5"/>',
+  rolling: '<path class="trend-toggle-icon-muted" d="M2 12V8m2.3 4V4.5m2.3 7.5V7m2.4 5V3m2.4 9V6m2.3 6V5m2.3 7V8.5"/><path d="M1.5 10.5c2-2.7 3.6-2.9 5.3-2.1 2.1 1 3.2.6 4.7-1.2 1.4-1.7 3-1.8 5-.2"/>',
+  "show-all": '<path d="m1.5 5.1 3-1.9 2.7 2 3.2-2.9 6.1 2.9M1.5 9l3-1.9 2.7 2 3.2-2.9 6.1 2.9M1.5 12.9l3-1.9 2.7 2 3.2-2.9 6.1 2.9"/>',
+} as const;
+type TrendToggleIcon = keyof typeof TREND_TOGGLE_ICON_PATHS;
+
 // render calendar-year comparison charts
 function renderTrends(state: DashboardState): string {
   // reserve the final chart during the first read
@@ -2709,8 +2718,16 @@ function renderTrendLineChart(
   const dailyDetail = state.trendDetail === "daily";
   const metricControl = renderTrendMetricControl(option.metric);
   const chartRange = `<span class="trend-chart-range">${escapeHtml(minimumLabel.value)}–${escapeHtml(maximumLabel.value)} ${escapeHtml(maximumLabel.unit)}</span>`;
-  const modeToggle = `<button type="button" class="trend-mode-toggle" data-trend-mode-toggle aria-pressed="${state.trendDisplayMode === "all" ? "true" : "false"}">${state.trendDisplayMode === "aggregate" ? "Show all" : "Aggregate"}</button>`;
-  const detailToggle = `<button type="button" class="trend-detail-toggle" data-trend-detail-toggle aria-pressed="${dailyDetail ? "true" : "false"}">${dailyDetail ? "7-day average" : "Daily detail"}</button>`;
+  // show the destination display mode
+  const modeToggleContent = state.trendDisplayMode === "aggregate"
+    ? { icon: "show-all", label: "Show all" } as const
+    : { icon: "aggregate", label: "Aggregate" } as const;
+  // show the destination detail level
+  const detailToggleContent = dailyDetail
+    ? { icon: "rolling", label: "7-day average" } as const
+    : { icon: "daily", label: "Daily detail" } as const;
+  const modeToggle = `<button type="button" class="trend-mode-toggle" data-trend-mode-toggle aria-pressed="${state.trendDisplayMode === "all" ? "true" : "false"}">${renderTrendToggleIcon(modeToggleContent.icon)}<span>${modeToggleContent.label}</span></button>`;
+  const detailToggle = `<button type="button" class="trend-detail-toggle" data-trend-detail-toggle aria-pressed="${dailyDetail ? "true" : "false"}">${renderTrendToggleIcon(detailToggleContent.icon)}<span>${detailToggleContent.label}</span></button>`;
   const yAxis = renderTrendYAxis(minimum, maximum, option.format, state.units);
 
   // share one interactive legend between both layouts
@@ -2774,6 +2791,11 @@ function renderTrendLineChart(
       </div>
     </article>
   `;
+}
+
+// render one decorative trend toggle glyph
+function renderTrendToggleIcon(icon: TrendToggleIcon): string {
+  return `<svg class="trend-toggle-icon" data-trend-toggle-icon="${icon}" viewBox="0 0 18 16" aria-hidden="true" focusable="false">${TREND_TOGGLE_ICON_PATHS[icon]}</svg>`;
 }
 
 // render responsive vertical scale labels outside the stretched SVG
@@ -6960,7 +6982,8 @@ function bindTrendCrosshair(
   const chart = surface?.closest<HTMLElement>("[data-trend-chart]") ?? null;
   const viewport = surface?.closest<HTMLElement>(".trend-chart-viewport") ?? null;
   const slider = surface?.querySelector<HTMLElement>("[data-trend-crosshair-slider]") ?? null;
-  const svg = surface?.querySelector<SVGSVGElement>("svg") ?? null;
+  // target the data canvas instead of a control glyph
+  const svg = surface?.querySelector<SVGSVGElement>(":scope > svg") ?? null;
   const metric = chart?.dataset.trendChart;
   const displayMode = chart?.dataset.trendDisplayMode;
   const detail = chart?.dataset.trendDetail;

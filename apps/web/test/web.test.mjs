@@ -626,14 +626,14 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((trendsHtml.match(/class="trend-year-line/gu) ?? []).length, 1);
   assert.equal((trendsHtml.match(/class="trend-year-hit-target/gu) ?? []).length, 0);
   assert.match(trendsHtml, /class="trend-year-line trend-year-line-current"[^>]*data-trend-year="2026"[^>]*stroke="var\(--brand-orange\)"/u);
-  assert.match(trendsHtml, /data-trend-mode-toggle aria-pressed="false">Show all<\/button>/u);
-  assert.match(trendsHtml, /data-trend-detail-toggle aria-pressed="false">Daily detail<\/button>/u);
+  assert.match(trendsHtml, /data-trend-mode-toggle aria-pressed="false">[\s\S]*?data-trend-toggle-icon="show-all"[\s\S]*?<span>Show all<\/span><\/button>/u);
+  assert.match(trendsHtml, /data-trend-detail-toggle aria-pressed="false">[\s\S]*?data-trend-toggle-icon="daily"[\s\S]*?<span>Daily detail<\/span><\/button>/u);
   assert.equal((allTrendsHtml.match(/class="trend-year-line/gu) ?? []).length, 3);
   assert.equal((allTrendsHtml.match(/class="trend-year-hit-target/gu) ?? []).length, 3);
   assert.equal((allTrendsHtml.match(/trend-year-line-current/gu) ?? []).length, 1);
-  assert.match(allTrendsHtml, /data-trend-mode-toggle aria-pressed="true">Aggregate<\/button>/u);
+  assert.match(allTrendsHtml, /data-trend-mode-toggle aria-pressed="true">[\s\S]*?data-trend-toggle-icon="aggregate"[\s\S]*?<span>Aggregate<\/span><\/button>/u);
   assert.match(dailyTrendsHtml, /data-trend-detail="daily" data-trend-display-mode="aggregate"/u);
-  assert.match(dailyTrendsHtml, /data-trend-detail-toggle aria-pressed="true">7-day average<\/button>/u);
+  assert.match(dailyTrendsHtml, /data-trend-detail-toggle aria-pressed="true">[\s\S]*?data-trend-toggle-icon="rolling"[\s\S]*?<span>7-day average<\/span><\/button>/u);
   assert.match(dailyTrendsHtml, /class="trend-chart-viewport">[\s\S]*class="trend-month-axis"[\s\S]*<\/div>\s*<\/div>\s*<div class="trend-chart-fixed-chrome">[\s\S]*aria-label="Trend measurement"[\s\S]*aria-label="Trend legend"/u);
   assert.equal((dailyTrendsHtml.match(/aria-label="Trend measurement"/gu) ?? []).length, 1);
   assert.equal((dailyTrendsHtml.match(/aria-label="Trend legend"/gu) ?? []).length, 1);

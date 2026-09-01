@@ -1461,10 +1461,12 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
           const landscape = chart.querySelector(".trend-chart-landscape");
           const legend = chart.querySelector(".trend-chart-legend");
           const median = chart.querySelector(".trend-aggregate-median-line");
+          const detailToggle = chart.querySelector("[data-trend-detail-toggle]");
+          const modeToggle = chart.querySelector("[data-trend-mode-toggle]");
           const ranges = [...chart.querySelectorAll(".trend-historical-range-line")];
           const title = chart.querySelector(".trend-chart-title");
           const titleControl = title?.closest(".trend-metric-control");
-          const svg = chart.querySelector("svg");
+          const svg = chart.querySelector(".trend-chart-landscape > svg");
           const viewport = chart.querySelector(".trend-chart-viewport");
           const xAxis = chart.querySelector(".trend-chart-axis");
           const crosshair = chart.querySelector(".trend-crosshair-line");
@@ -1482,9 +1484,11 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
             crosshairSummary === null ||
             crosshairValueFlags === null ||
             currentYearLine === null ||
+            detailToggle === null ||
             landscape === null ||
             legend === null ||
             median === null ||
+            modeToggle === null ||
             ranges.length !== 2 ||
             title === null ||
             titleControl === null ||
@@ -1497,6 +1501,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
           }
 
           const landscapeBounds = landscape.getBoundingClientRect();
+          const detailToggleBounds = detailToggle.getBoundingClientRect();
           const legendBounds = legend.getBoundingClientRect();
           const titleControlBounds = titleControl.getBoundingClientRect();
           const svgBounds = svg.getBoundingClientRect();
@@ -1536,6 +1541,9 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
             currentYearMatchesToday: getComputedStyle(currentYearLine).stroke ===
               getComputedStyle(todayMarker).borderLeftColor,
             currentYearUsesDarkOrange: getComputedStyle(currentYearLine).stroke === "rgb(239, 126, 31)",
+            detailIcon: detailToggle.querySelector("[data-trend-toggle-icon]")?.getAttribute("data-trend-toggle-icon"),
+            detailTopLeftOfTitle: detailToggleBounds.right < titleControlBounds.left &&
+              Math.abs(detailToggleBounds.top - titleControlBounds.top) < 2,
             legendCentered: Math.abs(
               legendBounds.left + legendBounds.width / 2 -
               (landscapeBounds.left + landscapeBounds.width / 2),
@@ -1548,6 +1556,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
             minimumSize: landscapeBounds.width >= viewportBounds.width - 1 &&
               landscape.clientWidth >= viewport.clientWidth,
             modeLabel: chart.querySelector("[data-trend-mode-toggle]")?.textContent,
+            modeIcon: modeToggle.querySelector("[data-trend-toggle-icon]")?.getAttribute("data-trend-toggle-icon"),
             monthLabels: [...chart.querySelectorAll(".trend-month-label")].map(
               // read one month label
               (label) => label.textContent,
@@ -1582,12 +1591,15 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         crosshairDateCentered: true,
         currentYearMatchesToday: true,
         currentYearUsesDarkOrange: true,
+        detailIcon: "daily",
+        detailTopLeftOfTitle: true,
         legendCentered: true,
         legendPlacement: "bottom",
         legendPlacementMatchesEdge: true,
         medianWidth: 2,
         minimumSize: true,
         modeLabel: "Show all",
+        modeIcon: "show-all",
         monthLabels: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
         preserveAspectRatio: "none",
         rangeDashes: ["3px, 4px", "3px, 4px"],
@@ -1641,6 +1653,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.notEqual(await page.locator("[data-trend-crosshair-date]").textContent(), trendDateBeforeScrub);
     await page.getByRole("button", { name: "Show all" }).click();
     await page.locator("[data-trend-display-mode=all]").waitFor();
+    assert.equal(await page.locator('[data-trend-toggle-icon="aggregate"]').count(), 1);
     assert.equal(await page.locator(".trend-aggregate-median-line").count(), 0);
     assert.equal(await page.locator(".trend-year-line").count(), 3);
     assert.equal(await page.locator(".trend-year-hit-target").count(), 3);
@@ -1706,6 +1719,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     );
     await page.getByRole("button", { name: "Daily detail" }).click();
     await page.locator("[data-trend-detail=daily]").waitFor();
+    assert.equal(await page.locator('[data-trend-toggle-icon="rolling"]').count(), 1);
     const dailyTrendGeometry = await page.locator(".trend-chart").evaluate(
       // verify the one fixed daily-detail canvas
       (chart) => {
@@ -1732,7 +1746,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         // keep chart chrome fixed while the daily data canvas moves
         (chart) => {
           const legend = chart.querySelector(".trend-chart-legend");
-          const svg = chart.querySelector("svg");
+          const svg = chart.querySelector(".trend-chart-landscape > svg");
           const title = chart.querySelector(".trend-metric-control");
           const viewport = chart.querySelector(".trend-chart-viewport");
           const xAxis = chart.querySelector(".trend-month-axis");
@@ -3699,13 +3713,14 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
           const crosshairSummary = panel.querySelector(".trend-crosshair-summary");
           const crosshairValueFlags = panel.querySelector(".trend-crosshair-values");
           const currentYearLine = panel.querySelector(".trend-year-line-current");
+          const detailToggle = panel.querySelector("[data-trend-detail-toggle]");
           const landscape = panel.querySelector(".trend-chart-landscape");
           const legend = panel.querySelector(".trend-chart-legend");
           const masthead = document.querySelector(".masthead");
           const navigation = document.querySelector(".section-nav");
           const title = panel.querySelector(".trend-chart-title");
           const titleControl = title?.closest(".trend-metric-control");
-          const svg = panel.querySelector("svg");
+          const svg = panel.querySelector(".trend-chart-landscape > svg");
           const viewport = panel.querySelector(".trend-chart-viewport");
 
           // require the complete mobile trend surface
@@ -3716,6 +3731,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
             crosshairSummary === null ||
             crosshairValueFlags === null ||
             currentYearLine === null ||
+            detailToggle === null ||
             landscape === null ||
             legend === null ||
             masthead === null ||
@@ -3729,6 +3745,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
           }
 
           const chartBounds = chart.getBoundingClientRect();
+          const detailToggleStyle = getComputedStyle(detailToggle);
           const landscapeBounds = landscape.getBoundingClientRect();
           const crosshairBounds = crosshair.getBoundingClientRect();
           const crosshairDateBounds = crosshairDate.getBoundingClientRect();
@@ -3777,6 +3794,10 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
                 crosshairValueFlagsStyle.borderBottomRightRadius === "0px"
               : crosshairValueFlagsStyle.borderTopLeftRadius === "0px" &&
                 crosshairValueFlagsStyle.borderBottomLeftRadius === "0px",
+            detailIcon: detailToggle.querySelector("[data-trend-toggle-icon]")?.getAttribute("data-trend-toggle-icon"),
+            detailTopLeftOfTitle: Number.parseFloat(detailToggleStyle.left) <
+              Number.parseFloat(titleControlStyle.left) &&
+              Math.abs(Number.parseFloat(detailToggleStyle.top) - Number.parseFloat(titleControlStyle.top)) < 2,
             landscapeFitsViewport: landscapeBounds.left >= viewportBounds.left - 1 &&
               landscapeBounds.right <= viewportBounds.right + 1 &&
               landscapeBounds.top >= viewportBounds.top - 1 &&
@@ -3809,6 +3830,8 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
         crosshairSummaryInsidePlot: true,
         crosshairSummaryMatchesCurrentYear: true,
         crosshairSummarySquareAgainstLine: true,
+        detailIcon: "daily",
+        detailTopLeftOfTitle: true,
         landscapeFitsViewport: true,
         landscapeRotated: true,
         legendAtChosenEdge: true,
@@ -3905,7 +3928,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
         // keep rotated chart chrome fixed while the daily data canvas moves
         (chart) => {
           const legend = chart.querySelector(".trend-chart-legend");
-          const svg = chart.querySelector("svg");
+          const svg = chart.querySelector(".trend-chart-landscape > svg");
           const title = chart.querySelector(".trend-metric-control");
           const viewport = chart.querySelector(".trend-chart-viewport");
           const xAxis = chart.querySelector(".trend-month-axis");

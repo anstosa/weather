@@ -1963,6 +1963,9 @@ h2 {
 
 .trend-mode-toggle,
 .trend-detail-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--md-sys-color-outline-variant);
@@ -1973,6 +1976,28 @@ h2 {
   font-weight: 750;
 }
 
+.trend-toggle-icon {
+  width: 1rem;
+  height: 0.9rem;
+  flex: none;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
+}
+
+.trend-toggle-icon-fill {
+  fill: currentColor;
+  stroke: none;
+  opacity: 0.16;
+}
+
+.trend-toggle-icon-muted {
+  opacity: 0.3;
+}
+
 .trend-mode-toggle {
   top: 0.65rem;
   right: 0.75rem;
@@ -1981,10 +2006,10 @@ h2 {
 }
 
 .trend-detail-toggle {
-  right: 0.45rem;
-  bottom: 0.16rem;
-  padding: 0.24rem 0.46rem;
-  border-radius: var(--md-sys-shape-small);
+  top: 0.65rem;
+  left: 0.75rem;
+  padding: 0.42rem 0.7rem;
+  border-radius: var(--md-sys-shape-full);
 }
 
 .trend-mode-toggle:hover,
@@ -3838,10 +3863,17 @@ td small {
   }
 
   .trend-detail-toggle {
-    right: 0.3rem;
-    bottom: 0.12rem;
-    padding: 0.2rem 0.36rem;
-    font-size: 0.52rem;
+    top: 0.45rem;
+    right: auto;
+    bottom: auto;
+    left: 0.55rem;
+    padding: 0.34rem 0.52rem;
+    font-size: 0.56rem;
+  }
+
+  .trend-toggle-icon {
+    width: 0.82rem;
+    height: 0.74rem;
   }
 
   .trend-month-axis {
