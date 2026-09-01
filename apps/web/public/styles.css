@@ -1854,7 +1854,7 @@ h2 {
   transform: translateX(-50%);
 }
 
-.trend-metric-control > summary,
+.trend-metric-trigger,
 .trend-metric-control-skeleton {
   display: flex;
   align-items: center;
@@ -1862,22 +1862,26 @@ h2 {
   gap: 0.1rem;
 }
 
-.trend-metric-control > summary {
+.trend-metric-trigger {
+  min-height: 0;
   padding: 0.2rem 0.3rem;
+  border: 0;
   border-radius: var(--md-sys-shape-small);
   color: var(--md-sys-color-on-surface);
+  background: transparent;
+  box-shadow: none;
   cursor: pointer;
-  list-style: none;
+  font-size: inherit;
+  font-weight: inherit;
+  line-height: inherit;
 }
 
-.trend-metric-control > summary::-webkit-details-marker {
-  display: none;
-}
-
-.trend-metric-control > summary:hover,
-.trend-metric-control > summary:focus-visible {
+.trend-metric-trigger:hover:not(:disabled),
+.trend-metric-trigger:focus-visible {
+  border-color: transparent;
   color: var(--md-sys-color-primary);
-  background: color-mix(in srgb, var(--md-sys-color-surface-container-high) 72%, transparent);
+  background: transparent;
+  box-shadow: none;
 }
 
 .trend-chart-title {
@@ -1898,7 +1902,7 @@ h2 {
   transition: transform 160ms ease;
 }
 
-.trend-metric-control[open] .trend-metric-caret {
+.trend-metric-trigger[aria-expanded="true"] .trend-metric-caret {
   transform: rotate(225deg);
 }
 

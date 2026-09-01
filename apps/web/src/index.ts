@@ -2821,18 +2821,20 @@ function renderTrendMetricControl(
   }
 
   return `
-    <details class="trend-metric-control" data-trend-metric-control>
-      <summary aria-label="Change trend measurement" aria-haspopup="menu">
-        <h2 class="trend-chart-title">${escapeHtml(selectedOption.label)}</h2>
-        <span class="trend-metric-caret" aria-hidden="true"></span>
-      </summary>
-      <div class="trend-metric-flyover" role="menu" aria-label="Trend measurement">
+    <div class="trend-metric-control" data-trend-metric-control>
+      <h2 class="trend-chart-title">
+        <button type="button" class="trend-metric-trigger" data-trend-metric-trigger aria-expanded="false" aria-haspopup="menu" aria-controls="trend-metric-flyover">
+          <span>${escapeHtml(selectedOption.label)}</span>
+          <span class="trend-metric-caret" aria-hidden="true"></span>
+        </button>
+      </h2>
+      <div class="trend-metric-flyover" id="trend-metric-flyover" role="menu" aria-label="Trend measurement" hidden>
         ${TREND_CHART_OPTIONS.map(
           // render one reviewed flyover option
           (option) => `<button type="button" class="trend-metric-option" data-trend-metric-option="${escapeHtml(option.metric)}" role="menuitemradio" aria-checked="${String(option.metric === selected)}">${escapeHtml(option.label)}</button>`,
         ).join("")}
       </div>
-    </details>
+    </div>
   `;
 }
 
@@ -6832,14 +6834,32 @@ function bindTrendMetricControl(
   root: HTMLElement,
   controller: WeatherDashboardController,
 ): void {
-  const control = root.querySelector<HTMLDetailsElement>("[data-trend-metric-control]");
+  const control = root.querySelector<HTMLElement>("[data-trend-metric-control]");
 
   // skip every non-trends route
   if (control === null) {
     return;
   }
 
+  const trigger = control.querySelector<HTMLButtonElement>("[data-trend-metric-trigger]");
+  const flyover = control.querySelector<HTMLElement>(".trend-metric-flyover");
   const options = [...control.querySelectorAll<HTMLButtonElement>("[data-trend-metric-option]")];
+
+  // require the complete title control
+  if (trigger === null || flyover === null) {
+    return;
+  }
+
+  // synchronize the custom flyover state
+  const setOpen = (open: boolean): void => {
+    trigger.setAttribute("aria-expanded", String(open));
+    flyover.hidden = !open;
+  };
+
+  // toggle the flyover from the title
+  trigger.addEventListener("click", () => {
+    setOpen(trigger.getAttribute("aria-expanded") !== "true");
+  });
 
   // bind every reviewed metric choice
   for (const option of options) {
@@ -6851,7 +6871,7 @@ function bindTrendMetricControl(
         return;
       }
 
-      control.open = false;
+      setOpen(false);
       controller.setSelectedTrendMetric(metric);
     });
   }
@@ -6859,13 +6879,13 @@ function bindTrendMetricControl(
   // close the flyover from the keyboard
   control.addEventListener("keydown", (event) => {
     // preserve ordinary title and option keys
-    if (event.key !== "Escape" || !control.open) {
+    if (event.key !== "Escape" || trigger.getAttribute("aria-expanded") !== "true") {
       return;
     }
 
     event.preventDefault();
-    control.open = false;
-    control.querySelector<HTMLElement>("summary")?.focus();
+    setOpen(false);
+    trigger.focus();
   });
 }
 

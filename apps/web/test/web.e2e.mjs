@@ -1372,16 +1372,16 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator("[data-trend-range]").count(), 0);
     assert.equal(await page.locator("[data-trend-display-mode=aggregate]").count(), 1);
     assert.equal(await page.locator("[data-trend-detail=rolling]").count(), 1);
-    const trendMetricTrigger = page.locator('summary[aria-label="Change trend measurement"]');
+    const trendMetricTrigger = page.locator("[data-trend-metric-trigger]");
     assert.equal(await page.getByRole("heading", { name: "Temperature" }).count(), 1);
     assert.equal(await page.locator("[data-trend-metric-option]").count(), 7);
     assert.equal(await page.locator(".trend-metric-flyover").isVisible(), false);
     await trendMetricTrigger.click();
-    assert.equal(await page.locator("[data-trend-metric-control]").getAttribute("open"), "");
+    assert.equal(await trendMetricTrigger.getAttribute("aria-expanded"), "true");
     assert.equal(await page.locator(".trend-metric-flyover").isVisible(), true);
     assert.equal(await page.locator('[data-trend-metric-option="temperatureC"]').getAttribute("aria-checked"), "true");
     await page.keyboard.press("Escape");
-    assert.equal(await page.locator("[data-trend-metric-control]").getAttribute("open"), null);
+    assert.equal(await trendMetricTrigger.getAttribute("aria-expanded"), "false");
     assert.equal(await page.locator('[data-trend-chart="temperatureC"]').count(), 1);
     assert.equal(await page.locator(".trend-chart").getAttribute("data-trend-domain"), "visible");
     assert.equal(await page.locator("[data-trend-crosshair-value=median]").count(), 1);
@@ -3690,7 +3690,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
     );
     assert.equal(await page.getByRole("heading", { name: "Yearly trends" }).count(), 0);
     assert.equal(await page.getByRole("heading", { name: "Temperature" }).count(), 1);
-    const mobileTrendMetricTrigger = page.locator('summary[aria-label="Change trend measurement"]');
+    const mobileTrendMetricTrigger = page.locator("[data-trend-metric-trigger]");
     await mobileTrendMetricTrigger.click();
     assert.equal(await page.locator(".trend-metric-flyover").isVisible(), true);
     assert.equal(
