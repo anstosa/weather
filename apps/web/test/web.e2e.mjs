@@ -1421,6 +1421,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.getByRole("link", { name: "Trends" }).click();
     await page.waitForURL(`${fixture.origin}/trends`);
     await page.waitForLoadState("networkidle");
+    await page.locator("[data-trend-display-mode=aggregate][data-trend-detail=rolling]").waitFor();
     assert.equal(await page.getByRole("heading", { name: "Yearly trends" }).count(), 0);
     assert.equal(await page.getByText("Calendar comparison", { exact: true }).count(), 0);
     assert.equal(await page.locator(".section-nav-trends").getAttribute("aria-current"), "page");
