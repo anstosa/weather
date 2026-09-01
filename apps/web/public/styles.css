@@ -19,6 +19,7 @@
   --brand-citron: #c8b744;
   --brand-gray: #545450;
   --brand-lavender: #7c5174;
+  --brand-orange: #ef7e1f;
   --brand-white: #ffffff;
   --forecast-day-shade: rgba(240, 218, 89, 0.2);
   --forecast-night-shade: rgba(84, 68, 96, 0.14);
@@ -1823,7 +1824,7 @@ h2 {
   bottom: 12%;
   left: var(--trend-today-position);
   width: 0;
-  border-left: 2px dashed var(--brand-citron);
+  border-left: 2px dashed var(--brand-orange);
   pointer-events: none;
 }
 
@@ -1834,7 +1835,7 @@ h2 {
   padding: 0.16rem 0.3rem;
   border-radius: var(--md-sys-shape-full);
   color: var(--brand-black);
-  background: var(--brand-citron);
+  background: var(--brand-orange);
   font-size: 0.54rem;
   font-weight: 800;
   line-height: 1;
@@ -2145,7 +2146,7 @@ h2 {
 }
 
 .trend-current-year-color {
-  color: var(--brand-citron);
+  color: var(--brand-orange);
 }
 
 .empty-panel {

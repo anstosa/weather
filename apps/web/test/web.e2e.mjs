@@ -1367,7 +1367,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator(".trend-aggregate-median-line").count(), 1);
     assert.equal(await page.locator(".trend-year-line").count(), 1);
     assert.equal(await page.locator(".trend-year-hit-target").count(), 0);
-    assert.equal(await page.locator(".trend-year-line-current").getAttribute("stroke"), "var(--brand-citron)");
+    assert.equal(await page.locator(".trend-year-line-current").getAttribute("stroke"), "var(--brand-orange)");
     assert.equal(await page.locator(".trend-y-axis span").count(), 5);
     assert.equal(await page.locator("[data-trend-range]").count(), 0);
     assert.equal(await page.locator("[data-trend-display-mode=aggregate]").count(), 1);
@@ -1446,6 +1446,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
               getComputedStyle(crosshairDateFlag).backgroundColor,
             currentYearMatchesToday: getComputedStyle(currentYearLine).stroke ===
               getComputedStyle(todayMarker).borderLeftColor,
+            currentYearUsesDarkOrange: getComputedStyle(currentYearLine).stroke === "rgb(239, 126, 31)",
             legendBottomCentered: Math.abs(
               legendBounds.left + legendBounds.width / 2 -
               (landscapeBounds.left + landscapeBounds.width / 2),
@@ -1481,6 +1482,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         crosshairFlagsAttached: true,
         crosshairFlagsBlack: true,
         currentYearMatchesToday: true,
+        currentYearUsesDarkOrange: true,
         legendBottomCentered: true,
         medianWidth: 2,
         minimumSize: true,
@@ -1558,7 +1560,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       {
         crosshairValues: 2,
         currentOpacity: 1,
-        currentStroke: "var(--brand-citron)",
+        currentStroke: "var(--brand-orange)",
         hiddenOpacities: [0],
         selectedOpacity: 1,
         selectedYear: "2019",
@@ -1717,7 +1719,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.getByRole("button", { name: "Aggregate" }).click();
     await page.locator("[data-trend-display-mode=aggregate]").waitFor();
     assert.equal(await page.locator(".trend-year-line").count(), 1);
-    assert.equal(await page.locator(".trend-year-line-current").getAttribute("stroke"), "var(--brand-citron)");
+    assert.equal(await page.locator(".trend-year-line-current").getAttribute("stroke"), "var(--brand-orange)");
     assert.equal(await page.locator(".trend-aggregate-median-line").count(), 1);
     assert.equal(await page.locator("[data-trend-crosshair-value=median]").count(), 1);
     assert.equal(await page.locator("[data-trend-crosshair-value]").count(), 2);

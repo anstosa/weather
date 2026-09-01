@@ -2565,7 +2565,7 @@ const TREND_CHART_PADDING_TOP = 42;
 const TREND_CHART_WIDTH = 720;
 const TREND_ROLLING_WINDOW_DAYS = 7;
 const TREND_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-const TREND_CURRENT_YEAR_COLOR = "var(--brand-citron)";
+const TREND_CURRENT_YEAR_COLOR = "var(--brand-orange)";
 const TREND_YEAR_COLORS = ["#3878c5", "#439756", "#e6b519", "#ef7e1f", "#cf4337", "#8d6e63", "#545450", "#00838f"] as const;
 type TrendChartFormat = keyof UnitPreferences | "humidity";
 interface TrendChartOption {

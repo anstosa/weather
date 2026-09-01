@@ -625,7 +625,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((trendsHtml.match(/class="trend-aggregate-median-line"/gu) ?? []).length, 1);
   assert.equal((trendsHtml.match(/class="trend-year-line/gu) ?? []).length, 1);
   assert.equal((trendsHtml.match(/class="trend-year-hit-target/gu) ?? []).length, 0);
-  assert.match(trendsHtml, /class="trend-year-line trend-year-line-current"[^>]*data-trend-year="2026"[^>]*stroke="var\(--brand-citron\)"/u);
+  assert.match(trendsHtml, /class="trend-year-line trend-year-line-current"[^>]*data-trend-year="2026"[^>]*stroke="var\(--brand-orange\)"/u);
   assert.match(trendsHtml, /data-trend-mode-toggle aria-pressed="false">Show all<\/button>/u);
   assert.match(trendsHtml, /data-trend-detail-toggle aria-pressed="false">Daily detail<\/button>/u);
   assert.equal((allTrendsHtml.match(/class="trend-year-line/gu) ?? []).length, 3);
