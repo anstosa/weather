@@ -1750,18 +1750,22 @@ h2 {
   pointer-events: none;
 }
 
-.trend-crosshair-summary time {
-  padding: 0.28rem 0.5rem;
+.trend-crosshair-date-pill {
+  position: absolute;
+  z-index: 4;
+  top: 15%;
+  left: var(--trend-crosshair-position);
+  padding: 0.16rem 0.3rem;
   border-radius: var(--md-sys-shape-full);
   color: var(--brand-white);
   background: var(--brand-black);
   box-shadow: var(--md-sys-elevation-1);
-  font-size: 0.68rem;
-  font-weight: 750;
+  font-size: 0.54rem;
+  font-weight: 800;
   line-height: 1;
   white-space: nowrap;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
+  transform: translate(-50%, calc(-100% - 0.3rem));
+  pointer-events: none;
 }
 
 .trend-crosshair-values {
@@ -1769,7 +1773,7 @@ h2 {
   grid-template-columns: max-content;
   gap: 0.18rem;
   padding: 0.28rem 0.35rem;
-  border-radius: 0 var(--md-sys-shape-small) var(--md-sys-shape-small) 0;
+  border-radius: var(--md-sys-shape-small);
   color: var(--brand-white);
   background: var(--brand-black);
   box-shadow: var(--md-sys-elevation-1);
@@ -1806,15 +1810,6 @@ h2 {
   justify-items: end;
   margin-left: 0;
   transform: translateX(-100%);
-}
-
-.trend-crosshair-summary-left time {
-  justify-self: end;
-  border-radius: var(--md-sys-shape-full) 0 0 var(--md-sys-shape-full);
-}
-
-.trend-crosshair-summary-left .trend-crosshair-values {
-  border-radius: var(--md-sys-shape-small) 0 0 var(--md-sys-shape-small);
 }
 
 .trend-today-marker {
@@ -3852,11 +3847,6 @@ td small {
   .trend-crosshair-summary {
     top: 3.15rem;
     gap: 0.16rem;
-  }
-
-  .trend-crosshair-summary time {
-    padding: 0.22rem 0.38rem;
-    font-size: 0.56rem;
   }
 
   .trend-crosshair-values {

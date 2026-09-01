@@ -647,7 +647,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((trendsHtml.match(/class="trend-y-grid-line"/gu) ?? []).length, 4);
   assert.match(trendsHtml, /class="trend-y-axis" aria-hidden="true">(?:\s*<span>[^<]+<\/span>){5}/u);
   assert.match(trendsHtml, /data-trend-crosshair-slider[\s\S]*role="slider"[\s\S]*aria-label="Annual trend date scrubber"/u);
-  assert.match(trendsHtml, /data-trend-crosshair-date datetime="2000-07-15">Jul 15<\/time>/u);
+  assert.match(trendsHtml, /class="trend-crosshair-date-pill" data-trend-crosshair-date datetime="2000-07-15" aria-hidden="true">Jul 15<\/time>/u);
   assert.match(trendsHtml, /data-trend-today-position="0\.636612021858"/u);
   assert.match(trendsHtml, /class="trend-today-marker" aria-hidden="true"><span>Today<\/span>/u);
   assert.equal((trendsHtml.match(/data-trend-crosshair-value=/gu) ?? []).length, 2);

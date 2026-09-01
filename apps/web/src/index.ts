@@ -3250,8 +3250,8 @@ function renderTrendCrosshair(
       aria-valuenow="${String(Math.round(position * 365))}"
       aria-valuetext="${escapeHtml(ariaValueText)}"
     ></div>
+    <time class="trend-crosshair-date-pill" data-trend-crosshair-date datetime="${date.key}" aria-hidden="true">${date.label}</time>
     <div class="trend-crosshair-summary" aria-hidden="true">
-      <time data-trend-crosshair-date datetime="${date.key}">${date.label}</time>
       <div class="trend-crosshair-values">${summaries.join("")}</div>
     </div>
   `;

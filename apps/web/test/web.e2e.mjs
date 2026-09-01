@@ -1436,6 +1436,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
           const svgBounds = svg.getBoundingClientRect();
           const viewportBounds = viewport.getBoundingClientRect();
           const xAxisBounds = xAxis.getBoundingClientRect();
+          const crosshairBounds = crosshair.getBoundingClientRect();
+          const crosshairDateBounds = crosshairDateFlag.getBoundingClientRect();
           return {
             bandOpacity: Number.parseFloat(getComputedStyle(band).opacity),
             crosshairFlagsAttached: Math.abs(
@@ -1444,6 +1446,11 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
             ) < 1,
             crosshairFlagsBlack: getComputedStyle(crosshairValueFlags).backgroundColor ===
               getComputedStyle(crosshairDateFlag).backgroundColor,
+            crosshairDateAboveLine: crosshairDateBounds.bottom < crosshairBounds.top,
+            crosshairDateCentered: Math.abs(
+              crosshairDateBounds.left + crosshairDateBounds.width / 2 -
+              (crosshairBounds.left + crosshairBounds.width / 2),
+            ) < 1,
             currentYearMatchesToday: getComputedStyle(currentYearLine).stroke ===
               getComputedStyle(todayMarker).borderLeftColor,
             currentYearUsesDarkOrange: getComputedStyle(currentYearLine).stroke === "rgb(239, 126, 31)",
@@ -1481,6 +1488,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         bandOpacity: 1,
         crosshairFlagsAttached: true,
         crosshairFlagsBlack: true,
+        crosshairDateAboveLine: true,
+        crosshairDateCentered: true,
         currentYearMatchesToday: true,
         currentYearUsesDarkOrange: true,
         legendBottomCentered: true,
@@ -3577,6 +3586,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
         (panel) => {
           const chart = panel.querySelector(".trend-chart");
           const crosshair = panel.querySelector(".trend-crosshair-line");
+          const crosshairDate = panel.querySelector(".trend-crosshair-date-pill");
           const crosshairSummary = panel.querySelector(".trend-crosshair-summary");
           const landscape = panel.querySelector(".trend-chart-landscape");
           const legend = panel.querySelector(".trend-chart-legend");
@@ -3591,6 +3601,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
           if (
             chart === null ||
             crosshair === null ||
+            crosshairDate === null ||
             crosshairSummary === null ||
             landscape === null ||
             legend === null ||
@@ -3607,6 +3618,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
           const chartBounds = chart.getBoundingClientRect();
           const landscapeBounds = landscape.getBoundingClientRect();
           const crosshairBounds = crosshair.getBoundingClientRect();
+          const crosshairDateBounds = crosshairDate.getBoundingClientRect();
           const crosshairSummaryBounds = crosshairSummary.getBoundingClientRect();
           const navigationBounds = navigation.getBoundingClientRect();
           const viewportBounds = viewport.getBoundingClientRect();
@@ -3624,6 +3636,15 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
               crosshairBounds.right <= landscapeBounds.right + 1 &&
               crosshairBounds.top >= landscapeBounds.top - 1 &&
               crosshairBounds.bottom <= landscapeBounds.bottom + 1,
+            crosshairDateCentered: Math.abs(
+              Number.parseFloat(getComputedStyle(crosshairDate).left) -
+              Number.parseFloat(getComputedStyle(crosshair).left),
+            ) < 1,
+            crosshairDateInsideLandscape: crosshairDateBounds.left >= landscapeBounds.left - 1 &&
+              crosshairDateBounds.right <= landscapeBounds.right + 1 &&
+              crosshairDateBounds.top >= landscapeBounds.top - 1 &&
+              crosshairDateBounds.bottom <= landscapeBounds.bottom + 1,
+            crosshairDateInsideRotatedChart: crosshairDate.closest(".trend-chart-landscape") === landscape,
             crosshairSummaryInsideLandscape: crosshairSummaryBounds.left >= landscapeBounds.left - 1 &&
               crosshairSummaryBounds.right <= landscapeBounds.right + 1 &&
               crosshairSummaryBounds.top >= landscapeBounds.top - 1 &&
@@ -3650,6 +3671,9 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
       {
         cardRemoved: true,
         chartFitsAboveNavigation: true,
+        crosshairDateCentered: true,
+        crosshairDateInsideLandscape: true,
+        crosshairDateInsideRotatedChart: true,
         crosshairInsideLandscape: true,
         crosshairSummaryInsideLandscape: true,
         landscapeFitsViewport: true,
