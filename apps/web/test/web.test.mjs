@@ -810,12 +810,12 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(html, /skeleton-region|skeleton-history-row|skeleton-history-card/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>61<small>°F<\/small>/u);
   assert.match(html, /Feels like[\s\S]*?<strong>60<small>°F<\/small>/u);
-  assert.match(html, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>9<small>mph<\/small>/u);
+  assert.match(html, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>9<small>mph SW<\/small>/u);
   assert.match(html, /Gusts[\s\S]*?<strong>16<small>mph<\/small>/u);
   assert.match(html, /data-condition="air-quality"[\s\S]*?<div class="condition-primary"><strong>7<\/strong>/u);
   assert.match(html, /data-condition="pressure"[\s\S]*?<div class="condition-primary"><strong>\+0\.1<small>%<\/small>/u);
   assert.match(firstPartyHtml, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>50<small>°F<\/small>/u);
-  assert.match(firstPartyHtml, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>2<small>mph<\/small>/u);
+  assert.match(firstPartyHtml, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>2<small>mph SW<\/small>/u);
   const selectedHtml = renderWeatherDashboard({
     ...state,
     selectedStationSlug: "tempest-38270",

@@ -3061,7 +3061,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentTemperature.textContent() ?? "", /61\s*°F/u);
     assert.match(await currentTemperature.textContent() ?? "", /Feels like\s*60\s*°F/u);
     const currentWind = page.locator("[data-condition='wind']");
-    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph/u);
+    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*16\s*mph/u);
     assert.equal(
       await page.locator(".condition-primary strong").evaluateAll(
@@ -3362,7 +3362,7 @@ test("real browser configures and persists every measurement unit preference", {
 
     assert.match(await currentTemperature.textContent() ?? "", /16\s*°C/u);
     assert.match(await currentTemperature.textContent() ?? "", /Feels like\s*16\s*°C/u);
-    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*4\s*m\/s/u);
+    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*4\s*m\/s SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*7\s*m\/s/u);
     assert.match(await currentWind.textContent() ?? "", /Peak reading 7 m\/s/u);
     assert.match(

@@ -1103,6 +1103,13 @@ function renderCurrent(state: DashboardState): string {
   const rainRate = findMetric(currentRecords, "precipitationRateMmPerHour");
   const uvIndex = findMetric(currentRecords, "uvIndex");
   const windGust = findMetric(currentRecords, "windGustMps");
+  const windDirection = formatWindDirection(current.metrics.windDirectionDegrees);
+  const windMeasurement = formatMeasurement(current.metrics.windSpeedMps, "windSpeed", state.units, 0);
+  // place the direction immediately after the speed unit
+  const directionalWindMeasurement = {
+    ...windMeasurement,
+    unit: windDirection === null ? windMeasurement.unit : `${windMeasurement.unit} ${windDirection}`,
+  };
   const forecast = forecastForSiteDay(
     state.forecast,
     current.validAt,
@@ -1127,7 +1134,7 @@ function renderCurrent(state: DashboardState): string {
           className: "wind-condition",
           icon: "air",
           label: "Wind",
-          measurement: formatMeasurement(current.metrics.windSpeedMps, "windSpeed", state.units, 0),
+          measurement: directionalWindMeasurement,
           forecast: forecastWind(forecast, state.units),
           secondary: {
             label: "Gusts",
@@ -1438,6 +1445,26 @@ interface ForecastCardValue {
 }
 
 type ForecastTone = "blue" | "burgundy" | "gold" | "gray" | "green" | "neutral" | "orange" | "purple" | "red" | "yellow";
+
+// map bearings to compact compass labels
+const WIND_CARDINAL_DIRECTIONS = [
+  "N",
+  "NNE",
+  "NE",
+  "ENE",
+  "E",
+  "ESE",
+  "SE",
+  "SSE",
+  "S",
+  "SSW",
+  "SW",
+  "WSW",
+  "W",
+  "WNW",
+  "NW",
+  "NNW",
+] as const;
 
 // describe one synchronized forecast chart
 interface ForecastChartDefinition {
@@ -4732,6 +4759,18 @@ function renderConditionMeasurement(measurement: FormattedMeasurement): string {
   }
 
   return `<strong>${escapeHtml(measurement.value)}<small>${escapeHtml(measurement.unit)}</small></strong>`;
+}
+
+// format one meteorological bearing as a compass direction
+function formatWindDirection(degrees: number | null): string | null {
+  // omit unavailable or malformed bearings
+  if (degrees === null || !Number.isFinite(degrees)) {
+    return null;
+  }
+
+  return WIND_CARDINAL_DIRECTIONS[
+    Math.round(degrees / (360 / WIND_CARDINAL_DIRECTIONS.length)) % WIND_CARDINAL_DIRECTIONS.length
+  ]!;
 }
 
 // classify temperature comfort and interpolate the requested color scale
