@@ -195,6 +195,9 @@ export interface ApiTrendPoint {
     readonly pressureHpa: number | null;
     readonly relativeHumidityPercent: number | null;
     readonly temperatureC: number | null;
+    readonly temperatureMaximumC: number | null;
+    readonly temperatureMinimumC: number | null;
+    readonly windDirectionDegrees: number | null;
     readonly windGustMps: number | null;
     readonly windSpeedMps: number | null;
   };
@@ -1146,6 +1149,9 @@ function mapTrendPoints(rows: readonly TrendPointRow[]): readonly ApiTrendPoint[
       pressureHpa: row.pressureHpa,
       relativeHumidityPercent: row.relativeHumidityPercent,
       temperatureC: row.temperatureC,
+      temperatureMaximumC: row.temperatureMaximumC,
+      temperatureMinimumC: row.temperatureMinimumC,
+      windDirectionDegrees: row.windDirectionDegrees,
       windGustMps: row.windGustMps,
       windSpeedMps: row.windSpeedMps,
     },

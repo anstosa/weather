@@ -189,6 +189,9 @@ for (const [yearIndex, year] of [2019, 2025, 2026].entries()) {
         pressureHpa: 1012 + month * 0.3,
         relativeHumidityPercent: 82 - month,
         temperatureC: 9 + Math.sin((month / 12) * Math.PI * 2) * 7 + yearIndex,
+        temperatureMaximumC: 14 + Math.sin((month / 12) * Math.PI * 2) * 7 + yearIndex,
+        temperatureMinimumC: 5 + Math.sin((month / 12) * Math.PI * 2) * 7 + yearIndex,
+        windDirectionDegrees: (month * 30 + yearIndex * 15) % 360,
         windGustMps: 5 + month * 0.25 + yearIndex * 0.2,
         windSpeedMps: 3 + month * 0.2,
       },
@@ -1449,7 +1452,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       true,
     );
     assert.equal(await page.getByRole("heading", { name: "Temperature" }).count(), 1);
-    assert.equal(await page.locator("[data-trend-metric-option]").count(), 7);
+    assert.equal(await page.locator("[data-trend-metric-option]").count(), 15);
+    assert.equal(await page.locator(".trend-metric-option-group").count(), 2);
     assert.equal(await page.locator(".trend-metric-flyover").isVisible(), false);
     await trendMetricTrigger.click();
     assert.equal(await trendMetricTrigger.getAttribute("aria-expanded"), "true");
@@ -1462,6 +1466,51 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator("[data-trend-crosshair-value=median]").count(), 1);
     assert.equal(await page.locator('[data-trend-crosshair-value="2026"]').count(), 1);
     assert.match(await page.locator("[data-trend-crosshair-date]").textContent() ?? "", /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}$/u);
+    const farmCharts = [
+      ["cumulativePrecipitationMm", "Cumulative rainfall"],
+      ["temperatureAnomalyC", "Temperature anomaly"],
+      ["temperatureRangeC", "Daily temperature range"],
+      ["drySpellDays", "Dry spell length"],
+      ["growingDegreeDaysC", "Growing degree days"],
+      ["frostDayCount", "Frost days"],
+      ["extremeDayCount", "Extreme day counts"],
+      ["windDirectionRose", "Wind direction rose"],
+    ];
+
+    // select and render every added farm chart without another API read
+    for (const [metric, label] of farmCharts) {
+      await trendMetricTrigger.click();
+      await page.locator(`[data-trend-metric-option="${metric}"]`).click();
+      await page.locator(`[data-trend-chart="${metric}"]`).waitFor();
+      assert.equal(await page.getByRole("heading", { name: label }).count(), 1);
+
+      // verify the polar chart's distinct accessible surface
+      if (metric === "windDirectionRose") {
+        assert.equal(await page.locator(".trend-wind-rose").count(), 1);
+        assert.equal(await page.locator("[data-wind-rose-sector]").count() > 0, true);
+        assert.equal(await page.locator('[aria-label="Wind direction percentages"] li').count(), 16);
+      } else {
+        // retain the shared annual line and scrubber contract
+        assert.equal(await page.locator(".trend-year-line-current").count(), 1);
+        assert.equal(await page.locator("[data-trend-crosshair-value]").count() >= 2, true);
+      }
+    }
+
+    await trendMetricTrigger.click();
+    await page.locator('[data-trend-metric-option="extremeDayCount"]').click();
+    await page.locator('[data-trend-chart="extremeDayCount"]').waitFor();
+    assert.equal(await page.locator("[data-trend-detail-toggle]").count(), 0);
+    assert.equal(await page.locator("[data-trend-extreme-kind]").inputValue(), "heat");
+    assert.equal(await page.locator("[data-trend-extreme-threshold]").inputValue(), "86.0");
+    await page.locator("[data-trend-extreme-threshold]").fill("80");
+    await page.locator("[data-trend-extreme-threshold]").dispatchEvent("change");
+    assert.equal(await page.locator("[data-trend-extreme-threshold]").inputValue(), "80.0");
+    await page.locator("[data-trend-extreme-kind]").selectOption("rain");
+    assert.equal(await page.locator("[data-trend-extreme-kind]").inputValue(), "rain");
+    assert.equal(await page.locator("[data-trend-extreme-threshold]").inputValue(), "1.0");
+    await trendMetricTrigger.click();
+    await page.locator('[data-trend-metric-option="temperatureC"]').click();
+    await page.locator('[data-trend-chart="temperatureC"]').waitFor();
     assert.deepEqual(
       await page.locator(".trend-chart").evaluate(
         // capture the aggregate viewport-fitted chart contract
@@ -4028,6 +4077,65 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
     assert.equal(
       await page.locator("body").evaluate(
         // reject rotated-chart horizontal overflow
+        (body) => body.scrollWidth > document.documentElement.clientWidth,
+      ),
+      false,
+    );
+    await mobileTrendMetricTrigger.click();
+    await page.locator('[data-trend-metric-option="windDirectionRose"]').click();
+    await page.locator('[data-trend-chart="windDirectionRose"]').waitFor();
+    assert.deepEqual(
+      await page.locator(".trend-chart").evaluate(
+        // keep the polar chart inside the rotated mobile surface
+        (chart) => {
+          const landscape = chart.querySelector(".trend-chart-landscape");
+          const rose = chart.querySelector(".trend-wind-rose");
+
+          // require the complete mobile polar surface
+          if (!(landscape instanceof HTMLElement) || !(rose instanceof SVGElement)) {
+            throw new Error("mobile wind rose is incomplete");
+          }
+
+          const landscapeBounds = landscape.getBoundingClientRect();
+          const roseBounds = rose.getBoundingClientRect();
+          return {
+            labels: rose.querySelectorAll(".trend-wind-rose-label").length,
+            roseInsideLandscape: roseBounds.left >= landscapeBounds.left - 1 &&
+              roseBounds.right <= landscapeBounds.right + 1 &&
+              roseBounds.top >= landscapeBounds.top - 1 &&
+              roseBounds.bottom <= landscapeBounds.bottom + 1,
+          };
+        },
+      ),
+      { labels: 8, roseInsideLandscape: true },
+    );
+    await mobileTrendMetricTrigger.click();
+    await page.locator('[data-trend-metric-option="extremeDayCount"]').click();
+    await page.locator('[data-trend-chart="extremeDayCount"]').waitFor();
+    assert.equal(
+      await page.locator("[data-trend-extreme-controls]").evaluate(
+        // keep threshold controls inside the rotated chart
+        (controls) => {
+          const chart = controls.closest(".trend-chart-landscape");
+
+          // require one rotated control owner
+          if (!(chart instanceof HTMLElement)) {
+            return false;
+          }
+
+          const bounds = controls.getBoundingClientRect();
+          const chartBounds = chart.getBoundingClientRect();
+          return bounds.left >= chartBounds.left - 1 &&
+            bounds.right <= chartBounds.right + 1 &&
+            bounds.top >= chartBounds.top - 1 &&
+            bounds.bottom <= chartBounds.bottom + 1;
+        },
+      ),
+      true,
+    );
+    assert.equal(
+      await page.locator("body").evaluate(
+        // reject derived-chart horizontal overflow
         (body) => body.scrollWidth > document.documentElement.clientWidth,
       ),
       false,

@@ -270,6 +270,9 @@ const trend = {
     pressureHpa: 1014.2,
     relativeHumidityPercent: 78,
     temperatureC: 16.2,
+    temperatureMaximumC: 19.4,
+    temperatureMinimumC: 11.1,
+    windDirectionDegrees: 225,
     windGustMps: 7.2,
     windSpeedMps: 4.1,
   },
@@ -403,6 +406,8 @@ test("dashboard separates current conditions from the historical logs route", ()
     selectedStationSlug: null,
     trendDetail: "rolling",
     trendDisplayMode: "aggregate",
+    trendExtremeKind: "heat",
+    trendExtremeThreshold: 30,
     selectedTrendMetric: "temperatureC",
     selectedTrendYear: null,
     selectedSite: site,
@@ -459,6 +464,22 @@ test("dashboard separates current conditions from the historical logs route", ()
     ...state,
     selectedTrendMetric: "windGustMps",
   }, "trends");
+  const farmChartsHtml = Object.fromEntries([
+    "cumulativePrecipitationMm",
+    "temperatureAnomalyC",
+    "temperatureRangeC",
+    "drySpellDays",
+    "growingDegreeDaysC",
+    "frostDayCount",
+    "extremeDayCount",
+    "windDirectionRose",
+  ].map(
+    // render every farm-focused chart option
+    (metric) => [metric, renderWeatherDashboard({
+      ...state,
+      selectedTrendMetric: metric,
+    }, "trends")],
+  ));
   const selectedTrendsHtml = renderWeatherDashboard({
     ...state,
     trendDisplayMode: "all",
@@ -618,6 +639,30 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.ok(Math.abs(Number(allTrendDomain[1]) - ((72 - 32) * 5) / 9) < 0.000_001);
   assert.ok(Math.abs(Number(allTrendDomain[2]) - 5) < 0.000_001);
   assert.match(trendsHtml, /<div class="trend-metric-control" data-trend-metric-control>[\s\S]*?<h2 class="trend-chart-title">[\s\S]*?<button type="button" class="trend-metric-trigger" data-trend-metric-trigger aria-expanded="false" aria-haspopup="menu" aria-controls="trend-metric-flyover">[\s\S]*?<span>Temperature<\/span>[\s\S]*?class="trend-metric-caret"[\s\S]*?<div class="trend-metric-flyover" id="trend-metric-flyover" role="menu" aria-label="Trend measurement" hidden>[\s\S]*?data-trend-metric-option="temperatureC" role="menuitemradio" aria-checked="true">Temperature<\/button>[\s\S]*?data-trend-metric-option="apparentTemperatureC"[^>]*>Feels like<\/button>[\s\S]*?data-trend-metric-option="windSpeedMps"[^>]*>Wind speed<\/button>[\s\S]*?data-trend-metric-option="windGustMps"[^>]*>Wind gust<\/button>[\s\S]*?data-trend-metric-option="precipitationMm"[^>]*>Daily rain<\/button>[\s\S]*?data-trend-metric-option="relativeHumidityPercent"[^>]*>Humidity<\/button>[\s\S]*?data-trend-metric-option="pressureHpa"[^>]*>Pressure<\/button>/u);
+  assert.equal((trendsHtml.match(/data-trend-metric-option=/gu) ?? []).length, 15);
+  assert.match(trendsHtml, /class="trend-metric-option-group" role="presentation">[\s\S]*?Measurements[\s\S]*?class="trend-metric-option-group" role="presentation">[\s\S]*?Farm insights/u);
+  for (const [metric, chartHtml] of Object.entries(farmChartsHtml)) {
+    // require one selectable rendered chart for every recommendation
+    assert.match(chartHtml, new RegExp(`data-trend-chart="${metric}"`, "u"));
+  }
+  assert.match(farmChartsHtml.cumulativePrecipitationMm, /Running annual total/u);
+  assert.match(farmChartsHtml.cumulativePrecipitationMm, /data-trend-crosshair-value="2026">0\.02 in<\/output>/u);
+  assert.doesNotMatch(farmChartsHtml.cumulativePrecipitationMm, /data-trend-detail-toggle/u);
+  assert.match(farmChartsHtml.temperatureAnomalyC, /Versus historical daily average/u);
+  assert.match(farmChartsHtml.temperatureAnomalyC, /data-trend-crosshair-value="2026">5 °F<\/output>/u);
+  assert.match(farmChartsHtml.temperatureRangeC, /Daily high − low/u);
+  assert.match(farmChartsHtml.temperatureRangeC, /data-trend-crosshair-value="2026">15 °F<\/output>/u);
+  assert.match(farmChartsHtml.drySpellDays, /Rain below 0\.01 in/u);
+  assert.match(farmChartsHtml.drySpellDays, /data-trend-crosshair-value="2026">2 days<\/output>/u);
+  assert.match(farmChartsHtml.growingDegreeDaysC, /Base 50 °F/u);
+  assert.match(farmChartsHtml.growingDegreeDaysC, /data-trend-crosshair-value="2026">22 °F·days<\/output>/u);
+  assert.match(farmChartsHtml.frostDayCount, /Daily low ≤ 32 °F/u);
+  assert.match(farmChartsHtml.frostDayCount, /data-trend-crosshair-value="2026">0 days<\/output>/u);
+  assert.match(farmChartsHtml.extremeDayCount, /data-trend-extreme-kind[\s\S]*?<option value="heat" selected>Heat<\/option>[\s\S]*?data-trend-extreme-threshold[^>]*value="86\.0"/u);
+  assert.match(farmChartsHtml.extremeDayCount, /data-trend-crosshair-value="2026">0 days<\/output>/u);
+  assert.equal((farmChartsHtml.windDirectionRose.match(/data-wind-rose-sector=/gu) ?? []).length, 2);
+  assert.match(farmChartsHtml.windDirectionRose, /class="trend-wind-rose"[\s\S]*?Wind direction rose comparing historical days with 2026[\s\S]*?aria-label="Wind rose legend"[\s\S]*?Historical[\s\S]*?2026/u);
+  assert.equal((farmChartsHtml.windDirectionRose.match(/<li>[^<]+: historical/gu) ?? []).length, 16);
   assert.match(trendsHtml, /<svg[^>]*preserveAspectRatio="none"/u);
   assert.match(trendsHtml, /data-trend-detail="rolling" data-trend-display-mode="aggregate"/u);
   assert.equal((trendsHtml.match(/class="trend-historical-quartile-band"/gu) ?? []).length, 1);

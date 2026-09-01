@@ -135,6 +135,9 @@ test("trend SQL prefers local-calendar reanalysis days with current-model fallba
   assert.match(queries[0].text, /date_trunc\('day', wr\.valid_at AT TIME ZONE si\.timezone\) AT TIME ZONE si\.timezone/u);
   assert.match(queries[0].text, /s\.source_kind IN \('model_current', 'reanalysis'\)/u);
   assert.match(queries[0].text, /CASE source_kind WHEN 'reanalysis' THEN 0 ELSE 1 END/u);
+  assert.match(queries[0].text, /MAX\(wr\.temperature_c\) AS temperature_maximum_c/u);
+  assert.match(queries[0].text, /MIN\(wr\.temperature_c\) AS temperature_minimum_c/u);
+  assert.match(queries[0].text, /DEGREES\(ATAN2\([\s\S]*AVG\(SIN\(RADIANS\(wr\.wind_direction_degrees\)\)\)[\s\S]*AVG\(COS\(RADIANS\(wr\.wind_direction_degrees\)\)\)/u);
   assert.match(queries[0].text, /WHERE source_priority = 1/u);
 });
 

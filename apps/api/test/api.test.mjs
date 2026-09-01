@@ -213,7 +213,10 @@ function createFixture(overrides = {}, options = {}) {
         pressureHpa: 1014.2,
         relativeHumidityPercent: 78,
         temperatureC: 16.2,
+        temperatureMaximumC: 19.4,
+        temperatureMinimumC: 11.1,
         validAt: new Date("2026-08-22T04:00:00.000Z"),
+        windDirectionDegrees: -135,
         windGustMps: 7.2,
         windSpeedMps: 4.1,
       }];
@@ -597,6 +600,9 @@ test("trends expose daily local-calendar history from 2019", async () => {
   }]);
   assert.equal(body.data[0].validAt, "2026-08-22T04:00:00.000Z");
   assert.equal(body.data[0].metrics.temperatureC, 16.2);
+  assert.equal(body.data[0].metrics.temperatureMaximumC, 19.4);
+  assert.equal(body.data[0].metrics.temperatureMinimumC, 11.1);
+  assert.equal(body.data[0].metrics.windDirectionDegrees, -135);
 
   assert.deepEqual(
     calendarTrendWindow("2026-08-22T05:00:00.000Z", "America/Los_Angeles"),

@@ -1610,6 +1610,7 @@ h2 {
 .trend-chart-fixed-chrome .trend-metric-control,
 .trend-chart-fixed-chrome .trend-mode-toggle,
 .trend-chart-fixed-chrome .trend-detail-toggle,
+.trend-chart-fixed-chrome .trend-extreme-controls,
 .trend-chart-fixed-chrome .trend-chart-legend {
   pointer-events: auto;
 }
@@ -1915,8 +1916,9 @@ h2 {
   top: calc(100% + 0.3rem);
   left: 50%;
   display: grid;
+  grid-template-columns: repeat(2, minmax(9.5rem, 1fr));
   width: max-content;
-  min-width: 10rem;
+  min-width: 19rem;
   gap: 0.1rem;
   padding: 0.35rem;
   border: 1px solid var(--md-sys-color-outline-variant);
@@ -1924,6 +1926,21 @@ h2 {
   background: var(--md-sys-color-surface-container-lowest);
   box-shadow: var(--md-sys-elevation-2);
   transform: translateX(-50%);
+}
+
+.trend-metric-option-group {
+  display: grid;
+  align-content: start;
+  gap: 0.1rem;
+}
+
+.trend-metric-option-group > span {
+  padding: 0.2rem 0.55rem 0.12rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .trend-metric-option {
@@ -1959,6 +1976,142 @@ h2 {
   color: var(--md-sys-color-on-surface-variant);
   font-size: 0.68rem;
   font-weight: 700;
+}
+
+.trend-extreme-controls {
+  position: absolute;
+  z-index: 2;
+  top: 3rem;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.22rem;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-full);
+  color: var(--md-sys-color-on-surface-variant);
+  background: color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 92%, transparent);
+  box-shadow: var(--md-sys-elevation-1);
+  font-size: 0.62rem;
+  font-weight: 750;
+  transform: translateX(-50%);
+}
+
+.trend-insight-note {
+  position: absolute;
+  z-index: 2;
+  top: 3.2rem;
+  left: 50%;
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.62rem;
+  font-weight: 650;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.trend-extreme-controls select,
+.trend-extreme-controls input {
+  min-width: 0;
+  min-height: 1.55rem;
+  padding: 0.12rem 0.28rem;
+  border: 0;
+  border-radius: var(--md-sys-shape-small);
+  color: var(--md-sys-color-on-surface);
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+}
+
+.trend-extreme-controls select {
+  width: 5.8rem;
+}
+
+.trend-extreme-controls input {
+  width: 3.6rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.trend-extreme-controls select:focus-visible,
+.trend-extreme-controls input:focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 1px;
+}
+
+.trend-extreme-comparator {
+  font-size: 0.72rem;
+}
+
+.trend-wind-rose-landscape {
+  cursor: default;
+  touch-action: pan-x pan-y;
+}
+
+.trend-wind-rose-landscape > .trend-wind-rose {
+  inset: 2.8rem 0 2rem;
+  width: 100%;
+  height: calc(100% - 4.8rem);
+}
+
+.trend-wind-rose-caption {
+  position: absolute;
+  z-index: 2;
+  top: 2.45rem;
+  left: 50%;
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.62rem;
+  font-weight: 650;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.trend-wind-rose-grid,
+.trend-wind-rose-axis {
+  fill: none;
+  stroke: rgba(84, 84, 80, 0.2);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-wind-rose-sector {
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-wind-rose-sector-historical {
+  fill: rgba(84, 84, 80, 0.35);
+  stroke: rgba(84, 84, 80, 0.6);
+}
+
+.trend-wind-rose-sector-current {
+  fill: color-mix(in srgb, var(--brand-orange) 68%, transparent);
+  stroke: var(--brand-orange);
+}
+
+.trend-wind-rose-label {
+  fill: var(--md-sys-color-on-surface-variant);
+  font-size: 9px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.trend-wind-rose-legend {
+  bottom: 0.65rem;
+}
+
+.trend-wind-rose-legend .trend-wind-rose-historical i {
+  height: 0.48rem;
+  border-radius: 0.12rem;
+  color: rgba(84, 84, 80, 0.5);
+}
+
+.trend-wind-rose-legend .trend-wind-rose-current i {
+  height: 0.48rem;
+  border-radius: 0.12rem;
+  color: var(--brand-orange);
 }
 
 .trend-mode-toggle,

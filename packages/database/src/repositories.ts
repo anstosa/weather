@@ -179,7 +179,10 @@ export interface TrendPointRow extends QueryResultRow {
   readonly pressureHpa: number | null;
   readonly relativeHumidityPercent: number | null;
   readonly temperatureC: number | null;
+  readonly temperatureMaximumC: number | null;
+  readonly temperatureMinimumC: number | null;
   readonly validAt: Date;
+  readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
 }
@@ -1678,10 +1681,16 @@ export async function listWeatherTrends(
           date_trunc('day', wr.valid_at AT TIME ZONE si.timezone) AT TIME ZONE si.timezone AS valid_at,
           s.source_kind,
           AVG(wr.temperature_c) AS temperature_c,
+          MAX(wr.temperature_c) AS temperature_maximum_c,
+          MIN(wr.temperature_c) AS temperature_minimum_c,
           AVG(wr.apparent_temperature_c) AS apparent_temperature_c,
           SUM(wr.precipitation_mm) AS precipitation_mm,
           AVG(wr.wind_speed_mps) AS wind_speed_mps,
           MAX(wr.wind_gust_mps) AS wind_gust_mps,
+          DEGREES(ATAN2(
+            AVG(SIN(RADIANS(wr.wind_direction_degrees))),
+            AVG(COS(RADIANS(wr.wind_direction_degrees)))
+          )) AS wind_direction_degrees,
           AVG(wr.pressure_hpa) AS pressure_hpa,
           AVG(wr.relative_humidity_percent) AS relative_humidity_percent
         FROM weather_records wr
@@ -1712,10 +1721,13 @@ export async function listWeatherTrends(
       SELECT
         valid_at AS "validAt",
         temperature_c AS "temperatureC",
+        temperature_maximum_c AS "temperatureMaximumC",
+        temperature_minimum_c AS "temperatureMinimumC",
         apparent_temperature_c AS "apparentTemperatureC",
         precipitation_mm AS "precipitationMm",
         wind_speed_mps AS "windSpeedMps",
         wind_gust_mps AS "windGustMps",
+        wind_direction_degrees AS "windDirectionDegrees",
         pressure_hpa AS "pressureHpa",
         relative_humidity_percent AS "relativeHumidityPercent"
       FROM preferred_days

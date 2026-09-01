@@ -173,6 +173,8 @@ export interface DashboardState {
   readonly selectedStationSlug: string | null;
   readonly trendDetail: TrendDetail;
   readonly trendDisplayMode: TrendDisplayMode;
+  readonly trendExtremeKind: TrendExtremeKind;
+  readonly trendExtremeThreshold: number;
   readonly selectedTrendMetric: TrendChartMetric;
   readonly selectedTrendYear: number | null;
   readonly selectedSite: WeatherSite | null;
@@ -198,12 +200,21 @@ export type TrendDetail = "daily" | "rolling";
 export type TrendDisplayMode = "aggregate" | "all";
 export type TrendChartMetric =
   | "apparentTemperatureC"
+  | "cumulativePrecipitationMm"
+  | "drySpellDays"
+  | "extremeDayCount"
+  | "frostDayCount"
+  | "growingDegreeDaysC"
   | "precipitationMm"
   | "pressureHpa"
   | "relativeHumidityPercent"
+  | "temperatureAnomalyC"
   | "temperatureC"
+  | "temperatureRangeC"
+  | "windDirectionRose"
   | "windGustMps"
   | "windSpeedMps";
+export type TrendExtremeKind = "cold" | "heat" | "rain" | "wind";
 export type PropertySensorIcon = "air-quality" | "rain" | "temperature" | "wind";
 export type ForecastMapLayer = "clouds" | "precipitation" | "radar" | "wind";
 type ForecastMapPhase = "forecast" | "history";
@@ -219,6 +230,9 @@ export interface TrendPoint {
     readonly pressureHpa: number | null;
     readonly relativeHumidityPercent: number | null;
     readonly temperatureC: number | null;
+    readonly temperatureMaximumC: number | null;
+    readonly temperatureMinimumC: number | null;
+    readonly windDirectionDegrees: number | null;
     readonly windGustMps: number | null;
     readonly windSpeedMps: number | null;
   };
@@ -285,6 +299,8 @@ const EMPTY_STATE: DashboardState = {
   selectedStationSlug: null,
   trendDetail: "rolling",
   trendDisplayMode: "aggregate",
+  trendExtremeKind: "heat",
+  trendExtremeThreshold: 30,
   selectedTrendMetric: "temperatureC",
   selectedTrendYear: null,
   selectedSite: null,
@@ -435,6 +451,31 @@ export class WeatherDashboardController {
   // switch the visible annual trend measurement
   setSelectedTrendMetric(metric: TrendChartMetric): void {
     this.patch({ selectedTrendMetric: metric, selectedTrendYear: null });
+  }
+
+  // switch the extreme-day measurement and its safe default threshold
+  setTrendExtremeKind(kind: TrendExtremeKind): void {
+    this.patch({
+      selectedTrendYear: null,
+      trendExtremeKind: kind,
+      trendExtremeThreshold: trendExtremeConfiguration(kind).defaultThreshold,
+    });
+  }
+
+  // update one bounded canonical extreme-day threshold
+  setTrendExtremeThreshold(threshold: number): void {
+    const configuration = trendExtremeConfiguration(this.#state.trendExtremeKind);
+
+    // reject malformed or unsafe chart boundaries
+    if (
+      !Number.isFinite(threshold) ||
+      threshold < configuration.minimum ||
+      threshold > configuration.maximum
+    ) {
+      return;
+    }
+
+    this.patch({ selectedTrendYear: null, trendExtremeThreshold: threshold });
   }
 
   // switch between the aggregate and individual years
@@ -2584,6 +2625,12 @@ interface TrendCrosshairSeries {
   readonly points: readonly TrendCalendarSample[];
 }
 
+interface TrendWindRoseSector {
+  readonly currentPercent: number;
+  readonly historicalPercent: number;
+  readonly label: string;
+}
+
 const TREND_CHART_HEIGHT = 280;
 const TREND_CHART_PADDING_BOTTOM = 34;
 const TREND_CHART_PADDING_LEFT = 42;
@@ -2592,25 +2639,60 @@ const TREND_CHART_PADDING_TOP = 42;
 const TREND_CHART_WIDTH = 720;
 const TREND_ROLLING_WINDOW_DAYS = 7;
 const TREND_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+const WIND_ROSE_DIRECTIONS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"] as const;
 const TREND_CURRENT_YEAR_COLOR = "var(--brand-orange)";
 const TREND_YEAR_COLORS = ["#3878c5", "#439756", "#e6b519", "#ef7e1f", "#cf4337", "#8d6e63", "#545450", "#00838f"] as const;
-type TrendChartFormat = keyof UnitPreferences | "humidity";
+type TrendChartFormat = keyof UnitPreferences | "count" | "degreeDays" | "humidity" | "temperatureDelta";
 interface TrendChartOption {
   readonly format: TrendChartFormat;
+  readonly group: "Farm insights" | "Measurements";
+  readonly includeZero?: boolean;
+  readonly kind?: "line" | "windRose";
   readonly label: string;
   readonly maximum?: number;
   readonly metric: TrendChartMetric;
   readonly minimum?: number;
+  readonly supportsDetail?: boolean;
 }
 const TREND_CHART_OPTIONS: readonly TrendChartOption[] = [
-  { format: "temperature", label: "Temperature", metric: "temperatureC" },
-  { format: "temperature", label: "Feels like", metric: "apparentTemperatureC" },
-  { format: "windSpeed", label: "Wind speed", metric: "windSpeedMps", minimum: 0 },
-  { format: "windSpeed", label: "Wind gust", metric: "windGustMps", minimum: 0 },
-  { format: "precipitation", label: "Daily rain", metric: "precipitationMm", minimum: 0 },
-  { format: "humidity", label: "Humidity", maximum: 100, metric: "relativeHumidityPercent", minimum: 0 },
-  { format: "pressure", label: "Pressure", metric: "pressureHpa" },
+  { format: "temperature", group: "Measurements", label: "Temperature", metric: "temperatureC" },
+  { format: "temperature", group: "Measurements", label: "Feels like", metric: "apparentTemperatureC" },
+  { format: "windSpeed", group: "Measurements", label: "Wind speed", metric: "windSpeedMps", minimum: 0 },
+  { format: "windSpeed", group: "Measurements", label: "Wind gust", metric: "windGustMps", minimum: 0 },
+  { format: "precipitation", group: "Measurements", label: "Daily rain", metric: "precipitationMm", minimum: 0 },
+  { format: "humidity", group: "Measurements", label: "Humidity", maximum: 100, metric: "relativeHumidityPercent", minimum: 0 },
+  { format: "pressure", group: "Measurements", label: "Pressure", metric: "pressureHpa" },
+  { format: "precipitation", group: "Farm insights", label: "Cumulative rainfall", metric: "cumulativePrecipitationMm", minimum: 0, supportsDetail: false },
+  { format: "temperatureDelta", group: "Farm insights", includeZero: true, label: "Temperature anomaly", metric: "temperatureAnomalyC" },
+  { format: "temperatureDelta", group: "Farm insights", label: "Daily temperature range", metric: "temperatureRangeC", minimum: 0 },
+  { format: "count", group: "Farm insights", label: "Dry spell length", metric: "drySpellDays", minimum: 0, supportsDetail: false },
+  { format: "degreeDays", group: "Farm insights", label: "Growing degree days", metric: "growingDegreeDaysC", minimum: 0, supportsDetail: false },
+  { format: "count", group: "Farm insights", label: "Frost days", metric: "frostDayCount", minimum: 0, supportsDetail: false },
+  { format: "count", group: "Farm insights", label: "Extreme day counts", metric: "extremeDayCount", minimum: 0, supportsDetail: false },
+  { format: "count", group: "Farm insights", kind: "windRose", label: "Wind direction rose", metric: "windDirectionRose", supportsDetail: false },
 ];
+
+interface TrendExtremeConfiguration {
+  readonly comparator: "atLeast" | "atMost";
+  readonly defaultThreshold: number;
+  readonly format: "precipitation" | "temperature" | "windSpeed";
+  readonly label: string;
+  readonly maximum: number;
+  readonly metric: "precipitationMm" | "temperatureMaximumC" | "temperatureMinimumC" | "windGustMps";
+  readonly minimum: number;
+}
+
+const TREND_EXTREME_CONFIGURATIONS: Readonly<Record<TrendExtremeKind, TrendExtremeConfiguration>> = {
+  cold: { comparator: "atMost", defaultThreshold: -5, format: "temperature", label: "Cold", maximum: 25, metric: "temperatureMinimumC", minimum: -60 },
+  heat: { comparator: "atLeast", defaultThreshold: 30, format: "temperature", label: "Heat", maximum: 60, metric: "temperatureMaximumC", minimum: -10 },
+  rain: { comparator: "atLeast", defaultThreshold: 25.4, format: "precipitation", label: "Heavy rain", maximum: 500, metric: "precipitationMm", minimum: 0 },
+  wind: { comparator: "atLeast", defaultThreshold: 17.881_6, format: "windSpeed", label: "High wind", maximum: 100, metric: "windGustMps", minimum: 0 },
+};
+
+// resolve one reviewed extreme-day configuration
+function trendExtremeConfiguration(kind: TrendExtremeKind): TrendExtremeConfiguration {
+  return TREND_EXTREME_CONFIGURATIONS[kind];
+}
 
 // define the destination-state toggle glyphs
 const TREND_TOGGLE_ICON_PATHS = {
@@ -2638,7 +2720,9 @@ function renderTrends(state: DashboardState): string {
       ${state.trends.length === 0
         ? '<p class="empty-panel">No normalized calendar-year trend buckets are available yet.</p>'
         : `<div class="trend-grid">
-            ${renderTrendLineChart(state, selected)}
+            ${selected.kind === "windRose"
+              ? renderTrendWindRose(state, selected)
+              : renderTrendLineChart(state, selected)}
           </div>`}
     </section>
   `;
@@ -2668,12 +2752,97 @@ function renderTrendsSkeleton(): string {
   `;
 }
 
+// render daily prevailing-wind frequency as a polar rose
+function renderTrendWindRose(
+  state: DashboardState,
+  option: TrendChartOption,
+): string {
+  const sectors = buildTrendWindRoseSectors(state);
+  const currentYear = trendCurrentYear(state, []);
+  const maximumPercent = Math.max(
+    1,
+    ...sectors.flatMap(
+      // compare both visible distributions on one radial scale
+      (sector) => [sector.currentPercent, sector.historicalPercent],
+    ),
+  );
+  const populated = sectors.some(
+    // require at least one daily direction sample
+    (sector) => sector.currentPercent > 0 || sector.historicalPercent > 0,
+  );
+
+  // render a per-series empty state
+  if (!populated) {
+    return `<article class="trend-chart">${renderTrendMetricControl(option.metric)}<p>No wind direction values</p></article>`;
+  }
+
+  return `
+    <article class="trend-chart trend-wind-rose-chart" data-trend-chart="${escapeHtml(option.metric)}" data-trend-detail="rolling" data-trend-display-mode="aggregate">
+      <div class="trend-chart-frame">
+        <div class="trend-chart-viewport">
+          <div class="trend-chart-landscape trend-wind-rose-landscape">
+            ${renderTrendMetricControl(option.metric)}
+            <p class="trend-wind-rose-caption">Share of daily prevailing winds</p>
+            <svg class="trend-wind-rose" viewBox="0 0 320 320" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Wind direction rose comparing historical days with ${String(currentYear)}">
+              <circle cx="160" cy="160" r="35" class="trend-wind-rose-grid"/>
+              <circle cx="160" cy="160" r="70" class="trend-wind-rose-grid"/>
+              <circle cx="160" cy="160" r="105" class="trend-wind-rose-grid"/>
+              ${[0, 2, 4, 6, 8, 10, 12, 14].map(
+                // draw one directional guide
+                (index) => {
+                  const edge = trendPolarPoint(160, 160, 112, index * 22.5 - 90);
+                  return `<line x1="160" y1="160" x2="${edge.x.toFixed(2)}" y2="${edge.y.toFixed(2)}" class="trend-wind-rose-axis"/>`;
+                },
+              ).join("")}
+              ${sectors.map(
+                // draw one historical direction sector
+                (sector, index) => renderTrendWindRoseSector(
+                  index,
+                  sector.historicalPercent,
+                  maximumPercent,
+                  "trend-wind-rose-sector-historical",
+                ),
+              ).join("")}
+              ${sectors.map(
+                // draw one current-year direction sector
+                (sector, index) => renderTrendWindRoseSector(
+                  index,
+                  sector.currentPercent,
+                  maximumPercent,
+                  "trend-wind-rose-sector-current",
+                ),
+              ).join("")}
+              ${[0, 2, 4, 6, 8, 10, 12, 14].map(
+                // label the eight principal compass points
+                (index) => {
+                  const label = trendPolarPoint(160, 160, 132, index * 22.5 - 90);
+                  return `<text x="${label.x.toFixed(2)}" y="${label.y.toFixed(2)}" class="trend-wind-rose-label">${WIND_ROSE_DIRECTIONS[index]}</text>`;
+                },
+              ).join("")}
+            </svg>
+            <div class="trend-chart-legend trend-wind-rose-legend" aria-label="Wind rose legend">
+              <span class="trend-wind-rose-historical"><i aria-hidden="true"></i>Historical</span>
+              <span class="trend-wind-rose-current"><i aria-hidden="true"></i>${String(currentYear)}</span>
+            </div>
+            <ol class="sr-only" aria-label="Wind direction percentages">
+              ${sectors.map(
+                // expose every polar sector to assistive technology
+                (sector) => `<li>${sector.label}: historical ${sector.historicalPercent.toFixed(1)}%, ${String(currentYear)} ${sector.currentPercent.toFixed(1)}%</li>`,
+              ).join("")}
+            </ol>
+          </div>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
 // render one dependency-free accessible SVG trend chart
 function renderTrendLineChart(
   state: DashboardState,
   option: TrendChartOption,
 ): string {
-  const rawSeries = buildTrendYearSeries(state.trends, option.metric, state.selectedSite?.timezone ?? "UTC");
+  const rawSeries = buildTrendChartYearSeries(state, option);
 
   // render a per-series empty state
   if (rawSeries.length === 0) {
@@ -2681,7 +2850,9 @@ function renderTrendLineChart(
   }
 
   const currentYear = trendCurrentYear(state, rawSeries);
-  const series = state.trendDetail === "rolling"
+  const supportsDetail = option.supportsDetail !== false;
+  const renderedDetail: TrendDetail = supportsDetail ? state.trendDetail : "rolling";
+  const series = renderedDetail === "rolling" && supportsDetail
     ? smoothTrendYearSeries(rawSeries, TREND_ROLLING_WINDOW_DAYS)
     : rawSeries;
   const historicalSeries = series.filter(
@@ -2739,10 +2910,12 @@ function renderTrendLineChart(
     selectedTrendYear,
     currentYear,
   );
-  const detailLabel = state.trendDetail === "daily" ? "Daily values" : "7-day average";
+  const detailLabel = supportsDetail
+    ? renderedDetail === "daily" ? "Daily values" : "7-day average"
+    : "annual progression";
 
   // move non-data chart chrome outside the daily scrollport
-  const dailyDetail = state.trendDetail === "daily";
+  const dailyDetail = renderedDetail === "daily";
   const metricControl = renderTrendMetricControl(option.metric);
   const chartRange = `<span class="trend-chart-range">${escapeHtml(minimumLabel.value)}–${escapeHtml(maximumLabel.value)} ${escapeHtml(maximumLabel.unit)}</span>`;
   // show the destination display mode
@@ -2754,7 +2927,10 @@ function renderTrendLineChart(
     ? { icon: "rolling", label: "7-day average" } as const
     : { icon: "daily", label: "Daily detail" } as const;
   const modeToggle = `<button type="button" class="trend-mode-toggle" data-trend-mode-toggle aria-pressed="${state.trendDisplayMode === "all" ? "true" : "false"}">${renderTrendToggleIcon(modeToggleContent.icon)}<span>${modeToggleContent.label}</span></button>`;
-  const detailToggle = `<button type="button" class="trend-detail-toggle" data-trend-detail-toggle aria-pressed="${dailyDetail ? "true" : "false"}">${renderTrendToggleIcon(detailToggleContent.icon)}<span>${detailToggleContent.label}</span></button>`;
+  const detailToggle = supportsDetail
+    ? `<button type="button" class="trend-detail-toggle" data-trend-detail-toggle aria-pressed="${dailyDetail ? "true" : "false"}">${renderTrendToggleIcon(detailToggleContent.icon)}<span>${detailToggleContent.label}</span></button>`
+    : "";
+  const insightControls = renderTrendInsightControls(state, option);
   const yAxis = renderTrendYAxis(minimum, maximum, option.format, state.units);
 
   // share one interactive legend between both layouts
@@ -2778,17 +2954,19 @@ function renderTrendLineChart(
     ${modeToggle}
     ${yAxis}
     ${detailToggle}
+    ${insightControls}
     ${legend}
   `;
 
   return `
-    <article class="trend-chart" data-trend-chart="${escapeHtml(option.metric)}" data-trend-detail="${state.trendDetail}" data-trend-display-mode="${state.trendDisplayMode}" data-trend-maximum="${maximum.toFixed(6)}" data-trend-minimum="${minimum.toFixed(6)}" data-trend-domain="visible"${selectedSeries === undefined ? "" : ` data-selected-trend-year="${String(selectedSeries.year.year)}"`}>
+    <article class="trend-chart" data-trend-chart="${escapeHtml(option.metric)}" data-trend-detail="${renderedDetail}" data-trend-display-mode="${state.trendDisplayMode}" data-trend-maximum="${maximum.toFixed(6)}" data-trend-minimum="${minimum.toFixed(6)}" data-trend-domain="visible"${selectedSeries === undefined ? "" : ` data-selected-trend-year="${String(selectedSeries.year.year)}"`}>
       <div class="trend-chart-frame">
         <div class="trend-chart-viewport">
           <div class="trend-chart-landscape" data-trend-scrub-surface data-trend-initial-position="${initialPosition.toFixed(12)}" data-trend-today-position="${todayPosition.toFixed(12)}">
             ${dailyDetail ? "" : metricControl}
             ${dailyDetail ? "" : chartRange}
             ${dailyDetail ? "" : modeToggle}
+            ${dailyDetail ? "" : insightControls}
             <svg viewBox="0 0 ${TREND_CHART_WIDTH} ${TREND_CHART_HEIGHT}" preserveAspectRatio="none" role="img" aria-label="${escapeHtml(option.label)} ${escapeHtml(detailLabel)} with historical median, quartiles, and range">
               ${renderTrendMonthGrid()}
               ${aggregateBandPath.length === 0 ? "" : `<path d="${aggregateBandPath}" class="trend-historical-quartile-band"/>`}
@@ -2878,26 +3056,210 @@ function renderTrendMetricControl(
         </button>
       </h2>
       <div class="trend-metric-flyover" id="trend-metric-flyover" role="menu" aria-label="Trend measurement" hidden>
-        ${TREND_CHART_OPTIONS.map(
-          // render one reviewed flyover option
-          (option) => `<button type="button" class="trend-metric-option" data-trend-metric-option="${escapeHtml(option.metric)}" role="menuitemradio" aria-checked="${String(option.metric === selected)}">${escapeHtml(option.label)}</button>`,
+        ${(["Measurements", "Farm insights"] as const).map(
+          // render one labeled chart family
+          (group) => `
+            <div class="trend-metric-option-group" role="presentation">
+              <span>${group}</span>
+              ${TREND_CHART_OPTIONS.filter(
+                // retain options from one chart family
+                (option) => option.group === group,
+              ).map(
+                // render one reviewed flyover option
+                (option) => `<button type="button" class="trend-metric-option" data-trend-metric-option="${escapeHtml(option.metric)}" role="menuitemradio" aria-checked="${String(option.metric === selected)}">${escapeHtml(option.label)}</button>`,
+              ).join("")}
+            </div>
+          `,
         ).join("")}
       </div>
     </div>
   `;
 }
 
-// group daily trend points by their site-local calendar year
+// render one concise farm-chart definition or interactive threshold
+function renderTrendInsightControls(
+  state: DashboardState,
+  option: TrendChartOption,
+): string {
+  // describe each derived chart without crowding its title
+  switch (option.metric) {
+    case "cumulativePrecipitationMm":
+      return '<p class="trend-insight-note">Running annual total</p>';
+    case "temperatureAnomalyC":
+      return '<p class="trend-insight-note">Versus historical daily average</p>';
+    case "temperatureRangeC":
+      return '<p class="trend-insight-note">Daily high − low</p>';
+    case "drySpellDays": {
+      const threshold = formatTrendMeasurement(0.254, "precipitation", state.units);
+      return `<p class="trend-insight-note">Rain below ${escapeHtml(threshold.value)} ${escapeHtml(threshold.unit)}</p>`;
+    }
+    case "growingDegreeDaysC": {
+      const base = formatTrendMeasurement(10, "temperature", state.units);
+      return `<p class="trend-insight-note">Base ${escapeHtml(base.value)} ${escapeHtml(base.unit)}</p>`;
+    }
+    case "frostDayCount": {
+      const freezing = formatTrendMeasurement(0, "temperature", state.units);
+      return `<p class="trend-insight-note">Daily low ≤ ${escapeHtml(freezing.value)} ${escapeHtml(freezing.unit)}</p>`;
+    }
+    case "extremeDayCount":
+      return renderTrendExtremeControls(state);
+    default:
+      return "";
+  }
+}
+
+// render the configurable extreme-day threshold controls
+function renderTrendExtremeControls(state: DashboardState): string {
+  const kind = normalizeTrendExtremeKind(state.trendExtremeKind);
+  const configuration = trendExtremeConfiguration(kind);
+  const threshold = normalizeTrendExtremeThreshold(state.trendExtremeThreshold, configuration);
+  const thresholdValue = trendDisplayValue(threshold, configuration.format, state.units);
+  const minimum = trendDisplayValue(configuration.minimum, configuration.format, state.units);
+  const maximum = trendDisplayValue(configuration.maximum, configuration.format, state.units);
+  const unit = formatTrendMeasurement(threshold, configuration.format, state.units).unit;
+
+  return `
+    <div class="trend-extreme-controls" data-trend-extreme-controls>
+      <label>
+        <span class="sr-only">Extreme-day measurement</span>
+        <select data-trend-extreme-kind aria-label="Extreme-day measurement">
+          ${Object.entries(TREND_EXTREME_CONFIGURATIONS).map(
+            // render one supported threshold family
+            ([value, candidate]) => `<option value="${value}"${value === kind ? " selected" : ""}>${candidate.label}</option>`,
+          ).join("")}
+        </select>
+      </label>
+      <span class="trend-extreme-comparator" aria-hidden="true">${configuration.comparator === "atLeast" ? "≥" : "≤"}</span>
+      <label>
+        <span class="sr-only">Extreme-day threshold</span>
+        <input data-trend-extreme-threshold aria-label="Extreme-day threshold" type="number" min="${minimum.toFixed(2)}" max="${maximum.toFixed(2)}" step="1" value="${thresholdValue.toFixed(1)}">
+      </label>
+      <span class="trend-extreme-unit">${escapeHtml(unit)}</span>
+    </div>
+  `;
+}
+
+// normalize one runtime extreme-day family
+function normalizeTrendExtremeKind(value: TrendExtremeKind | undefined): TrendExtremeKind {
+  // retain only reviewed threshold families
+  if (value === "cold" || value === "heat" || value === "rain" || value === "wind") {
+    return value;
+  }
+
+  return "heat";
+}
+
+// normalize one runtime threshold against its canonical bounds
+function normalizeTrendExtremeThreshold(
+  value: number | undefined,
+  configuration: TrendExtremeConfiguration,
+): number {
+  // replace missing or unsafe thresholds with one reviewed default
+  if (
+    value === undefined ||
+    !Number.isFinite(value) ||
+    value < configuration.minimum ||
+    value > configuration.maximum
+  ) {
+    return configuration.defaultThreshold;
+  }
+
+  return value;
+}
+
+type TrendValueResolver = (point: TrendPoint) => number | null;
+
+// build the selected raw or farm-derived annual series
+function buildTrendChartYearSeries(
+  state: DashboardState,
+  option: TrendChartOption,
+): readonly TrendYearSeries[] {
+  const timezone = state.selectedSite?.timezone ?? "UTC";
+
+  // derive each farm chart from the shared daily payload
+  switch (option.metric) {
+    case "cumulativePrecipitationMm":
+      return accumulateTrendYearSeries(
+        buildTrendYearSeries(state.trends, "precipitationMm", timezone),
+        // retain only physical precipitation accumulation
+        (value) => Math.max(0, value),
+      );
+    case "temperatureAnomalyC":
+      return buildTemperatureAnomalySeries(state, timezone);
+    case "temperatureRangeC":
+      return buildTrendValueYearSeries(
+        state.trends,
+        timezone,
+        // calculate one daily high-to-low swing
+        (point) => {
+          const maximum = point.metrics.temperatureMaximumC;
+          const minimum = point.metrics.temperatureMinimumC;
+          return maximum === null || minimum === null ? null : Math.max(0, maximum - minimum);
+        },
+      );
+    case "drySpellDays":
+      return buildDrySpellSeries(
+        buildTrendYearSeries(state.trends, "precipitationMm", timezone),
+      );
+    case "growingDegreeDaysC":
+      return accumulateTrendYearSeries(
+        buildTrendYearSeries(state.trends, "temperatureC", timezone),
+        // accumulate heat above the standard 10 °C crop base
+        (value) => Math.max(0, value - 10),
+      );
+    case "frostDayCount":
+      return buildCumulativeCountSeries(
+        buildTrendYearSeries(state.trends, "temperatureMinimumC", timezone),
+        // count days that reached freezing
+        (value) => value <= 0,
+      );
+    case "extremeDayCount": {
+      const kind = normalizeTrendExtremeKind(state.trendExtremeKind);
+      const configuration = trendExtremeConfiguration(kind);
+      const threshold = normalizeTrendExtremeThreshold(
+        state.trendExtremeThreshold,
+        configuration,
+      );
+      return buildCumulativeCountSeries(
+        buildTrendYearSeries(state.trends, configuration.metric, timezone),
+        // compare one daily extreme to the selected boundary
+        (value) => configuration.comparator === "atLeast"
+          ? value >= threshold
+          : value <= threshold,
+      );
+    }
+    case "windDirectionRose":
+      return [];
+    default:
+      return buildTrendYearSeries(state.trends, option.metric, timezone);
+  }
+}
+
+// group one raw daily metric by its site-local calendar year
 function buildTrendYearSeries(
   trends: readonly TrendPoint[],
   metric: TrendMetricKey,
   timezone: string,
 ): readonly TrendYearSeries[] {
+  return buildTrendValueYearSeries(
+    trends,
+    timezone,
+    // read one canonical daily metric
+    (point) => point.metrics[metric],
+  );
+}
+
+// group resolved daily values by their site-local calendar year
+function buildTrendValueYearSeries(
+  trends: readonly TrendPoint[],
+  timezone: string,
+  resolveValue: TrendValueResolver,
+): readonly TrendYearSeries[] {
   const years = new Map<number, Map<string, TrendCalendarSample>>();
 
   // retain each finite daily reading
   for (const point of trends) {
-    const value = point.metrics[metric];
+    const value = resolveValue(point);
 
     // omit missing daily readings
     if (value === null || !Number.isFinite(value)) {
@@ -2922,6 +3284,197 @@ function buildTrendYearSeries(
       year,
     }),
   );
+}
+
+// accumulate one annual series from daily contributions
+function accumulateTrendYearSeries(
+  series: readonly TrendYearSeries[],
+  contribution: (value: number) => number,
+): readonly TrendYearSeries[] {
+  return series.map(
+    // restart each accumulation on January 1
+    (year) => {
+      let total = 0;
+      return {
+        points: year.points.map(
+          // retain the cumulative value after one day
+          (point) => {
+            total += contribution(point.value);
+            return { ...point, value: total };
+          },
+        ),
+        year: year.year,
+      };
+    },
+  );
+}
+
+// count matching days cumulatively within each calendar year
+function buildCumulativeCountSeries(
+  series: readonly TrendYearSeries[],
+  matches: (value: number) => boolean,
+): readonly TrendYearSeries[] {
+  return accumulateTrendYearSeries(
+    series,
+    // add one only when the daily threshold matched
+    (value) => matches(value) ? 1 : 0,
+  );
+}
+
+// measure the active consecutive dry-day streak
+function buildDrySpellSeries(
+  series: readonly TrendYearSeries[],
+): readonly TrendYearSeries[] {
+  return series.map(
+    // restart each dry spell on January 1
+    (year) => {
+      let streak = 0;
+      return {
+        points: year.points.map(
+          // reset after at least 0.01 inches of measurable rain
+          (point) => {
+            streak = point.value < 0.254 ? streak + 1 : 0;
+            return { ...point, value: streak };
+          },
+        ),
+        year: year.year,
+      };
+    },
+  );
+}
+
+// compare each daily mean with the historical calendar-day average
+function buildTemperatureAnomalySeries(
+  state: DashboardState,
+  timezone: string,
+): readonly TrendYearSeries[] {
+  const source = buildTrendYearSeries(state.trends, "temperatureC", timezone);
+  const currentYear = trendCurrentYear(state, source);
+  const historical = source.filter(
+    // exclude the incomplete current year from the climate baseline
+    (year) => year.year !== currentYear,
+  );
+  const baselineSource = historical.length === 0 ? source : historical;
+  const baseline = new Map<string, { count: number; total: number }>();
+
+  // collect each historical calendar-day mean
+  for (const year of baselineSource) {
+    // add every observed historical day
+    for (const point of year.points) {
+      const day = baseline.get(point.dayKey) ?? { count: 0, total: 0 };
+      day.count += 1;
+      day.total += point.value;
+      baseline.set(point.dayKey, day);
+    }
+  }
+
+  return source.map(
+    // subtract one shared climate baseline from every year
+    (year) => ({
+      points: year.points.flatMap(
+        // retain only days with a historical comparison
+        (point) => {
+          const day = baseline.get(point.dayKey);
+          return day === undefined
+            ? []
+            : [{ ...point, value: point.value - day.total / day.count }];
+        },
+      ),
+      year: year.year,
+    }),
+  );
+}
+
+// summarize daily prevailing directions into sixteen compass sectors
+function buildTrendWindRoseSectors(
+  state: DashboardState,
+): readonly TrendWindRoseSector[] {
+  const currentYear = trendCurrentYear(state, []);
+  const timezone = state.selectedSite?.timezone ?? "UTC";
+  const currentCounts = Array.from({ length: WIND_ROSE_DIRECTIONS.length }, () => 0);
+  const historicalCounts = Array.from({ length: WIND_ROSE_DIRECTIONS.length }, () => 0);
+
+  // count each finite daily prevailing direction
+  for (const point of state.trends) {
+    const direction = point.metrics.windDirectionDegrees;
+
+    // omit missing daily directions
+    if (direction === null || !Number.isFinite(direction)) {
+      continue;
+    }
+
+    const normalized = ((direction % 360) + 360) % 360;
+    const sector = Math.round(normalized / 22.5) % WIND_ROSE_DIRECTIONS.length;
+    const year = formatWallClockParts(new Date(point.validAt), timezone).year;
+
+    // separate the partial current year from complete historical years
+    if (year === currentYear) {
+      currentCounts[sector] = (currentCounts[sector] ?? 0) + 1;
+    } else {
+      historicalCounts[sector] = (historicalCounts[sector] ?? 0) + 1;
+    }
+  }
+
+  const currentTotal = currentCounts.reduce(
+    // total the current-year direction samples
+    (total, count) => total + count,
+    0,
+  );
+  const historicalTotal = historicalCounts.reduce(
+    // total the historical direction samples
+    (total, count) => total + count,
+    0,
+  );
+
+  return WIND_ROSE_DIRECTIONS.map(
+    // convert one sector count into comparable percentages
+    (label, index) => ({
+      currentPercent: currentTotal === 0
+        ? 0
+        : ((currentCounts[index] ?? 0) / currentTotal) * 100,
+      historicalPercent: historicalTotal === 0
+        ? 0
+        : ((historicalCounts[index] ?? 0) / historicalTotal) * 100,
+      label,
+    }),
+  );
+}
+
+// render one annular wind-rose sector
+function renderTrendWindRoseSector(
+  index: number,
+  percent: number,
+  maximumPercent: number,
+  className: string,
+): string {
+  // omit empty directions from the visual layer
+  if (percent <= 0) {
+    return "";
+  }
+
+  const innerRadius = 12;
+  const outerRadius = innerRadius + (percent / maximumPercent) * 98;
+  const startAngle = index * 22.5 - 99;
+  const endAngle = index * 22.5 - 81;
+  const innerStart = trendPolarPoint(160, 160, innerRadius, startAngle);
+  const outerStart = trendPolarPoint(160, 160, outerRadius, startAngle);
+  const outerEnd = trendPolarPoint(160, 160, outerRadius, endAngle);
+  const innerEnd = trendPolarPoint(160, 160, innerRadius, endAngle);
+  return `<path data-wind-rose-sector="${WIND_ROSE_DIRECTIONS[index] ?? ""}" data-wind-rose-percent="${percent.toFixed(4)}" class="trend-wind-rose-sector ${className}" d="M ${innerStart.x.toFixed(2)} ${innerStart.y.toFixed(2)} L ${outerStart.x.toFixed(2)} ${outerStart.y.toFixed(2)} A ${outerRadius.toFixed(2)} ${outerRadius.toFixed(2)} 0 0 1 ${outerEnd.x.toFixed(2)} ${outerEnd.y.toFixed(2)} L ${innerEnd.x.toFixed(2)} ${innerEnd.y.toFixed(2)} A ${innerRadius.toFixed(2)} ${innerRadius.toFixed(2)} 0 0 0 ${innerStart.x.toFixed(2)} ${innerStart.y.toFixed(2)} Z"/>`;
+}
+
+// project one polar coordinate into the shared wind-rose view box
+function trendPolarPoint(
+  centerX: number,
+  centerY: number,
+  radius: number,
+  degrees: number,
+): Readonly<{ x: number; y: number }> {
+  const radians = (degrees * Math.PI) / 180;
+  return {
+    x: centerX + Math.cos(radians) * radius,
+    y: centerY + Math.sin(radians) * radius,
+  };
 }
 
 // smooth every calendar year with one centered moving average
@@ -3085,6 +3638,7 @@ function trendVisibleDomain(
         (year) => year.year === currentYear,
       );
   const values = [
+    ...(option.includeZero === true ? [0] : []),
     ...aggregate.flatMap(
       // include both visible historical range lines
       (point) => [point.minimum, point.maximum],
@@ -3160,6 +3714,11 @@ function trendDisplayValue(
 ): number {
   // convert one monotonic display scale
   switch (format) {
+    case "count":
+      return value;
+    case "degreeDays":
+    case "temperatureDelta":
+      return units.temperature === "fahrenheit" ? (value * 9) / 5 : value;
     case "humidity":
       return value;
     case "temperature":
@@ -3197,6 +3756,11 @@ function trendCanonicalValue(
 ): number {
   // invert one monotonic display scale
   switch (format) {
+    case "count":
+      return value;
+    case "degreeDays":
+    case "temperatureDelta":
+      return units.temperature === "fahrenheit" ? (value * 5) / 9 : value;
     case "humidity":
       return value;
     case "temperature":
@@ -3232,6 +3796,35 @@ function formatTrendMeasurement(
   format: TrendChartFormat,
   units: UnitPreferences,
 ): FormattedMeasurement {
+  // format whole-day streaks and cumulative counts
+  if (format === "count") {
+    return formatFixedMeasurement(value, "days", 0);
+  }
+
+  // format accumulated seasonal heat without an absolute-temperature offset
+  if (format === "degreeDays") {
+    const displayValue = value === null
+      ? null
+      : trendDisplayValue(value, format, units);
+    return formatFixedMeasurement(
+      displayValue,
+      units.temperature === "fahrenheit" ? "°F·days" : "°C·days",
+      0,
+    );
+  }
+
+  // format temperature differences without an absolute-temperature offset
+  if (format === "temperatureDelta") {
+    const displayValue = value === null
+      ? null
+      : trendDisplayValue(value, format, units);
+    return formatFixedMeasurement(
+      displayValue,
+      units.temperature === "fahrenheit" ? "°F" : "°C",
+      0,
+    );
+  }
+
   // format normalized humidity without a configurable unit
   if (format === "humidity") {
     return formatFixedMeasurement(value, "%", 0);
@@ -5243,6 +5836,7 @@ function bindDashboardControls(
   bindForecastCharts(root, controller);
   bindTrendMetricControl(root, controller);
   bindTrendViewControls(root, controller);
+  bindTrendExtremeControls(root, controller);
   bindTrendYearControls(root, controller);
   bindTrendCrosshair(root, controller);
   bindMapControls(root, controller);
@@ -6977,6 +7571,47 @@ function bindTrendViewControls(
   });
 }
 
+// connect the extreme-day family and threshold controls
+function bindTrendExtremeControls(
+  root: HTMLElement,
+  controller: WeatherDashboardController,
+): void {
+  const kind = root.querySelector<HTMLSelectElement>("[data-trend-extreme-kind]");
+  const threshold = root.querySelector<HTMLInputElement>("[data-trend-extreme-threshold]");
+
+  // switch threshold families with one reviewed default
+  kind?.addEventListener("change", () => {
+    // reject an impossible rendered family
+    if (!isTrendExtremeKind(kind.value)) {
+      return;
+    }
+
+    controller.setTrendExtremeKind(kind.value);
+  });
+
+  // apply one preferred-unit threshold at the chart boundary
+  threshold?.addEventListener("change", () => {
+    const value = Number(threshold.value);
+    const configuration = trendExtremeConfiguration(
+      normalizeTrendExtremeKind(controller.state.trendExtremeKind),
+    );
+
+    // reject empty or malformed number input
+    if (!Number.isFinite(value)) {
+      return;
+    }
+
+    controller.setTrendExtremeThreshold(
+      trendCanonicalValue(value, configuration.format, controller.state.units),
+    );
+  });
+}
+
+// validate one rendered extreme-day family
+function isTrendExtremeKind(value: string): value is TrendExtremeKind {
+  return value === "cold" || value === "heat" || value === "rain" || value === "wind";
+}
+
 // connect yearly trend lines to visual emphasis
 function bindTrendYearControls(
   root: HTMLElement,
@@ -7052,13 +7687,9 @@ function bindTrendCrosshair(
     return;
   }
 
-  const rawSeries = buildTrendYearSeries(
-    controller.state.trends,
-    metric,
-    controller.state.selectedSite?.timezone ?? "UTC",
-  );
+  const rawSeries = buildTrendChartYearSeries(controller.state, option);
   const currentYear = trendCurrentYear(controller.state, rawSeries);
-  const series = detail === "rolling"
+  const series = detail === "rolling" && option.supportsDetail !== false
     ? smoothTrendYearSeries(rawSeries, TREND_ROLLING_WINDOW_DAYS)
     : rawSeries;
   const currentSeries = series.find(

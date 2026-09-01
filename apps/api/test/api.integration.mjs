@@ -73,6 +73,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       idSuffix: "history-tied",
       temperatureC: 14.9,
       validAt: "2026-08-22T04:50:00.000Z",
+      windDirectionDegrees: 225,
     });
     await insertRecord(admin, forecastSource, forecastRun, {
       idSuffix: "forecast-first",
@@ -196,6 +197,9 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(trend.data.length > 0, true);
       // prefer complete reanalysis days over current-model fallback
       assert.equal(trend.data.at(-1).metrics.temperatureC, 14.9);
+      assert.equal(trend.data.at(-1).metrics.temperatureMaximumC, 14.9);
+      assert.equal(trend.data.at(-1).metrics.temperatureMinimumC, 14.9);
+      assert.ok(Math.abs(trend.data.at(-1).metrics.windDirectionDegrees + 135) < 0.000_001);
     });
 
     await context.test("deactivated sources disappear from current and history", async () => {
@@ -392,6 +396,7 @@ async function insertRecord(pool, source, runId, input) {
         quality_metadata,
         provider_metadata,
         temperature_c,
+        wind_direction_degrees,
         content_hash
       )
       VALUES (
@@ -410,6 +415,7 @@ async function insertRecord(pool, source, runId, input) {
         '{"confidence_percent":93,"flags":["integration"],"status":"accepted"}'::jsonb,
         '{"dataset":"integration","elevation_m":17,"request_id":"private"}'::jsonb,
         $5,
+        $8,
         $6
       )
     `,
@@ -421,6 +427,7 @@ async function insertRecord(pool, source, runId, input) {
       input.temperatureC,
       contentHash,
       input.productRunAt ?? null,
+      input.windDirectionDegrees ?? null,
     ],
   );
 }
