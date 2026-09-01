@@ -7020,6 +7020,21 @@ function bindTrendCrosshair(
     selectedYear,
     currentYear,
   );
+  const legendSamples: readonly Readonly<{ readonly value: number; readonly x: number }>[] = [
+    ...aggregate.flatMap(
+      // retain every visible historical band edge
+      (point) => [
+        { value: point.minimum, x: point.x },
+        { value: point.lowerQuartile, x: point.x },
+        { value: point.upperQuartile, x: point.x },
+        { value: point.maximum, x: point.x },
+      ],
+    ),
+    ...visibleSeries.flatMap(
+      // retain every visible comparison line
+      (entry) => entry.points,
+    ),
+  ];
   const newestFirst = [...visibleSeries].reverse();
   const outputs = new Map(
     [...surface.querySelectorAll<HTMLOutputElement>("[data-trend-crosshair-value]")].flatMap(
@@ -7031,12 +7046,18 @@ function bindTrendCrosshair(
     ),
   );
   const date = surface.querySelector<HTMLTimeElement>("[data-trend-crosshair-date]");
+  const legend = chart.querySelector<HTMLElement>(".trend-chart-legend");
   const summary = surface.querySelector<HTMLElement>(".trend-crosshair-summary");
   const maximum = Number(chart.dataset.trendMaximum);
   const minimum = Number(chart.dataset.trendMinimum);
 
   // require the rendered comparison card
-  if (summary === null || !Number.isFinite(maximum) || !Number.isFinite(minimum)) {
+  if (
+    legend === null ||
+    summary === null ||
+    !Number.isFinite(maximum) ||
+    !Number.isFinite(minimum)
+  ) {
     return;
   }
 
@@ -7082,6 +7103,53 @@ function bindTrendCrosshair(
   // detect the rotated phone chart interaction axis
   const isMobileTrend = (): boolean => window.matchMedia("(max-width: 42rem)").matches;
 
+  // move the legend to the quieter visible data edge
+  const updateLegendPlacement = (): void => {
+    const mobile = isMobileTrend();
+    const visibleStart = expanded
+      ? mobile
+        ? viewport.scrollTop
+        : viewport.scrollLeft
+      : 0;
+    const visibleWidth = expanded
+      ? mobile
+        ? viewport.clientHeight
+        : viewport.clientWidth
+      : surface.clientWidth;
+    const legendHeight = legend.offsetHeight;
+    const legendLeft = visibleStart + visibleWidth / 2 - legend.offsetWidth / 2;
+    const legendRight = legendLeft + legend.offsetWidth;
+    const rootFontSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const edgeGap = rootFontSize * (mobile ? 0.4 : 0.55);
+    const topPosition = surface.clientHeight * 0.15 + edgeGap;
+    const bottomPosition = surface.clientHeight * 0.88 - edgeGap - legendHeight;
+
+    // score plotted samples behind one candidate legend band
+    const overlapScore = (candidateTop: number): number => legendSamples.reduce(
+      // total direct and nearby data overlap
+      (score, point) => {
+        const pointX = (trendChartX(point.x) / TREND_CHART_WIDTH) * surface.clientWidth;
+        const pointY = (trendChartY(point.value, minimum, span) / TREND_CHART_HEIGHT) *
+          surface.clientHeight;
+        const withinLegendWidth = pointX >= legendLeft && pointX <= legendRight;
+        const verticalDistance = Math.max(
+          candidateTop - pointY,
+          0,
+          pointY - (candidateTop + legendHeight),
+        );
+        const proximity = Math.max(0, 1 - verticalDistance / Math.max(1, legendHeight));
+        return score + (withinLegendWidth ? proximity : 0);
+      },
+      0,
+    );
+
+    const topOverlap = overlapScore(topPosition);
+    const bottomOverlap = overlapScore(bottomPosition);
+    const placement = topOverlap < bottomOverlap ? "top" : "bottom";
+    legend.classList.toggle("trend-chart-legend-top", placement === "top");
+    legend.dataset.trendLegendPlacement = placement;
+  };
+
   // place the comparison flag at the current-year intersection
   const updateSummaryPosition = (): void => {
     const linePosition = (trendChartPercentage(position) / 100) * surface.clientWidth;
@@ -7103,6 +7171,12 @@ function bindTrendCrosshair(
     const maximumTop = Math.max(plotTop, plotBottom - summaryHeight);
     summary.classList.toggle("trend-crosshair-summary-left", rightSpace < summary.offsetWidth + 8);
     summary.style.top = `${Math.max(plotTop, Math.min(maximumTop, targetTop)).toFixed(2)}px`;
+  };
+
+  // align every floating chart overlay after viewport movement
+  const updateOverlayPositions = (): void => {
+    updateLegendPlacement();
+    updateSummaryPosition();
   };
 
   // update the line, date, and every visible value without rerendering
@@ -7197,7 +7271,7 @@ function bindTrendCrosshair(
         viewport.scrollLeft = gesture.startScrollLeft - (event.clientX - gesture.startX);
       }
 
-      updateSummaryPosition();
+      updateOverlayPositions();
       return;
     }
 
@@ -7289,7 +7363,7 @@ function bindTrendCrosshair(
       viewport.scrollLeft += delta;
     }
 
-    updateSummaryPosition();
+    updateOverlayPositions();
   }, { passive: false });
 
   // provide exact daily keyboard steps
@@ -7321,11 +7395,12 @@ function bindTrendCrosshair(
     updatePosition(nextPosition);
   });
 
-  viewport.addEventListener("scroll", updateSummaryPosition, { passive: true });
-  window.addEventListener("resize", updateSummaryPosition);
+  viewport.addEventListener("scroll", updateOverlayPositions, { passive: true });
+  window.addEventListener("resize", updateOverlayPositions);
   const todayPosition = Math.max(0, Math.min(1, Number(surface.dataset.trendTodayPosition ?? 0)));
   surface.style.setProperty("--trend-today-position", `${trendChartPercentage(todayPosition).toFixed(4)}%`);
   updatePosition(position);
+  updateLegendPlacement();
 
   // center the selected day when opening the fixed daily canvas
   if (expanded) {
@@ -7340,7 +7415,7 @@ function bindTrendCrosshair(
         viewport.scrollLeft = Math.max(0, linePosition - viewport.clientWidth / 2);
       }
 
-      updateSummaryPosition();
+      updateOverlayPositions();
     });
   }
 }

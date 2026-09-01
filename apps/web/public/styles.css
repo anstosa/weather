@@ -2049,6 +2049,11 @@ h2 {
   transform: translateX(-50%);
 }
 
+.trend-chart-legend.trend-chart-legend-top {
+  top: calc(15% + 0.55rem);
+  bottom: auto;
+}
+
 .trend-chart-legend span,
 .trend-chart-legend button {
   gap: 0.22rem;
@@ -3876,6 +3881,11 @@ td small {
     gap: 0.2rem 0.4rem;
     padding: 0.28rem 0.35rem;
     font-size: 0.52rem;
+  }
+
+  .trend-chart-legend.trend-chart-legend-top {
+    top: calc(15% + 0.4rem);
+    bottom: auto;
   }
 
   .station-map-layout {

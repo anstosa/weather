@@ -1535,10 +1535,14 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
             currentYearMatchesToday: getComputedStyle(currentYearLine).stroke ===
               getComputedStyle(todayMarker).borderLeftColor,
             currentYearUsesDarkOrange: getComputedStyle(currentYearLine).stroke === "rgb(239, 126, 31)",
-            legendBottomCentered: Math.abs(
+            legendCentered: Math.abs(
               legendBounds.left + legendBounds.width / 2 -
               (landscapeBounds.left + landscapeBounds.width / 2),
-            ) < 2 && legendBounds.bottom <= xAxisBounds.top + 1,
+            ) < 2,
+            legendPlacement: legend.dataset.trendLegendPlacement,
+            legendPlacementMatchesEdge: legend.dataset.trendLegendPlacement === "top"
+              ? Number.parseFloat(getComputedStyle(legend).top) > landscape.clientHeight * (42 / 280)
+              : legendBounds.bottom <= xAxisBounds.top + 1,
             medianWidth: Number.parseFloat(getComputedStyle(median).strokeWidth),
             minimumSize: landscapeBounds.width >= viewportBounds.width - 1 &&
               landscape.clientWidth >= viewport.clientWidth,
@@ -1577,7 +1581,9 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         crosshairDateCentered: true,
         currentYearMatchesToday: true,
         currentYearUsesDarkOrange: true,
-        legendBottomCentered: true,
+        legendCentered: true,
+        legendPlacement: "bottom",
+        legendPlacementMatchesEdge: true,
         medianWidth: 2,
         minimumSize: true,
         modeLabel: "Show all",
@@ -1591,6 +1597,23 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         todayPositionInsideChart: true,
       },
     );
+    await trendMetricTrigger.click();
+    await page.locator('[data-trend-metric-option="precipitationMm"]').click();
+    await page.locator('[data-trend-chart="precipitationMm"]').waitFor();
+    assert.equal(
+      await page.locator(".trend-chart-legend").getAttribute("data-trend-legend-placement"),
+      "top",
+    );
+    await page.locator("[data-trend-metric-trigger]").click();
+    await page.locator('[data-trend-metric-option="relativeHumidityPercent"]').click();
+    await page.locator('[data-trend-chart="relativeHumidityPercent"]').waitFor();
+    assert.equal(
+      await page.locator(".trend-chart-legend").getAttribute("data-trend-legend-placement"),
+      "bottom",
+    );
+    await page.locator("[data-trend-metric-trigger]").click();
+    await page.locator('[data-trend-metric-option="temperatureC"]').click();
+    await page.locator('[data-trend-chart="temperatureC"]').waitFor();
     const trendRequestsBeforeSelection = fixture.state.requests.filter(
       // count the calendar endpoint before local chart changes
       (entry) => entry === "GET /api/v1/sites/ballydidean/trends",
@@ -3758,7 +3781,9 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
               landscapeBounds.top >= viewportBounds.top - 1 &&
               landscapeBounds.bottom <= viewportBounds.bottom + 1,
             landscapeRotated: landscapeTransform.startsWith("matrix(0, 1, -1, 0"),
-            legendAboveXAxis: Number.parseFloat(legendStyle.bottom) > landscape.clientHeight * (34 / 280),
+            legendAtChosenEdge: legend.dataset.trendLegendPlacement === "top"
+              ? Number.parseFloat(legendStyle.top) > landscape.clientHeight * (42 / 280)
+              : Number.parseFloat(legendStyle.bottom) > landscape.clientHeight * (34 / 280),
             legendInsideRotatedChart: legend.closest(".trend-chart-landscape") === landscape,
             mastheadTransform: getComputedStyle(masthead).transform,
             navigationTransform: getComputedStyle(navigation).transform,
@@ -3785,7 +3810,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
         crosshairSummarySquareAgainstLine: true,
         landscapeFitsViewport: true,
         landscapeRotated: true,
-        legendAboveXAxis: true,
+        legendAtChosenEdge: true,
         legendInsideRotatedChart: true,
         mastheadTransform: "none",
         navigationTransform: "none",
