@@ -1441,6 +1441,13 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator("[data-trend-display-mode=aggregate]").count(), 1);
     assert.equal(await page.locator("[data-trend-detail=rolling]").count(), 1);
     const trendMetricTrigger = page.locator("[data-trend-metric-trigger]");
+    assert.equal(
+      await trendMetricTrigger.evaluate(
+        // preserve visible space between the title and caret
+        (trigger) => Number.parseFloat(getComputedStyle(trigger).columnGap) >= 4,
+      ),
+      true,
+    );
     assert.equal(await page.getByRole("heading", { name: "Temperature" }).count(), 1);
     assert.equal(await page.locator("[data-trend-metric-option]").count(), 7);
     assert.equal(await page.locator(".trend-metric-flyover").isVisible(), false);
