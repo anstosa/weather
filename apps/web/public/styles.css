@@ -1739,7 +1739,7 @@ h2 {
 .trend-crosshair-summary {
   position: absolute;
   z-index: 4;
-  top: 3.65rem;
+  top: 15%;
   left: var(--trend-crosshair-position);
   display: grid;
   justify-items: start;
@@ -1773,7 +1773,7 @@ h2 {
   grid-template-columns: max-content;
   gap: 0.18rem;
   padding: 0.28rem 0.35rem;
-  border-radius: var(--md-sys-shape-small);
+  border-radius: 0 var(--md-sys-shape-small) var(--md-sys-shape-small) 0;
   color: var(--brand-white);
   background: var(--brand-black);
   box-shadow: var(--md-sys-elevation-1);
@@ -1810,6 +1810,10 @@ h2 {
   justify-items: end;
   margin-left: 0;
   transform: translateX(-100%);
+}
+
+.trend-crosshair-summary-left .trend-crosshair-values {
+  border-radius: var(--md-sys-shape-small) 0 0 var(--md-sys-shape-small);
 }
 
 .trend-today-marker {
@@ -3849,7 +3853,6 @@ td small {
   }
 
   .trend-crosshair-summary {
-    top: 3.15rem;
     gap: 0.16rem;
   }
 

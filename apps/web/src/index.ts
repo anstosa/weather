@@ -6999,6 +6999,10 @@ function bindTrendCrosshair(
   const series = detail === "rolling"
     ? smoothTrendYearSeries(rawSeries, TREND_ROLLING_WINDOW_DAYS)
     : rawSeries;
+  const currentSeries = series.find(
+    // locate the permanent current-year comparison
+    (year) => year.year === currentYear,
+  );
   const historicalSeries = series.filter(
     // exclude the incomplete current year from historical statistics
     (year) => year.year !== currentYear,
@@ -7028,11 +7032,15 @@ function bindTrendCrosshair(
   );
   const date = surface.querySelector<HTMLTimeElement>("[data-trend-crosshair-date]");
   const summary = surface.querySelector<HTMLElement>(".trend-crosshair-summary");
+  const maximum = Number(chart.dataset.trendMaximum);
+  const minimum = Number(chart.dataset.trendMinimum);
 
   // require the rendered comparison card
-  if (summary === null) {
+  if (summary === null || !Number.isFinite(maximum) || !Number.isFinite(minimum)) {
     return;
   }
+
+  const span = maximum === minimum ? 1 : maximum - minimum;
 
   let position = Math.max(0, Math.min(1, Number(surface.dataset.trendInitialPosition ?? 0)));
   const expanded = detail === "daily";
@@ -7074,14 +7082,27 @@ function bindTrendCrosshair(
   // detect the rotated phone chart interaction axis
   const isMobileTrend = (): boolean => window.matchMedia("(max-width: 42rem)").matches;
 
-  // place the comparison column beside the visible line without clipping
-  const updateSummarySide = (): void => {
+  // place the comparison flag at the current-year intersection
+  const updateSummaryPosition = (): void => {
     const linePosition = (trendChartPercentage(position) / 100) * surface.clientWidth;
     const viewportEnd = isMobileTrend()
       ? viewport.scrollTop + viewport.clientHeight
       : viewport.scrollLeft + viewport.clientWidth;
     const rightSpace = viewportEnd - linePosition;
+    const currentValue = currentSeries === undefined
+      ? null
+      : interpolateTrendValue(currentSeries.points, position);
+    const plotTop = (TREND_CHART_PADDING_TOP / TREND_CHART_HEIGHT) * surface.clientHeight;
+    const plotBottom = ((TREND_CHART_HEIGHT - TREND_CHART_PADDING_BOTTOM) / TREND_CHART_HEIGHT) *
+      surface.clientHeight;
+    const summaryHeight = summary.offsetHeight;
+    const targetTop = currentValue === null
+      ? plotTop
+      : (trendChartY(currentValue, minimum, span) / TREND_CHART_HEIGHT) * surface.clientHeight -
+        summaryHeight / 2;
+    const maximumTop = Math.max(plotTop, plotBottom - summaryHeight);
     summary.classList.toggle("trend-crosshair-summary-left", rightSpace < summary.offsetWidth + 8);
+    summary.style.top = `${Math.max(plotTop, Math.min(maximumTop, targetTop)).toFixed(2)}px`;
   };
 
   // update the line, date, and every visible value without rerendering
@@ -7114,7 +7135,7 @@ function bindTrendCrosshair(
     }
 
     slider.setAttribute("aria-valuetext", `${selectedDate.label}. ${summaries.join(". ")}`);
-    updateSummarySide();
+    updateSummaryPosition();
   };
 
   // begin one calendar scrub or fixed-detail pan
@@ -7176,7 +7197,7 @@ function bindTrendCrosshair(
         viewport.scrollLeft = gesture.startScrollLeft - (event.clientX - gesture.startX);
       }
 
-      updateSummarySide();
+      updateSummaryPosition();
       return;
     }
 
@@ -7268,7 +7289,7 @@ function bindTrendCrosshair(
       viewport.scrollLeft += delta;
     }
 
-    updateSummarySide();
+    updateSummaryPosition();
   }, { passive: false });
 
   // provide exact daily keyboard steps
@@ -7300,8 +7321,8 @@ function bindTrendCrosshair(
     updatePosition(nextPosition);
   });
 
-  viewport.addEventListener("scroll", updateSummarySide, { passive: true });
-  window.addEventListener("resize", updateSummarySide);
+  viewport.addEventListener("scroll", updateSummaryPosition, { passive: true });
+  window.addEventListener("resize", updateSummaryPosition);
   const todayPosition = Math.max(0, Math.min(1, Number(surface.dataset.trendTodayPosition ?? 0)));
   surface.style.setProperty("--trend-today-position", `${trendChartPercentage(todayPosition).toFixed(4)}%`);
   updatePosition(position);
@@ -7319,7 +7340,7 @@ function bindTrendCrosshair(
         viewport.scrollLeft = Math.max(0, linePosition - viewport.clientWidth / 2);
       }
 
-      updateSummarySide();
+      updateSummaryPosition();
     });
   }
 }

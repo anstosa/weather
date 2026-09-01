@@ -1503,6 +1503,10 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
           const xAxisBounds = xAxis.getBoundingClientRect();
           const crosshairBounds = crosshair.getBoundingClientRect();
           const crosshairDateBounds = crosshairDateFlag.getBoundingClientRect();
+          const currentYearPoint = currentYearLine.points.getItem(currentYearLine.points.numberOfItems - 1);
+          const currentYearY = (currentYearPoint.y / 280) * landscape.clientHeight;
+          const summaryValuesStyle = getComputedStyle(crosshairValueFlags);
+          const summaryOnLeft = crosshairSummary.classList.contains("trend-crosshair-summary-left");
           return {
             bandOpacity: Number.parseFloat(getComputedStyle(band).opacity),
             crosshairFlagsAttached: Math.abs(
@@ -1511,6 +1515,18 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
             ) < 1,
             crosshairFlagsBlack: getComputedStyle(crosshairValueFlags).backgroundColor ===
               getComputedStyle(crosshairDateFlag).backgroundColor,
+            crosshairFlagsInsidePlot: crosshairSummary.offsetTop >= landscape.clientHeight * (42 / 280) - 1 &&
+              crosshairSummary.offsetTop + crosshairSummary.offsetHeight <=
+                landscape.clientHeight * ((280 - 34) / 280) + 1,
+            crosshairFlagsMatchCurrentYear: Math.abs(
+              crosshairSummary.offsetTop + crosshairSummary.offsetHeight / 2 - currentYearY,
+            ) < 2,
+            crosshairFlagsSquareAgainstLine: summaryOnLeft
+              ? summaryValuesStyle.borderTopRightRadius === "0px" &&
+                summaryValuesStyle.borderBottomRightRadius === "0px"
+              : summaryValuesStyle.borderTopLeftRadius === "0px" &&
+                summaryValuesStyle.borderBottomLeftRadius === "0px",
+            crosshairFlagsTopIsDynamic: crosshairSummary.style.top.endsWith("px"),
             crosshairDateAboveLine: crosshairDateBounds.bottom < crosshairBounds.top,
             crosshairDateCentered: Math.abs(
               crosshairDateBounds.left + crosshairDateBounds.width / 2 -
@@ -1553,6 +1569,10 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         bandOpacity: 1,
         crosshairFlagsAttached: true,
         crosshairFlagsBlack: true,
+        crosshairFlagsInsidePlot: true,
+        crosshairFlagsMatchCurrentYear: true,
+        crosshairFlagsSquareAgainstLine: true,
+        crosshairFlagsTopIsDynamic: true,
         crosshairDateAboveLine: true,
         crosshairDateCentered: true,
         currentYearMatchesToday: true,
@@ -3653,6 +3673,8 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
           const crosshair = panel.querySelector(".trend-crosshair-line");
           const crosshairDate = panel.querySelector(".trend-crosshair-date-pill");
           const crosshairSummary = panel.querySelector(".trend-crosshair-summary");
+          const crosshairValueFlags = panel.querySelector(".trend-crosshair-values");
+          const currentYearLine = panel.querySelector(".trend-year-line-current");
           const landscape = panel.querySelector(".trend-chart-landscape");
           const legend = panel.querySelector(".trend-chart-legend");
           const masthead = document.querySelector(".masthead");
@@ -3668,6 +3690,8 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
             crosshair === null ||
             crosshairDate === null ||
             crosshairSummary === null ||
+            crosshairValueFlags === null ||
+            currentYearLine === null ||
             landscape === null ||
             legend === null ||
             masthead === null ||
@@ -3691,6 +3715,10 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
           const legendStyle = getComputedStyle(legend);
           const titleControlStyle = getComputedStyle(titleControl);
           const chartStyle = getComputedStyle(chart);
+          const currentYearPoint = currentYearLine.points.getItem(currentYearLine.points.numberOfItems - 1);
+          const currentYearY = (currentYearPoint.y / 280) * landscape.clientHeight;
+          const crosshairValueFlagsStyle = getComputedStyle(crosshairValueFlags);
+          const summaryOnLeft = crosshairSummary.classList.contains("trend-crosshair-summary-left");
           return {
             cardRemoved: chartStyle.borderTopStyle === "none" &&
               chartStyle.backgroundColor === "rgba(0, 0, 0, 0)" &&
@@ -3714,6 +3742,17 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
               crosshairSummaryBounds.right <= landscapeBounds.right + 1 &&
               crosshairSummaryBounds.top >= landscapeBounds.top - 1 &&
               crosshairSummaryBounds.bottom <= landscapeBounds.bottom + 1,
+            crosshairSummaryInsidePlot: crosshairSummary.offsetTop >= landscape.clientHeight * (42 / 280) - 1 &&
+              crosshairSummary.offsetTop + crosshairSummary.offsetHeight <=
+                landscape.clientHeight * ((280 - 34) / 280) + 1,
+            crosshairSummaryMatchesCurrentYear: Math.abs(
+              crosshairSummary.offsetTop + crosshairSummary.offsetHeight / 2 - currentYearY,
+            ) < 2,
+            crosshairSummarySquareAgainstLine: summaryOnLeft
+              ? crosshairValueFlagsStyle.borderTopRightRadius === "0px" &&
+                crosshairValueFlagsStyle.borderBottomRightRadius === "0px"
+              : crosshairValueFlagsStyle.borderTopLeftRadius === "0px" &&
+                crosshairValueFlagsStyle.borderBottomLeftRadius === "0px",
             landscapeFitsViewport: landscapeBounds.left >= viewportBounds.left - 1 &&
               landscapeBounds.right <= viewportBounds.right + 1 &&
               landscapeBounds.top >= viewportBounds.top - 1 &&
@@ -3741,6 +3780,9 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
         crosshairDateInsideRotatedChart: true,
         crosshairInsideLandscape: true,
         crosshairSummaryInsideLandscape: true,
+        crosshairSummaryInsidePlot: true,
+        crosshairSummaryMatchesCurrentYear: true,
+        crosshairSummarySquareAgainstLine: true,
         landscapeFitsViewport: true,
         landscapeRotated: true,
         legendAboveXAxis: true,
