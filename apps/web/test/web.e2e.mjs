@@ -1125,6 +1125,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.getByRole("heading", { name: "Property sensors" }).isVisible(), true);
     const propertyMap = page.locator(".property-map");
     const propertySensorList = page.locator(".property-sensor-list");
+    // wait for route data to replace the map skeleton
+    await propertySensorList.getByText("Orchard soil", { exact: true }).waitFor();
     assert.equal(await propertySensorList.getByText("Orchard soil", { exact: true }).isVisible(), true);
     assert.match(await propertySensorList.textContent() ?? "", /Temp 63\.9 °F/u);
     const propertySensorListButton = propertySensorList.locator('[data-property-sensor-view="soil-1"]');
