@@ -72,11 +72,40 @@ function resolveView(pathname: string): WeatherView {
   return "home";
 }
 
+// select the history surface visible to the user
+function resolveHistoryWindow(): Window | null {
+  const topWindow = window.top;
+
+  // keep standalone navigation on the application window
+  if (topWindow === null || topWindow === window) {
+    return window;
+  }
+
+  try {
+    // synchronize a same-origin embedding host
+    if (topWindow.location.origin === window.location.origin) {
+      return topWindow;
+    }
+  } catch {
+    // preserve native navigation across isolated frames
+    return null;
+  }
+
+  return null;
+}
+
 // connect public page links to browser history
 function bindBrowserNavigation(
   root: HTMLElement,
   controller: WeatherDashboardController,
 ): void {
+  const historyWindow = resolveHistoryWindow();
+
+  // let cross-origin frames perform observable document navigation
+  if (historyWindow === null) {
+    return;
+  }
+
   root.addEventListener("click", (event) => {
     // preserve modified clicks and previously handled events
     if (
@@ -109,17 +138,17 @@ function bindBrowserNavigation(
     const nextLocation = `${destination.pathname}${destination.search}${destination.hash}`;
 
     // avoid duplicate history entries for the active route
-    if (nextLocation === `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+    if (nextLocation === `${historyWindow.location.pathname}${historyWindow.location.search}${historyWindow.location.hash}`) {
       return;
     }
 
-    window.history.pushState(null, "", nextLocation);
+    historyWindow.history.pushState(null, "", nextLocation);
     void controller.setView(resolveView(destination.pathname));
   });
 
-  window.addEventListener("popstate", () => {
+  historyWindow.addEventListener("popstate", () => {
     // restore content when browser history changes
-    void controller.setView(resolveView(window.location.pathname));
+    void controller.setView(resolveView(historyWindow.location.pathname));
   });
 }
 

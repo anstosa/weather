@@ -618,6 +618,14 @@ async function startFixtureServer() {
       return;
     }
 
+    // serve one same-origin embedding host
+    if (url.pathname === "/embed") {
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end('<!doctype html><html><body><iframe title="Embedded weather" src="/" style="width: 1000px; height: 700px"></iframe></body></html>');
+      return;
+    }
+
     const assets = new Map([
       ["/", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
       ["/logs", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
@@ -872,6 +880,63 @@ test("public navigation updates the URL and restores routed content from history
   }
 });
 
+// verify embedded navigation owns the visible same-origin URL
+test("same-origin iframe navigation updates the parent URL", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 1440 },
+    });
+    await page.goto(`${fixture.origin}/embed`, { waitUntil: "networkidle" });
+    const frame = page.frameLocator('iframe[title="Embedded weather"]');
+    await frame.locator(".current-conditions").waitFor();
+    await frame.locator("html").evaluate(
+      // mark the child document against iframe reloads
+      (documentElement) => {
+        documentElement.dataset.navigationDocument = "preserved";
+      },
+    );
+
+    await frame.getByRole("link", { name: "Forecast" }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`, { timeout: 3_000 });
+    await frame.locator(".forecast-panel").waitFor();
+    assert.equal(
+      await frame.locator("html").evaluate(
+        // confirm the embedded document stayed mounted
+        (documentElement) => documentElement.dataset.navigationDocument,
+      ),
+      "preserved",
+    );
+
+    await frame.getByRole("link", { name: "Trends" }).click();
+    await page.waitForURL(`${fixture.origin}/trends`);
+    await frame.locator(".trends-panel").waitFor();
+
+    await page.evaluate(
+      // restore the preceding embedded route
+      () => window.history.back(),
+    );
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    await frame.locator(".forecast-panel").waitFor();
+
+    await page.evaluate(
+      // restore the embedding host route
+      () => window.history.back(),
+    );
+    await page.waitForURL(`${fixture.origin}/embed`);
+    await frame.locator(".current-conditions").waitFor();
+  } finally {
+    // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // send one bounded JSON response
 function sendJson(response, body, status = 200) {
   response.statusCode = status;
@@ -1058,10 +1123,10 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.waitForURL(`${fixture.origin}/map`);
     await page.waitForLoadState("networkidle");
     assert.equal(await page.getByRole("heading", { name: "Property sensors" }).isVisible(), true);
-    assert.equal(await page.getByText("Orchard soil", { exact: true }).first().isVisible(), true);
-    assert.match(await page.locator(".property-sensor-list").textContent() ?? "", /Temp 63\.9 °F/u);
     const propertyMap = page.locator(".property-map");
     const propertySensorList = page.locator(".property-sensor-list");
+    assert.equal(await propertySensorList.getByText("Orchard soil", { exact: true }).isVisible(), true);
+    assert.match(await propertySensorList.textContent() ?? "", /Temp 63\.9 °F/u);
     const propertySensorListButton = propertySensorList.locator('[data-property-sensor-view="soil-1"]');
     const propertySensorMarker = propertyMap.locator('[data-property-sensor-view="soil-1"]');
     assert.equal(
