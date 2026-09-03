@@ -1392,7 +1392,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.waitForURL(`${fixture.origin}/forecast`);
     await page.waitForLoadState("networkidle");
     assert.equal(await page.getByRole("heading", { name: "Forecast timeline" }).count(), 0);
-    assert.equal(await page.locator(".forecast-panel > .forecast-controls + .forecast-chart-shell").count(), 1);
+    assert.equal(await page.locator(".forecast-panel > .forecast-chart-shell").count(), 1);
     assert.equal(await page.locator(".forecast-model, .forecast-scrub-help").count(), 0);
     assert.equal(await page.locator(".section-nav-forecast").getAttribute("aria-current"), "page");
     assert.equal(await page.locator(".current-conditions, .trends-panel, .station-map-panel, [data-history-filters]").count(), 0);
