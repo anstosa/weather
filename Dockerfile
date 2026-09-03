@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG NODE_IMAGE=node:24-bookworm-slim
+ARG NODE_IMAGE=node:24.16.0-bookworm-slim
 
 FROM ${NODE_IMAGE} AS dependencies
 WORKDIR /opt/weather

@@ -519,6 +519,8 @@ test("container commands match the API, worker, and web runtime contracts", () =
 // verify the reviewed adjustment tree is server-only image material
 test("server image bakes only reviewed forecast adjustment config", () => {
   const dockerfile = read("Dockerfile");
+  assert.match(dockerfile, /ARG NODE_IMAGE=node:24\.16\.0-bookworm-slim/u);
+  assert.equal(read(".nvmrc"), "24.16.0\n");
   const serverStage = dockerfile
     .split("FROM runtime AS server\n")[1]
     .split("\nFROM runtime AS web\n")[0];
