@@ -174,6 +174,41 @@
       },
       "cadenceSeconds": 3600,
       "active": true
+    },
+    {
+      "key": "open-meteo-previous-runs-v1",
+      "sourceKind": "forecast",
+      "capabilities": [
+        "historical"
+      ],
+      "adapterConfig": {
+        "contractVersion": "previous-runs-hourly/v1",
+        "model": "best_match",
+        "contractEpoch": "open-meteo-previous-runs-best-match/2026-09",
+        "leadHours": [
+          24,
+          48,
+          72,
+          96,
+          120,
+          144,
+          168
+        ],
+        "maximumChunkDays": 14,
+        "variables": [
+          "temperature",
+          "apparent_temperature",
+          "relative_humidity",
+          "precipitation",
+          "cloud_cover",
+          "wind_speed",
+          "wind_gust",
+          "wind_direction",
+          "surface_pressure"
+        ]
+      },
+      "cadenceSeconds": null,
+      "active": true
     }
   ]
 }

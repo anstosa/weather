@@ -57,7 +57,7 @@ test("current SQL enforces active joins and parameterized station/source filters
   assert.match(queries[0].text, /wr\.provider_metadata AS "providerMetadata"/u);
 });
 
-test("site discovery requires every public entity to remain active", async () => {
+test("site discovery requires active public-capability sources", async () => {
   const { pool, queries } = createCapturingPool();
   await listActiveSites(pool);
 
@@ -66,6 +66,14 @@ test("site discovery requires every public entity to remain active", async () =>
   assert.match(queries[0].text, /JOIN stations st ON st\.site_id = si\.id AND st\.active/u);
   assert.match(queries[0].text, /JOIN sources s ON s\.station_id = st\.id AND s\.active/u);
   assert.match(queries[0].text, /JOIN providers p ON p\.id = s\.provider_id AND p\.active/u);
+  assert.match(
+    queries[0].text,
+    /s\.source_kind <> 'forecast'[\s\S]*s\.capabilities @> '\["forecast"\]'::jsonb/u,
+  );
+  assert.doesNotMatch(
+    queries[0].text,
+    /source_key\s*(?:=|<>|NOT IN)[\s\S]*open-meteo-previous-runs/u,
+  );
 });
 
 test("history SQL enforces active predicates, frozen filters, order, and bounded lookahead", async () => {

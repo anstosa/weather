@@ -1,16 +1,29 @@
 import { createHash } from "node:crypto";
 
 import {
+  FORECAST_ADJUSTMENT_METRICS,
+  FORECAST_OBSERVATION_SOURCE_LINEAGES,
+  FORECAST_OBSERVATION_STATIONS,
   createBackfillChunkIdentity,
+  createFixedLeadAnchorTrainingRow,
+  createLegacyV4RetrievalSnapshotTrainingRow,
+  forecastAnchorRecordContent,
   validateFingerprint,
   validateIngestionError,
   validateUtcInstant,
   validateVersion,
   weatherRecordContent,
   type BackfillChunkIdentity,
+  type CanonicalWeatherMetrics,
+  type FixedLeadAnchorTrainingRow,
+  type ForecastAdjustmentMetric,
+  type ForecastObservationProviderFamily,
+  type ForecastObservationStationKey,
   type IngestionError,
   type IngestionMode,
   type JsonValue,
+  type LegacyV4RetrievalSnapshotTrainingRow,
+  type NormalizedForecastAnchorRecord,
   type NormalizedWeatherRecord,
   type SourceKind,
   type StationKind,
@@ -26,10 +39,19 @@ import type { TideConfiguration } from "./tides-config.js";
 
 // remain below PostgreSQL's parameter limit
 const WEATHER_RECORD_BATCH_SIZE = 2_000;
+// remain below PostgreSQL's parameter limit for anchor rows
+const FORECAST_ANCHOR_RECORD_BATCH_SIZE = 2_000;
 // bound ten civil forecast days with daylight-saving headroom
 const MAX_FORECAST_HOURS = 264;
+// match the production export window ceiling
+const MAX_FORECAST_TRAINING_DAYS = 450;
+// freeze one UTC hour
+const HOUR_MILLISECONDS = 3_600_000;
+// freeze station sampling windows
+const FIVE_MINUTES_MILLISECONDS = 5 * 60_000;
+const TEN_MINUTES_MILLISECONDS = 10 * 60_000;
 
-// hide sources replaced by an active material successor
+// hide non-live or superseded sources
 const CURRENT_SOURCE_PREDICATE = "weather_source_is_current(s.id)";
 
 export interface DueSource extends QueryResultRow {
@@ -117,6 +139,15 @@ export interface CompleteBackfillIngestionInput {
   readonly upstreamResponseChecksum?: string | null;
 }
 
+export interface CompleteForecastAnchorBackfillIngestionInput {
+  readonly attempts: number;
+  readonly identity: BackfillChunkIdentity;
+  readonly records: readonly NormalizedForecastAnchorRecord[];
+  readonly responseMetadata?: Readonly<Record<string, JsonValue>> | null;
+  readonly runId: string;
+  readonly upstreamResponseChecksum?: string | null;
+}
+
 export interface FailIngestionRunInput {
   readonly attempts: number;
   readonly backfillIdentity?: BackfillChunkIdentity;
@@ -145,6 +176,110 @@ export interface ForecastQuery {
   readonly asOf: string;
   readonly hours: number;
   readonly siteSlug: string;
+}
+
+export interface ForecastTrainingQuery {
+  readonly from: string;
+  readonly siteSlug: string;
+  readonly to: string;
+}
+
+export interface ForecastTrainingCohorts {
+  readonly fixedLeadAnchors: readonly FixedLeadAnchorTrainingRow[];
+  readonly legacyV4RetrievalSnapshots: readonly LegacyV4RetrievalSnapshotTrainingRow[];
+}
+
+export type ForecastObservationHourlyMetrics = Readonly<
+  Record<ForecastAdjustmentMetric, number | null>
+>;
+
+export interface ForecastObservationHourlyStationRow {
+  readonly metrics: ForecastObservationHourlyMetrics;
+  readonly physicalStationKey: ForecastObservationStationKey;
+  readonly providerFamily: ForecastObservationProviderFamily;
+  readonly sourceKeys: readonly string[];
+  readonly validAt: string;
+}
+
+interface ForecastAnchorStorageRow extends QueryResultRow {
+  readonly adapterVersion: string;
+  readonly apparentTemperatureC: number | null;
+  readonly cloudCoverPercent: number | null;
+  readonly contractEpoch: string;
+  readonly dataset: "previous_runs";
+  readonly leadHours: number;
+  readonly pressureHpa: number | null;
+  readonly precipitationMm: number | null;
+  readonly providerMetadata: Readonly<Record<string, JsonValue>> | null;
+  readonly qualityMetadata: Readonly<Record<string, JsonValue>> | null;
+  readonly receivedAt: Date | string;
+  readonly relativeHumidityPercent: number | null;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceId: string;
+  readonly temperatureC: number | null;
+  readonly upstreamModel: "best_match";
+  readonly upstreamTimezone: string;
+  readonly validAt: Date | string;
+  readonly windDirectionDegrees: number | null;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
+}
+
+interface LegacyV4ForecastStorageRow extends QueryResultRow {
+  readonly adapterVersion: string | null;
+  readonly apparentTemperatureC: number | null;
+  readonly blackGlobeTemperatureC: number | null;
+  readonly cloudCoverPercent: number | null;
+  readonly dataset: string | null;
+  readonly pm25MicrogramsPerCubicMeter: number | null;
+  readonly precipitationMm: number | null;
+  readonly precipitationRateMmPerHour: number | null;
+  readonly pressureHpa: number | null;
+  readonly referenceAt: Date | string;
+  readonly relativeHumidityPercent: number | null;
+  readonly soilElectricalConductivityMicrosiemensPerCm: number | null;
+  readonly soilMoisturePercent: number | null;
+  readonly solarRadiationWm2: number | null;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceId: string;
+  readonly stableRecordId: string;
+  readonly temperatureC: number | null;
+  readonly upstreamModel: string | null;
+  readonly uvIndex: number | null;
+  readonly validAt: Date | string;
+  readonly waterLevelM: number | null;
+  readonly wetBulbGlobeTemperatureC: number | null;
+  readonly windDirectionDegrees: number | null;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
+}
+
+interface ForecastObservationStorageRow extends QueryResultRow {
+  readonly adapterContract: string | null;
+  readonly id: string;
+  readonly qualityMetadata: Readonly<Record<string, JsonValue>> | null;
+  readonly relativeHumidityPercent: number | null;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceKey: string;
+  readonly stationSlug: string;
+  readonly temperatureC: number | null;
+  readonly validAt: Date | string;
+  readonly windDirectionDegrees: number | null;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
+}
+
+interface ValidatedForecastObservationStorageRow {
+  readonly id: string;
+  readonly physicalStationKey: ForecastObservationStationKey;
+  readonly relativeHumidityPercent: number | null;
+  readonly sourceKey: string;
+  readonly temperatureC: number | null;
+  readonly validAt: string;
+  readonly validAtMilliseconds: number;
+  readonly windDirectionDegrees: number | null;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
 }
 
 export interface TrendQuery {
@@ -192,9 +327,11 @@ export interface LatestWorkerHeartbeat extends QueryResultRow {
 }
 
 export interface WeatherRecordRow extends QueryResultRow {
+  readonly adapterVersion: string | null;
   readonly apparentTemperatureC: number | null;
   readonly blackGlobeTemperatureC: number | null;
   readonly cloudCoverPercent: number | null;
+  readonly contractEpoch: string | null;
   readonly deviceModel: string | null;
   readonly deviceSerial: string | null;
   readonly deviceVendor: string | null;
@@ -213,6 +350,7 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly revisionCount: number;
   readonly siteSlug: string;
   readonly sourceId: string;
+  readonly sourceConfigFingerprint: string | null;
   readonly sourceKey: string;
   readonly sourceKind: SourceKind;
   readonly stationSlug: string;
@@ -229,6 +367,15 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
   readonly wetBulbGlobeTemperatureC: number | null;
+}
+
+interface ForecastRuntimeProvenanceRow extends QueryResultRow {
+  readonly adapterVersion: string;
+  readonly contractEpoch: string;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceId: string;
+  readonly sourceKey: string;
+  readonly weatherRecordId: string;
 }
 
 export interface TideRecordRow extends QueryResultRow {
@@ -1273,6 +1420,47 @@ export async function completeBackfillIngestion(
   });
 }
 
+// atomically store fixed-anchor backfill success
+export async function completeForecastAnchorBackfillIngestion(
+  session: SourceSession,
+  input: CompleteForecastAnchorBackfillIngestionInput,
+): Promise<void> {
+  const identity = createBackfillChunkIdentity(input.identity);
+
+  // require matching source identity
+  if (identity.sourceId !== session.sourceId) {
+    throw new Error("backfill identity source does not match the locked source");
+  }
+
+  // bind every anchor to the exact backfill provenance
+  for (const record of input.records) {
+    // reject cross-run anchor provenance
+    if (
+      record.sourceConfigFingerprint !== identity.sourceConfigFingerprint ||
+      record.adapterVersion !== identity.adapterVersion
+    ) {
+      throw new Error("forecast anchor provenance does not match the backfill identity");
+    }
+  }
+
+  validateCompletionCounts(input.attempts, input.records.length);
+
+  await withTransaction(session.client, async () => {
+    await assertBackfillRunMatches(session, input.runId, identity);
+    await upsertForecastAnchorRecords(session, input.runId, input.records);
+    await upsertBackfillOutcome(session, input.runId, identity, "succeeded", null);
+    await finalizeSuccessfulRun(
+      session,
+      input.runId,
+      input.attempts,
+      input.records.length,
+      input.responseMetadata ?? null,
+      input.upstreamResponseChecksum ?? null,
+      "backfill",
+    );
+  });
+}
+
 // guard-finalize a failed run
 export async function failIngestionRun(
   session: SourceSession,
@@ -1484,6 +1672,10 @@ export async function listActiveSites(pool: Pool): Promise<readonly ActiveSiteRo
       JOIN sources s ON s.station_id = st.id AND s.active
       JOIN providers p ON p.id = s.provider_id AND p.active
       WHERE si.active
+        AND (
+          s.source_kind <> 'forecast'
+          OR s.capabilities @> '["forecast"]'::jsonb
+        )
         AND ${CURRENT_SOURCE_PREDICATE}
       ORDER BY si.slug, st.slug, s.source_key
     `,
@@ -1561,7 +1753,7 @@ export async function getWeatherForecast(
   const endExclusive = new Date(
     Date.parse(asOf) + query.hours * 3_600_000,
   ).toISOString();
-  const result = await pool.query<WeatherRecordRow>(
+  const rawResult = await pool.query<WeatherRecordRow>(
     `
       SELECT
         ${weatherRecordSelection()}
@@ -1589,13 +1781,231 @@ export async function getWeatherForecast(
         AND s.active
         AND p.active
         AND s.source_kind = 'forecast'
+        AND s.capabilities @> '["forecast"]'::jsonb
         AND ${CURRENT_SOURCE_PREDICATE}
       ORDER BY wr.valid_at ASC, wr.id ASC
     `,
     [query.siteSlug, asOf, endExclusive],
   );
 
-  return result.rows;
+  // skip optional provenance without raw records
+  if (rawResult.rows.length === 0) {
+    return rawResult.rows;
+  }
+
+  // fail raw when optional provenance is unavailable
+  try {
+    const provenanceResult = await pool.query<ForecastRuntimeProvenanceRow>(
+      `
+        SELECT
+          weather_record_id AS "weatherRecordId",
+          source_id AS "sourceId",
+          source_key AS "sourceKey",
+          source_config_fingerprint AS "sourceConfigFingerprint",
+          adapter_version AS "adapterVersion",
+          contract_epoch AS "contractEpoch"
+        FROM forecast_runtime_provenance_v1
+        WHERE weather_record_id = ANY($1::bigint[])
+        ORDER BY weather_record_id ASC
+        LIMIT ${String(MAX_FORECAST_HOURS)}
+      `,
+      [
+        rawResult.rows.map(
+          // bind only returned record identifiers
+          (record) => record.id,
+        ),
+      ],
+    );
+    const rawByRecordId = new Map(
+      rawResult.rows.map(
+        // retain exact source linkage
+        (record) => [record.id, record] as const,
+      ),
+    );
+    const provenanceByRecordId = new Map<string, ForecastRuntimeProvenanceRow>();
+
+    // validate every optional linkage before decoration
+    for (const provenance of provenanceResult.rows) {
+      const rawRecord = rawByRecordId.get(provenance.weatherRecordId);
+
+      // reject partial or duplicate linkage
+      if (
+        rawRecord === undefined
+        || rawRecord.sourceId !== provenance.sourceId
+        || rawRecord.sourceKey !== provenance.sourceKey
+        || provenanceByRecordId.has(provenance.weatherRecordId)
+      ) {
+        throw new Error("forecast runtime provenance linkage is invalid");
+      }
+
+      provenanceByRecordId.set(provenance.weatherRecordId, provenance);
+    }
+
+    return rawResult.rows.map(
+      // decorate matching records without changing ordering
+      (record) => {
+        const provenance = provenanceByRecordId.get(record.id);
+
+        // retain the authoritative raw record when unmatched
+        if (provenance === undefined) {
+          return record;
+        }
+
+        return {
+          ...record,
+          adapterVersion: provenance.adapterVersion,
+          contractEpoch: provenance.contractEpoch,
+          sourceConfigFingerprint: provenance.sourceConfigFingerprint,
+        };
+      },
+    );
+  } catch {
+    return rawResult.rows;
+  }
+}
+
+// read provenance-separated forecast training cohorts
+export async function listForecastTrainingCohorts(
+  pool: Pool,
+  query: ForecastTrainingQuery,
+): Promise<ForecastTrainingCohorts> {
+  const { from, to } = validateForecastTrainingWindow(query.from, query.to);
+  const anchors = await pool.query<ForecastAnchorStorageRow>(
+    `
+      SELECT
+        far.source_id AS "sourceId",
+        far.source_config_fingerprint AS "sourceConfigFingerprint",
+        far.valid_at AS "validAt",
+        far.lead_hours AS "leadHours",
+        far.dataset,
+        far.upstream_model AS "upstreamModel",
+        far.contract_epoch AS "contractEpoch",
+        far.adapter_version AS "adapterVersion",
+        far.last_received_at AS "receivedAt",
+        far.upstream_timezone AS "upstreamTimezone",
+        far.quality_metadata AS "qualityMetadata",
+        far.provider_metadata AS "providerMetadata",
+        far.temperature_c AS "temperatureC",
+        far.apparent_temperature_c AS "apparentTemperatureC",
+        far.precipitation_mm AS "precipitationMm",
+        far.wind_speed_mps AS "windSpeedMps",
+        far.wind_gust_mps AS "windGustMps",
+        far.pressure_hpa AS "pressureHpa",
+        far.relative_humidity_percent AS "relativeHumidityPercent",
+        far.cloud_cover_percent AS "cloudCoverPercent",
+        far.wind_direction_degrees AS "windDirectionDegrees"
+      FROM forecast_anchor_records far
+      JOIN sources s ON s.id = far.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      WHERE si.slug = $1
+        AND far.valid_at >= $2
+        AND far.valid_at < $3
+        AND far.source_kind = 'forecast'
+        AND far.dataset = 'previous_runs'
+        AND far.upstream_model = 'best_match'
+        AND s.capabilities @> '["historical"]'::jsonb
+      ORDER BY far.valid_at ASC, far.lead_hours ASC, far.id ASC
+    `,
+    [query.siteSlug, from, to],
+  );
+  const retrievals = await pool.query<LegacyV4ForecastStorageRow>(
+    `
+      SELECT
+        wr.id AS "stableRecordId",
+        wr.source_id AS "sourceId",
+        s.source_config_fingerprint AS "sourceConfigFingerprint",
+        wr.valid_at AS "validAt",
+        wr.product_run_at AS "referenceAt",
+        wr.upstream_model AS "upstreamModel",
+        wr.provider_metadata ->> 'dataset' AS dataset,
+        last_run.adapter_version AS "adapterVersion",
+        wr.temperature_c AS "temperatureC",
+        wr.apparent_temperature_c AS "apparentTemperatureC",
+        wr.precipitation_mm AS "precipitationMm",
+        wr.wind_speed_mps AS "windSpeedMps",
+        wr.wind_gust_mps AS "windGustMps",
+        wr.pressure_hpa AS "pressureHpa",
+        wr.relative_humidity_percent AS "relativeHumidityPercent",
+        wr.cloud_cover_percent AS "cloudCoverPercent",
+        wr.wind_direction_degrees AS "windDirectionDegrees",
+        wr.black_globe_temperature_c AS "blackGlobeTemperatureC",
+        wr.pm25_micrograms_per_cubic_meter AS "pm25MicrogramsPerCubicMeter",
+        wr.precipitation_rate_mm_per_hour AS "precipitationRateMmPerHour",
+        wr.soil_electrical_conductivity_us_cm AS "soilElectricalConductivityMicrosiemensPerCm",
+        wr.soil_moisture_percent AS "soilMoisturePercent",
+        wr.solar_radiation_wm2 AS "solarRadiationWm2",
+        wr.uv_index AS "uvIndex",
+        wr.wet_bulb_globe_temperature_c AS "wetBulbGlobeTemperatureC",
+        wr.water_level_m AS "waterLevelM"
+      FROM weather_records wr
+      JOIN sources s ON s.id = wr.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN ingestion_runs last_run ON last_run.id = wr.last_ingestion_run_id
+      WHERE si.slug = $1
+        AND wr.valid_at >= $2
+        AND wr.valid_at < $3
+        AND s.source_key = 'open-meteo-forecast-v4'
+        AND s.source_kind = 'forecast'
+        AND s.capabilities @> '["forecast"]'::jsonb
+      ORDER BY wr.valid_at ASC, wr.product_run_at ASC, wr.id ASC
+    `,
+    [query.siteSlug, from, to],
+  );
+
+  return {
+    fixedLeadAnchors: anchors.rows.map(projectFixedLeadAnchorStorageRow),
+    legacyV4RetrievalSnapshots: projectLegacyV4RetrievalRows(retrievals.rows),
+  };
+}
+
+// read deterministic physical-station hours without spatial fitting
+export async function listForecastObservationHourlyStations(
+  pool: Pool,
+  query: ForecastTrainingQuery,
+): Promise<readonly ForecastObservationHourlyStationRow[]> {
+  const { from, to } = validateForecastTrainingWindow(query.from, query.to);
+
+  // require exact hourly projection boundaries
+  if (Date.parse(from) % HOUR_MILLISECONDS !== 0 || Date.parse(to) % HOUR_MILLISECONDS !== 0) {
+    throw new RangeError("forecast observation projection bounds must align to UTC hours");
+  }
+
+  const sourceKeys = FORECAST_OBSERVATION_SOURCE_LINEAGES.map(
+    (lineage) => lineage.sourceKey,
+  );
+  const result = await pool.query<ForecastObservationStorageRow>(
+    `
+      SELECT
+        wr.id,
+        wr.valid_at AS "validAt",
+        wr.quality_metadata AS "qualityMetadata",
+        wr.temperature_c AS "temperatureC",
+        wr.relative_humidity_percent AS "relativeHumidityPercent",
+        wr.wind_speed_mps AS "windSpeedMps",
+        wr.wind_gust_mps AS "windGustMps",
+        wr.wind_direction_degrees AS "windDirectionDegrees",
+        s.source_key AS "sourceKey",
+        s.source_config_fingerprint AS "sourceConfigFingerprint",
+        s.material_provider_config ->> 'contractVersion' AS "adapterContract",
+        st.slug AS "stationSlug"
+      FROM weather_records wr
+      JOIN sources s ON s.id = wr.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      WHERE si.slug = $1
+        AND wr.valid_at >= $2::timestamptz - interval '1 hour'
+        AND wr.valid_at < $3::timestamptz + interval '5 minutes'
+        AND s.source_kind = 'physical_sensor'
+        AND s.source_key = ANY($4::text[])
+      ORDER BY wr.valid_at ASC, wr.id ASC
+    `,
+    [query.siteSlug, from, to, sourceKeys],
+  );
+  const records = validateForecastObservationRows(result.rows);
+
+  return projectForecastObservationHours(records, from, to);
 }
 
 // sum today's nearest physical rain gauge
@@ -1895,6 +2305,157 @@ export async function listWeatherHistory(
   );
 
   return result.rows;
+}
+
+// atomically upsert normalized fixed anchors
+async function upsertForecastAnchorRecords(
+  session: SourceSession,
+  runId: string,
+  records: readonly NormalizedForecastAnchorRecord[],
+): Promise<void> {
+  // persist bounded batches
+  for (
+    let offset = 0;
+    offset < records.length;
+    offset += FORECAST_ANCHOR_RECORD_BATCH_SIZE
+  ) {
+    const batch = records.slice(
+      offset,
+      offset + FORECAST_ANCHOR_RECORD_BATCH_SIZE,
+    );
+    await upsertForecastAnchorRecordBatch(session, runId, batch);
+  }
+}
+
+// upsert one bounded fixed-anchor batch
+async function upsertForecastAnchorRecordBatch(
+  session: SourceSession,
+  runId: string,
+  records: readonly NormalizedForecastAnchorRecord[],
+): Promise<void> {
+  const values: unknown[] = [];
+
+  // serialize every truthful fixed anchor
+  const placeholders = records.map((record) => {
+    // reject cross-source writes
+    if (record.sourceId !== session.sourceId) {
+      throw new Error("forecast anchor source does not match the locked source");
+    }
+
+    const contentHash = createHash("sha256")
+      .update(forecastAnchorRecordContent(record))
+      .digest("hex");
+    const firstParameter = values.length + 1;
+    values.push(
+      session.sourceId,
+      record.sourceKind,
+      record.sourceConfigFingerprint,
+      record.validAt,
+      record.leadHours,
+      record.dataset,
+      record.upstreamModel,
+      record.contractEpoch,
+      record.adapterVersion,
+      runId,
+      record.receivedAt,
+      record.metadata.upstreamTimezone,
+      serializeNullableJson(record.metadata.quality),
+      serializeNullableJson(record.metadata.provider),
+      record.metrics.temperatureC,
+      record.metrics.apparentTemperatureC,
+      record.metrics.precipitationMm,
+      record.metrics.windSpeedMps,
+      record.metrics.windGustMps,
+      record.metrics.pressureHpa,
+      record.metrics.relativeHumidityPercent,
+      record.metrics.cloudCoverPercent,
+      record.metrics.windDirectionDegrees,
+      contentHash,
+    );
+
+    return forecastAnchorRecordPlaceholder(firstParameter);
+  });
+
+  // skip empty caller batches
+  if (placeholders.length === 0) {
+    return;
+  }
+
+  const result = await session.client.query(
+    `
+      INSERT INTO forecast_anchor_records (
+        source_id,
+        source_kind,
+        source_config_fingerprint,
+        valid_at,
+        lead_hours,
+        dataset,
+        upstream_model,
+        contract_epoch,
+        adapter_version,
+        first_ingestion_run_id,
+        last_ingestion_run_id,
+        first_received_at,
+        last_received_at,
+        upstream_timezone,
+        quality_metadata,
+        provider_metadata,
+        temperature_c,
+        apparent_temperature_c,
+        precipitation_mm,
+        wind_speed_mps,
+        wind_gust_mps,
+        pressure_hpa,
+        relative_humidity_percent,
+        cloud_cover_percent,
+        wind_direction_degrees,
+        content_hash
+      )
+      VALUES ${placeholders.join(",\n        ")}
+      ON CONFLICT ON CONSTRAINT forecast_anchor_records_identity_key DO UPDATE SET
+        last_ingestion_run_id = EXCLUDED.last_ingestion_run_id,
+        last_received_at = EXCLUDED.last_received_at,
+        quality_metadata = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.quality_metadata ELSE forecast_anchor_records.quality_metadata END,
+        provider_metadata = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.provider_metadata ELSE forecast_anchor_records.provider_metadata END,
+        temperature_c = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.temperature_c ELSE forecast_anchor_records.temperature_c END,
+        apparent_temperature_c = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.apparent_temperature_c ELSE forecast_anchor_records.apparent_temperature_c END,
+        precipitation_mm = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.precipitation_mm ELSE forecast_anchor_records.precipitation_mm END,
+        wind_speed_mps = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_speed_mps ELSE forecast_anchor_records.wind_speed_mps END,
+        wind_gust_mps = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_gust_mps ELSE forecast_anchor_records.wind_gust_mps END,
+        pressure_hpa = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.pressure_hpa ELSE forecast_anchor_records.pressure_hpa END,
+        relative_humidity_percent = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.relative_humidity_percent ELSE forecast_anchor_records.relative_humidity_percent END,
+        cloud_cover_percent = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.cloud_cover_percent ELSE forecast_anchor_records.cloud_cover_percent END,
+        wind_direction_degrees = CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.wind_direction_degrees ELSE forecast_anchor_records.wind_direction_degrees END,
+        revision_count = forecast_anchor_records.revision_count + CASE WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN 1 ELSE 0 END,
+        content_hash = EXCLUDED.content_hash
+      WHERE forecast_anchor_records.source_kind = EXCLUDED.source_kind
+        AND forecast_anchor_records.source_config_fingerprint = EXCLUDED.source_config_fingerprint
+        AND forecast_anchor_records.dataset = EXCLUDED.dataset
+        AND forecast_anchor_records.upstream_model = EXCLUDED.upstream_model
+        AND forecast_anchor_records.contract_epoch = EXCLUDED.contract_epoch
+        AND forecast_anchor_records.adapter_version = EXCLUDED.adapter_version
+        AND forecast_anchor_records.upstream_timezone = EXCLUDED.upstream_timezone
+    `,
+    values,
+  );
+
+  // fail the transaction on immutable-provenance conflicts
+  if (result.rowCount !== records.length) {
+    throw new Error("forecast anchor upsert did not persist every input row");
+  }
+}
+
+// create one repeated fixed-anchor tuple
+function forecastAnchorRecordPlaceholder(firstParameter: number): string {
+  const parameters = Array.from(
+    { length: 24 },
+    (_unused, index) => `$${String(firstParameter + index)}`,
+  );
+  parameters[12] = `${parameters[12]!}::jsonb`;
+  parameters[13] = `${parameters[13]!}::jsonb`;
+  parameters.splice(10, 0, parameters[9]!);
+  parameters.splice(12, 0, parameters[11]!);
+  return `(${parameters.join(", ")})`;
 }
 
 // atomically upsert normalized records
@@ -2340,11 +2901,557 @@ function requireRow<R>(row: R | undefined, operation: string): R {
   return row;
 }
 
-// centralize the read projection
+// validate one bounded training/export interval
+function validateForecastTrainingWindow(
+  fromInput: string,
+  toInput: string,
+): Readonly<{ from: string; to: string }> {
+  const from = validateUtcInstant(fromInput, "from");
+  const to = validateUtcInstant(toInput, "to");
+
+  // require an ordered bounded export window
+  if (
+    from >= to ||
+    Date.parse(to) - Date.parse(from) >
+      MAX_FORECAST_TRAINING_DAYS * 86_400_000 + 2 * HOUR_MILLISECONDS
+  ) {
+    throw new RangeError("forecast training range must be increasing and at most 450 days");
+  }
+
+  return { from, to };
+}
+
+// project one stored fixed anchor through the domain contract
+function projectFixedLeadAnchorStorageRow(
+  row: ForecastAnchorStorageRow,
+): FixedLeadAnchorTrainingRow {
+  return createFixedLeadAnchorTrainingRow({
+    adapterVersion: row.adapterVersion,
+    contractEpoch: row.contractEpoch,
+    contractVersion: "forecast-anchor-record/v1",
+    dataset: row.dataset,
+    leadHours: row.leadHours as NormalizedForecastAnchorRecord["leadHours"],
+    metadata: {
+      device: null,
+      model: row.upstreamModel,
+      provider: row.providerMetadata,
+      quality: row.qualityMetadata,
+      upstreamTimezone: row.upstreamTimezone,
+    },
+    metrics: canonicalMetricsFromForecastStorage(row),
+    receivedAt: storageInstant(row.receivedAt, "receivedAt"),
+    sourceConfigFingerprint: row.sourceConfigFingerprint,
+    sourceId: String(row.sourceId),
+    sourceKind: "forecast",
+    upstreamModel: row.upstreamModel,
+    validAt: storageInstant(row.validAt, "validAt"),
+  });
+}
+
+// project only eligible legacy v4 retrieval snapshots
+function projectLegacyV4RetrievalRows(
+  rows: readonly LegacyV4ForecastStorageRow[],
+): readonly LegacyV4RetrievalSnapshotTrainingRow[] {
+  const projected: LegacyV4RetrievalSnapshotTrainingRow[] = [];
+
+  // retain storage order across eligible rows
+  for (const row of rows) {
+    const adapterVersion = requireStorageText(row.adapterVersion, "adapterVersion");
+    const dataset = requireStorageText(row.dataset, "dataset");
+    const upstreamModel = requireStorageText(row.upstreamModel, "upstreamModel");
+    const trainingRow = createLegacyV4RetrievalSnapshotTrainingRow({
+      adapterVersion,
+      contractEpoch: deriveLegacyV4ContractEpoch(
+        adapterVersion,
+        row.sourceConfigFingerprint,
+      ),
+      dataset,
+      metrics: canonicalMetricsFromForecastStorage(row),
+      referenceAt: storageInstant(row.referenceAt, "referenceAt"),
+      sourceConfigFingerprint: row.sourceConfigFingerprint,
+      sourceId: String(row.sourceId),
+      stableRecordId: String(row.stableRecordId),
+      upstreamModel,
+      validAt: storageInstant(row.validAt, "validAt"),
+    });
+
+    // exclude current and unsupported target leads
+    if (trainingRow === null) {
+      continue;
+    }
+
+    // fail closed on a malformed domain projection
+    if (!Number.isInteger(trainingRow.targetLeadHours)) {
+      throw new Error("legacy v4 target lead must be an integer");
+    }
+
+    projected.push(trainingRow);
+  }
+
+  return projected;
+}
+
+// derive one local epoch from the immutable v4 tuple
+export function deriveLegacyV4ContractEpoch(
+  adapterVersionInput: string,
+  sourceConfigFingerprintInput: string,
+): string {
+  const adapterVersion = validateVersion(adapterVersionInput, "adapterVersion");
+  const sourceConfigFingerprint = validateFingerprint(
+    sourceConfigFingerprintInput,
+  );
+  const tupleHash = createHash("sha256")
+    .update(adapterVersion)
+    .update("\0")
+    .update(sourceConfigFingerprint)
+    .digest("hex");
+
+  return `legacy-v4/${tupleHash}`;
+}
+
+// build the complete canonical metric shape from storage
+function canonicalMetricsFromForecastStorage(
+  row: ForecastAnchorStorageRow | LegacyV4ForecastStorageRow,
+): CanonicalWeatherMetrics {
+  return {
+    apparentTemperatureC: row.apparentTemperatureC,
+    blackGlobeTemperatureC:
+      "blackGlobeTemperatureC" in row ? row.blackGlobeTemperatureC : null,
+    cloudCoverPercent: row.cloudCoverPercent,
+    pm25MicrogramsPerCubicMeter:
+      "pm25MicrogramsPerCubicMeter" in row
+        ? row.pm25MicrogramsPerCubicMeter
+        : null,
+    precipitationMm: "precipitationMm" in row ? row.precipitationMm : null,
+    precipitationRateMmPerHour:
+      "precipitationRateMmPerHour" in row
+        ? row.precipitationRateMmPerHour
+        : null,
+    pressureHpa: row.pressureHpa,
+    relativeHumidityPercent: row.relativeHumidityPercent,
+    soilElectricalConductivityMicrosiemensPerCm:
+      "soilElectricalConductivityMicrosiemensPerCm" in row
+        ? row.soilElectricalConductivityMicrosiemensPerCm
+        : null,
+    soilMoisturePercent:
+      "soilMoisturePercent" in row ? row.soilMoisturePercent : null,
+    solarRadiationWm2:
+      "solarRadiationWm2" in row ? row.solarRadiationWm2 : null,
+    temperatureC: row.temperatureC,
+    uvIndex: "uvIndex" in row ? row.uvIndex : null,
+    waterLevelM: "waterLevelM" in row ? row.waterLevelM : null,
+    wetBulbGlobeTemperatureC:
+      "wetBulbGlobeTemperatureC" in row
+        ? row.wetBulbGlobeTemperatureC
+        : null,
+    windDirectionDegrees: row.windDirectionDegrees,
+    windGustMps: row.windGustMps,
+    windSpeedMps: row.windSpeedMps,
+  };
+}
+
+// validate source lineage and row quality before aggregation
+function validateForecastObservationRows(
+  rows: readonly ForecastObservationStorageRow[],
+): readonly ValidatedForecastObservationStorageRow[] {
+  const validated: ValidatedForecastObservationStorageRow[] = [];
+
+  // verify every selected accepted source row
+  for (const row of rows) {
+    const lineage = FORECAST_OBSERVATION_SOURCE_LINEAGES.find(
+      (candidate) => candidate.sourceKey === row.sourceKey,
+    );
+
+    // reject unexpected repository rows
+    if (lineage === undefined) {
+      throw new Error(`unexpected forecast observation source ${row.sourceKey}`);
+    }
+
+    // fail closed on station or immutable source drift
+    if (
+      row.stationSlug !== lineage.physicalStationKey ||
+      row.sourceConfigFingerprint !== lineage.checkedFingerprint ||
+      row.adapterContract !== lineage.adapterContract
+    ) {
+      throw new Error(`forecast observation lineage mismatch for ${row.sourceKey}`);
+    }
+
+    const validAt = storageInstant(row.validAt, "validAt");
+    const validAtMilliseconds = Date.parse(validAt);
+
+    // exclude rows outside the literal half-open lineage interval
+    if (
+      (lineage.acceptedStartInclusive !== null &&
+        validAtMilliseconds < Date.parse(lineage.acceptedStartInclusive)) ||
+      (lineage.acceptedEndExclusive !== null &&
+        validAtMilliseconds >= Date.parse(lineage.acceptedEndExclusive))
+    ) {
+      continue;
+    }
+
+    // exclude rows rejected by literal quality rules
+    if (!forecastObservationQualityAccepted(row.qualityMetadata, lineage.qualityRule)) {
+      continue;
+    }
+
+    validated.push({
+      id: String(row.id),
+      physicalStationKey: lineage.physicalStationKey,
+      relativeHumidityPercent: row.relativeHumidityPercent,
+      sourceKey: row.sourceKey,
+      temperatureC: row.temperatureC,
+      validAt,
+      validAtMilliseconds,
+      windDirectionDegrees: row.windDirectionDegrees,
+      windGustMps: row.windGustMps,
+      windSpeedMps: row.windSpeedMps,
+    });
+  }
+
+  // establish bounded-memory collision order
+  validated.sort(
+    (left, right) =>
+      left.validAtMilliseconds - right.validAtMilliseconds ||
+      left.physicalStationKey.localeCompare(right.physicalStationKey) ||
+      left.id.localeCompare(right.id),
+  );
+  assertNoForecastObservationCollisions(validated);
+  return validated;
+}
+
+// apply literal status and flag allowlists
+function forecastObservationQualityAccepted(
+  quality: Readonly<Record<string, JsonValue>> | null,
+  rule: Readonly<{
+    allowedFlags: readonly string[];
+    statusRule: "absent" | "absent_or_provider_qc_1";
+  }>,
+): boolean {
+  const rawFlags = quality?.flags;
+  const rawStatus = quality?.status;
+
+  // reject malformed or unknown flags
+  if (
+    rawFlags !== undefined &&
+    (!Array.isArray(rawFlags) ||
+      rawFlags.some(
+        (flag) => typeof flag !== "string" || !rule.allowedFlags.includes(flag),
+      ))
+  ) {
+    return false;
+  }
+
+  // require absent status for non-WU sources
+  if (rule.statusRule === "absent") {
+    return rawStatus === undefined;
+  }
+
+  return rawStatus === undefined || rawStatus === "provider_qc_1";
+}
+
+// reject post-precedence station/time/metric collisions
+function assertNoForecastObservationCollisions(
+  rows: readonly ValidatedForecastObservationStorageRow[],
+): void {
+  const latestMetricInstants = new Map<string, number>();
+
+  // inspect each eligible station metric
+  for (const row of rows) {
+    // inspect the exact five-metric matrix
+    for (const metric of FORECAST_ADJUSTMENT_METRICS) {
+      // skip missing station values
+      if (row[metric] === null) {
+        continue;
+      }
+
+      // exclude calm directions before collision identity
+      if (
+        metric === "windDirectionDegrees" &&
+        (row.windSpeedMps === null || row.windSpeedMps < 1)
+      ) {
+        continue;
+      }
+
+      const identity = `${row.physicalStationKey}\0${metric}`;
+
+      // fail on duplicate post-precedence observations
+      if (latestMetricInstants.get(identity) === row.validAtMilliseconds) {
+        throw new Error(
+          `forecast observation collision for ${row.physicalStationKey} ${row.validAt} ${metric}`,
+        );
+      }
+
+      latestMetricInstants.set(identity, row.validAtMilliseconds);
+    }
+  }
+}
+
+// aggregate literal station hours without network fitting
+function projectForecastObservationHours(
+  rows: readonly ValidatedForecastObservationStorageRow[],
+  from: string,
+  to: string,
+): readonly ForecastObservationHourlyStationRow[] {
+  const byStation = new Map<
+    ForecastObservationStationKey,
+    readonly ValidatedForecastObservationStorageRow[]
+  >();
+
+  // group source-precedence rows by physical identity
+  for (const station of FORECAST_OBSERVATION_STATIONS) {
+    byStation.set(
+      station.key,
+      rows
+        .filter((row) => row.physicalStationKey === station.key)
+        .sort(
+          (left, right) =>
+            left.validAtMilliseconds - right.validAtMilliseconds ||
+            left.id.localeCompare(right.id),
+        ),
+    );
+  }
+
+  const projected: ForecastObservationHourlyStationRow[] = [];
+
+  // emit every requested UTC hour
+  for (
+    let validAtMilliseconds = Date.parse(from);
+    validAtMilliseconds < Date.parse(to);
+    validAtMilliseconds += HOUR_MILLISECONDS
+  ) {
+    const validAt = new Date(validAtMilliseconds).toISOString();
+
+    // emit every frozen physical station
+    for (const station of FORECAST_OBSERVATION_STATIONS) {
+      const stationRows = byStation.get(station.key) ?? [];
+      const temperature = selectInstantObservation(
+        stationRows,
+        validAtMilliseconds,
+        "temperatureC",
+      );
+      const humidity = selectInstantObservation(
+        stationRows,
+        validAtMilliseconds,
+        "relativeHumidityPercent",
+      );
+      const speed = selectInstantObservation(
+        stationRows,
+        validAtMilliseconds,
+        "windSpeedMps",
+      );
+      const direction = selectInstantObservation(
+        stationRows,
+        validAtMilliseconds,
+        "windDirectionDegrees",
+      );
+      const gust = selectCoveredGustObservation(stationRows, validAtMilliseconds);
+      const sourceKeys = [
+        ...temperature.sourceKeys,
+        ...humidity.sourceKeys,
+        ...speed.sourceKeys,
+        ...direction.sourceKeys,
+        ...gust.sourceKeys,
+      ];
+
+      projected.push({
+        metrics: {
+          relativeHumidityPercent: humidity.value,
+          temperatureC: temperature.value,
+          windDirectionDegrees: direction.value,
+          windGustMps: gust.value,
+          windSpeedMps: speed.value,
+        },
+        physicalStationKey: station.key,
+        providerFamily: station.providerFamily,
+        sourceKeys: [...new Set(sourceKeys)].sort(),
+        validAt,
+      });
+    }
+  }
+
+  return projected;
+}
+
+// choose one closest instant metric with earlier ties
+function selectInstantObservation(
+  rows: readonly ValidatedForecastObservationStorageRow[],
+  validAtMilliseconds: number,
+  metric: Exclude<ForecastAdjustmentMetric, "windGustMps">,
+): Readonly<{ sourceKeys: readonly string[]; value: number | null }> {
+  const candidates = rows
+    .slice(
+      firstObservationAtOrAfter(
+        rows,
+        validAtMilliseconds - FIVE_MINUTES_MILLISECONDS,
+      ),
+      firstObservationAtOrAfter(
+        rows,
+        validAtMilliseconds + FIVE_MINUTES_MILLISECONDS,
+      ),
+    )
+    .filter((row) => {
+      // skip missing station metrics
+      if (row[metric] === null) {
+        return false;
+      }
+
+      // require paired station speed for direction
+      if (
+        metric === "windDirectionDegrees" &&
+        (row.windSpeedMps === null || row.windSpeedMps < 1)
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+  candidates.sort((left, right) => {
+    const distanceDifference =
+      Math.abs(left.validAtMilliseconds - validAtMilliseconds) -
+      Math.abs(right.validAtMilliseconds - validAtMilliseconds);
+
+    // prefer the closest instant
+    if (distanceDifference !== 0) {
+      return distanceDifference;
+    }
+
+    // break equal-distance ties earlier
+    if (left.validAtMilliseconds !== right.validAtMilliseconds) {
+      return left.validAtMilliseconds - right.validAtMilliseconds;
+    }
+
+    return left.id.localeCompare(right.id);
+  });
+  const selected = candidates[0];
+
+  // preserve missing instant metrics
+  if (selected === undefined) {
+    return { sourceKeys: [], value: null };
+  }
+
+  return { sourceKeys: [selected.sourceKey], value: selected[metric] };
+}
+
+// select a fully covered preceding-hour gust maximum
+function selectCoveredGustObservation(
+  rows: readonly ValidatedForecastObservationStorageRow[],
+  validAtMilliseconds: number,
+): Readonly<{ sourceKeys: readonly string[]; value: number | null }> {
+  const windowStart = validAtMilliseconds - HOUR_MILLISECONDS;
+  const candidates = rows
+    .slice(
+      firstObservationAfter(rows, windowStart),
+      firstObservationAfter(rows, validAtMilliseconds),
+    )
+    .filter((row) => row.windGustMps !== null)
+    .sort(
+      (left, right) =>
+        left.validAtMilliseconds - right.validAtMilliseconds ||
+        left.id.localeCompare(right.id),
+    );
+  const first = candidates[0];
+  const last = candidates.at(-1);
+
+  // require observations at both window boundaries
+  if (
+    first === undefined ||
+    last === undefined ||
+    first.validAtMilliseconds - windowStart > TEN_MINUTES_MILLISECONDS ||
+    validAtMilliseconds - last.validAtMilliseconds > TEN_MINUTES_MILLISECONDS
+  ) {
+    return { sourceKeys: [], value: null };
+  }
+
+  // reject any internal coverage gap
+  for (let index = 1; index < candidates.length; index += 1) {
+    // preserve missing gust on wide gaps
+    if (
+      candidates[index]!.validAtMilliseconds -
+        candidates[index - 1]!.validAtMilliseconds >
+      TEN_MINUTES_MILLISECONDS
+    ) {
+      return { sourceKeys: [], value: null };
+    }
+  }
+
+  return {
+    sourceKeys: [...new Set(candidates.map((row) => row.sourceKey))].sort(),
+    value: Math.max(...candidates.map((row) => row.windGustMps!)),
+  };
+}
+
+// find the first observation at or after one instant
+function firstObservationAtOrAfter(
+  rows: readonly ValidatedForecastObservationStorageRow[],
+  instant: number,
+): number {
+  let lower = 0;
+  let upper = rows.length;
+
+  // narrow the sorted observation interval
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+
+    // keep the matching half
+    if (rows[middle]!.validAtMilliseconds < instant) {
+      lower = middle + 1;
+    } else {
+      upper = middle;
+    }
+  }
+
+  return lower;
+}
+
+// find the first observation strictly after one instant
+function firstObservationAfter(
+  rows: readonly ValidatedForecastObservationStorageRow[],
+  instant: number,
+): number {
+  let lower = 0;
+  let upper = rows.length;
+
+  // narrow the sorted observation interval
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+
+    // keep the matching half
+    if (rows[middle]!.validAtMilliseconds <= instant) {
+      lower = middle + 1;
+    } else {
+      upper = middle;
+    }
+  }
+
+  return lower;
+}
+
+// convert one PostgreSQL timestamptz value
+function storageInstant(value: Date | string, fieldName: string): string {
+  return validateUtcInstant(
+    value instanceof Date ? value.toISOString() : value,
+    fieldName,
+  );
+}
+
+// require one bounded storage provenance value
+function requireStorageText(value: string | null, fieldName: string): string {
+  // reject missing or oversized storage provenance
+  if (value === null || value.trim().length === 0 || value.length > 128) {
+    throw new Error(`legacy v4 ${fieldName} is missing or invalid`);
+  }
+
+  return value;
+}
+
+// centralize the raw read projection
 function weatherRecordSelection(): string {
   return `
     wr.id,
     wr.source_id AS "sourceId",
+    NULL::text AS "sourceConfigFingerprint",
+    NULL::text AS "adapterVersion",
+    NULL::text AS "contractEpoch",
     s.source_key AS "sourceKey",
     wr.source_kind AS "sourceKind",
     wr.valid_at AS "validAt",

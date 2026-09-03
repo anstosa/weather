@@ -15,7 +15,7 @@ import {
 const executeFile = promisify(execFile);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const migrationDirectory = join(repoRoot, "packages/database/migrations");
-const runtimeAclPath = join(repoRoot, "deploy/postgres/runtime-acl-v1.sql");
+const runtimeAclPath = join(repoRoot, "deploy/postgres/runtime-acl-v2.sql");
 const siteConfigurationPath = join(repoRoot, "config/sites/ballydidean.json");
 const ecowittConfigurationPath = join(repoRoot, "config/ecowitt/gateways.json");
 const publicStationConfigurationPath = join(
@@ -26,9 +26,173 @@ const tempestConfigurationPath = join(repoRoot, "config/tempest/stations.json");
 const tideConfigurationPath = join(repoRoot, "config/tides/noaa.json");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 
+// enumerate exact export authority
+const exportAuthoritySnapshotSql = `
+  SELECT
+    ARRAY(
+      SELECT privilege.name
+      FROM unnest(ARRAY['CONNECT', 'CREATE', 'TEMP']) privilege(name)
+      WHERE has_database_privilege(
+        'weather_training_export', current_database(), privilege.name
+      )
+      ORDER BY privilege.name
+    ) AS database_privileges,
+    ARRAY(
+      SELECT format('%s:%s', namespace.nspname, privilege.name)
+      FROM pg_namespace namespace
+      CROSS JOIN LATERAL unnest(ARRAY['CREATE', 'USAGE']) privilege(name)
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND has_schema_privilege(
+          'weather_training_export', namespace.oid, privilege.name
+        )
+      ORDER BY namespace.nspname, privilege.name
+    ) AS schema_privileges,
+    ARRAY(
+      SELECT format(
+        '%s.%s:%s', namespace.nspname, relation.relname, privilege.name
+      )
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      CROSS JOIN LATERAL unnest(ARRAY[
+        'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+      ]) privilege(name)
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+        AND has_table_privilege(
+          'weather_training_export', relation.oid, privilege.name
+        )
+      ORDER BY namespace.nspname, relation.relname, privilege.name
+    ) AS relation_privileges,
+    ARRAY(
+      SELECT format(
+        '%s.%s:%s', namespace.nspname, sequence.relname, privilege.name
+      )
+      FROM pg_class sequence
+      JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+      CROSS JOIN LATERAL unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) privilege(name)
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND sequence.relkind = 'S'
+        AND has_sequence_privilege(
+          'weather_training_export', sequence.oid, privilege.name
+        )
+      ORDER BY namespace.nspname, sequence.relname, privilege.name
+    ) AS sequence_privileges,
+    ARRAY(
+      SELECT procedure.oid::regprocedure::text
+      FROM pg_proc procedure
+      JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND procedure.prosecdef
+        AND has_function_privilege(
+          'weather_training_export', procedure.oid, 'EXECUTE'
+        )
+      ORDER BY procedure.oid::regprocedure::text
+    ) AS executable_functions,
+    ARRAY(
+      SELECT format(
+        '%s:%s', database.datname, array_to_string(setting.setconfig, ',')
+      )
+      FROM pg_db_role_setting setting
+      JOIN pg_database database ON database.oid = setting.setdatabase
+      WHERE setting.setrole = 'weather_training_export'::regrole
+      ORDER BY database.datname
+    ) AS database_settings
+`;
+
+const expectedExportAuthoritySnapshot = {
+  database_privileges: ["CONNECT"],
+  database_settings: [],
+  executable_functions: [],
+  relation_privileges: [
+    "public.forecast_training_export_manifest_v1:SELECT",
+    "public.forecast_training_export_rows_v1:SELECT",
+  ],
+  schema_privileges: ["public:USAGE"],
+  sequence_privileges: [],
+};
+
+// insert one fixed-lead anchor fixture
+const insertAnchorSql = `
+  INSERT INTO forecast_anchor_records (
+    source_id,
+    source_kind,
+    source_config_fingerprint,
+    valid_at,
+    lead_hours,
+    dataset,
+    upstream_model,
+    contract_epoch,
+    adapter_version,
+    first_ingestion_run_id,
+    last_ingestion_run_id,
+    first_received_at,
+    last_received_at,
+    upstream_timezone,
+    quality_metadata,
+    provider_metadata,
+    temperature_c,
+    content_hash,
+    revision_count
+  )
+  VALUES (
+    $1,
+    'forecast',
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9,
+    $10,
+    $11,
+    $12,
+    'UTC',
+    '{"status":"validated"}'::jsonb,
+    '{"dataset":"previous_runs","request_id":"anchor-integration"}'::jsonb,
+    $13,
+    $14,
+    $15
+  )
+`;
+
+// revise one anchor only when content changes
+const upsertAnchorSql = `${insertAnchorSql}
+  ON CONFLICT ON CONSTRAINT forecast_anchor_records_identity_key DO UPDATE SET
+    last_ingestion_run_id = EXCLUDED.last_ingestion_run_id,
+    last_received_at = EXCLUDED.last_received_at,
+    temperature_c = CASE
+      WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash
+        THEN EXCLUDED.temperature_c
+      ELSE forecast_anchor_records.temperature_c
+    END,
+    revision_count = forecast_anchor_records.revision_count + CASE
+      WHEN forecast_anchor_records.content_hash <> EXCLUDED.content_hash THEN 1
+      ELSE 0
+    END,
+    content_hash = EXCLUDED.content_hash
+`;
+
 // require PostgreSQL privilege denial
 async function assertPrivilegeDenied(operation) {
   await assert.rejects(operation, { code: "42501" });
+}
+
+// set one validated export range on the pooled session
+async function setTrainingExportRange(pool, fromDate, toDate) {
+  await pool.query(
+    `
+      SELECT
+        set_config('weather.forecast_training_from_date', $1, false),
+        set_config('weather.forecast_training_to_date', $2, false)
+    `,
+    [fromDate, toDate],
+  );
 }
 
 // configure production-equivalent database roles
@@ -37,11 +201,13 @@ async function bootstrapRuntimeRoles(server, directory) {
   const ownerPath = join(directory, "owner");
   const apiPath = join(directory, "api");
   const ingestPath = join(directory, "ingest");
+  const trainingExportPath = join(directory, "training-export");
   await Promise.all([
     writeFile(adminPath, `${server.password}\n`, { mode: 0o600 }),
     writeFile(ownerPath, "owner-test\n", { mode: 0o600 }),
     writeFile(apiPath, "api-test\n", { mode: 0o600 }),
     writeFile(ingestPath, "ingest-test\n", { mode: 0o600 }),
+    writeFile(trainingExportPath, "training-export-test\n", { mode: 0o600 }),
   ]);
   await executeFile(join(repoRoot, "deploy/postgres/010-create-runtime-roles.sh"), [], {
     env: {
@@ -55,6 +221,7 @@ async function bootstrapRuntimeRoles(server, directory) {
       WEATHER_API_PASSWORD_FILE: apiPath,
       WEATHER_INGEST_PASSWORD_FILE: ingestPath,
       WEATHER_OWNER_PASSWORD_FILE: ownerPath,
+      WEATHER_TRAINING_EXPORT_PASSWORD_FILE: trainingExportPath,
     },
     timeout: 30_000,
   });
@@ -107,13 +274,18 @@ test(
   async () => {
     const directory = await mkdtemp(join(tmpdir(), "weather-migrate-entrypoint-"));
     let server;
+    let adminPool;
     let pool;
     let apiPool;
     let ingestPool;
+    let trainingExportPool;
+    let reconciledTrainingExportPool;
     let migrationLockClient;
+    let temporaryAclClient;
 
     try {
       server = await startPostgres(17, "migrate-entrypoint");
+      adminPool = createTestPool(server);
       const ownerPath = await bootstrapRuntimeRoles(server, directory);
       const configuredSitePath = join(directory, "ballydidean.json");
       const configuredSite = JSON.parse(await readFile(siteConfigurationPath, "utf8"));
@@ -161,6 +333,10 @@ test(
         "0006_station_coordinates.sql",
         "0007_tide_sources.sql",
         "0008_ecowitt_property_sensors.sql",
+        "0009_forecast_anchor_records.sql",
+        "0010_forecast_training_export.sql",
+        "0011_forecast_runtime_provenance.sql",
+        "0012_hide_archive_only_forecasts_from_live_reads.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -174,6 +350,10 @@ test(
         "0006_station_coordinates.sql",
         "0007_tide_sources.sql",
         "0008_ecowitt_property_sensors.sql",
+        "0009_forecast_anchor_records.sql",
+        "0010_forecast_training_export.sql",
+        "0011_forecast_runtime_provenance.sql",
+        "0012_hide_archive_only_forecasts_from_live_reads.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondEvent.ecowittBootstrap, firstEvent.ecowittBootstrap);
@@ -198,6 +378,10 @@ test(
         { name: "0006_station_coordinates.sql" },
         { name: "0007_tide_sources.sql" },
         { name: "0008_ecowitt_property_sensors.sql" },
+        { name: "0009_forecast_anchor_records.sql" },
+        { name: "0010_forecast_training_export.sql" },
+        { name: "0011_forecast_runtime_provenance.sql" },
+        { name: "0012_hide_archive_only_forecasts_from_live_reads.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -292,6 +476,10 @@ test(
         { id: firstEvent.bootstrap.sourceIds[3], source_key: "open-meteo-forecast-v2" },
         { id: firstEvent.bootstrap.sourceIds[4], source_key: "open-meteo-forecast-v3" },
         { id: firstEvent.bootstrap.sourceIds[5], source_key: "open-meteo-forecast-v4" },
+        {
+          id: firstEvent.bootstrap.sourceIds[6],
+          source_key: "open-meteo-previous-runs-v1",
+        },
         { id: firstEvent.bootstrap.sourceIds[1], source_key: "open-meteo-reanalysis-v1" },
         {
           id: firstEvent.publicStationBootstrap.sourceIds[
@@ -426,6 +614,277 @@ test(
           timeout: 30_000,
         },
       );
+      apiPool = createTestPool(server, "weather_test", "weather_api", "api-test");
+      ingestPool = createTestPool(
+        server,
+        "weather_test",
+        "weather_ingest",
+        "ingest-test",
+      );
+      trainingExportPool = createTestPool(
+        server,
+        "weather_test",
+        "weather_training_export",
+        "training-export-test",
+      );
+      const runtimeProvenance = await apiPool.query(
+        "SELECT * FROM forecast_runtime_provenance_v1",
+      );
+      assert.equal(runtimeProvenance.rowCount, 0);
+      assert.deepEqual(
+        runtimeProvenance.fields.map(
+          // retain the exact API-only projection
+          (field) => field.name,
+        ),
+        [
+          "weather_record_id",
+          "source_id",
+          "source_key",
+          "source_config_fingerprint",
+          "adapter_version",
+          "contract_epoch",
+        ],
+      );
+      for (const deniedApiQuery of [
+        "SELECT source_config_fingerprint FROM sources",
+        "SELECT * FROM ingestion_runs",
+        "SELECT * FROM forecast_anchor_records",
+        "SELECT * FROM forecast_training_export_rows_v1",
+        "SELECT * FROM forecast_training_export_manifest_v1",
+      ]) {
+        // deny every training or ingestion authority
+        await assertPrivilegeDenied(apiPool.query(deniedApiQuery));
+      }
+      const anchorSources = await pool.query(
+        `
+          INSERT INTO sources (
+            station_id,
+            provider_id,
+            source_key,
+            source_kind,
+            material_provider_config,
+            source_config_fingerprint,
+            capabilities,
+            cadence_seconds,
+            active
+          )
+          VALUES
+            ($1, $2, 'anchor-history-integration-v1', 'forecast',
+              '{"contractVersion":"previous-runs-hourly/v1"}'::jsonb,
+              $3, '["historical"]'::jsonb, NULL, true),
+            ($1, $2, 'anchor-forecast-only-integration-v1', 'forecast',
+              '{"contractVersion":"forecast-hourly/v1"}'::jsonb,
+              $4, '["forecast"]'::jsonb, 3600, true)
+          RETURNING id, source_config_fingerprint, source_key
+        `,
+        [
+          firstEvent.bootstrap.stationId,
+          firstEvent.bootstrap.providerId,
+          "a".repeat(64),
+          "b".repeat(64),
+        ],
+      );
+      const historicalAnchorSource = anchorSources.rows.find(
+        // select the historical anchor fixture
+        (source) => source.source_key === "anchor-history-integration-v1",
+      );
+      const forecastOnlySource = anchorSources.rows.find(
+        // select the forecast-only denial fixture
+        (source) => source.source_key === "anchor-forecast-only-integration-v1",
+      );
+      assert.ok(historicalAnchorSource);
+      assert.ok(forecastOnlySource);
+      const anchorRuns = await pool.query(
+        `
+          INSERT INTO ingestion_runs (
+            source_id,
+            mode,
+            requested_start,
+            requested_end_exclusive,
+            source_config_fingerprint,
+            adapter_version,
+            chunk_plan_version,
+            started_at,
+            deadline_at,
+            completed_at,
+            state,
+            attempts,
+            record_count
+          )
+          VALUES
+            ($1, 'backfill', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z', $2,
+              'previous-runs/v1', 'previous-runs-utc/v1', '2026-08-02T00:00:00Z',
+              '2026-08-02T00:05:00Z', '2026-08-02T00:01:00Z', 'succeeded', 1, 1),
+            ($1, 'backfill', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z', $2,
+              'previous-runs/v1', 'previous-runs-utc/v1', '2026-08-02T00:02:00Z',
+              '2026-08-02T00:07:00Z', '2026-08-02T00:03:00Z', 'succeeded', 1, 1),
+            ($3, 'scheduled', '2026-08-01T00:00:00Z', '2026-08-02T00:00:00Z', $4,
+              'forecast/v1', NULL, '2026-08-02T00:00:00Z',
+              '2026-08-02T00:05:00Z', '2026-08-02T00:01:00Z', 'succeeded', 1, 1)
+          RETURNING id, source_id
+        `,
+        [
+          historicalAnchorSource.id,
+          historicalAnchorSource.source_config_fingerprint,
+          forecastOnlySource.id,
+          forecastOnlySource.source_config_fingerprint,
+        ],
+      );
+      const historicalRunIds = anchorRuns.rows
+        .filter(
+          // retain only historical-source runs
+          (run) => run.source_id === historicalAnchorSource.id,
+        )
+        .map(
+          // retain stable run identities
+          (run) => run.id,
+        );
+      const forecastOnlyRunId = anchorRuns.rows.find(
+        // select the forecast-only run
+        (run) => run.source_id === forecastOnlySource.id,
+      )?.id;
+      assert.equal(historicalRunIds.length, 2);
+      assert.ok(forecastOnlyRunId);
+      const anchorParameters = [
+        historicalAnchorSource.id,
+        historicalAnchorSource.source_config_fingerprint,
+        "2026-08-01T12:00:00Z",
+        24,
+        "previous_runs",
+        "best_match",
+        "open-meteo-previous-runs-best-match/2026-09",
+        "previous-runs/v1",
+        historicalRunIds[0],
+        historicalRunIds[0],
+        "2026-08-02T00:00:00Z",
+        "2026-08-02T00:00:00Z",
+        12,
+        "c".repeat(64),
+        0,
+      ];
+      const insertedAnchor = await ingestPool.query(insertAnchorSql, anchorParameters);
+      assert.equal(insertedAnchor.rowCount, 1);
+      const anchorIdentity = await pool.query(
+        `
+          SELECT id
+          FROM forecast_anchor_records
+          WHERE source_id = $1
+            AND valid_at = $2
+            AND lead_hours = $3
+        `,
+        [historicalAnchorSource.id, anchorParameters[2], anchorParameters[3]],
+      );
+      assert.equal(anchorIdentity.rowCount, 1);
+      const exactRetryParameters = [...anchorParameters];
+      exactRetryParameters[9] = historicalRunIds[1];
+      exactRetryParameters[11] = "2026-08-02T00:02:00Z";
+      await ingestPool.query(upsertAnchorSql, exactRetryParameters);
+      const changedContentParameters = [...exactRetryParameters];
+      changedContentParameters[12] = 13;
+      changedContentParameters[13] = "d".repeat(64);
+      await ingestPool.query(upsertAnchorSql, changedContentParameters);
+      const revisedAnchor = await pool.query(
+        `
+          SELECT
+            first_ingestion_run_id,
+            last_ingestion_run_id,
+            revision_count,
+            temperature_c
+          FROM forecast_anchor_records
+          WHERE id = $1
+        `,
+        [anchorIdentity.rows[0].id],
+      );
+      assert.deepEqual(revisedAnchor.rows[0], {
+        first_ingestion_run_id: historicalRunIds[0],
+        last_ingestion_run_id: historicalRunIds[1],
+        revision_count: 1,
+        temperature_c: 13,
+      });
+      await assert.rejects(
+        pool.query(
+          `
+            UPDATE forecast_anchor_records
+            SET content_hash = $1,
+                revision_count = revision_count + 1
+            WHERE id = $2
+          `,
+          ["e".repeat(64), anchorIdentity.rows[0].id],
+        ),
+        { code: "23514" },
+      );
+      await assert.rejects(
+        pool.query(
+          `
+            UPDATE forecast_anchor_records
+            SET temperature_c = 14,
+                content_hash = $1
+            WHERE id = $2
+          `,
+          ["e".repeat(64), anchorIdentity.rows[0].id],
+        ),
+        { code: "23514" },
+      );
+      const wrongDatasetParameters = [...anchorParameters];
+      wrongDatasetParameters[2] = "2026-08-01T13:00:00Z";
+      wrongDatasetParameters[4] = "forecast";
+      await assert.rejects(
+        ingestPool.query(insertAnchorSql, wrongDatasetParameters),
+        { code: "23514" },
+      );
+      const wrongModelParameters = [...anchorParameters];
+      wrongModelParameters[2] = "2026-08-01T14:00:00Z";
+      wrongModelParameters[5] = "gfs_seamless";
+      await assert.rejects(
+        ingestPool.query(insertAnchorSql, wrongModelParameters),
+        { code: "23514" },
+      );
+      const wrongRunParameters = [...anchorParameters];
+      wrongRunParameters[2] = "2026-08-01T15:00:00Z";
+      wrongRunParameters[8] = forecastOnlyRunId;
+      wrongRunParameters[9] = forecastOnlyRunId;
+      await assert.rejects(
+        ingestPool.query(insertAnchorSql, wrongRunParameters),
+        { code: "23503" },
+      );
+      await assert.rejects(
+        pool.query(
+          "UPDATE forecast_anchor_records SET contract_epoch = 'changed/v2' WHERE id = $1",
+          [anchorIdentity.rows[0].id],
+        ),
+        { code: "23514" },
+      );
+      await assert.rejects(
+        ingestPool.query(insertAnchorSql, [
+          ...anchorParameters.slice(0, 3),
+          25,
+          ...anchorParameters.slice(4),
+        ]),
+        { code: "23514" },
+      );
+      await assert.rejects(
+        ingestPool.query(insertAnchorSql, [
+          forecastOnlySource.id,
+          forecastOnlySource.source_config_fingerprint,
+          "2026-08-01T12:00:00Z",
+          24,
+          "previous_runs",
+          "best_match",
+          "open-meteo-previous-runs-best-match/2026-09",
+          "previous-runs/v1",
+          forecastOnlyRunId,
+          forecastOnlyRunId,
+          "2026-08-02T00:00:00Z",
+          "2026-08-02T00:00:00Z",
+          12,
+          "f".repeat(64),
+          0,
+        ]),
+        { code: "23514" },
+      );
+      await assertPrivilegeDenied(apiPool.query("SELECT * FROM forecast_anchor_records"));
+      await assertPrivilegeDenied(ingestPool.query("SELECT * FROM forecast_anchor_records"));
+      assert.equal((await pool.query("SELECT * FROM forecast_anchor_records")).rowCount, 1);
       const tempestSuccessor = await pool.query(
         `
           SELECT s.station_id, s.provider_id
@@ -454,7 +913,6 @@ test(
         `,
         [successor.station_id, successor.provider_id, "f".repeat(64)],
       );
-      apiPool = createTestPool(server, "weather_test", "weather_api", "api-test");
       const visibleTempestSources = await apiPool.query(
         `
           SELECT source_key
@@ -467,7 +925,6 @@ test(
       assert.deepEqual(visibleTempestSources.rows, [
         { source_key: "tempest-203055-observations-v2" },
       ]);
-      ingestPool = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
       const ingestMigrations = await ingestPool.query(
         "SELECT name FROM schema_migrations ORDER BY name",
       );
@@ -480,6 +937,10 @@ test(
         { name: "0006_station_coordinates.sql" },
         { name: "0007_tide_sources.sql" },
         { name: "0008_ecowitt_property_sensors.sql" },
+        { name: "0009_forecast_anchor_records.sql" },
+        { name: "0010_forecast_training_export.sql" },
+        { name: "0011_forecast_runtime_provenance.sql" },
+        { name: "0012_hide_archive_only_forecasts_from_live_reads.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(
@@ -518,12 +979,868 @@ test(
       await assertPrivilegeDenied(
         ingestPool.query("CREATE TABLE weather_ingest_acl_probe (id integer)"),
       );
+
+      const exportRole = await pool.query(`
+        SELECT
+          rolcanlogin,
+          rolcreatedb,
+          rolcreaterole,
+          rolinherit,
+          rolreplication,
+          rolsuper,
+          rolbypassrls,
+          rolconfig,
+          (
+            SELECT count(*)::integer
+            FROM pg_auth_members
+            WHERE member = role.oid
+          ) AS membership_count,
+          (
+            SELECT count(*)::integer
+            FROM pg_db_role_setting
+            WHERE setrole = role.oid
+              AND setdatabase <> 0
+          ) AS database_setting_count
+        FROM pg_roles role
+        WHERE rolname = 'weather_training_export'
+      `);
+      assert.deepEqual(exportRole.rows[0], {
+        database_setting_count: 0,
+        membership_count: 0,
+        rolbypassrls: false,
+        rolcanlogin: true,
+        rolconfig: ["default_transaction_read_only=on"],
+        rolcreatedb: false,
+        rolcreaterole: false,
+        rolinherit: false,
+        rolreplication: false,
+        rolsuper: false,
+      });
+      assert.deepEqual(
+        (await pool.query(exportAuthoritySnapshotSql)).rows[0],
+        expectedExportAuthoritySnapshot,
+      );
+      assert.deepEqual(
+        (await trainingExportPool.query("SHOW default_transaction_read_only")).rows,
+        [{ default_transaction_read_only: "on" }],
+      );
+      await trainingExportPool.query("BEGIN ISOLATION LEVEL REPEATABLE READ");
+      assert.deepEqual(
+        (await trainingExportPool.query("SHOW transaction_read_only")).rows,
+        [{ transaction_read_only: "on" }],
+      );
+      await trainingExportPool.query("ROLLBACK");
+      const exportColumns = await pool.query(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'forecast_training_export_rows_v1'
+        ORDER BY ordinal_position
+      `);
+      assert.deepEqual(exportColumns.rows.map((column) => column.column_name), [
+        "record_kind",
+        "site_key",
+        "physical_station_key",
+        "provider_family",
+        "source_keys",
+        "source_config_fingerprints",
+        "adapter_contracts",
+        "valid_at",
+        "reference_at",
+        "received_at",
+        "reference_kind",
+        "target_lead_hours",
+        "dataset",
+        "upstream_model",
+        "contract_epoch",
+        "temperature_c",
+        "relative_humidity_percent",
+        "wind_speed_mps",
+        "wind_gust_mps",
+        "wind_direction_degrees",
+        "ingestion_run_ids",
+        "content_hashes",
+        "exclusion_reason_codes",
+        "collision_count",
+      ]);
+      const exportManifest = await trainingExportPool.query(
+        "SELECT * FROM forecast_training_export_manifest_v1",
+      );
+      assert.deepEqual(
+        {
+          aggregation: exportManifest.rows[0].aggregation_contract_sha256,
+          coordinates: exportManifest.rows[0].coordinate_manifest_sha256,
+          metrics: exportManifest.rows[0].metric_eligibility_sha256,
+          query: exportManifest.rows[0].query_contract_sha256,
+          row: exportManifest.rows[0].row_schema_sha256,
+          sources: exportManifest.rows[0].source_lineage_sha256,
+          spatial: exportManifest.rows[0].spatial_weights_sha256,
+          stations: exportManifest.rows[0].station_manifest_sha256,
+        },
+        {
+          aggregation: "9c309ef5a00780167570746ad6c31b9128c266db50954fe4645287e1f2b31e64",
+          coordinates: "04bfd93a03c393e977c8767a9aca6fe2a4cba9c263cb46e6987fa733b666ba58",
+          metrics: "53731954b347836a26500b05a195ca15cf26214c4d561fe482c5ff87ef56a82e",
+          query: "3b7926c47bbdb208ac2e305ee7798bfe4ea9590ce2863f556e752a71d1158e76",
+          row: "2717b6c3c704a1b52c7748b59c37d635efd92d92efb9dc97ea4ddef97cd504fc",
+          sources: "261a134589a12c1bbbd9a783343950317fd1fbc87e08383e60e805b7761566cc",
+          spatial: "8ed5ce70d33edd4a5166049d9938cbaaf800151b6a0b3345d3005419e9041c74",
+          stations: "a1f76440c056987bbb434d5315e4916f961deeb2951fe889d785943f559cdd49",
+        },
+      );
+      await assert.rejects(
+        trainingExportPool.query(
+          "SELECT count(*) FROM forecast_training_export_rows_v1",
+        ),
+        { code: "22012" },
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "not-a-date",
+        "2026-08-24",
+      );
+      await assert.rejects(
+        trainingExportPool.query(
+          "SELECT count(*) FROM forecast_training_export_rows_v1",
+        ),
+        { code: "22007" },
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2026-8-24",
+        "2026-08-24",
+      );
+      await assert.rejects(
+        trainingExportPool.query(
+          "SELECT count(*) FROM forecast_training_export_rows_v1",
+        ),
+        { code: "22012" },
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2026-08-24",
+        "2026-08-23",
+      );
+      await assert.rejects(
+        trainingExportPool.query(
+          "SELECT count(*) FROM forecast_training_export_rows_v1",
+        ),
+        { code: "22012" },
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2025-01-01",
+        "2026-03-27",
+      );
+      await assert.rejects(
+        trainingExportPool.query(
+          "SELECT count(*) FROM forecast_training_export_rows_v1",
+        ),
+        { code: "22012" },
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2025-03-09",
+        "2025-03-09",
+      );
+      assert.equal(
+        Number((await trainingExportPool.query(`
+          SELECT count(*) AS count
+          FROM forecast_training_export_rows_v1
+          WHERE record_kind = 'station_hour'
+        `)).rows[0].count),
+        11 * 23,
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2025-11-02",
+        "2025-11-02",
+      );
+      assert.equal(
+        Number((await trainingExportPool.query(`
+          SELECT count(*) AS count
+          FROM forecast_training_export_rows_v1
+          WHERE record_kind = 'station_hour'
+        `)).rows[0].count),
+        11 * 25,
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2025-06-09",
+        "2026-09-01",
+      );
+      assert.equal(
+        Number((await trainingExportPool.query(`
+          SELECT count(*) AS count
+          FROM forecast_training_export_rows_v1
+          WHERE record_kind = 'station_hour'
+        `)).rows[0].count),
+        118_800,
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2021-01-01",
+        "2021-01-01",
+      );
+      const gapRows = await trainingExportPool.query(`
+        SELECT source_keys, ingestion_run_ids, content_hashes
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND valid_at = TIMESTAMPTZ '2021-01-01 08:00:00+00'
+        ORDER BY physical_station_key
+      `);
+      assert.equal(gapRows.rowCount, 11);
+      assert.equal(
+        gapRows.rows.every(
+          // require provenance-free explicit gaps
+          (row) =>
+            row.source_keys.length === 0 &&
+            row.ingestion_run_ids.length === 0 &&
+            row.content_hashes.length === 0,
+        ),
+        true,
+      );
+      await pool.query(`
+        INSERT INTO sources (
+          station_id,
+          provider_id,
+          source_key,
+          source_kind,
+          material_provider_config,
+          source_config_fingerprint,
+          capabilities,
+          cadence_seconds,
+          active
+        )
+        SELECT
+          source.station_id,
+          source.provider_id,
+          'tempest-38270-observations-v1',
+          'physical_sensor',
+          '{"contractVersion":"tempest-observations/v1"}'::jsonb,
+          repeat('f', 64),
+          '["current","historical"]'::jsonb,
+          3600,
+          true
+        FROM sources source
+        WHERE source.source_key = 'tempest-38270-observations-v2'
+      `);
+      const stationSources = await pool.query(`
+        SELECT id, source_key, source_config_fingerprint
+        FROM sources
+        WHERE source_key = ANY(ARRAY[
+          'ambient-maxweather-observations-v1',
+          'wunderground-maxweather-history-v1',
+          'tempest-38270-observations-v1',
+          'tempest-38270-observations-v2'
+        ])
+        ORDER BY source_key
+      `);
+      assert.equal(stationSources.rowCount, 4);
+      await pool.query(`
+        SELECT setval(
+          'ingestion_runs_id_seq',
+          greatest((SELECT coalesce(max(id), 0) FROM ingestion_runs), 8),
+          true
+        )
+      `);
+      const stationRuns = await pool.query(
+        `
+          INSERT INTO ingestion_runs (
+            source_id,
+            mode,
+            requested_start,
+            requested_end_exclusive,
+            source_config_fingerprint,
+            adapter_version,
+            started_at,
+            deadline_at,
+            completed_at,
+            state,
+            attempts,
+            record_count
+          )
+          SELECT
+            fixture.source_id,
+            'scheduled',
+            TIMESTAMPTZ '2026-08-23 00:00:00+00',
+            TIMESTAMPTZ '2026-08-26 00:00:00+00',
+            fixture.source_config_fingerprint,
+            'forecast-training-export-fixture/v1',
+            TIMESTAMPTZ '2026-08-26 00:00:00+00' + fixture.ordinality * INTERVAL '1 minute',
+            TIMESTAMPTZ '2026-08-26 01:00:00+00' + fixture.ordinality * INTERVAL '1 minute',
+            TIMESTAMPTZ '2026-08-26 00:30:00+00' + fixture.ordinality * INTERVAL '1 minute',
+            'succeeded',
+            1,
+            1
+          FROM unnest($1::bigint[], $2::text[]) WITH ORDINALITY
+            AS fixture(source_id, source_config_fingerprint, ordinality)
+          RETURNING id, source_id
+        `,
+        [
+          stationSources.rows.map(
+            // preserve ordered source identities
+            (source) => source.id,
+          ),
+          stationSources.rows.map(
+            // preserve ordered source fingerprints
+            (source) => source.source_config_fingerprint,
+          ),
+        ],
+      );
+      const runBySourceId = new Map(
+        stationRuns.rows.map(
+          // index runs by stable source identity
+          (run) => [String(run.source_id), run.id],
+        ),
+      );
+      const ambientSource = stationSources.rows.find(
+        // select the Ambient fixture source
+        (source) => source.source_key === "ambient-maxweather-observations-v1",
+      );
+      const wundergroundSource = stationSources.rows.find(
+        // select the Weather Underground fixture source
+        (source) => source.source_key === "wunderground-maxweather-history-v1",
+      );
+      const tempestV1Source = stationSources.rows.find(
+        // select the excluded Tempest fixture source
+        (source) => source.source_key === "tempest-38270-observations-v1",
+      );
+      const tempestV2Source = stationSources.rows.find(
+        // select the accepted Tempest fixture source
+        (source) => source.source_key === "tempest-38270-observations-v2",
+      );
+      assert.ok(ambientSource && wundergroundSource && tempestV1Source && tempestV2Source);
+      const ambientRunId = runBySourceId.get(String(ambientSource.id));
+      const wundergroundRunId = runBySourceId.get(String(wundergroundSource.id));
+      const tempestV1RunId = runBySourceId.get(String(tempestV1Source.id));
+      const tempestV2RunId = runBySourceId.get(String(tempestV2Source.id));
+      assert.ok(ambientRunId && wundergroundRunId && tempestV1RunId && tempestV2RunId);
+      const stationRecordFixtures = [
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:55:00Z", temperatureC: 30 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:58:00Z", temperatureC: 10, relativeHumidityPercent: 80, windSpeedMps: 0.999, windDirectionDegrees: 90 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T01:01:00Z", temperatureC: 69, qualityMetadata: { flags: ["unknown_flag"] } },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T01:02:00Z", temperatureC: 20, relativeHumidityPercent: 70, windSpeedMps: 2, windDirectionDegrees: 200 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T01:05:00Z", temperatureC: 60 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:10:00Z", windGustMps: 2 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:20:00Z", windGustMps: 3 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:30:00Z", windGustMps: 4 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:40:00Z", windGustMps: 5 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T00:50:00Z", windGustMps: 6 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T01:00:00Z", windGustMps: 7 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T02:55:00Z", temperatureC: 15 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T03:05:00Z", temperatureC: 16 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T03:00:00Z", windGustMps: 99 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T03:10:00Z", windGustMps: 4 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T03:21:00Z", windGustMps: 5 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-25T04:00:00Z", windGustMps: 6 },
+        { sourceId: ambientSource.id, runId: ambientRunId, validAt: "2026-08-24T00:00:00Z", temperatureC: 5 },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-23T23:10:00Z", windGustMps: 2, qualityMetadata: { status: "provider_qc_1" } },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-23T23:20:00Z", windGustMps: 3, qualityMetadata: { status: "provider_qc_1" } },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-23T23:30:00Z", windGustMps: 4, qualityMetadata: { status: "provider_qc_1" } },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-23T23:40:00Z", windGustMps: 5, qualityMetadata: { status: "provider_qc_1" } },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-23T23:50:00Z", windGustMps: 6, qualityMetadata: { status: "provider_qc_1" } },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-23T23:59:00Z", temperatureC: 69, qualityMetadata: { status: "provider_qc_2" } },
+        { sourceId: wundergroundSource.id, runId: wundergroundRunId, validAt: "2026-08-24T00:00:00Z", temperatureC: 68, qualityMetadata: { status: "provider_qc_1" } },
+        { sourceId: tempestV1Source.id, runId: tempestV1RunId, validAt: "2026-08-25T01:00:00Z", temperatureC: 69 },
+        { sourceId: tempestV2Source.id, runId: tempestV2RunId, validAt: "2026-08-25T01:00:00Z", temperatureC: 11, qualityMetadata: { flags: ["uv_index_out_of_range"] } },
+      ];
+      await pool.query(
+        `
+          INSERT INTO weather_records (
+            source_id,
+            source_kind,
+            valid_at,
+            product_run_at,
+            first_ingestion_run_id,
+            last_ingestion_run_id,
+            first_received_at,
+            last_received_at,
+            upstream_timezone,
+            device_serial,
+            quality_metadata,
+            provider_metadata,
+            temperature_c,
+            wind_speed_mps,
+            wind_gust_mps,
+            relative_humidity_percent,
+            wind_direction_degrees,
+            content_hash
+          )
+          SELECT
+            fixture."sourceId",
+            'physical_sensor',
+            fixture."validAt",
+            NULL,
+            fixture."runId",
+            fixture."runId",
+            fixture."validAt" + INTERVAL '1 minute',
+            fixture."validAt" + INTERVAL '1 minute',
+            'UTC',
+            'serial-lan-property-password-poison',
+            fixture."qualityMetadata",
+            '{"request_id":"credential-poison"}'::jsonb,
+            fixture."temperatureC",
+            fixture."windSpeedMps",
+            fixture."windGustMps",
+            fixture."relativeHumidityPercent",
+            fixture."windDirectionDegrees",
+            repeat('a', 64)
+          FROM jsonb_to_recordset($1::jsonb) AS fixture(
+            "sourceId" bigint,
+            "runId" bigint,
+            "validAt" timestamptz,
+            "qualityMetadata" jsonb,
+            "temperatureC" double precision,
+            "windSpeedMps" double precision,
+            "windGustMps" double precision,
+            "relativeHumidityPercent" double precision,
+            "windDirectionDegrees" double precision
+          )
+        `,
+        [JSON.stringify(stationRecordFixtures)],
+      );
+      await setTrainingExportRange(
+        trainingExportPool,
+        "2026-08-23",
+        "2026-08-26",
+      );
+      const sampledStation = await trainingExportPool.query(`
+        SELECT *
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'ambient-maxweather'
+          AND valid_at = TIMESTAMPTZ '2026-08-25 01:00:00+00'
+      `);
+      assert.deepEqual(
+        {
+          direction: sampledStation.rows[0].wind_direction_degrees,
+          gust: sampledStation.rows[0].wind_gust_mps,
+          humidity: sampledStation.rows[0].relative_humidity_percent,
+          ingestionRunIds: sampledStation.rows[0].ingestion_run_ids,
+          reasons: sampledStation.rows[0].exclusion_reason_codes,
+          speed: sampledStation.rows[0].wind_speed_mps,
+          temperature: sampledStation.rows[0].temperature_c,
+        },
+        {
+          direction: 200,
+          gust: 7,
+          humidity: 80,
+          ingestionRunIds: [String(ambientRunId)],
+          reasons: ["quality_flag_rejected", "station_direction_calm"],
+          speed: 0.999,
+          temperature: 10,
+        },
+      );
+      assert.doesNotMatch(
+        JSON.stringify(sampledStation.rows[0]),
+        /serial-lan-property-password-poison|credential-poison/u,
+      );
+      const boundaryStation = await trainingExportPool.query(`
+        SELECT temperature_c
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'ambient-maxweather'
+          AND valid_at = TIMESTAMPTZ '2026-08-25 03:00:00+00'
+      `);
+      assert.equal(boundaryStation.rows[0].temperature_c, 15);
+      const incompleteGust = await trainingExportPool.query(`
+        SELECT wind_gust_mps, exclusion_reason_codes
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'ambient-maxweather'
+          AND valid_at = TIMESTAMPTZ '2026-08-25 04:00:00+00'
+      `);
+      assert.equal(incompleteGust.rows[0].wind_gust_mps, null);
+      assert.equal(
+        incompleteGust.rows[0].exclusion_reason_codes.includes(
+          "station_gust_coverage_incomplete",
+        ),
+        true,
+      );
+      const cutoverStation = await trainingExportPool.query(`
+        SELECT
+          source_keys,
+          source_config_fingerprints,
+          adapter_contracts,
+          temperature_c,
+          wind_gust_mps,
+          exclusion_reason_codes
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'ambient-maxweather'
+          AND valid_at = TIMESTAMPTZ '2026-08-24 00:00:00+00'
+      `);
+      assert.deepEqual(cutoverStation.rows[0].source_keys, [
+        "ambient-maxweather-observations-v1",
+        "wunderground-maxweather-history-v1",
+      ]);
+      assert.deepEqual(cutoverStation.rows[0].source_config_fingerprints, [
+        "7a7528a6278924ca5280a1a6045b6647b7e660b112d7fa3008c542a17ff99df4",
+        "52dda6c5444d0a234fbe23d6218027d417ac966ecf291a7d5dfff42fd0dc207c",
+      ]);
+      assert.deepEqual(cutoverStation.rows[0].adapter_contracts, [
+        "ambient-device-data/v1",
+        "wunderground-pws-history/v1",
+      ]);
+      assert.equal(cutoverStation.rows[0].temperature_c, 5);
+      assert.equal(cutoverStation.rows[0].wind_gust_mps, 6);
+      assert.deepEqual(cutoverStation.rows[0].exclusion_reason_codes, [
+        "metric_missing",
+        "quality_status_rejected",
+        "source_interval_out_of_range",
+      ]);
+      const tempestStation = await trainingExportPool.query(`
+        SELECT temperature_c, source_keys, exclusion_reason_codes
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'tempest-38270'
+          AND valid_at = TIMESTAMPTZ '2026-08-25 01:00:00+00'
+      `);
+      assert.equal(tempestStation.rows[0].temperature_c, 11);
+      assert.deepEqual(tempestStation.rows[0].source_keys, [
+        "tempest-38270-observations-v2",
+      ]);
+      assert.deepEqual(tempestStation.rows[0].exclusion_reason_codes, [
+        "metric_missing",
+        "source_superseded",
+      ]);
+      const ambientSourceMaterial = await pool.query(`
+        SELECT material_provider_config, source_config_fingerprint::text
+        FROM sources
+        WHERE id = ${String(ambientSource.id)}
+      `);
+      await pool.query(`
+        ALTER TABLE sources DISABLE TRIGGER sources_material_immutable;
+        UPDATE sources
+        SET material_provider_config = material_provider_config - 'contractVersion'
+        WHERE id = ${String(ambientSource.id)};
+        ALTER TABLE sources ENABLE TRIGGER sources_material_immutable;
+      `);
+      const missingAdapterStation = await trainingExportPool.query(`
+        SELECT temperature_c, exclusion_reason_codes
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'ambient-maxweather'
+          AND valid_at = TIMESTAMPTZ '2026-08-25 01:00:00+00'
+      `);
+      assert.equal(missingAdapterStation.rows[0].temperature_c, null);
+      assert.equal(
+        missingAdapterStation.rows[0].exclusion_reason_codes.includes(
+          "source_superseded",
+        ),
+        true,
+      );
+      await pool.query(
+        "ALTER TABLE sources DISABLE TRIGGER sources_material_immutable",
+      );
+      await pool.query(
+        `
+          UPDATE sources
+          SET material_provider_config = $1::jsonb
+          WHERE id = $2
+        `,
+        [ambientSourceMaterial.rows[0].material_provider_config, ambientSource.id],
+      );
+      await pool.query(
+        "ALTER TABLE sources ENABLE TRIGGER sources_material_immutable",
+      );
+      await adminPool.query(`
+        ALTER TABLE sources DISABLE TRIGGER ALL;
+        ALTER TABLE ingestion_runs DISABLE TRIGGER ALL;
+        UPDATE ingestion_runs
+        SET source_config_fingerprint = repeat('e', 64)
+        WHERE source_id = ${String(ambientSource.id)};
+        UPDATE sources
+        SET source_config_fingerprint = repeat('e', 64)
+        WHERE id = ${String(ambientSource.id)};
+        ALTER TABLE ingestion_runs ENABLE TRIGGER ALL;
+        ALTER TABLE sources ENABLE TRIGGER ALL;
+      `);
+      const wrongFingerprintStation = await trainingExportPool.query(`
+        SELECT temperature_c, exclusion_reason_codes
+        FROM forecast_training_export_rows_v1
+        WHERE record_kind = 'station_hour'
+          AND physical_station_key = 'ambient-maxweather'
+          AND valid_at = TIMESTAMPTZ '2026-08-25 01:00:00+00'
+      `);
+      assert.equal(wrongFingerprintStation.rows[0].temperature_c, null);
+      assert.equal(
+        wrongFingerprintStation.rows[0].exclusion_reason_codes.includes(
+          "source_superseded",
+        ),
+        true,
+      );
+      await adminPool.query(`
+        ALTER TABLE sources DISABLE TRIGGER ALL;
+        ALTER TABLE ingestion_runs DISABLE TRIGGER ALL;
+        UPDATE sources
+        SET source_config_fingerprint = '${ambientSourceMaterial.rows[0].source_config_fingerprint}'
+        WHERE id = ${String(ambientSource.id)};
+        UPDATE ingestion_runs
+        SET source_config_fingerprint = '${ambientSourceMaterial.rows[0].source_config_fingerprint}'
+        WHERE source_id = ${String(ambientSource.id)};
+        ALTER TABLE ingestion_runs ENABLE TRIGGER ALL;
+        ALTER TABLE sources ENABLE TRIGGER ALL;
+      `);
+      for (const deniedQuery of [
+        "SELECT * FROM sites",
+        "SELECT * FROM sources",
+        "SELECT * FROM weather_records",
+        "SELECT * FROM forecast_anchor_records",
+        "SELECT nextval('weather_records_id_seq')",
+        "SELECT weather_source_is_current(1)",
+        "CREATE TABLE export_acl_probe (id integer)",
+        "SET ROLE weather_owner",
+      ]) {
+        // deny every non-projection authority
+        await assert.rejects(
+          trainingExportPool.query(deniedQuery),
+          (error) => error?.code === "42501" || error?.code === "25006",
+        );
+      }
+      const exportAclClient = await trainingExportPool.connect();
+      try {
+        // disable the safety default
+        await exportAclClient.query("SET default_transaction_read_only = off");
+        for (const deniedMutation of [
+          "INSERT INTO sites (slug, display_name, timezone) VALUES ('export-denied', 'denied', 'UTC')",
+          "UPDATE sites SET display_name = display_name WHERE false",
+          "DELETE FROM sites WHERE false",
+          "TRUNCATE sites",
+        ]) {
+          // prove ACL denial directly
+          await assertPrivilegeDenied(exportAclClient.query(deniedMutation));
+        }
+      } finally {
+        // release the isolated session
+        exportAclClient.release();
+      }
+
+      temporaryAclClient = await adminPool.connect();
+      await temporaryAclClient.query(`
+        CREATE FUNCTION pg_temp.weather_temp_acl_probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'
+      `);
+      const temporaryAclBefore = await temporaryAclClient.query(`
+        SELECT procedure.proacl
+        FROM pg_proc procedure
+        WHERE procedure.oid = 'pg_temp.weather_temp_acl_probe()'::regprocedure
+      `);
+      const systemAclBefore = await pool.query(`
+        SELECT namespace.nspname, procedure.oid::regprocedure::text AS identity, procedure.proacl
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname IN ('pg_catalog', 'information_schema', 'pg_toast')
+        ORDER BY namespace.nspname, identity
+      `);
+      await adminPool.query(`
+        CREATE ROLE weather_export_extra NOLOGIN;
+        GRANT weather_export_extra TO weather_training_export;
+        ALTER ROLE weather_training_export SET search_path = pg_catalog;
+        ALTER ROLE weather_training_export IN DATABASE weather_test
+          SET default_transaction_read_only = off;
+        ALTER ROLE weather_training_export IN DATABASE weather_test
+          SET search_path = pg_catalog;
+      `);
+      await pool.query(`
+        CREATE FUNCTION weather_export_acl_probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        GRANT EXECUTE ON FUNCTION weather_export_acl_probe()
+        TO weather_api, weather_ingest, weather_training_export;
+      `);
+      await adminPool.query(`
+        CREATE FUNCTION weather_foreign_invoker_probe() RETURNS integer
+        LANGUAGE sql SECURITY INVOKER AS 'SELECT 1';
+        CREATE SCHEMA weather_foreign_acl AUTHORIZATION postgres;
+        REVOKE ALL ON SCHEMA weather_foreign_acl FROM PUBLIC;
+        GRANT USAGE ON SCHEMA weather_foreign_acl TO weather_api;
+        CREATE FUNCTION weather_foreign_acl.split_reachability_probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        REVOKE ALL ON FUNCTION weather_foreign_acl.split_reachability_probe() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION weather_foreign_acl.split_reachability_probe()
+        TO weather_ingest;
+        CREATE SCHEMA weather_public_reachable AUTHORIZATION postgres;
+        GRANT USAGE ON SCHEMA weather_public_reachable TO PUBLIC;
+        CREATE FUNCTION weather_public_reachable.probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        CREATE FUNCTION weather_public_reachable.invoker_probe() RETURNS integer
+        LANGUAGE sql SECURITY INVOKER AS 'SELECT 42';
+        CREATE SCHEMA weather_api_reachable AUTHORIZATION postgres;
+        REVOKE ALL ON SCHEMA weather_api_reachable FROM PUBLIC;
+        GRANT USAGE ON SCHEMA weather_api_reachable TO weather_api;
+        CREATE FUNCTION weather_api_reachable.probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        REVOKE ALL ON FUNCTION weather_api_reachable.probe() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION weather_api_reachable.probe() TO weather_api;
+        CREATE SCHEMA weather_ingest_reachable AUTHORIZATION postgres;
+        REVOKE ALL ON SCHEMA weather_ingest_reachable FROM PUBLIC;
+        GRANT USAGE ON SCHEMA weather_ingest_reachable TO weather_ingest;
+        CREATE FUNCTION weather_ingest_reachable.probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        REVOKE ALL ON FUNCTION weather_ingest_reachable.probe() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION weather_ingest_reachable.probe() TO weather_ingest;
+        CREATE SCHEMA weather_export_reachable AUTHORIZATION postgres;
+        REVOKE ALL ON SCHEMA weather_export_reachable FROM PUBLIC;
+        GRANT USAGE ON SCHEMA weather_export_reachable TO weather_training_export;
+        CREATE FUNCTION weather_export_reachable.probe() RETURNS integer
+        LANGUAGE sql SECURITY DEFINER AS 'SELECT 1';
+        REVOKE ALL ON FUNCTION weather_export_reachable.probe() FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION weather_export_reachable.probe()
+        TO weather_training_export;
+      `);
+      assert.deepEqual(
+        (
+          await trainingExportPool.query(
+            "SELECT weather_public_reachable.invoker_probe() AS value",
+          )
+        ).rows,
+        [{ value: 42 }],
+      );
+      await executeFile(
+        "psql",
+        [
+          "--set=ON_ERROR_STOP=1",
+          "--host",
+          server.host,
+          "--port",
+          String(server.port),
+          "--username",
+          server.user,
+          "--dbname",
+          "weather_test",
+          "--file",
+          runtimeAclPath,
+        ],
+        {
+          env: { ...process.env, PGPASSWORD: server.password },
+          timeout: 30_000,
+        },
+      );
+      const convergedAcl = await adminPool.query(`
+        SELECT
+          NOT has_function_privilege(
+            'weather_api', 'weather_export_acl_probe()', 'EXECUTE'
+          ) AS api_extra_revoked,
+          NOT has_function_privilege(
+            'weather_ingest', 'weather_export_acl_probe()', 'EXECUTE'
+          ) AS ingest_extra_revoked,
+          NOT has_function_privilege(
+            'weather_training_export', 'weather_export_acl_probe()', 'EXECUTE'
+          ) AS export_extra_revoked,
+          has_function_privilege(
+            'weather_ingest',
+            'weather_foreign_acl.split_reachability_probe()',
+            'EXECUTE'
+          ) AS split_reachability_unchanged,
+          NOT has_function_privilege(
+            'weather_api', 'weather_public_reachable.probe()', 'EXECUTE'
+          ) AS public_reachable_revoked,
+          NOT has_function_privilege(
+            'weather_api', 'weather_api_reachable.probe()', 'EXECUTE'
+          ) AS api_reachable_revoked,
+          NOT has_function_privilege(
+            'weather_ingest', 'weather_ingest_reachable.probe()', 'EXECUTE'
+          ) AS ingest_reachable_revoked,
+          NOT has_function_privilege(
+            'weather_training_export', 'weather_export_reachable.probe()', 'EXECUTE'
+          ) AS export_reachable_revoked,
+          has_function_privilege(
+            'weather_api', 'weather_source_is_current(bigint)', 'EXECUTE'
+          ) AS api_intended_retained,
+          has_function_privilege(
+            'weather_ingest', 'weather_json_object_keys_allowed(jsonb,text[])', 'EXECUTE'
+          ) AS ingest_intended_retained,
+          has_function_privilege(
+            'weather_training_export', 'weather_foreign_invoker_probe()', 'EXECUTE'
+          ) AS foreign_invoker_unchanged,
+          (SELECT rolconfig FROM pg_roles WHERE rolname = 'weather_training_export')
+            = ARRAY['default_transaction_read_only=on'] AS settings_reset,
+          NOT EXISTS (
+            SELECT 1 FROM pg_db_role_setting
+            WHERE setrole = 'weather_training_export'::regrole
+              AND setdatabase <> 0
+          ) AS database_settings_reset,
+          NOT EXISTS (
+            SELECT 1 FROM pg_auth_members
+            WHERE member = 'weather_training_export'::regrole
+          ) AS memberships_reset
+      `);
+      assert.deepEqual(convergedAcl.rows[0], {
+        api_extra_revoked: true,
+        api_intended_retained: true,
+        api_reachable_revoked: true,
+        database_settings_reset: true,
+        export_extra_revoked: true,
+        export_reachable_revoked: true,
+        foreign_invoker_unchanged: true,
+        ingest_extra_revoked: true,
+        ingest_intended_retained: true,
+        ingest_reachable_revoked: true,
+        memberships_reset: true,
+        public_reachable_revoked: true,
+        settings_reset: true,
+        split_reachability_unchanged: true,
+      });
+      assert.deepEqual(
+        (
+          await trainingExportPool.query(
+            "SELECT weather_public_reachable.invoker_probe() AS value",
+          )
+        ).rows,
+        [{ value: 42 }],
+      );
+      await assertPrivilegeDenied(
+        trainingExportPool.query("SELECT weather_public_reachable.probe()"),
+      );
+      assert.deepEqual(
+        (await adminPool.query(exportAuthoritySnapshotSql)).rows[0],
+        {
+          ...expectedExportAuthoritySnapshot,
+          schema_privileges: [
+            "public:USAGE",
+            "weather_public_reachable:USAGE",
+          ],
+        },
+      );
+      reconciledTrainingExportPool = createTestPool(
+        server,
+        "weather_test",
+        "weather_training_export",
+        "training-export-test",
+      );
+      assert.deepEqual(
+        (
+          await reconciledTrainingExportPool.query(
+            "SHOW default_transaction_read_only",
+          )
+        ).rows,
+        [{ default_transaction_read_only: "on" }],
+      );
+      const systemAclAfter = await adminPool.query(`
+        SELECT namespace.nspname, procedure.oid::regprocedure::text AS identity, procedure.proacl
+        FROM pg_proc procedure
+        JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+        WHERE namespace.nspname IN ('pg_catalog', 'information_schema', 'pg_toast')
+        ORDER BY namespace.nspname, identity
+      `);
+      assert.deepEqual(systemAclAfter.rows, systemAclBefore.rows);
+      const temporaryAclAfter = await temporaryAclClient.query(`
+        SELECT procedure.proacl
+        FROM pg_proc procedure
+        WHERE procedure.oid = 'pg_temp.weather_temp_acl_probe()'::regprocedure
+      `);
+      assert.deepEqual(temporaryAclAfter.rows, temporaryAclBefore.rows);
     } finally {
       // clean disposable resources
       migrationLockClient?.release();
+      temporaryAclClient?.release();
       await apiPool?.end();
       await ingestPool?.end();
+      await trainingExportPool?.end();
+      await reconciledTrainingExportPool?.end();
       await pool?.end();
+      await adminPool?.end();
       // stop only a started container
       if (server !== undefined) {
         await stopPostgres(server);

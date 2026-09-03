@@ -1,14 +1,37 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
+  canonicalJsonBytes,
+  createForecastAdjustmentRuntimeBundle,
+  createForecastAdjustmentRuntimeLoaderForRoot,
+  FORECAST_ADJUSTMENT_CANONICAL_FORECAST_IDENTITY_V1,
+} from "@weather/forecast-adjustment";
+
+import {
   calendarTrendWindow,
+  createDatabaseWeatherReadStore,
   createWeatherApi,
   createWeatherApiServer,
   readApiRelease,
   siteForecastDayWindow,
 } from "../dist/index.js";
+
+import { createQualifiedFixture } from "../../../packages/forecast-adjustment/test/evidence-fixtures.mjs";
+
+const inactiveAdjustmentRuntime = {
+  activeBundle: null,
+  candidateArtifactSha256: null,
+  evaluationReportSha256: null,
+  loadedAt: "2026-08-22T05:00:00.000Z",
+  qualificationReceiptSha256: null,
+  reasonCode: "registry_inactive",
+  state: "disabled",
+};
 
 const siteRows = [
   {
@@ -59,7 +82,7 @@ const siteRows = [
     siteName: "Ballydidean",
     siteSlug: "ballydidean",
     sourceId: "12",
-    sourceKey: "open-meteo-forecast-v1",
+    sourceKey: "open-meteo-forecast-v4",
     sourceKind: "forecast",
     stationKind: "virtual",
     stationLatitude: 47.950429954185445,
@@ -77,21 +100,52 @@ const currentRecord = makeRecord({
   sourceKey: "open-meteo-current-v1",
   validAt: "2026-08-22T04:50:00.000Z",
 });
+// mirror the first normalized raw v4 fixture record
 const forecastRecord = makeRecord({
+  apparentTemperatureC: 11.7,
+  blackGlobeTemperatureC: null,
+  cloudCoverPercent: 72,
+  deviceModel: null,
+  deviceSerial: null,
+  deviceVendor: null,
   id: "201",
+  lastReceivedAt: "2026-08-22T05:00:00.000Z",
+  pm25MicrogramsPerCubicMeter: 5,
+  precipitationMm: 0.1,
+  precipitationRateMmPerHour: 0.1,
+  pressureHpa: 1018.1,
   productRunAt: "2026-08-22T05:00:00.000Z",
+  providerMetadata: {
+    dataset: "forecast",
+    elevation_m: 32,
+    grid_cell: "47.941,-122.438",
+  },
+  qualityMetadata: null,
+  relativeHumidityPercent: 83,
   sourceId: "12",
   sourceKind: "forecast",
-  sourceKey: "open-meteo-forecast-v1",
+  sourceKey: "open-meteo-forecast-v4",
+  soilElectricalConductivityMicrosiemensPerCm: null,
+  soilMoisturePercent: null,
+  solarRadiationWm2: null,
+  temperatureC: 12.1,
+  upstreamTimezone: "GMT",
+  uvIndex: 0.2,
   validAt: "2026-08-22T06:00:00.000Z",
+  windDirectionDegrees: 180,
+  windGustMps: 3.1,
+  windSpeedMps: 1.8,
+  wetBulbGlobeTemperatureC: null,
 });
 
 // create a deterministic storage record
 function makeRecord(overrides = {}) {
   return {
+    adapterVersion: "forecast-daily/v4",
     apparentTemperatureC: 15.5,
     blackGlobeTemperatureC: 18.4,
     cloudCoverPercent: 42,
+    contractEpoch: FORECAST_ADJUSTMENT_CANONICAL_FORECAST_IDENTITY_V1.contractEpoch,
     deviceModel: "virtual-grid",
     deviceSerial: null,
     deviceVendor: "Open-Meteo",
@@ -120,6 +174,8 @@ function makeRecord(overrides = {}) {
     revisionCount: 0,
     siteSlug: "ballydidean",
     sourceId: "11",
+    sourceConfigFingerprint:
+      FORECAST_ADJUSTMENT_CANONICAL_FORECAST_IDENTITY_V1.sourceConfigFingerprint,
     sourceKey: "open-meteo-reanalysis-v1",
     sourceKind: "reanalysis",
     stationSlug: "open-meteo-virtual",
@@ -237,6 +293,63 @@ function createFixture(overrides = {}, options = {}) {
     historyQueries,
     trendQueries,
   };
+}
+
+// build one qualified active runtime without external services
+async function createActiveForecastRuntime() {
+  const directory = await mkdtemp(join(tmpdir(), "weather-api-adjustment-"));
+  const triple = await createQualifiedFixture(directory);
+  const bundle = createForecastAdjustmentRuntimeBundle(triple);
+  return { bundle, reasonCode: null, state: "active" };
+}
+
+// build one row matching the candidate's immutable v4 identity
+function matchingForecastRecord(overrides = {}) {
+  const identity = FORECAST_ADJUSTMENT_CANONICAL_FORECAST_IDENTITY_V1;
+  return {
+    ...forecastRecord,
+    adapterVersion: identity.adapterVersion,
+    contractEpoch: identity.contractEpoch,
+    providerMetadata: {
+      ...forecastRecord.providerMetadata,
+      dataset: identity.dataset,
+    },
+    sourceConfigFingerprint: identity.sourceConfigFingerprint,
+    sourceKey: identity.sourceKey,
+    upstreamModel: identity.upstreamModel,
+    ...overrides,
+  };
+}
+
+// write one canonical registry pointing at the selected runtime bundle
+async function writeRuntimeRegistry(root, bundle, overrides = {}) {
+  const activeBundle = {
+    bundleSha256: bundle.bundleSha256,
+    candidateArtifactSha256: bundle.candidate.candidateArtifactSha256,
+    evaluationReportSha256:
+      bundle.evaluationReport.evaluationReportSha256,
+    path: `bundles/sha256-${bundle.bundleSha256}.json`,
+    qualificationReceiptSha256:
+      bundle.qualificationReceipt.qualificationReceiptSha256,
+    ...overrides,
+  };
+  await writeFile(
+    join(root, "ballydidean.json"),
+    canonicalJsonBytes({
+      activeBundle,
+      contractVersion: "forecast-adjustment-registry/v1",
+    }),
+  );
+}
+
+// write one canonical runtime bundle at its content-addressed path
+async function writeRuntimeBundle(root, bundle) {
+  const directory = join(root, "ballydidean", "bundles");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, `sha256-${bundle.bundleSha256}.json`),
+    canonicalJsonBytes(bundle),
+  );
 }
 
 test("only exact versioned GET and HEAD routes are public", async () => {
@@ -465,7 +578,8 @@ test("history uses frozen filter names, defaults, maximum, and opaque cursor", a
   assert.equal(oldName.status, 400);
 });
 
-test("forecast returns the latest normalized product within the fixed horizon", async () => {
+// lock the public raw v4 response before adjustment metadata exists
+test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata", async () => {
   const { forecastQueries, handler } = createFixture();
   const response = await handler(
     new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
@@ -478,8 +592,73 @@ test("forecast returns the latest normalized product within the fixed horizon", 
     hours: 24,
     siteSlug: "ballydidean",
   }]);
-  assert.equal(body.data[0].provenance.sourceKind, "forecast");
-  assert.equal(body.data[0].productRunAt, "2026-08-22T05:00:00.000Z");
+  // retain exact serialized field order and public values
+  const rawForecast = {
+    freshness: {
+      ageSeconds: 0,
+      label: "Weather value is current",
+      status: "fresh",
+    },
+    id: "201",
+    metadata: {
+      device: null,
+      provider: {
+        dataset: "forecast",
+        elevationM: 32,
+        gridCell: "47.941,-122.438",
+        propertySensors: null,
+      },
+      quality: null,
+      upstream: {
+        model: "best_match",
+        timezone: "GMT",
+      },
+    },
+    metrics: {
+      apparentTemperatureC: 11.7,
+      blackGlobeTemperatureC: null,
+      cloudCoverPercent: 72,
+      pm25MicrogramsPerCubicMeter: 5,
+      precipitationMm: 0.1,
+      precipitationRateMmPerHour: 0.1,
+      pressureHpa: 1018.1,
+      relativeHumidityPercent: 83,
+      soilElectricalConductivityMicrosiemensPerCm: null,
+      soilMoisturePercent: null,
+      solarRadiationWm2: null,
+      temperatureC: 12.1,
+      uvIndex: 0.2,
+      windDirectionDegrees: 180,
+      windGustMps: 3.1,
+      windSpeedMps: 1.8,
+      wetBulbGlobeTemperatureC: null,
+    },
+    productRunAt: "2026-08-22T05:00:00.000Z",
+    provenance: {
+      attribution: {
+        label: "Weather data by Open-Meteo",
+        url: "https://open-meteo.com/",
+      },
+      label: "forecast model product",
+      providerKey: "open-meteo",
+      sourceId: "12",
+      sourceKey: "open-meteo-forecast-v4",
+      sourceKind: "forecast",
+      stationSlug: "open-meteo-virtual",
+    },
+    receivedAt: "2026-08-22T05:00:00.000Z",
+    revisionCount: 0,
+    validAt: "2026-08-22T06:00:00.000Z",
+    adjustment: {
+      adjustedMetrics: {},
+      appliedMetrics: [],
+      contractVersion: "forecast-adjustment-decision/v1",
+      reasonCode: "registry_inactive",
+      state: "disabled",
+    },
+  };
+  assert.equal(JSON.stringify(body.data[0]), JSON.stringify(rawForecast));
+  assert.deepEqual(body.adjustmentRuntime, inactiveAdjustmentRuntime);
   assert.equal(body.days, 1);
 
   const extendedResponse = await handler(
@@ -493,6 +672,366 @@ test("forecast returns the latest normalized product within the fixed horizon", 
     hours: 240,
     siteSlug: "ballydidean",
   });
+});
+
+test("I-API-02 active runtime adjusts only its enabled metric-band pairs", async () => {
+  const runtime = await createActiveForecastRuntime();
+  const rawRow = matchingForecastRecord();
+  const { handler } = createFixture(
+    {
+      // return one exact candidate-identity row
+      async getForecast() {
+        return [rawRow];
+      },
+    },
+    {
+      forecastAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+  const decision = body.data[0].adjustment;
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data[0].metrics.temperatureC, rawRow.temperatureC);
+  assert.equal(body.data[0].metrics.cloudCoverPercent, rawRow.cloudCoverPercent);
+  assert.equal(decision.state, "active");
+  assert.deepEqual(decision.appliedMetrics, ["temperatureC"]);
+  assert.deepEqual(decision.adjustedMetrics, { temperatureC: 14.1 });
+  assert.equal("cloudCoverPercent" in decision.adjustedMetrics, false);
+  assert.deepEqual(body.adjustmentRuntime, {
+    activeBundle: runtime.bundle.bundleSha256,
+    candidateArtifactSha256:
+      runtime.bundle.candidate.candidateArtifactSha256,
+    evaluationReportSha256:
+      runtime.bundle.evaluationReport.evaluationReportSha256,
+    loadedAt: "2026-08-22T04:59:00.000Z",
+    qualificationReceiptSha256:
+      runtime.bundle.qualificationReceipt.qualificationReceiptSha256,
+    reasonCode: null,
+    state: "active",
+  });
+  assert.doesNotMatch(
+    JSON.stringify(body.adjustmentRuntime),
+    /coefficient|evidence|path|station|training/u,
+  );
+  const healthResponse = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const health = await healthResponse.json();
+  assert.deepEqual(health.data.adjustmentRuntime, body.adjustmentRuntime);
+});
+
+test("I-API-03 runtime identity and lead mismatches fail raw with stable reasons", async () => {
+  const runtime = await createActiveForecastRuntime();
+  const cases = [
+    ["source", { sourceKey: "open-meteo-forecast-v5" }, "identity_mismatch"],
+    ["model", { upstreamModel: "gfs_seamless" }, "identity_mismatch"],
+    ["epoch", { contractEpoch: `legacy-v4/${"0".repeat(64)}` }, "identity_mismatch"],
+    ["adapter", { adapterVersion: "current/v1" }, "identity_mismatch"],
+    [
+      "lead",
+      { validAt: "2026-08-29T06:00:00.000Z" },
+      "unsupported_lead",
+    ],
+  ];
+
+  // verify every immutable identity guard independently
+  for (const [name, overrides, reasonCode] of cases) {
+    const row = matchingForecastRecord(overrides);
+    const { handler } = createFixture(
+      {
+        // return the selected mismatch only
+        async getForecast() {
+          return [row];
+        },
+      },
+      {
+        forecastAdjustment: {
+          loadedAt: "2026-08-22T04:59:00.000Z",
+          runtime,
+        },
+      },
+    );
+    const response = await handler(
+      new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200, name);
+    assert.deepEqual(body.data[0].metrics, {
+      apparentTemperatureC: row.apparentTemperatureC,
+      blackGlobeTemperatureC: row.blackGlobeTemperatureC,
+      cloudCoverPercent: row.cloudCoverPercent,
+      pm25MicrogramsPerCubicMeter: row.pm25MicrogramsPerCubicMeter,
+      precipitationMm: row.precipitationMm,
+      precipitationRateMmPerHour: row.precipitationRateMmPerHour,
+      pressureHpa: row.pressureHpa,
+      relativeHumidityPercent: row.relativeHumidityPercent,
+      soilElectricalConductivityMicrosiemensPerCm:
+        row.soilElectricalConductivityMicrosiemensPerCm,
+      soilMoisturePercent: row.soilMoisturePercent,
+      solarRadiationWm2: row.solarRadiationWm2,
+      temperatureC: row.temperatureC,
+      uvIndex: row.uvIndex,
+      windDirectionDegrees: row.windDirectionDegrees,
+      windGustMps: row.windGustMps,
+      windSpeedMps: row.windSpeedMps,
+      wetBulbGlobeTemperatureC: row.wetBulbGlobeTemperatureC,
+    }, name);
+    assert.equal(body.data[0].adjustment.state, "not_applicable", name);
+    assert.equal(body.data[0].adjustment.reasonCode, reasonCode, name);
+  }
+});
+
+test("I-API-05 adjustment exceptions preserve raw forecast status and metrics", async () => {
+  const runtime = await createActiveForecastRuntime();
+  const rawRow = matchingForecastRecord();
+  const { handler } = createFixture(
+    {
+      // return unchanged v4 storage data
+      async getForecast() {
+        return [rawRow];
+      },
+    },
+    {
+      forecastAdjustment: {
+        // simulate an unexpected model implementation exception
+        apply() {
+          throw new Error("secret coefficient failure");
+        },
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(JSON.stringify(body.data[0].metrics), JSON.stringify({
+    apparentTemperatureC: rawRow.apparentTemperatureC,
+    blackGlobeTemperatureC: rawRow.blackGlobeTemperatureC,
+    cloudCoverPercent: rawRow.cloudCoverPercent,
+    pm25MicrogramsPerCubicMeter: rawRow.pm25MicrogramsPerCubicMeter,
+    precipitationMm: rawRow.precipitationMm,
+    precipitationRateMmPerHour: rawRow.precipitationRateMmPerHour,
+    pressureHpa: rawRow.pressureHpa,
+    relativeHumidityPercent: rawRow.relativeHumidityPercent,
+    soilElectricalConductivityMicrosiemensPerCm:
+      rawRow.soilElectricalConductivityMicrosiemensPerCm,
+    soilMoisturePercent: rawRow.soilMoisturePercent,
+    solarRadiationWm2: rawRow.solarRadiationWm2,
+    temperatureC: rawRow.temperatureC,
+    uvIndex: rawRow.uvIndex,
+    windDirectionDegrees: rawRow.windDirectionDegrees,
+    windGustMps: rawRow.windGustMps,
+    windSpeedMps: rawRow.windSpeedMps,
+    wetBulbGlobeTemperatureC: rawRow.wetBulbGlobeTemperatureC,
+  }));
+  assert.deepEqual(body.data[0].adjustment, {
+    adjustedMetrics: {},
+    appliedMetrics: [],
+    contractVersion: "forecast-adjustment-decision/v1",
+    reasonCode: "adjustment_error",
+    state: "not_applicable",
+  });
+  assert.doesNotMatch(JSON.stringify(body), /secret|coefficient failure/u);
+});
+
+test("I-API-05 provenance permission failures preserve raw API metrics", async () => {
+  const runtime = await createActiveForecastRuntime();
+  const rawRow = matchingForecastRecord({
+    adapterVersion: null,
+    contractEpoch: null,
+    sourceConfigFingerprint: null,
+  });
+  const queries = [];
+  const pool = {
+    // serve raw reads while denying only optional provenance
+    async query(text, values) {
+      queries.push({ text, values });
+
+      // deny the optional view
+      if (text.includes("forecast_runtime_provenance_v1")) {
+        throw Object.assign(new Error("permission denied"), { code: "42501" });
+      }
+
+      // serve public discovery
+      if (text.includes("FROM sites si")) {
+        return { rows: siteRows };
+      }
+
+      // serve the authoritative raw forecast
+      if (text.includes("JOIN LATERAL")) {
+        return { rows: [rawRow] };
+      }
+
+      throw new Error("unexpected database query");
+    },
+  };
+  const store = createDatabaseWeatherReadStore(pool, {
+    migrationAuthorization: null,
+    migrationDirectory: "/unused",
+    release: "test/v1",
+  });
+  const handler = createWeatherApi(store, {
+    forecastAdjustment: {
+      loadedAt: "2026-08-22T04:59:00.000Z",
+      runtime,
+    },
+    // freeze response time
+    now: () => new Date("2026-08-22T05:00:00.000Z"),
+    version: "test/v1",
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(queries.length, 3);
+  assert.doesNotMatch(queries[1].text, /forecast_runtime_provenance_v1/u);
+  assert.match(queries[2].text, /FROM forecast_runtime_provenance_v1/u);
+  assert.equal(JSON.stringify(body.data[0].metrics), JSON.stringify({
+    apparentTemperatureC: rawRow.apparentTemperatureC,
+    blackGlobeTemperatureC: rawRow.blackGlobeTemperatureC,
+    cloudCoverPercent: rawRow.cloudCoverPercent,
+    pm25MicrogramsPerCubicMeter: rawRow.pm25MicrogramsPerCubicMeter,
+    precipitationMm: rawRow.precipitationMm,
+    precipitationRateMmPerHour: rawRow.precipitationRateMmPerHour,
+    pressureHpa: rawRow.pressureHpa,
+    relativeHumidityPercent: rawRow.relativeHumidityPercent,
+    soilElectricalConductivityMicrosiemensPerCm:
+      rawRow.soilElectricalConductivityMicrosiemensPerCm,
+    soilMoisturePercent: rawRow.soilMoisturePercent,
+    solarRadiationWm2: rawRow.solarRadiationWm2,
+    temperatureC: rawRow.temperatureC,
+    uvIndex: rawRow.uvIndex,
+    windDirectionDegrees: rawRow.windDirectionDegrees,
+    windGustMps: rawRow.windGustMps,
+    windSpeedMps: rawRow.windSpeedMps,
+    wetBulbGlobeTemperatureC: rawRow.wetBulbGlobeTemperatureC,
+  }));
+  assert.deepEqual(body.data[0].adjustment, {
+    adjustedMetrics: {},
+    appliedMetrics: [],
+    contractVersion: "forecast-adjustment-decision/v1",
+    reasonCode: "identity_mismatch",
+    state: "not_applicable",
+  });
+  assert.doesNotMatch(JSON.stringify(body), /permission denied|42501/u);
+});
+
+test("I-API-06 invalid runtime trees stay disabled and preserve raw metrics", async () => {
+  const qualifiedDirectory = await mkdtemp(
+    join(tmpdir(), "weather-api-qualified-"),
+  );
+  const triple = await createQualifiedFixture(qualifiedDirectory);
+  const bundle = createForecastAdjustmentRuntimeBundle(triple);
+  const cases = [];
+
+  const missingBundleRoot = await mkdtemp(
+    join(tmpdir(), "weather-api-missing-bundle-"),
+  );
+  await mkdir(join(missingBundleRoot, "ballydidean", "bundles"), {
+    recursive: true,
+  });
+  await writeRuntimeRegistry(missingBundleRoot, bundle);
+  cases.push(["missing bundle", missingBundleRoot, "bundle_missing"]);
+
+  const wrongFilenameRoot = await mkdtemp(
+    join(tmpdir(), "weather-api-wrong-filename-"),
+  );
+  await writeRuntimeBundle(wrongFilenameRoot, bundle);
+  await writeRuntimeRegistry(wrongFilenameRoot, bundle, {
+    path: "bundles/runtime.json",
+  });
+  cases.push(["wrong filename", wrongFilenameRoot, "registry_invalid"]);
+
+  const substitutedReportRoot = await mkdtemp(
+    join(tmpdir(), "weather-api-substituted-report-"),
+  );
+  const substitutedReportBundle = structuredClone(bundle);
+  substitutedReportBundle.evaluationReport.candidateArtifactSha256 =
+    "0".repeat(64);
+  await writeRuntimeBundle(substitutedReportRoot, substitutedReportBundle);
+  await writeRuntimeRegistry(substitutedReportRoot, bundle);
+  cases.push(["substituted report", substitutedReportRoot, "bundle_invalid"]);
+
+  const substitutedReceiptRoot = await mkdtemp(
+    join(tmpdir(), "weather-api-substituted-receipt-"),
+  );
+  const substitutedReceiptBundle = structuredClone(bundle);
+  substitutedReceiptBundle.qualificationReceipt.evaluationReportSha256 =
+    "f".repeat(64);
+  await writeRuntimeBundle(substitutedReceiptRoot, substitutedReceiptBundle);
+  await writeRuntimeRegistry(substitutedReceiptRoot, bundle);
+  cases.push(["substituted receipt", substitutedReceiptRoot, "bundle_invalid"]);
+
+  const forbiddenFieldRoot = await mkdtemp(
+    join(tmpdir(), "weather-api-forbidden-field-"),
+  );
+  const forbiddenFieldBundle = structuredClone(bundle);
+  forbiddenFieldBundle.privateEvidencePath = "/secret/evidence";
+  await writeRuntimeBundle(forbiddenFieldRoot, forbiddenFieldBundle);
+  await writeRuntimeRegistry(forbiddenFieldRoot, bundle);
+  cases.push(["forbidden field", forbiddenFieldRoot, "bundle_invalid"]);
+
+  // exercise every loader failure through the public forecast response
+  for (const [name, root, reasonCode] of cases) {
+    const runtime = await createForecastAdjustmentRuntimeLoaderForRoot(root).load();
+    const rawRow = matchingForecastRecord();
+    const { handler } = createFixture(
+      {
+        // preserve the same v4 result for every invalid runtime
+        async getForecast() {
+          return [rawRow];
+        },
+      },
+      {
+        forecastAdjustment: {
+          loadedAt: "2026-08-22T04:59:00.000Z",
+          runtime,
+        },
+      },
+    );
+    const response = await handler(
+      new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+    );
+    const body = await response.json();
+
+    assert.equal(response.status, 200, name);
+    assert.equal(body.adjustmentRuntime.activeBundle, null, name);
+    assert.equal(body.adjustmentRuntime.reasonCode, reasonCode, name);
+    assert.equal(body.data[0].metrics.temperatureC, rawRow.temperatureC, name);
+    assert.equal(body.data[0].adjustment.reasonCode, reasonCode, name);
+    assert.doesNotMatch(JSON.stringify(body), /secret|privateEvidencePath/u);
+  }
+});
+
+test("I-API-04 archive-only Previous Runs remains absent from live reads", async () => {
+  const { handler } = createFixture();
+  const sitesResponse = await handler(
+    new Request("http://weather.test/api/v1/sites"),
+  );
+  const sites = await sitesResponse.json();
+  const previousRunsResponse = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/previous-runs"),
+  );
+
+  assert.equal(previousRunsResponse.status, 404);
+  assert.equal(
+    JSON.stringify(sites).includes("open-meteo-previous-runs-v1"),
+    false,
+  );
 });
 
 test("daily precipitation uses the site-local day and nearest physical gauge", async () => {
@@ -648,6 +1187,7 @@ test("health is allowlisted and reports migration readiness and coarse freshness
   assert.equal(response.status, 200);
   assert.deepEqual(body, {
     data: {
+      adjustmentRuntime: inactiveAdjustmentRuntime,
       database: "ready",
       live: true,
       migration: { status: "current", version: "0001_initial_weather.sql" },
@@ -657,6 +1197,7 @@ test("health is allowlisted and reports migration readiness and coarse freshness
     },
   });
   assert.deepEqual(Object.keys(body.data).sort(), [
+    "adjustmentRuntime",
     "database",
     "live",
     "migration",
@@ -744,6 +1285,7 @@ test("health failures stay live, fail readiness, and redact raw database errors"
 
   assert.equal(response.status, 503);
   assert.deepEqual(body.data, {
+    adjustmentRuntime: inactiveAdjustmentRuntime,
     database: "unavailable",
     live: true,
     migration: { status: "unavailable", version: null },

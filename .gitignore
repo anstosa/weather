@@ -4,6 +4,8 @@ coverage/
 *.log
 *.tsbuildinfo
 .DS_Store
+.weather-data/
+.weather-models/
 .env
 .env.*
 !.env.example

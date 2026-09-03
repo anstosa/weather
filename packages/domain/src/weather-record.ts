@@ -29,6 +29,38 @@ export const CANONICAL_UNITS = {
 
 export type MetricName = keyof typeof CANONICAL_UNITS;
 
+// describe one canonical metric domain
+export interface MetricBounds {
+  readonly maximum: number;
+  readonly minimum: number;
+  readonly maximumExclusive?: boolean;
+}
+
+// freeze every canonical metric domain
+export const METRIC_BOUNDS: Readonly<Record<MetricName, MetricBounds>> = {
+  apparentTemperatureC: { maximum: 70, minimum: -100 },
+  blackGlobeTemperatureC: { maximum: 125, minimum: -100 },
+  cloudCoverPercent: { maximum: 100, minimum: 0 },
+  pm25MicrogramsPerCubicMeter: { maximum: 999, minimum: 0 },
+  precipitationMm: { maximum: 2_000, minimum: 0 },
+  precipitationRateMmPerHour: { maximum: 10_000, minimum: 0 },
+  pressureHpa: { maximum: 1_200, minimum: 100 },
+  relativeHumidityPercent: { maximum: 100, minimum: 0 },
+  soilElectricalConductivityMicrosiemensPerCm: {
+    maximum: 10_000,
+    minimum: 0,
+  },
+  soilMoisturePercent: { maximum: 100, minimum: 0 },
+  solarRadiationWm2: { maximum: 2_500, minimum: 0 },
+  temperatureC: { maximum: 70, minimum: -100 },
+  uvIndex: { maximum: 20, minimum: 0 },
+  waterLevelM: { maximum: 30, minimum: -20 },
+  windDirectionDegrees: { maximum: 360, maximumExclusive: true, minimum: 0 },
+  windGustMps: { maximum: 150, minimum: 0 },
+  windSpeedMps: { maximum: 150, minimum: 0 },
+  wetBulbGlobeTemperatureC: { maximum: 125, minimum: -100 },
+};
+
 export interface CanonicalWeatherMetrics {
   readonly apparentTemperatureC: number | null;
   readonly blackGlobeTemperatureC: number | null;
@@ -183,24 +215,7 @@ export function createNormalizedWeatherRecord(
     throw new RangeError("forecast records require productRunAt");
   }
 
-  const metricKeys = Object.keys(input.metrics);
-
-  // require the exact canonical metric set
-  if (
-    metricKeys.length !== METRIC_NAMES.length ||
-    METRIC_NAMES.some((metric) => !(metric in input.metrics)) ||
-    metricKeys.some((metric) => !METRIC_NAMES.includes(metric as MetricName))
-  ) {
-    throw new RangeError("record metrics must use the complete canonical metric set");
-  }
-
-  // validate every metric
-  for (const [metric, value] of Object.entries(input.metrics)) {
-    // preserve null metrics
-    if (value !== null) {
-      validateMetricValue(metric as MetricName, value);
-    }
-  }
+  const metrics = validateCanonicalWeatherMetrics(input.metrics);
 
   const metadata = validateWeatherRecordMetadata(input.metadata);
 
@@ -211,13 +226,39 @@ export function createNormalizedWeatherRecord(
 
   return {
     metadata,
-    metrics: { ...input.metrics },
+    metrics,
     productRunAt,
     receivedAt,
     sourceId: input.sourceId,
     sourceKind,
     validAt,
   };
+}
+
+// validate the complete canonical metric shape
+export function validateCanonicalWeatherMetrics(
+  metrics: CanonicalWeatherMetrics,
+): CanonicalWeatherMetrics {
+  const metricKeys = Object.keys(metrics);
+
+  // require the exact canonical metric set
+  if (
+    metricKeys.length !== METRIC_NAMES.length ||
+    METRIC_NAMES.some((metric) => !(metric in metrics)) ||
+    metricKeys.some((metric) => !METRIC_NAMES.includes(metric as MetricName))
+  ) {
+    throw new RangeError("record metrics must use the complete canonical metric set");
+  }
+
+  // validate every metric
+  for (const [metric, value] of Object.entries(metrics)) {
+    // preserve null metrics
+    if (value !== null) {
+      validateMetricValue(metric as MetricName, value);
+    }
+  }
+
+  return { ...metrics };
 }
 
 // build stable storage identity
@@ -433,9 +474,9 @@ function convertMetricValue(
   throw new RangeError(`${unit} is not supported for ${metric}`);
 }
 
-// enforce metric bounds
-function validateMetricValue(metric: MetricName, value: number): void {
-  const range = metricRange(metric);
+// enforce canonical metric bounds
+export function validateMetricValue(metric: MetricName, value: number): void {
+  const range = METRIC_BOUNDS[metric];
 
   // reject impossible values
   if (!Number.isFinite(value) || value < range.minimum || value > range.maximum) {
@@ -444,88 +485,14 @@ function validateMetricValue(metric: MetricName, value: number): void {
     );
   }
 
-  // reject circular duplicate direction
-  if (metric === "windDirectionDegrees" && value === 360) {
-    throw new RangeError("windDirectionDegrees must be less than 360");
+  // reject exclusive maxima
+  if (range.maximumExclusive === true && value === range.maximum) {
+    throw new RangeError(`${metric} must be less than ${range.maximum}`);
   }
-}
-
-// map metric ranges
-function metricRange(
-  metric: MetricName,
-): Readonly<{ maximum: number; minimum: number }> {
-  // map temperature range
-  if (metric === "temperatureC" || metric === "apparentTemperatureC") {
-    return { maximum: 70, minimum: -100 };
-  }
-
-  // map heat stress temperatures
-  if (
-    metric === "blackGlobeTemperatureC" ||
-    metric === "wetBulbGlobeTemperatureC"
-  ) {
-    return { maximum: 125, minimum: -100 };
-  }
-
-  // map percentage range
-  if (
-    metric === "relativeHumidityPercent" ||
-    metric === "cloudCoverPercent" ||
-    metric === "soilMoisturePercent"
-  ) {
-    return { maximum: 100, minimum: 0 };
-  }
-
-  // map precipitation range
-  if (metric === "precipitationMm") {
-    return { maximum: 2_000, minimum: 0 };
-  }
-
-  // map precipitation rate range
-  if (metric === "precipitationRateMmPerHour") {
-    return { maximum: 10_000, minimum: 0 };
-  }
-
-  // map wind range
-  if (metric === "windSpeedMps" || metric === "windGustMps") {
-    return { maximum: 150, minimum: 0 };
-  }
-
-  // map pressure range
-  if (metric === "pressureHpa") {
-    return { maximum: 1_200, minimum: 100 };
-  }
-
-  // map particulate range
-  if (metric === "pm25MicrogramsPerCubicMeter") {
-    return { maximum: 999, minimum: 0 };
-  }
-
-  // map soil conductivity range
-  if (metric === "soilElectricalConductivityMicrosiemensPerCm") {
-    return { maximum: 10_000, minimum: 0 };
-  }
-
-  // map solar radiation range
-  if (metric === "solarRadiationWm2") {
-    return { maximum: 2_500, minimum: 0 };
-  }
-
-  // map UV range
-  if (metric === "uvIndex") {
-    return { maximum: 20, minimum: 0 };
-  }
-
-  // map coastal water-level range
-  if (metric === "waterLevelM") {
-    return { maximum: 30, minimum: -20 };
-  }
-
-  return { maximum: 360, minimum: 0 };
 }
 
 // validate record metadata
-function validateWeatherRecordMetadata(
+export function validateWeatherRecordMetadata(
   metadata: WeatherRecordMetadata,
 ): WeatherRecordMetadata {
   // reject unknown metadata fields

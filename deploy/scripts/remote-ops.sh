@@ -15,6 +15,9 @@ if [[ ! -d "$deploy_dir" ]]; then
   exit 1
 fi
 
+# shellcheck source=common.sh
+source "$deploy_dir/scripts/common.sh"
+
 (($# >= 1)) || { printf 'error: missing operation\n' >&2; exit 2; }
 action=$1
 shift
@@ -44,6 +47,12 @@ case "$action" in
       exit 2
     }
     exec "$deploy_dir/scripts/update.sh" "$action" "$1"
+    ;;
+  # export only one fixed Ballydidean date window
+  forecast-training-export)
+    (($# == 2)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
+    validate_calendar_date_range "$1" "$2" 450
+    exec "$deploy_dir/scripts/forecast-training-export.sh" "$1" "$2"
     ;;
   *) printf 'error: operation denied\n' >&2; exit 126 ;;
 esac

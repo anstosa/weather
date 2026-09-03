@@ -83,12 +83,18 @@ export function createTestPool(
 // create runtime roles before grants execute
 export async function createRuntimeRoles(pool) {
   await pool.query(`
+    CREATE ROLE weather_owner
+      NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
     CREATE ROLE weather_api
       LOGIN PASSWORD 'api-test'
       NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
     CREATE ROLE weather_ingest
       LOGIN PASSWORD 'ingest-test'
       NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+    CREATE ROLE weather_training_export
+      LOGIN PASSWORD 'training-export-test'
+      NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    ALTER ROLE weather_training_export SET default_transaction_read_only = on;
   `);
 }
 

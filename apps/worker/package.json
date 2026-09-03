@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build:dependencies && tsc -p tsconfig.json",
-    "build:dependencies": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers",
+    "build:dependencies": "npm run build --workspace @weather/domain && npm run build --workspace @weather/database && npm run build --workspace @weather/providers && npm run build --workspace @weather/forecast-adjustment",
     "health": "node dist/health.js",
     "start": "npm run build && node dist/worker.js",
     "test": "npm run build && node --test test/*.test.mjs",
@@ -19,11 +19,15 @@
     "weather:tempest:backfill": "npm run build && node dist/tempest-backfill-cli.js",
     "weather:public-stations:backfill": "npm run build && node dist/public-stations-backfill-cli.js",
     "weather:backfill": "npm run build && node dist/backfill-cli.js",
+    "weather:forecast-adjustment:bundle": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-bundle-cli.js",
+    "weather:forecast-adjustment:evaluate": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-evaluate-cli.js",
+    "weather:forecast-adjustment:evidence": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-evidence-cli.js",
     "typecheck": "npm run build:dependencies && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@weather/database": "0.0.0",
     "@weather/domain": "0.0.0",
+    "@weather/forecast-adjustment": "0.0.0",
     "@weather/providers": "0.0.0"
   }
 }

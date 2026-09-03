@@ -21,18 +21,27 @@ const textExtensions = new Set([
   ".yaml",
 ]);
 const expectedProjectDependencies = new Map([
-  ["@weather/api", new Set(["@weather/database", "@weather/domain"])],
+  [
+    "@weather/api",
+    new Set([
+      "@weather/database",
+      "@weather/domain",
+      "@weather/forecast-adjustment",
+    ]),
+  ],
   ["@weather/web", new Set()],
   [
     "@weather/worker",
     new Set([
       "@weather/database",
       "@weather/domain",
+      "@weather/forecast-adjustment",
       "@weather/providers",
     ]),
   ],
   ["@weather/database", new Set(["@weather/domain"])],
   ["@weather/domain", new Set()],
+  ["@weather/forecast-adjustment", new Set(["@weather/domain"])],
   ["@weather/providers", new Set(["@weather/domain"])],
 ]);
 const importRules = [
@@ -49,15 +58,24 @@ const importRules = [
     pathPrefix: "packages/providers/src/",
   },
   {
+    allowed: new Set(["@weather/domain"]),
+    pathPrefix: "packages/forecast-adjustment/src/",
+  },
+  {
     allowed: new Set([
       "@weather/database",
       "@weather/domain",
+      "@weather/forecast-adjustment",
       "@weather/providers",
     ]),
     pathPrefix: "apps/worker/src/",
   },
   {
-    allowed: new Set(["@weather/database", "@weather/domain"]),
+    allowed: new Set([
+      "@weather/database",
+      "@weather/domain",
+      "@weather/forecast-adjustment",
+    ]),
     pathPrefix: "apps/api/src/",
   },
   {

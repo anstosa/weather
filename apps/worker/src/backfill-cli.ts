@@ -6,11 +6,13 @@ import {
   acquireSourceSession,
   assertSupportedPostgres,
   completeBackfillIngestion,
+  completeForecastAnchorBackfillIngestion,
   createDatabasePool,
   failIngestionRun,
   hasSuccessfulBackfillChunk,
   startIngestionRun,
   type SiteConfiguration,
+  type SiteConfigurationSource,
   type SourceSession,
 } from "@weather/database";
 import {
@@ -22,10 +24,18 @@ import {
 import {
   OPEN_METEO_ARCHIVE_ADAPTER_VERSION,
   OPEN_METEO_ARCHIVE_CHUNK_PLAN_VERSION,
+  OPEN_METEO_PREVIOUS_RUNS_ADAPTER_VERSION,
+  OPEN_METEO_PREVIOUS_RUNS_CHUNK_PLAN_VERSION,
+  OPEN_METEO_PREVIOUS_RUNS_CONTRACT_EPOCH,
+  OPEN_METEO_PREVIOUS_RUNS_CONTRACT_VERSION,
+  OPEN_METEO_PREVIOUS_RUNS_MAXIMUM_CHUNK_DAYS,
   asProviderFailure,
   createOpenMeteoHistoricalOperation,
+  createOpenMeteoPreviousRunsOperation,
   fetchOpenMeteoArchive,
+  fetchOpenMeteoPreviousRuns,
   type OpenMeteoHistoricalOperation,
+  type OpenMeteoPreviousRunsOperation,
   type ProviderFetchOptions,
 } from "@weather/providers";
 
@@ -97,6 +107,8 @@ interface BackfillRepository {
   readonly abandonExpiredRuns: typeof abandonExpiredRuns;
   readonly acquireSourceSession: typeof acquireSourceSession;
   readonly completeBackfillIngestion: typeof completeBackfillIngestion;
+  readonly completeForecastAnchorBackfillIngestion:
+    typeof completeForecastAnchorBackfillIngestion;
   readonly failIngestionRun: typeof failIngestionRun;
   readonly hasSuccessfulBackfillChunk: typeof hasSuccessfulBackfillChunk;
   readonly startIngestionRun: typeof startIngestionRun;
@@ -104,6 +116,7 @@ interface BackfillRepository {
 
 interface BackfillExecutionOptions {
   readonly fetchArchive?: OpenMeteoHistoricalOperation;
+  readonly fetchPreviousRuns?: OpenMeteoPreviousRunsOperation;
   readonly fetchOptions?: ProviderFetchOptions;
   readonly now?: () => Date;
   readonly repository?: BackfillRepository;
@@ -113,10 +126,25 @@ const databaseRepository: BackfillRepository = {
   abandonExpiredRuns,
   acquireSourceSession,
   completeBackfillIngestion,
+  completeForecastAnchorBackfillIngestion,
   failIngestionRun,
   hasSuccessfulBackfillChunk,
   startIngestionRun,
 };
+
+// identify the legacy weather-record route
+interface ArchiveBackfillContract {
+  readonly kind: "archive";
+}
+
+// identify the fixed-anchor route
+interface PreviousRunsBackfillContract {
+  readonly contractEpoch: typeof OPEN_METEO_PREVIOUS_RUNS_CONTRACT_EPOCH;
+  readonly kind: "previous_runs";
+}
+
+// constrain supported Open-Meteo backfills
+type BackfillContract = ArchiveBackfillContract | PreviousRunsBackfillContract;
 
 // parse the one-shot CLI contract
 export function parseBackfillArguments(
@@ -241,6 +269,43 @@ export function planBackfillChunks(
   return chunks;
 }
 
+// plan deterministic inclusive UTC chunks
+export function planPreviousRunsBackfillChunks(
+  arguments_: Pick<BackfillArguments, "chunkDays" | "from" | "to"> &
+    Readonly<{
+      sourceConfigFingerprint: string;
+      sourceId: string;
+    }>,
+): readonly PlannedBackfillChunk[] {
+  const chunks: PlannedBackfillChunk[] = [];
+  let startDate = arguments_.from;
+
+  // cover the inclusive requested UTC date range
+  while (startDate <= arguments_.to) {
+    const maximumEnd = addCalendarDays(startDate, arguments_.chunkDays - 1);
+    const endDate = maximumEnd < arguments_.to ? maximumEnd : arguments_.to;
+    const identity = createBackfillChunkIdentity({
+      adapterVersion: OPEN_METEO_PREVIOUS_RUNS_ADAPTER_VERSION,
+      chunkPlanVersion: OPEN_METEO_PREVIOUS_RUNS_CHUNK_PLAN_VERSION,
+      intervalEndExclusive: `${addCalendarDays(endDate, 1)}T00:00:00.000Z`,
+      intervalStart: `${startDate}T00:00:00.000Z`,
+      requestedFromDate: arguments_.from,
+      requestedToDate: arguments_.to,
+      sourceConfigFingerprint: arguments_.sourceConfigFingerprint,
+      sourceId: arguments_.sourceId,
+    });
+    chunks.push({
+      endDate,
+      identity,
+      key: backfillChunkKey(identity),
+      startDate,
+    });
+    startDate = addCalendarDays(endDate, 1);
+  }
+
+  return chunks;
+}
+
 // execute a sequential exact-identity backfill
 export async function executeBackfill(
   pool: DatabasePool,
@@ -252,19 +317,19 @@ export async function executeBackfill(
   assertBackfillSite(arguments_.site, site.site.key);
   const repository = options.repository ?? databaseRepository;
   const fetchArchive = options.fetchArchive ?? fetchOpenMeteoArchive;
+  const fetchPreviousRuns =
+    options.fetchPreviousRuns ?? fetchOpenMeteoPreviousRuns;
   const now = options.now ?? defaultNow;
   const sourceConfiguration = site.sources.find(
     (candidate) => candidate.key === source.key,
   );
 
-  // require the historical source capability
-  if (
-    sourceConfiguration === undefined ||
-    sourceConfiguration.sourceKind !== "reanalysis" ||
-    !sourceConfiguration.capabilities.includes("historical")
-  ) {
+  // require one configured source identity
+  if (sourceConfiguration === undefined) {
     throw new Error("selected source does not support historical ingestion");
   }
+
+  const contract = requireBackfillContract(sourceConfiguration);
 
   // reject identity drift before resume reads locks or provider I/O
   if (
@@ -276,15 +341,23 @@ export async function executeBackfill(
     throw new Error("source identity does not match configuration");
   }
 
-  requireArchiveContract(sourceConfiguration.adapterConfig);
-  const chunks = planBackfillChunks({
-    chunkDays: arguments_.chunkDays,
-    from: arguments_.from,
-    sourceConfigFingerprint: sourceConfiguration.fingerprint,
-    sourceId: source.id,
-    timezone: source.timezone,
-    to: arguments_.to,
-  });
+  // select the contract-specific calendar planner
+  const chunks = contract.kind === "archive"
+    ? planBackfillChunks({
+        chunkDays: arguments_.chunkDays,
+        from: arguments_.from,
+        sourceConfigFingerprint: sourceConfiguration.fingerprint,
+        sourceId: source.id,
+        timezone: source.timezone,
+        to: arguments_.to,
+      })
+    : planPreviousRunsBackfillChunks({
+        chunkDays: arguments_.chunkDays,
+        from: arguments_.from,
+        sourceConfigFingerprint: sourceConfiguration.fingerprint,
+        sourceId: source.id,
+        to: arguments_.to,
+      });
   const reports: BackfillChunkReport[] = [];
 
   // execute each chunk with one retained source session
@@ -339,7 +412,9 @@ export async function executeBackfill(
       session,
       repository,
       fetchArchive,
+      fetchPreviousRuns,
       chunk,
+      contract,
       source,
       now,
       options.fetchOptions,
@@ -356,12 +431,14 @@ export async function executeBackfill(
   return createBackfillReport(arguments_, source, reports, 0);
 }
 
-// execute one committed archive chunk
+// execute one committed historical chunk
 async function executeBackfillChunk(
   session: SourceSession,
   repository: BackfillRepository,
   fetchArchive: OpenMeteoHistoricalOperation,
+  fetchPreviousRuns: OpenMeteoPreviousRunsOperation,
   chunk: PlannedBackfillChunk,
+  contract: BackfillContract,
   source: BackfillSource,
   now: () => Date,
   fetchOptions: ProviderFetchOptions | undefined,
@@ -379,37 +456,80 @@ async function executeBackfillChunk(
       chunkPlanVersion: chunk.identity.chunkPlanVersion,
       deadlineAt: deadlines.runDeadlineAt,
       mode: "backfill",
-      requestMetadata: {
-        end_date: chunk.endDate,
-        endpoint: "archive/hourly",
-        start_date: chunk.startDate,
-      },
+      // retain the selected provider endpoint
+      requestMetadata: contract.kind === "archive"
+        ? {
+            end_date: chunk.endDate,
+            endpoint: "archive/hourly",
+            start_date: chunk.startDate,
+          }
+        : {
+            end_date: chunk.endDate,
+            endpoint: "previous-runs/forecast",
+            start_date: chunk.startDate,
+          },
       requestedEndExclusive: chunk.identity.intervalEndExclusive,
       requestedStart: chunk.identity.intervalStart,
       sourceConfigFingerprint: chunk.identity.sourceConfigFingerprint,
     });
     runId = started.id;
-    const batch = await fetchArchive(
-      {
-        endDate: chunk.endDate,
-        latitude: source.latitude,
-        longitude: source.longitude,
-        sourceId: source.id,
-        startDate: chunk.startDate,
-        timezone: source.timezone,
-      },
-      { ...fetchOptions, deadlineAt: deadlines.providerDeadlineAt, now },
-    );
-    attempts = batch.attempts;
-    assertRecordsWithinChunk(batch.records, chunk.identity);
-    await repository.completeBackfillIngestion(session, {
-      attempts,
-      identity: chunk.identity,
-      records: batch.records,
-      responseMetadata: batch.responseMetadata,
-      runId,
-      upstreamResponseChecksum: batch.checksum,
-    });
+    const providerOptions = {
+      ...fetchOptions,
+      deadlineAt: deadlines.providerDeadlineAt,
+      now,
+    };
+
+    // dispatch the exact configured storage contract
+    if (contract.kind === "archive") {
+      const batch = await fetchArchive(
+        {
+          endDate: chunk.endDate,
+          latitude: source.latitude,
+          longitude: source.longitude,
+          sourceId: source.id,
+          startDate: chunk.startDate,
+          timezone: source.timezone,
+        },
+        providerOptions,
+      );
+      attempts = batch.attempts;
+      assertRecordsWithinChunk(batch.records, chunk.identity, "archive");
+      await repository.completeBackfillIngestion(session, {
+        attempts,
+        identity: chunk.identity,
+        records: batch.records,
+        responseMetadata: batch.responseMetadata,
+        runId,
+        upstreamResponseChecksum: batch.checksum,
+      });
+    } else {
+      const batch = await fetchPreviousRuns(
+        {
+          contractEpoch: contract.contractEpoch,
+          endDate: chunk.endDate,
+          locations: [
+            {
+              latitude: source.latitude,
+              longitude: source.longitude,
+              sourceConfigFingerprint: chunk.identity.sourceConfigFingerprint,
+              sourceId: source.id,
+            },
+          ],
+          startDate: chunk.startDate,
+        },
+        providerOptions,
+      );
+      attempts = batch.attempts;
+      assertRecordsWithinChunk(batch.records, chunk.identity, "Previous Runs");
+      await repository.completeForecastAnchorBackfillIngestion(session, {
+        attempts,
+        identity: chunk.identity,
+        records: batch.records,
+        responseMetadata: batch.responseMetadata,
+        runId,
+        upstreamResponseChecksum: batch.checksum,
+      });
+    }
     result = {
       ok: true,
       report: {
@@ -453,14 +573,24 @@ async function executeBackfillChunk(
 
   // retain the primary chunk outcome when cleanup also fails
   if (releaseError !== null) {
+    // preserve an already committed success
+    if (result.report.status === "completed") {
+      return {
+        ok: true,
+        report: {
+          ...result.report,
+          secondaryError: combineWorkerDiagnostics([
+            { label: "release", value: releaseError },
+          ]),
+        },
+      };
+    }
+
     return {
       ok: false,
       report: {
         ...result.report,
-        errorCode:
-          result.report.status === "completed"
-            ? "session_release_failed"
-            : result.report.errorCode,
+        errorCode: result.report.errorCode,
         secondaryError: combineWorkerDiagnostics([
           { label: "finalization", value: result.report.secondaryError },
           { label: "release", value: releaseError },
@@ -477,10 +607,11 @@ async function executeBackfillChunk(
 function assertRecordsWithinChunk(
   records: readonly Readonly<{ validAt: string }>[],
   identity: BackfillChunkIdentity,
+  payloadName: "archive" | "Previous Runs",
 ): void {
   // reject successful empty chunks
   if (records.length === 0) {
-    throw new Error("archive payload contained no records");
+    throw new Error(`${payloadName} payload contained no records`);
   }
 
   // reject out-of-window provider records
@@ -491,7 +622,9 @@ function assertRecordsWithinChunk(
         record.validAt >= identity.intervalEndExclusive,
     )
   ) {
-    throw new Error("archive payload contained records outside the requested chunk");
+    throw new Error(
+      `${payloadName} payload contained records outside the requested chunk`,
+    );
   }
 }
 
@@ -531,22 +664,22 @@ function createBackfillReport(
   };
 }
 
-// resolve one configured active archive source
+// resolve one configured active historical source
 export async function resolveBackfillSource(
   pool: DatabasePool,
   site: SiteConfiguration,
   sourceKey: string | null,
 ): Promise<BackfillSource> {
   const configuredSource = site.sources.find(
+    // retain the exact archive key as the default
     (candidate) =>
-      candidate.sourceKind === "reanalysis" &&
       candidate.capabilities.includes("historical") &&
-      (sourceKey === null || candidate.key === sourceKey),
+      candidate.key === (sourceKey ?? "open-meteo-reanalysis-v1"),
   );
 
   // require one configured historical source
   if (configuredSource === undefined) {
-    throw new Error("no configured Open-Meteo reanalysis source matches the request");
+    throw new Error("no configured Open-Meteo historical source matches the request");
   }
 
   const result = await pool.query<{
@@ -593,7 +726,7 @@ export async function resolveBackfillSource(
 
   // reject absent or unsupported sources
   if (row === undefined) {
-    throw new Error("no active Open-Meteo reanalysis source matches the request");
+    throw new Error("no active Open-Meteo historical source matches the request");
   }
 
   const source: BackfillSource = {
@@ -634,6 +767,9 @@ export async function runBackfillCli(
   const fetchArchive = createOpenMeteoHistoricalOperation(
     configuration.openMeteoCompatibilityOrigin,
   );
+  const fetchPreviousRuns = createOpenMeteoPreviousRunsOperation(
+    configuration.openMeteoCompatibilityOrigin,
+  );
 
   try {
     await assertSupportedPostgres(pool);
@@ -647,7 +783,7 @@ export async function runBackfillCli(
       parsed,
       configuration.site,
       source,
-      { fetchArchive },
+      { fetchArchive, fetchPreviousRuns },
     );
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
 
@@ -673,6 +809,40 @@ function assertBackfillSite(requested: string, configured: string): void {
   }
 }
 
+// resolve the exact historical storage contract
+function requireBackfillContract(
+  source: SiteConfigurationSource,
+): BackfillContract {
+  // retain the legacy archive contract
+  if (
+    source.key === "open-meteo-reanalysis-v1" &&
+    source.sourceKind === "reanalysis" &&
+    source.capabilities.length === 1 &&
+    source.capabilities[0] === "historical" &&
+    source.cadenceSeconds === null
+  ) {
+    requireArchiveContract(source.adapterConfig);
+    return { kind: "archive" };
+  }
+
+  // require an unscheduled historical forecast identity
+  if (
+    source.key === "open-meteo-previous-runs-v1" &&
+    source.sourceKind === "forecast" &&
+    source.capabilities.length === 1 &&
+    source.capabilities[0] === "historical" &&
+    source.cadenceSeconds === null
+  ) {
+    requirePreviousRunsContract(source.adapterConfig);
+    return {
+      contractEpoch: OPEN_METEO_PREVIOUS_RUNS_CONTRACT_EPOCH,
+      kind: "previous_runs",
+    };
+  }
+
+  throw new Error("selected source does not support historical ingestion");
+}
+
 // validate the frozen archive contract
 function requireArchiveContract(adapterConfig: unknown): void {
   // reject changed source semantics
@@ -686,6 +856,55 @@ function requireArchiveContract(adapterConfig: unknown): void {
     adapterConfig.maximumChunkDays !== 14
   ) {
     throw new Error("source adapter contract must be archive-hourly/v1 with 14-day chunks");
+  }
+}
+
+// validate the frozen Previous Runs contract
+function requirePreviousRunsContract(adapterConfig: unknown): void {
+  const expectedLeadHours = [24, 48, 72, 96, 120, 144, 168];
+  const expectedVariables = [
+    "temperature",
+    "apparent_temperature",
+    "relative_humidity",
+    "precipitation",
+    "cloud_cover",
+    "wind_speed",
+    "wind_gust",
+    "wind_direction",
+    "surface_pressure",
+  ];
+
+  // reject changed fixed-anchor semantics
+  if (
+    typeof adapterConfig !== "object" ||
+    adapterConfig === null ||
+    Array.isArray(adapterConfig) ||
+    !("contractVersion" in adapterConfig) ||
+    adapterConfig.contractVersion !== OPEN_METEO_PREVIOUS_RUNS_CONTRACT_VERSION ||
+    !("contractEpoch" in adapterConfig) ||
+    adapterConfig.contractEpoch !== OPEN_METEO_PREVIOUS_RUNS_CONTRACT_EPOCH ||
+    !("model" in adapterConfig) ||
+    adapterConfig.model !== "best_match" ||
+    !("maximumChunkDays" in adapterConfig) ||
+    adapterConfig.maximumChunkDays !== OPEN_METEO_PREVIOUS_RUNS_MAXIMUM_CHUNK_DAYS ||
+    !("leadHours" in adapterConfig) ||
+    !Array.isArray(adapterConfig.leadHours) ||
+    adapterConfig.leadHours.length !== expectedLeadHours.length ||
+    adapterConfig.leadHours.some(
+      // compare every frozen fixed lead by position
+      (leadHours, index) => leadHours !== expectedLeadHours[index],
+    ) ||
+    !("variables" in adapterConfig) ||
+    !Array.isArray(adapterConfig.variables) ||
+    adapterConfig.variables.length !== expectedVariables.length ||
+    adapterConfig.variables.some(
+      // compare every frozen base variable by position
+      (variable, index) => variable !== expectedVariables[index],
+    )
+  ) {
+    throw new Error(
+      "source adapter contract must be previous-runs-hourly/v1 with fixed 24-168 hour leads and 14-day chunks",
+    );
   }
 }
 

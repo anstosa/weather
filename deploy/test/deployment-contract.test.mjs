@@ -248,6 +248,7 @@ test("database and connector secrets are scoped to least-privilege consumers", (
     "weather_postgres_api_password",
     "weather_postgres_ingest_password",
     "weather_postgres_owner_password",
+    "weather_postgres_training_export_password",
   ]);
   assert.equal(
     compose.services.postgres.environment.POSTGRES_PASSWORD_FILE,
@@ -258,14 +259,26 @@ test("database and connector secrets are scoped to least-privilege consumers", (
   for (const [name, service] of Object.entries(compose.services)) {
     if (name !== "postgres") {
       assert.equal(secretSources(service).includes("weather_postgres_admin_password"), false);
+      assert.equal(
+        secretSources(service).includes("weather_postgres_training_export_password"),
+        false,
+      );
     }
+  }
+
+  // exclude operator-only training paths
+  for (const serviceName of ["api", "web", "worker", "migration"]) {
+    assert.doesNotMatch(
+      JSON.stringify(compose.services[serviceName]),
+      /weather_training_export|\.weather-data|\.weather-models|model-evidence/u,
+    );
   }
 
   // require distinct host-owned secret sources
   const credentialSecretFiles = Object.entries(compose.secrets)
     .filter(([name]) => name !== "cloudflare_tunnel_token")
     .map(([, secret]) => secret.file);
-  assert.equal(credentialSecretFiles.length, 10);
+  assert.equal(credentialSecretFiles.length, 11);
   assert.equal(new Set(credentialSecretFiles).size, credentialSecretFiles.length);
 
   // reject ignored compose ownership metadata
@@ -293,6 +306,7 @@ test("PostgreSQL bootstrap rejects equal administrator and owner credentials", a
   const owner = join(directory, "owner");
   const api = join(directory, "api");
   const ingest = join(directory, "ingest");
+  const trainingExport = join(directory, "training-export");
 
   try {
     await mkdir(bin);
@@ -301,6 +315,7 @@ test("PostgreSQL bootstrap rejects equal administrator and owner credentials", a
       writeFile(owner, "shared-password\n"),
       writeFile(api, "api-password\n"),
       writeFile(ingest, "ingest-password\n"),
+      writeFile(trainingExport, "training-export-password\n"),
       writeFile(join(bin, "psql"), "#!/usr/bin/env bash\ncat >/dev/null\n"),
     ]);
     await chmod(join(bin, "psql"), 0o700);
@@ -314,6 +329,7 @@ test("PostgreSQL bootstrap rejects equal administrator and owner credentials", a
         WEATHER_API_PASSWORD_FILE: api,
         WEATHER_INGEST_PASSWORD_FILE: ingest,
         WEATHER_OWNER_PASSWORD_FILE: owner,
+        WEATHER_TRAINING_EXPORT_PASSWORD_FILE: trainingExport,
       },
     });
     assert.notEqual(result.status, 0);
@@ -327,7 +343,9 @@ test("PostgreSQL bootstrap rejects equal administrator and owner credentials", a
 test("PostgreSQL reconciles retained administrator credentials before network startup", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
   const postgres = compose.services.postgres;
+  const bootstrap = read("deploy/postgres/010-create-runtime-roles.sh");
   const entrypoint = read("deploy/postgres/postgres-admin-entrypoint.sh");
+  const runtimeAcl = read("deploy/postgres/runtime-acl-v2.sql");
   const entrypointMount = postgres.volumes.find(
     (volume) => volume.target === "/usr/local/bin/weather-postgres-entrypoint",
   );
@@ -344,6 +362,13 @@ test("PostgreSQL reconciles retained administrator credentials before network st
   assert.match(entrypoint, /listen_addresses=''/u);
   assert.match(entrypoint, /pg_ctl[\s\S]*start/u);
   assert.match(entrypoint, /ALTER ROLE postgres WITH LOGIN PASSWORD/u);
+  assert.match(entrypoint, /pg_db_role_setting/u);
+  assert.match(entrypoint, /IN DATABASE %I RESET ALL/u);
+  assert.match(bootstrap, /pg_db_role_setting/u);
+  assert.match(bootstrap, /IN DATABASE %I RESET ALL/u);
+  assert.match(runtimeAcl, /pg_db_role_setting/u);
+  assert.match(runtimeAcl, /IN DATABASE %I RESET ALL/u);
+  assert.doesNotMatch(runtimeAcl, /REVOKE ALL ON SCHEMA %I FROM PUBLIC/u);
   assert.match(entrypoint, /exec \/usr\/local\/bin\/docker-entrypoint\.sh/u);
   assert.match(entrypoint, /PGPASSWORD[\s\S]*--host postgres/u);
   assert.doesNotMatch(entrypoint, /printf[^\n]*(?:admin_password|owner_password)/u);
@@ -473,7 +498,10 @@ test("container commands match the API, worker, and web runtime contracts", () =
   assert.equal(compose.services.migration.volumes, undefined);
   const dockerfile = read("Dockerfile");
   const webServer = read("deploy/scripts/web-server.mjs");
-  assert.match(dockerfile, /COPY --chown=10002:10002 config config/u);
+  assert.match(
+    dockerfile,
+    /COPY --chown=10002:10002 config\/forecast-adjustments config\/forecast-adjustments/u,
+  );
   assert.match(dockerfile, /apps\/web\/public apps\/web\/public/u);
   assert.match(dockerfile, /deploy\/scripts\/web-server\.mjs/u);
   assert.match(dockerfile, /deploy\/scripts\/xweather-tile-cache\.mjs/u);
@@ -482,6 +510,51 @@ test("container commands match the API, worker, and web runtime contracts", () =
   assert.match(webServer, /XWEATHER_PROVIDER_DAILY_MAP_UNIT_BUDGET = 300/u);
   assert.match(webServer, /XWEATHER_PROVIDER_MONTHLY_MAP_UNIT_BUDGET = 10_000/u);
   assert.doesNotMatch(webServer, /XWEATHER_MANUAL_REFRESH_COOLDOWN|startForecastRefresh|forecastFootprints|X-Weather-Map-Refresh/u);
+});
+
+// verify the reviewed adjustment tree is server-only image material
+test("server image bakes only reviewed forecast adjustment config", () => {
+  const dockerfile = read("Dockerfile");
+  const serverStage = dockerfile
+    .split("FROM runtime AS server\n")[1]
+    .split("\nFROM runtime AS web\n")[0];
+  const webStage = dockerfile.split("\nFROM runtime AS web\n")[1];
+  const registry = read("config/forecast-adjustments/ballydidean.json");
+  assert.equal(
+    registry,
+    '{"activeBundle":null,"contractVersion":"forecast-adjustment-registry/v1"}\n',
+  );
+  assert.match(
+    serverStage,
+    /packages\/forecast-adjustment\/dist packages\/forecast-adjustment\/dist/u,
+  );
+  assert.match(
+    serverStage,
+    /packages\/forecast-adjustment\/package\.json packages\/forecast-adjustment\/package\.json/u,
+  );
+  assert.match(
+    serverStage,
+    /config\/forecast-adjustments config\/forecast-adjustments/u,
+  );
+  assert.doesNotMatch(
+    serverStage,
+    /\.weather-data|\.weather-models|model-evidence|training_export_password/u,
+  );
+  assert.doesNotMatch(webStage, /config\/forecast-adjustments|sha256-[a-f0-9]{64}\.json/u);
+  assert.match(
+    webStage,
+    /RUN unlink node_modules\/@weather\/forecast-adjustment/u,
+  );
+
+  const compose = renderCompose(["compose.verify.yaml"]);
+
+  // deny operator evidence and keys as API or web mounts
+  for (const serviceName of ["api", "web"]) {
+    assert.doesNotMatch(
+      JSON.stringify(compose.services[serviceName].volumes ?? []),
+      /\.weather-data|\.weather-models|model-evidence|training-export|training_export|decrypt|encryption-key/iu,
+    );
+  }
 });
 
 // exercise the static edge and same-origin proxy
@@ -922,12 +995,27 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.match(restore, /rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication/u);
   assert.match(restore, /dropdb[\s\S]*--if-exists/u);
   assert.match(restore, /verify_runtime_database_acl/u);
-  const runtimeAcl = read("deploy/postgres/runtime-acl-v1.sql");
-  assert.match(runtimeAcl, /REVOKE ALL ON ALL TABLES[^;]*weather_api, weather_ingest/u);
-  assert.match(runtimeAcl, /GRANT SELECT ON schema_migrations TO weather_ingest/u);
-  assert.match(runtimeAcl, /black_globe_temperature_c[\s\S]*wet_bulb_globe_temperature_c/u);
-  assert.match(runtimeAcl, /wet_bulb_globe_temperature_c[\s\S]*water_level_m/u);
-  assert.match(runtimeAcl, /ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner/u);
+  const runtimeAclV1 = read("deploy/postgres/runtime-acl-v1.sql");
+  const runtimeAclV2 = read("deploy/postgres/runtime-acl-v2.sql");
+  assert.match(runtimeAclV1, /REVOKE ALL ON ALL TABLES[^;]*weather_api, weather_ingest/u);
+  assert.match(runtimeAclV1, /GRANT SELECT ON schema_migrations TO weather_ingest/u);
+  assert.match(runtimeAclV1, /black_globe_temperature_c[\s\S]*wet_bulb_globe_temperature_c/u);
+  assert.match(runtimeAclV1, /wet_bulb_globe_temperature_c[\s\S]*water_level_m/u);
+  assert.match(runtimeAclV1, /ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner/u);
+  assert.doesNotMatch(runtimeAclV1, /forecast_anchor_records/u);
+  assert.match(runtimeAclV2, /source_kind,[\s\S]*capabilities,[\s\S]*cadence_seconds/u);
+  assert.match(runtimeAclV2, /GRANT INSERT ON forecast_anchor_records TO weather_ingest/u);
+  assert.match(runtimeAclV2, /GRANT SELECT \([\s\S]*content_hash,[\s\S]*revision_count[\s\S]*\) ON forecast_anchor_records TO weather_ingest/u);
+  assert.doesNotMatch(runtimeAclV2, /forecast_anchor_records TO weather_api/u);
+  assert.match(
+    runtimeAclV2,
+    /GRANT SELECT ON forecast_runtime_provenance_v1 TO weather_api/u,
+  );
+  assert.doesNotMatch(
+    runtimeAclV2,
+    /source_config_fingerprint[\s\S]*ON sources TO weather_api/u,
+  );
+  assert.match(common, /runtime-acl-v2\.sql/u);
   assert.match(
     common,
     /has_table_privilege\('weather_ingest', 'schema_migrations', 'SELECT'\)/u,
@@ -1051,6 +1139,11 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /apps\/api\/dist\/main\.js/u);
   assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
   assert.match(update, /state='succeeded'/u);
+  assert.match(update, /0009_forecast_anchor_records\.sql/u);
+  assert.match(update, /DROP TABLE IF EXISTS forecast_anchor_records/u);
+  assert.match(update, /open-meteo-forecast-v4/u);
+  assert.match(update, /\/forecast/u);
+  assert.match(update, /forecastBody\.data\.length===0/u);
   assert.match(update, /non_compatibility_source_ids/u);
   assert.match(update, /provider_key = 'open-meteo'/u);
   assert.match(update, /provider_key <> 'open-meteo'/u);
@@ -1077,7 +1170,11 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
   );
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
-  assert.match(read("deploy/test/compose.integration.test.mjs"), /0009_candidate_contract\.sql/u);
+  const composeIntegration = read("deploy/test/compose.integration.test.mjs");
+  assert.match(composeIntegration, /"git",[\s\n]*\["archive"/u);
+  assert.match(composeIntegration, /weather\.test\.git-head/u);
+  assert.match(composeIntegration, /0009_forecast_anchor_records\.sql/u);
+  assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
     /allowlists only the exact installed version 5[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
@@ -1346,9 +1443,11 @@ test("all deployment shell entrypoints have stable names", () => {
     "backup-stream.sh",
     "backup.sh",
     "common.sh",
+    "forecast-training-export.sh",
     "preflight-capacity.sh",
     "public-stations-backfill.sh",
     "pull-backup.sh",
+    "pull-forecast-training-export.sh",
     "remote-ops.sh",
     "restore.sh",
     "ssh-dispatch.sh",

@@ -12,6 +12,127 @@ const executeFile = promisify(execFile);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const deployRoot = join(repoRoot, "deploy");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
+const expectedTrainingExportAuthority = {
+  databasePrivileges: ["CONNECT"],
+  executableFunctions: [],
+  relationPrivileges: [
+    "public.forecast_training_export_manifest_v1:SELECT",
+    "public.forecast_training_export_rows_v1:SELECT",
+  ],
+  role: {
+    bypassRls: false,
+    canCreateDatabase: false,
+    canCreateRole: false,
+    canLogin: true,
+    configuration: ["default_transaction_read_only=on"],
+    databaseSettings: [],
+    inherit: false,
+    memberships: [],
+    replication: false,
+    superuser: false,
+  },
+  schemaPrivileges: ["public:USAGE"],
+  sequencePrivileges: [],
+};
+
+// enumerate exact export authority
+const trainingExportAuthoritySql = `
+  SELECT json_build_object(
+    'databasePrivileges', ARRAY(
+      SELECT privilege.name
+      FROM unnest(ARRAY['CONNECT', 'CREATE', 'TEMP']) privilege(name)
+      WHERE has_database_privilege(
+        'weather_training_export', current_database(), privilege.name
+      )
+      ORDER BY privilege.name
+    ),
+    'schemaPrivileges', ARRAY(
+      SELECT format('%s:%s', namespace.nspname, privilege.name)
+      FROM pg_namespace namespace
+      CROSS JOIN LATERAL unnest(ARRAY['CREATE', 'USAGE']) privilege(name)
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND has_schema_privilege(
+          'weather_training_export', namespace.oid, privilege.name
+        )
+      ORDER BY namespace.nspname, privilege.name
+    ),
+    'relationPrivileges', ARRAY(
+      SELECT format(
+        '%s.%s:%s', namespace.nspname, relation.relname, privilege.name
+      )
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      CROSS JOIN LATERAL unnest(ARRAY[
+        'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+      ]) privilege(name)
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+        AND has_table_privilege(
+          'weather_training_export', relation.oid, privilege.name
+        )
+      ORDER BY namespace.nspname, relation.relname, privilege.name
+    ),
+    'sequencePrivileges', ARRAY(
+      SELECT format(
+        '%s.%s:%s', namespace.nspname, sequence.relname, privilege.name
+      )
+      FROM pg_class sequence
+      JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+      CROSS JOIN LATERAL unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) privilege(name)
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND sequence.relkind = 'S'
+        AND has_sequence_privilege(
+          'weather_training_export', sequence.oid, privilege.name
+        )
+      ORDER BY namespace.nspname, sequence.relname, privilege.name
+    ),
+    'executableFunctions', ARRAY(
+      SELECT procedure.oid::regprocedure::text
+      FROM pg_proc procedure
+      JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname <> 'information_schema'
+        AND namespace.nspname NOT LIKE 'pg_%'
+        AND procedure.prosecdef
+        AND has_function_privilege(
+          'weather_training_export', procedure.oid, 'EXECUTE'
+        )
+      ORDER BY procedure.oid::regprocedure::text
+    ),
+    'role', (
+      SELECT json_build_object(
+        'canLogin', role.rolcanlogin,
+        'inherit', role.rolinherit,
+        'superuser', role.rolsuper,
+        'canCreateDatabase', role.rolcreatedb,
+        'canCreateRole', role.rolcreaterole,
+        'replication', role.rolreplication,
+        'bypassRls', role.rolbypassrls,
+        'configuration', role.rolconfig,
+        'databaseSettings', ARRAY(
+          SELECT format(
+            '%s:%s', database.datname, array_to_string(setting.setconfig, ',')
+          )
+          FROM pg_db_role_setting setting
+          JOIN pg_database database ON database.oid = setting.setdatabase
+          WHERE setting.setrole = role.oid
+          ORDER BY database.datname
+        ),
+        'memberships', ARRAY(
+          SELECT granted.rolname
+          FROM pg_auth_members membership
+          JOIN pg_roles granted ON granted.oid = membership.roleid
+          WHERE membership.member = role.oid
+          ORDER BY granted.rolname
+        )
+      )
+      FROM pg_roles role
+      WHERE role.rolname = 'weather_training_export'
+    )
+  )
+`;
 
 // reserve one loopback port
 async function reservePort() {
@@ -36,7 +157,7 @@ async function buildReleaseImage(directory, baseImage, targetImage, release, mig
   const buildRoot = join(directory, `image-${release}-${imageKey}`);
   const dockerfile = join(buildRoot, "Dockerfile");
   await executeFile("mkdir", ["-p", buildRoot]);
-  const migrationName = "0009_candidate_contract.sql";
+  const migrationName = "9999_candidate_contract.sql";
   let dockerfileBody = `FROM ${baseImage}\nLABEL weather.test.release=${release}\n`;
 
   // add only the candidate migration contract
@@ -53,12 +174,59 @@ async function buildReleaseImage(directory, baseImage, targetImage, release, mig
   );
 }
 
+// build the exact committed baseline server image
+async function buildGitHeadServerImage(directory, targetImage) {
+  const buildRoot = join(directory, "git-head-server");
+  const archivePath = join(directory, "git-head-server.tar");
+  const revision = (
+    await executeFile("git", ["rev-parse", "HEAD"], { cwd: repoRoot, timeout: 30_000 })
+  ).stdout.trim();
+  await mkdir(buildRoot);
+  await executeFile(
+    "git",
+    ["archive", "--format=tar", "--output", archivePath, revision],
+    { cwd: repoRoot, timeout: 30_000 },
+  );
+  await executeFile(
+    "tar",
+    ["--extract", "--file", archivePath, "--directory", buildRoot],
+    { timeout: 30_000 },
+  );
+  await executeFile(
+    "docker",
+    [
+      "build",
+      "--quiet",
+      "--target",
+      "server",
+      "--label",
+      `weather.test.git-head=${revision}`,
+      "--tag",
+      targetImage,
+      buildRoot,
+    ],
+    { cwd: repoRoot, timeout: 300_000 },
+  );
+  return revision;
+}
+
 // read one local image identity
 async function imageId(image) {
   return (
     await executeFile("docker", ["image", "inspect", "--format", "{{.Id}}", image], {
       timeout: 30_000,
     })
+  ).stdout.trim();
+}
+
+// read one committed baseline label
+async function imageLabel(image, label) {
+  return (
+    await executeFile(
+      "docker",
+      ["image", "inspect", "--format", `{{ index .Config.Labels "${label}" }}`, image],
+      { timeout: 30_000 },
+    )
   ).stdout.trim();
 }
 
@@ -82,6 +250,27 @@ async function compose(environment, override, ...argumentsList) {
     ],
     { cwd: repoRoot, env: environment, maxBuffer: 8 * 1024 * 1024, timeout: 600_000 },
   );
+}
+
+// read one normalized export authority snapshot
+async function trainingExportAuthority(environment, override, databaseName) {
+  const snapshot = await compose(
+    environment,
+    override,
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "--username",
+    "postgres",
+    "--dbname",
+    databaseName,
+    "--tuples-only",
+    "--no-align",
+    "--command",
+    trainingExportAuthoritySql,
+  );
+  return JSON.parse(snapshot.stdout.trim());
 }
 
 // execute one protocol-specific container probe
@@ -148,6 +337,7 @@ async function provisionSecrets(directory) {
     writeFile(join(directory, "weather_postgres_api_password"), api),
     writeFile(join(directory, "weather_api_password"), api),
     writeFile(join(directory, "weather_postgres_ingest_password"), ingest),
+    writeFile(join(directory, "weather_postgres_training_export_password"), "training-export-integration-password\n"),
     writeFile(join(directory, "weather_worker_ingest_password"), ingest),
     writeFile(join(directory, "weather_tempest_api_key"), "test-tempest-api-key\n"),
     writeFile(join(directory, "weather_xweather_client_id"), "test-xweather-client-id\n"),
@@ -224,7 +414,7 @@ async function writeOverride(path, secretsRoot) {
       compatibility-provider:
         condition: service_started
 secrets:
-  ${secret("weather_postgres_admin_password")}  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_worker_ingest_password")}  ${secret("weather_tempest_api_key")}  ${secret("weather_xweather_client_id")}  ${secret("weather_xweather_client_secret")}  ${secret("cloudflare_tunnel_token")}`,
+  ${secret("weather_postgres_admin_password")}  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_postgres_training_export_password")}  ${secret("weather_worker_ingest_password")}  ${secret("weather_tempest_api_key")}  ${secret("weather_xweather_client_id")}  ${secret("weather_xweather_client_secret")}  ${secret("cloudflare_tunnel_token")}`,
   );
 }
 
@@ -232,7 +422,7 @@ test(
   "local Compose proves lifecycle, persistence, isolation, secrets, and encrypted restore",
   {
     skip: runIntegration ? false : "set WEATHER_RUN_DEPLOY_INTEGRATION=1",
-    timeout: 900_000,
+    timeout: 1_200_000,
   },
   // exercise lifecycle behavior
   async () => {
@@ -291,7 +481,7 @@ test(
       await provisionSecrets(secretsRoot);
       await writeOverride(override, secretsRoot);
       await compose(environment, override, "up", "--detach", "--build", "--wait");
-      await buildReleaseImage(directory, environment.WEATHER_LOCAL_SERVER_IMAGE, previousServerImage, "2026.08.22-1");
+      const previousGitHead = await buildGitHeadServerImage(directory, previousServerImage);
       await buildReleaseImage(
         directory,
         environment.WEATHER_LOCAL_SERVER_IMAGE,
@@ -336,6 +526,10 @@ test(
       for (const [previousImage, targetImage] of imagePairs) {
         assert.notEqual(await imageId(previousImage), await imageId(targetImage));
       }
+      assert.equal(
+        await imageLabel(previousServerImage, "weather.test.git-head"),
+        previousGitHead,
+      );
       await executeFile("docker", [
         "run",
         "--rm",
@@ -343,7 +537,7 @@ test(
         "sh",
         previousServerImage,
         "-c",
-        "test ! -f /opt/weather/packages/database/migrations/0009_candidate_contract.sql",
+        "test ! -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test ! -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test ! -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test ! -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test ! -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       await executeFile("docker", [
         "run",
@@ -352,7 +546,7 @@ test(
         "sh",
         targetServerImage,
         "-c",
-        "test -f /opt/weather/packages/database/migrations/0009_candidate_contract.sql",
+        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
@@ -506,6 +700,132 @@ test(
         "SELECT current_user",
       );
       assert.equal(idempotentAdministratorLogin.stdout.trim(), "postgres");
+
+      const initialTrainingExportLogin = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "env",
+        "PGPASSWORD=training-export-integration-password",
+        "psql",
+        "--host",
+        "postgres",
+        "--username",
+        "weather_training_export",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT contract_version FROM forecast_training_export_manifest_v1",
+      );
+      assert.equal(
+        initialTrainingExportLogin.stdout.trim(),
+        "forecast-training-export-manifest/v1",
+      );
+      await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "--set=ON_ERROR_STOP=1",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--command",
+        "CREATE ROLE weather_export_retained_extra NOLOGIN; GRANT weather_export_retained_extra TO weather_training_export; ALTER ROLE weather_training_export SET search_path = pg_catalog; ALTER ROLE weather_training_export IN DATABASE weather_deploy_test SET default_transaction_read_only = off; ALTER ROLE weather_training_export IN DATABASE weather_deploy_test SET search_path = pg_catalog;",
+      );
+      await executeFile(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--volume",
+          `${secretsRoot}:/secrets`,
+          "--entrypoint",
+          "sh",
+          "node:24-bookworm-slim",
+          "-c",
+          "printf '%s\\n' 'training-export-rotated-password' > /secrets/weather_postgres_training_export_password && chown 999:999 /secrets/weather_postgres_training_export_password && chmod 0400 /secrets/weather_postgres_training_export_password",
+        ],
+        { timeout: 120_000 },
+      );
+      await compose(environment, override, "restart", "postgres");
+      await compose(environment, override, "up", "--detach", "--no-deps", "--wait", "postgres");
+      await assert.rejects(
+        compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "env",
+          "PGPASSWORD=training-export-integration-password",
+          "psql",
+          "--host",
+          "postgres",
+          "--username",
+          "weather_training_export",
+          "--dbname",
+          "weather_deploy_test",
+          "--command",
+          "SELECT 1",
+        ),
+      );
+      const rotatedTrainingExport = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "env",
+        "PGPASSWORD=training-export-rotated-password",
+        "psql",
+        "--host",
+        "postgres",
+        "--username",
+        "weather_training_export",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT current_user || ':' || current_setting('default_transaction_read_only')",
+      );
+      assert.equal(
+        rotatedTrainingExport.stdout.trim(),
+        "weather_training_export:on",
+      );
+      const retainedTrainingRole = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT rolconfig = ARRAY['default_transaction_read_only=on'] AND NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE member = 'weather_training_export'::regrole) AND NOT EXISTS (SELECT 1 FROM pg_db_role_setting WHERE setrole = 'weather_training_export'::regrole AND setdatabase <> 0) FROM pg_roles WHERE rolname = 'weather_training_export'",
+      );
+      assert.equal(retainedTrainingRole.stdout.trim(), "t");
+      assert.deepEqual(
+        await trainingExportAuthority(
+          environment,
+          override,
+          "weather_deploy_test",
+        ),
+        expectedTrainingExportAuthority,
+      );
       const postgresLogs = await compose(environment, override, "logs", "--no-color", "postgres");
 
       // reject credential disclosure
@@ -514,6 +834,8 @@ test(
         "owner-integration-password",
         "api-integration-password",
         "ingest-integration-password",
+        "training-export-integration-password",
+        "training-export-rotated-password",
       ]) {
         assert.equal(`${postgresLogs.stdout}${postgresLogs.stderr}`.includes(secret), false);
       }
@@ -933,6 +1255,8 @@ record_service_image before "$current_env" cloudflared
 printf 'release-before:%s\\n' "$(WEATHER_ENV_FILE=$current_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
 rollback_release
 previous_env="$releases_dir/2026.08.22-1.env"
+verify_runtime_database_acl "$previous_env" weather_deploy_test
+printf 'acl-after-rollback:verified\\n' >>"$transcript"
 record_service_image after "$previous_env" postgres
 record_service_image after "$previous_env" api
 record_service_image after "$previous_env" web
@@ -946,6 +1270,8 @@ fi
 printf 'stale-activate-after\\n' >>"$transcript"
 WEATHER_ENV_FILE=$previous_env compose down --remove-orphans
 main recover
+verify_runtime_database_acl "$previous_env" weather_deploy_test
+printf 'acl-after-recover:verified\\n' >>"$transcript"
 printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
           "weather-rollback-integration",
           join(deployRoot, "scripts/update.sh"),
@@ -973,6 +1299,8 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
       assert.doesNotMatch(rollbackCommands, /\brun\b[^\n]*\bmigration\b/u);
       assert.match(rollbackCommands, /release-before:2026\.08\.22-3/u);
       assert.match(rollbackCommands, /release-after:2026\.08\.22-1/u);
+      assert.match(rollbackCommands, /acl-after-rollback:verified/u);
+      assert.match(rollbackCommands, /acl-after-recover:verified/u);
       assert.match(
         rollbackCommands,
         /stale-activate-before\nerror: cannot activate release 2026\.08\.22-2 while runtime release 2026\.08\.22-1 differs from retained schema release 2026\.08\.22-3\nstale-activate-after/u,
@@ -1020,6 +1348,14 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
         )
       ).stdout.trim();
       assert.equal(migrationAfter, migrationBefore);
+      assert.deepEqual(
+        await trainingExportAuthority(
+          environment,
+          override,
+          "weather_deploy_test",
+        ),
+        expectedTrainingExportAuthority,
+      );
 
       // prove consumer secret isolation
       await compose(
@@ -1044,6 +1380,47 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
           "require('node:fs').accessSync('/run/secrets/weather_ingest_password')",
         ),
       );
+      const forbiddenTrainingPaths = [
+        "/run/secrets/weather_training_export_password",
+        "/opt/weather/.weather-data",
+        "/opt/weather/.weather-models",
+        "/home/weather/.weather-data",
+        "/home/weather/.weather/model-evidence",
+        "/root/.weather-data",
+        "/root/.weather/model-evidence",
+      ];
+
+      // deny runtime evidence and key paths
+      for (const service of ["api", "web", "worker"]) {
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          service,
+          "sh",
+          "-eu",
+          "-c",
+          'for path do test ! -e "$path"; done',
+          "training-path-denial",
+          ...forbiddenTrainingPaths,
+        );
+      }
+      await compose(
+        environment,
+        override,
+        "run",
+        "--rm",
+        "--no-deps",
+        "--entrypoint",
+        "sh",
+        "migration",
+        "-eu",
+        "-c",
+        'for path do test ! -e "$path"; done',
+        "training-path-denial",
+        ...forbiddenTrainingPaths,
+      );
 
       // prove named-volume persistence through recovery
       const secondSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
@@ -1051,10 +1428,37 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
       assert.equal(await secondSites.text(), firstBody);
 
       // verify the retained pre-candidate backup
-      await executeFile(
+      const restored = await executeFile(
         join(deployRoot, "scripts/restore.sh"),
-        ["verify", archive, "--identity", identity, "--env-file", envFile],
+        [
+          "verify",
+          archive,
+          "--identity",
+          identity,
+          "--env-file",
+          envFile,
+          "--retain",
+        ],
         { cwd: repoRoot, env: environment, timeout: 120_000 },
+      );
+      const restoredDatabase = restored.stdout.match(
+        /Retained diagnostic database: ([a-z0-9_]+)/u,
+      )?.[1];
+      assert.ok(restoredDatabase);
+      assert.deepEqual(
+        await trainingExportAuthority(environment, override, restoredDatabase),
+        expectedTrainingExportAuthority,
+      );
+      await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "dropdb",
+        "--username",
+        "postgres",
+        restoredDatabase,
       );
     } finally {
       await compose(environment, override, "down", "--volumes", "--remove-orphans").catch(

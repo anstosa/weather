@@ -1,0 +1,333 @@
+{
+  "latitude": 47.941,
+  "longitude": -122.438,
+  "generationtime_ms": 0.42,
+  "utc_offset_seconds": 0,
+  "timezone": "GMT",
+  "timezone_abbreviation": "GMT",
+  "elevation": 32,
+  "hourly_units": {
+    "time": "iso8601",
+    "temperature_2m_previous_day1": "°C",
+    "temperature_2m_previous_day2": "°C",
+    "temperature_2m_previous_day3": "°C",
+    "temperature_2m_previous_day4": "°C",
+    "temperature_2m_previous_day5": "°C",
+    "temperature_2m_previous_day6": "°C",
+    "temperature_2m_previous_day7": "°C",
+    "apparent_temperature_previous_day1": "°C",
+    "apparent_temperature_previous_day2": "°C",
+    "apparent_temperature_previous_day3": "°C",
+    "apparent_temperature_previous_day4": "°C",
+    "apparent_temperature_previous_day5": "°C",
+    "apparent_temperature_previous_day6": "°C",
+    "apparent_temperature_previous_day7": "°C",
+    "relative_humidity_2m_previous_day1": "%",
+    "relative_humidity_2m_previous_day2": "%",
+    "relative_humidity_2m_previous_day3": "%",
+    "relative_humidity_2m_previous_day4": "%",
+    "relative_humidity_2m_previous_day5": "%",
+    "relative_humidity_2m_previous_day6": "%",
+    "relative_humidity_2m_previous_day7": "%",
+    "precipitation_previous_day1": "mm",
+    "precipitation_previous_day2": "mm",
+    "precipitation_previous_day3": "mm",
+    "precipitation_previous_day4": "mm",
+    "precipitation_previous_day5": "mm",
+    "precipitation_previous_day6": "mm",
+    "precipitation_previous_day7": "mm",
+    "cloud_cover_previous_day1": "%",
+    "cloud_cover_previous_day2": "%",
+    "cloud_cover_previous_day3": "%",
+    "cloud_cover_previous_day4": "%",
+    "cloud_cover_previous_day5": "%",
+    "cloud_cover_previous_day6": "%",
+    "cloud_cover_previous_day7": "%",
+    "wind_speed_10m_previous_day1": "m/s",
+    "wind_speed_10m_previous_day2": "m/s",
+    "wind_speed_10m_previous_day3": "m/s",
+    "wind_speed_10m_previous_day4": "m/s",
+    "wind_speed_10m_previous_day5": "m/s",
+    "wind_speed_10m_previous_day6": "m/s",
+    "wind_speed_10m_previous_day7": "m/s",
+    "wind_gusts_10m_previous_day1": "m/s",
+    "wind_gusts_10m_previous_day2": "m/s",
+    "wind_gusts_10m_previous_day3": "m/s",
+    "wind_gusts_10m_previous_day4": "m/s",
+    "wind_gusts_10m_previous_day5": "m/s",
+    "wind_gusts_10m_previous_day6": "m/s",
+    "wind_gusts_10m_previous_day7": "m/s",
+    "wind_direction_10m_previous_day1": "°",
+    "wind_direction_10m_previous_day2": "°",
+    "wind_direction_10m_previous_day3": "°",
+    "wind_direction_10m_previous_day4": "°",
+    "wind_direction_10m_previous_day5": "°",
+    "wind_direction_10m_previous_day6": "°",
+    "wind_direction_10m_previous_day7": "°",
+    "surface_pressure_previous_day1": "hPa",
+    "surface_pressure_previous_day2": "hPa",
+    "surface_pressure_previous_day3": "hPa",
+    "surface_pressure_previous_day4": "hPa",
+    "surface_pressure_previous_day5": "hPa",
+    "surface_pressure_previous_day6": "hPa",
+    "surface_pressure_previous_day7": "hPa"
+  },
+  "hourly": {
+    "time": [
+      "2026-08-01T00:00",
+      "2026-08-01T01:00"
+    ],
+    "temperature_2m_previous_day1": [
+      10.1,
+      11.1
+    ],
+    "temperature_2m_previous_day2": [
+      10.2,
+      11.2
+    ],
+    "temperature_2m_previous_day3": [
+      10.3,
+      11.3
+    ],
+    "temperature_2m_previous_day4": [
+      10.4,
+      11.4
+    ],
+    "temperature_2m_previous_day5": [
+      10.5,
+      11.5
+    ],
+    "temperature_2m_previous_day6": [
+      10.6,
+      11.6
+    ],
+    "temperature_2m_previous_day7": [
+      10.7,
+      11.7
+    ],
+    "apparent_temperature_previous_day1": [
+      9.1,
+      10.1
+    ],
+    "apparent_temperature_previous_day2": [
+      9.2,
+      10.2
+    ],
+    "apparent_temperature_previous_day3": [
+      9.3,
+      10.3
+    ],
+    "apparent_temperature_previous_day4": [
+      9.4,
+      10.4
+    ],
+    "apparent_temperature_previous_day5": [
+      9.5,
+      10.5
+    ],
+    "apparent_temperature_previous_day6": [
+      9.6,
+      10.6
+    ],
+    "apparent_temperature_previous_day7": [
+      9.7,
+      10.7
+    ],
+    "relative_humidity_2m_previous_day1": [
+      81,
+      79
+    ],
+    "relative_humidity_2m_previous_day2": [
+      82,
+      80
+    ],
+    "relative_humidity_2m_previous_day3": [
+      83,
+      81
+    ],
+    "relative_humidity_2m_previous_day4": [
+      84,
+      82
+    ],
+    "relative_humidity_2m_previous_day5": [
+      85,
+      83
+    ],
+    "relative_humidity_2m_previous_day6": [
+      86,
+      84
+    ],
+    "relative_humidity_2m_previous_day7": [
+      87,
+      85
+    ],
+    "precipitation_previous_day1": [
+      0.1,
+      0.3
+    ],
+    "precipitation_previous_day2": [
+      0.2,
+      0.4
+    ],
+    "precipitation_previous_day3": [
+      0.3,
+      0.5
+    ],
+    "precipitation_previous_day4": [
+      0.4,
+      0.6
+    ],
+    "precipitation_previous_day5": [
+      0.5,
+      0.7
+    ],
+    "precipitation_previous_day6": [
+      0.6,
+      0.8
+    ],
+    "precipitation_previous_day7": [
+      0.7,
+      0.9
+    ],
+    "cloud_cover_previous_day1": [
+      61,
+      56
+    ],
+    "cloud_cover_previous_day2": [
+      62,
+      57
+    ],
+    "cloud_cover_previous_day3": [
+      63,
+      58
+    ],
+    "cloud_cover_previous_day4": [
+      64,
+      59
+    ],
+    "cloud_cover_previous_day5": [
+      65,
+      60
+    ],
+    "cloud_cover_previous_day6": [
+      66,
+      61
+    ],
+    "cloud_cover_previous_day7": [
+      67,
+      62
+    ],
+    "wind_speed_10m_previous_day1": [
+      2.1,
+      2.6
+    ],
+    "wind_speed_10m_previous_day2": [
+      2.2,
+      2.7
+    ],
+    "wind_speed_10m_previous_day3": [
+      2.3,
+      2.8
+    ],
+    "wind_speed_10m_previous_day4": [
+      2.4,
+      2.9
+    ],
+    "wind_speed_10m_previous_day5": [
+      2.5,
+      3.0
+    ],
+    "wind_speed_10m_previous_day6": [
+      2.6,
+      3.1
+    ],
+    "wind_speed_10m_previous_day7": [
+      2.7,
+      3.2
+    ],
+    "wind_gusts_10m_previous_day1": [
+      4.1,
+      5.1
+    ],
+    "wind_gusts_10m_previous_day2": [
+      4.2,
+      5.2
+    ],
+    "wind_gusts_10m_previous_day3": [
+      4.3,
+      5.3
+    ],
+    "wind_gusts_10m_previous_day4": [
+      4.4,
+      5.4
+    ],
+    "wind_gusts_10m_previous_day5": [
+      4.5,
+      5.5
+    ],
+    "wind_gusts_10m_previous_day6": [
+      4.6,
+      5.6
+    ],
+    "wind_gusts_10m_previous_day7": [
+      4.7,
+      5.7
+    ],
+    "wind_direction_10m_previous_day1": [
+      181,
+      191
+    ],
+    "wind_direction_10m_previous_day2": [
+      182,
+      192
+    ],
+    "wind_direction_10m_previous_day3": [
+      183,
+      193
+    ],
+    "wind_direction_10m_previous_day4": [
+      184,
+      194
+    ],
+    "wind_direction_10m_previous_day5": [
+      185,
+      195
+    ],
+    "wind_direction_10m_previous_day6": [
+      186,
+      196
+    ],
+    "wind_direction_10m_previous_day7": [
+      187,
+      197
+    ],
+    "surface_pressure_previous_day1": [
+      1015.1,
+      1015.6
+    ],
+    "surface_pressure_previous_day2": [
+      1015.2,
+      1015.7
+    ],
+    "surface_pressure_previous_day3": [
+      1015.3,
+      1015.8
+    ],
+    "surface_pressure_previous_day4": [
+      1015.4,
+      1015.9
+    ],
+    "surface_pressure_previous_day5": [
+      1015.5,
+      1016.0
+    ],
+    "surface_pressure_previous_day6": [
+      1015.6,
+      1016.1
+    ],
+    "surface_pressure_previous_day7": [
+      1015.7,
+      1016.2
+    ]
+  }
+}

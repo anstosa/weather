@@ -49,6 +49,7 @@ export interface WeatherSite {
 }
 
 export interface WeatherRecord {
+  readonly adjustment?: ForecastAdjustmentDecision;
   readonly freshness: {
     readonly ageSeconds: number;
     readonly label: string;
@@ -115,6 +116,101 @@ export interface WeatherRecord {
   readonly validAt: string;
 }
 
+// name the only adjustable browser metrics
+export type ForecastAdjustmentMetric =
+  | "relativeHumidityPercent"
+  | "temperatureC"
+  | "windDirectionDegrees"
+  | "windGustMps"
+  | "windSpeedMps";
+
+// name one bounded adjustment failure
+export type ForecastAdjustmentReasonCode =
+  | "adjustment_error"
+  | "bundle_invalid"
+  | "bundle_missing"
+  | "coefficient_missing"
+  | "cross_link_mismatch"
+  | "direction_calm"
+  | "evidence_redundancy_missing"
+  | "hash_mismatch"
+  | "identity_mismatch"
+  | "insufficient_data"
+  | "metric_not_enabled"
+  | "metric_out_of_bounds"
+  | "qualification_failed"
+  | "registry_inactive"
+  | "registry_invalid"
+  | "runtime_fingerprint_mismatch"
+  | "training_envelope_mismatch"
+  | "unsupported_lead"
+  | "wrong_cohort";
+
+// describe unchanged raw output
+export interface ForecastAdjustmentFailRawDecision {
+  readonly adjustedMetrics: Readonly<Record<string, never>>;
+  readonly appliedMetrics: readonly [];
+  readonly contractVersion: "forecast-adjustment-decision/v1";
+  readonly reasonCode: ForecastAdjustmentReasonCode;
+  readonly state: "disabled" | "not_applicable";
+}
+
+// describe the raw forecast identity
+export interface ForecastAdjustmentRawForecastProvenance {
+  readonly adapterVersion: string;
+  readonly cohort: "legacy_v4_retrieval_snapshot";
+  readonly contractEpoch: string;
+  readonly dataset: string;
+  readonly referenceAt: string;
+  readonly referenceKind: "retrieval_snapshot";
+  readonly sourceConfigFingerprint: string;
+  readonly sourceKey: string;
+  readonly targetLeadHours: number;
+  readonly upstreamModel: string;
+  readonly validAt: string;
+}
+
+// describe one usable local adjustment
+export interface ForecastAdjustmentActiveDecision {
+  readonly adjustedMetrics: Readonly<Partial<Record<ForecastAdjustmentMetric, number>>>;
+  readonly algorithmContractVersion: "robust-hierarchical-median/v1";
+  readonly appliedMetrics: readonly ForecastAdjustmentMetric[];
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: "forecast-adjustment-decision/v1";
+  readonly evaluationReportSha256: string;
+  readonly leadBand: ForecastAdjustmentLeadBand;
+  readonly qualificationReceiptSha256: string;
+  readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
+  readonly reasonCode: null;
+  readonly state: "active";
+}
+
+// unite API decision states
+export type ForecastAdjustmentDecision =
+  | ForecastAdjustmentActiveDecision
+  | ForecastAdjustmentFailRawDecision;
+
+// name one fixed adjustment lead band
+export type ForecastAdjustmentLeadBand =
+  | "001-024"
+  | "025-048"
+  | "049-072"
+  | "073-096"
+  | "097-120"
+  | "121-144"
+  | "145-168";
+
+// describe the bounded runtime summary
+export interface ForecastAdjustmentRuntimeStatus {
+  readonly activeBundle: string | null;
+  readonly candidateArtifactSha256: string | null;
+  readonly evaluationReportSha256: string | null;
+  readonly loadedAt: string | null;
+  readonly qualificationReceiptSha256: string | null;
+  readonly reasonCode: ForecastAdjustmentReasonCode | null;
+  readonly state: "active" | "disabled";
+}
+
 export interface PropertySensorSnapshot {
   readonly channel: number | null;
   readonly key: string;
@@ -160,6 +256,8 @@ export interface DashboardState {
   readonly dailyPrecipitation: DailyPrecipitation | null;
   readonly error: string | null;
   readonly filters: HistoryFilters;
+  readonly forecastAdjustmentMode: ForecastAdjustmentMode;
+  readonly forecastAdjustmentRuntime: ForecastAdjustmentRuntimeStatus | null;
   readonly forecast: readonly WeatherRecord[];
   readonly forecastDays: ForecastDays;
   readonly history: readonly WeatherRecord[];
@@ -194,6 +292,7 @@ export interface DashboardOptions {
 }
 
 export type WeatherView = "admin" | "forecast" | "home" | "logs" | "map" | "settings" | "trends";
+export type ForecastAdjustmentMode = "adjusted" | "raw";
 export type ForecastDays = 1 | 5 | 10;
 export type MapLayer = "roads" | "satellite" | "topo";
 export type TrendDetail = "daily" | "rolling";
@@ -257,6 +356,11 @@ interface RecordsResponse {
   readonly site: WeatherSite;
 }
 
+// describe the adjusted forecast boundary
+interface ForecastRecordsResponse extends RecordsResponse {
+  readonly adjustmentRuntime: ForecastAdjustmentRuntimeStatus;
+}
+
 interface TrendsResponse {
   readonly data: readonly TrendPoint[];
   readonly generatedAt: string;
@@ -286,6 +390,8 @@ const EMPTY_STATE: DashboardState = {
   dailyPrecipitation: null,
   error: null,
   filters: {},
+  forecastAdjustmentMode: "adjusted",
+  forecastAdjustmentRuntime: null,
   forecast: [],
   forecastDays: 1,
   history: [],
@@ -312,6 +418,43 @@ const EMPTY_STATE: DashboardState = {
   units: DEFAULT_UNIT_PREFERENCES,
 };
 
+export const FORECAST_ADJUSTMENT_MODE_STORAGE_KEY = "weather.forecast-adjustment-mode.v1";
+
+// load one validated forecast display preference
+function loadForecastAdjustmentMode(
+  storage: UnitPreferenceStorage | null,
+): ForecastAdjustmentMode {
+  // retain adjusted forecasts without browser storage
+  if (storage === null) {
+    return "adjusted";
+  }
+
+  try {
+    return storage.getItem(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY) === "raw"
+      ? "raw"
+      : "adjusted";
+  } catch {
+    return "adjusted";
+  }
+}
+
+// persist one forecast display preference
+function persistForecastAdjustmentMode(
+  storage: UnitPreferenceStorage | null,
+  mode: ForecastAdjustmentMode,
+): void {
+  // skip unavailable browser storage
+  if (storage === null) {
+    return;
+  }
+
+  try {
+    storage.setItem(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY, mode);
+  } catch {
+    // retain the in-memory preference
+  }
+}
+
 const PRODUCT_SITE: WeatherSite = {
   latitude: 47.950429954185445,
   longitude: -122.42797012608193,
@@ -325,6 +468,704 @@ const INVALID_HISTORY_WALL_CLOCK_MESSAGE =
   "That site time does not exist or occurs twice because of daylight saving time. Choose another time.";
 const WALL_CLOCK_OFFSET_SAMPLE_MS = 6 * 60 * 60 * 1_000;
 const WALL_CLOCK_OFFSET_WINDOW_MS = 48 * 60 * 60 * 1_000;
+
+// freeze the browser adjustment allowlists
+const FORECAST_ADJUSTMENT_METRIC_KEYS = new Set<ForecastAdjustmentMetric>([
+  "relativeHumidityPercent",
+  "temperatureC",
+  "windDirectionDegrees",
+  "windGustMps",
+  "windSpeedMps",
+]);
+const FORECAST_ADJUSTMENT_REASON_CODE_KEYS = new Set<ForecastAdjustmentReasonCode>([
+  "adjustment_error",
+  "bundle_invalid",
+  "bundle_missing",
+  "coefficient_missing",
+  "cross_link_mismatch",
+  "direction_calm",
+  "evidence_redundancy_missing",
+  "hash_mismatch",
+  "identity_mismatch",
+  "insufficient_data",
+  "metric_not_enabled",
+  "metric_out_of_bounds",
+  "qualification_failed",
+  "registry_inactive",
+  "registry_invalid",
+  "runtime_fingerprint_mismatch",
+  "training_envelope_mismatch",
+  "unsupported_lead",
+  "wrong_cohort",
+]);
+const FORECAST_ADJUSTMENT_RUNTIME_KEYS = new Set([
+  "activeBundle",
+  "candidateArtifactSha256",
+  "evaluationReportSha256",
+  "loadedAt",
+  "qualificationReceiptSha256",
+  "reasonCode",
+  "state",
+]);
+const FORECAST_ADJUSTMENT_FAIL_RAW_KEYS = new Set([
+  "adjustedMetrics",
+  "appliedMetrics",
+  "contractVersion",
+  "reasonCode",
+  "state",
+]);
+const FORECAST_ADJUSTMENT_ACTIVE_KEYS = new Set([
+  "adjustedMetrics",
+  "algorithmContractVersion",
+  "appliedMetrics",
+  "candidateArtifactSha256",
+  "contractVersion",
+  "evaluationReportSha256",
+  "leadBand",
+  "qualificationReceiptSha256",
+  "rawForecastProvenance",
+  "reasonCode",
+  "state",
+]);
+const FORECAST_ADJUSTMENT_RAW_PROVENANCE_KEYS = new Set([
+  "adapterVersion",
+  "cohort",
+  "contractEpoch",
+  "dataset",
+  "referenceAt",
+  "referenceKind",
+  "sourceConfigFingerprint",
+  "sourceKey",
+  "targetLeadHours",
+  "upstreamModel",
+  "validAt",
+]);
+const FORECAST_ADJUSTMENT_METRIC_BOUNDS: Readonly<
+  Record<
+    ForecastAdjustmentMetric,
+    Readonly<{ maximum: number; maximumExclusive?: boolean; minimum: number }>
+  >
+> = {
+  relativeHumidityPercent: { maximum: 100, minimum: 0 },
+  temperatureC: { maximum: 70, minimum: -100 },
+  windDirectionDegrees: { maximum: 360, maximumExclusive: true, minimum: 0 },
+  windGustMps: { maximum: 150, minimum: 0 },
+  windSpeedMps: { maximum: 150, minimum: 0 },
+};
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
+
+// freeze the raw weather record allowlists
+const WEATHER_RECORD_FRESHNESS_STATUSES = new Set<WeatherRecord["freshness"]["status"]>([
+  "delayed",
+  "fresh",
+  "stale",
+]);
+const WEATHER_RECORD_METRIC_KEYS: readonly (keyof WeatherRecord["metrics"])[] = [
+  "apparentTemperatureC",
+  "blackGlobeTemperatureC",
+  "cloudCoverPercent",
+  "pm25MicrogramsPerCubicMeter",
+  "precipitationMm",
+  "precipitationRateMmPerHour",
+  "pressureHpa",
+  "relativeHumidityPercent",
+  "soilElectricalConductivityMicrosiemensPerCm",
+  "soilMoisturePercent",
+  "solarRadiationWm2",
+  "temperatureC",
+  "uvIndex",
+  "windDirectionDegrees",
+  "windGustMps",
+  "windSpeedMps",
+  "wetBulbGlobeTemperatureC",
+];
+const WEATHER_RECORD_SOURCE_KINDS = new Set<SiteSource["kind"]>([
+  "forecast",
+  "model_current",
+  "physical_sensor",
+  "reanalysis",
+  "tide_observation",
+  "tide_prediction",
+]);
+
+// create one bounded invalid-metadata fallback
+function invalidForecastAdjustmentRuntime(): ForecastAdjustmentRuntimeStatus {
+  return {
+    activeBundle: null,
+    candidateArtifactSha256: null,
+    evaluationReportSha256: null,
+    loadedAt: null,
+    qualificationReceiptSha256: null,
+    reasonCode: "adjustment_error",
+    state: "disabled",
+  };
+}
+
+// narrow one JSON object
+function forecastAdjustmentObject(value: unknown): Record<string, unknown> | null {
+  // reject arrays and primitive values
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+// require one exact JSON key set
+function hasExactForecastAdjustmentKeys(
+  value: Record<string, unknown>,
+  keys: ReadonlySet<string>,
+): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.size && actual.every(
+    // reject every unknown field
+    (key) => keys.has(key),
+  );
+}
+
+// validate one bounded contract string
+function isBoundedForecastAdjustmentText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
+// validate one canonical digest
+function isForecastAdjustmentSha256(value: unknown): value is string {
+  return typeof value === "string" && SHA256_HEX_PATTERN.test(value);
+}
+
+// validate one explicit UTC instant
+function isForecastAdjustmentInstant(value: unknown): value is string {
+  // require an explicit timezone suffix
+  if (typeof value !== "string" || !/(?:Z|[+-]\d{2}:\d{2})$/u.test(value)) {
+    return false;
+  }
+
+  return Number.isFinite(Date.parse(value));
+}
+
+// validate one nullable API string
+function isWeatherRecordNullableText(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+// validate one nullable API number
+function isWeatherRecordNullableNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+// validate one device metadata object
+function isWeatherRecordDevice(value: unknown): boolean {
+  // preserve absent device metadata
+  if (value === null) {
+    return true;
+  }
+
+  const device = forecastAdjustmentObject(value);
+
+  // require every public device field
+  if (device === null) {
+    return false;
+  }
+
+  return isWeatherRecordNullableText(device.model) &&
+    isWeatherRecordNullableText(device.serial) &&
+    isWeatherRecordNullableText(device.vendor);
+}
+
+// validate one property sensor reading map
+function isWeatherRecordSensorReadings(value: unknown): boolean {
+  const readings = forecastAdjustmentObject(value);
+
+  // require one finite reading map
+  if (readings === null) {
+    return false;
+  }
+
+  // validate every additive sensor metric
+  return Object.values(readings).every(
+    // require one finite reading
+    (reading) => typeof reading === "number" && Number.isFinite(reading),
+  );
+}
+
+// validate one property sensor snapshot
+function isWeatherRecordPropertySensor(value: unknown): boolean {
+  const sensor = forecastAdjustmentObject(value);
+
+  // require the complete public snapshot
+  if (sensor === null) {
+    return false;
+  }
+
+  const validChannel = sensor.channel === null ||
+    (typeof sensor.channel === "number" &&
+      Number.isSafeInteger(sensor.channel) &&
+      sensor.channel >= 1 &&
+      sensor.channel <= 32);
+  return validChannel &&
+    typeof sensor.key === "string" &&
+    typeof sensor.model === "string" &&
+    isWeatherRecordSensorReadings(sensor.readings);
+}
+
+// validate nullable property sensor snapshots
+function isWeatherRecordPropertySensors(value: unknown): boolean {
+  // preserve absent property sensor metadata
+  if (value === null) {
+    return true;
+  }
+
+  // require and validate every sensor snapshot
+  return Array.isArray(value) && value.every(
+    // validate one sensor
+    (sensor) => isWeatherRecordPropertySensor(sensor),
+  );
+}
+
+// validate one provider metadata object
+function isWeatherRecordProvider(value: unknown): boolean {
+  // preserve absent provider metadata
+  if (value === null) {
+    return true;
+  }
+
+  const provider = forecastAdjustmentObject(value);
+
+  // require every public provider field
+  if (provider === null) {
+    return false;
+  }
+
+  return isWeatherRecordNullableText(provider.dataset) &&
+    isWeatherRecordNullableNumber(provider.elevationM) &&
+    isWeatherRecordNullableText(provider.gridCell) &&
+    isWeatherRecordPropertySensors(provider.propertySensors);
+}
+
+// validate one quality metadata object
+function isWeatherRecordQuality(value: unknown): boolean {
+  // preserve absent quality metadata
+  if (value === null) {
+    return true;
+  }
+
+  const quality = forecastAdjustmentObject(value);
+
+  // require every public quality field
+  if (quality === null) {
+    return false;
+  }
+
+  const validFlags = quality.flags === null ||
+    (Array.isArray(quality.flags) && quality.flags.every(
+      // require one string flag
+      (flag) => typeof flag === "string",
+    ));
+  return isWeatherRecordNullableNumber(quality.confidencePercent) &&
+    validFlags &&
+    isWeatherRecordNullableText(quality.interpolation) &&
+    isWeatherRecordNullableText(quality.status);
+}
+
+// validate the complete public metadata shape
+function isWeatherRecordMetadata(value: unknown): boolean {
+  const metadata = forecastAdjustmentObject(value);
+
+  // require every metadata branch
+  if (metadata === null) {
+    return false;
+  }
+
+  const upstream = forecastAdjustmentObject(metadata.upstream);
+
+  // require the upstream identity
+  if (upstream === null) {
+    return false;
+  }
+
+  return isWeatherRecordDevice(metadata.device) &&
+    isWeatherRecordProvider(metadata.provider) &&
+    isWeatherRecordQuality(metadata.quality) &&
+    isWeatherRecordNullableText(upstream.model) &&
+    typeof upstream.timezone === "string";
+}
+
+// validate all canonical weather metrics
+function isWeatherRecordMetrics(value: unknown): boolean {
+  const metrics = forecastAdjustmentObject(value);
+
+  // require one metrics object
+  if (metrics === null) {
+    return false;
+  }
+
+  // require every canonical metric while allowing additive fields
+  return WEATHER_RECORD_METRIC_KEYS.every(
+    // validate one finite-or-null metric
+    (metric) => isWeatherRecordNullableNumber(metrics[metric]),
+  );
+}
+
+// validate one public provenance object
+function isWeatherRecordProvenance(value: unknown): boolean {
+  const provenance = forecastAdjustmentObject(value);
+
+  // require one provenance object
+  if (provenance === null) {
+    return false;
+  }
+
+  const attribution = forecastAdjustmentObject(provenance.attribution);
+
+  // require the attribution identity
+  if (attribution === null) {
+    return false;
+  }
+
+  return typeof attribution.label === "string" &&
+    typeof attribution.url === "string" &&
+    typeof provenance.label === "string" &&
+    typeof provenance.providerKey === "string" &&
+    typeof provenance.sourceId === "string" &&
+    typeof provenance.sourceKey === "string" &&
+    typeof provenance.sourceKind === "string" &&
+    WEATHER_RECORD_SOURCE_KINDS.has(provenance.sourceKind as SiteSource["kind"]) &&
+    typeof provenance.stationSlug === "string";
+}
+
+// validate one complete raw weather record
+function isRawWeatherRecord(value: Record<string, unknown>): boolean {
+  const freshness = forecastAdjustmentObject(value.freshness);
+
+  // require safe freshness metadata
+  if (
+    freshness === null ||
+    typeof freshness.ageSeconds !== "number" ||
+    !Number.isSafeInteger(freshness.ageSeconds) ||
+    freshness.ageSeconds < 0 ||
+    typeof freshness.label !== "string" ||
+    typeof freshness.status !== "string" ||
+    !WEATHER_RECORD_FRESHNESS_STATUSES.has(
+      freshness.status as WeatherRecord["freshness"]["status"],
+    )
+  ) {
+    return false;
+  }
+
+  return typeof value.id === "string" &&
+    isWeatherRecordMetadata(value.metadata) &&
+    isWeatherRecordMetrics(value.metrics) &&
+    (value.productRunAt === null || isForecastAdjustmentInstant(value.productRunAt)) &&
+    isWeatherRecordProvenance(value.provenance) &&
+    isForecastAdjustmentInstant(value.receivedAt) &&
+    typeof value.revisionCount === "number" &&
+    Number.isSafeInteger(value.revisionCount) &&
+    value.revisionCount >= 0 &&
+    isForecastAdjustmentInstant(value.validAt);
+}
+
+// resolve one exact supported lead band
+function forecastAdjustmentLeadBand(
+  targetLeadHours: number,
+): ForecastAdjustmentLeadBand | null {
+  // reject unsupported leads
+  if (!Number.isSafeInteger(targetLeadHours) || targetLeadHours < 1 || targetLeadHours > 168) {
+    return null;
+  }
+
+  const minimum = Math.floor((targetLeadHours - 1) / 24) * 24 + 1;
+  const maximum = minimum + 23;
+  return `${String(minimum).padStart(3, "0")}-${String(maximum).padStart(3, "0")}` as ForecastAdjustmentLeadBand;
+}
+
+// validate one adjusted metric value
+function isForecastAdjustmentMetricValue(
+  metric: ForecastAdjustmentMetric,
+  value: unknown,
+): value is number {
+  const bounds = FORECAST_ADJUSTMENT_METRIC_BOUNDS[metric];
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= bounds.minimum &&
+    value <= bounds.maximum &&
+    (bounds.maximumExclusive !== true || value < bounds.maximum);
+}
+
+// parse one bounded reason code
+function parseForecastAdjustmentReasonCode(
+  value: unknown,
+): ForecastAdjustmentReasonCode | null {
+  return typeof value === "string" &&
+    FORECAST_ADJUSTMENT_REASON_CODE_KEYS.has(value as ForecastAdjustmentReasonCode)
+    ? value as ForecastAdjustmentReasonCode
+    : null;
+}
+
+// parse the response-level runtime state
+function parseForecastAdjustmentRuntime(
+  value: unknown,
+): ForecastAdjustmentRuntimeStatus | null {
+  const runtime = forecastAdjustmentObject(value);
+
+  // require the exact runtime envelope
+  if (
+    runtime === null ||
+    !hasExactForecastAdjustmentKeys(runtime, FORECAST_ADJUSTMENT_RUNTIME_KEYS) ||
+    !isForecastAdjustmentInstant(runtime.loadedAt)
+  ) {
+    return null;
+  }
+
+  // accept one complete active identity
+  if (
+    runtime.state === "active" &&
+    runtime.reasonCode === null &&
+    isForecastAdjustmentSha256(runtime.activeBundle) &&
+    isForecastAdjustmentSha256(runtime.candidateArtifactSha256) &&
+    isForecastAdjustmentSha256(runtime.evaluationReportSha256) &&
+    isForecastAdjustmentSha256(runtime.qualificationReceiptSha256)
+  ) {
+    return runtime as unknown as ForecastAdjustmentRuntimeStatus;
+  }
+
+  const reasonCode = parseForecastAdjustmentReasonCode(runtime.reasonCode);
+
+  // accept one complete disabled identity
+  if (
+    runtime.state === "disabled" &&
+    reasonCode !== null &&
+    runtime.activeBundle === null &&
+    runtime.candidateArtifactSha256 === null &&
+    runtime.evaluationReportSha256 === null &&
+    runtime.qualificationReceiptSha256 === null
+  ) {
+    return { ...runtime, reasonCode } as ForecastAdjustmentRuntimeStatus;
+  }
+
+  return null;
+}
+
+// parse one unchanged-raw row decision
+function parseForecastAdjustmentFailRawDecision(
+  value: Record<string, unknown>,
+): ForecastAdjustmentFailRawDecision | null {
+  const adjustedMetrics = forecastAdjustmentObject(value.adjustedMetrics);
+  const reasonCode = parseForecastAdjustmentReasonCode(value.reasonCode);
+
+  // require the exact empty fail-raw contract
+  if (
+    !hasExactForecastAdjustmentKeys(value, FORECAST_ADJUSTMENT_FAIL_RAW_KEYS) ||
+    value.contractVersion !== "forecast-adjustment-decision/v1" ||
+    (value.state !== "disabled" && value.state !== "not_applicable") ||
+    reasonCode === null ||
+    adjustedMetrics === null ||
+    Object.keys(adjustedMetrics).length !== 0 ||
+    !Array.isArray(value.appliedMetrics) ||
+    value.appliedMetrics.length !== 0
+  ) {
+    return null;
+  }
+
+  return { ...value, reasonCode } as unknown as ForecastAdjustmentFailRawDecision;
+}
+
+// parse one active row decision
+function parseForecastAdjustmentActiveDecision(
+  value: Record<string, unknown>,
+  record: WeatherRecord,
+  runtime: ForecastAdjustmentRuntimeStatus,
+): ForecastAdjustmentActiveDecision | null {
+  const adjustedMetrics = forecastAdjustmentObject(value.adjustedMetrics);
+  const provenance = forecastAdjustmentObject(value.rawForecastProvenance);
+  const appliedMetrics = Array.isArray(value.appliedMetrics)
+    ? value.appliedMetrics
+    : [];
+
+  // require the exact active envelope and runtime cross-links
+  if (
+    !hasExactForecastAdjustmentKeys(value, FORECAST_ADJUSTMENT_ACTIVE_KEYS) ||
+    value.contractVersion !== "forecast-adjustment-decision/v1" ||
+    value.algorithmContractVersion !== "robust-hierarchical-median/v1" ||
+    value.state !== "active" ||
+    value.reasonCode !== null ||
+    runtime.state !== "active" ||
+    value.candidateArtifactSha256 !== runtime.candidateArtifactSha256 ||
+    value.evaluationReportSha256 !== runtime.evaluationReportSha256 ||
+    value.qualificationReceiptSha256 !== runtime.qualificationReceiptSha256 ||
+    adjustedMetrics === null ||
+    provenance === null ||
+    !hasExactForecastAdjustmentKeys(provenance, FORECAST_ADJUSTMENT_RAW_PROVENANCE_KEYS)
+  ) {
+    return null;
+  }
+
+  const targetLeadHours = provenance.targetLeadHours;
+  const leadBand = typeof targetLeadHours === "number"
+    ? forecastAdjustmentLeadBand(targetLeadHours)
+    : null;
+  const referenceAt = isForecastAdjustmentInstant(provenance.referenceAt)
+    ? Date.parse(provenance.referenceAt)
+    : Number.NaN;
+  const validAt = isForecastAdjustmentInstant(provenance.validAt)
+    ? Date.parse(provenance.validAt)
+    : Number.NaN;
+  const derivedLeadHours = Math.ceil((validAt - referenceAt) / 3_600_000);
+
+  // bind the active decision to the displayed raw row
+  if (
+    provenance.cohort !== "legacy_v4_retrieval_snapshot" ||
+    provenance.referenceKind !== "retrieval_snapshot" ||
+    !isBoundedForecastAdjustmentText(provenance.adapterVersion) ||
+    !isBoundedForecastAdjustmentText(provenance.contractEpoch) ||
+    !isBoundedForecastAdjustmentText(provenance.dataset) ||
+    !isBoundedForecastAdjustmentText(provenance.sourceKey) ||
+    !isBoundedForecastAdjustmentText(provenance.upstreamModel) ||
+    !isForecastAdjustmentSha256(provenance.sourceConfigFingerprint) ||
+    leadBand === null ||
+    derivedLeadHours !== targetLeadHours ||
+    value.leadBand !== leadBand ||
+    provenance.validAt !== record.validAt ||
+    provenance.sourceKey !== record.provenance.sourceKey ||
+    provenance.dataset !== record.metadata.provider?.dataset ||
+    provenance.upstreamModel !== record.metadata.upstream.model
+  ) {
+    return null;
+  }
+
+  const uniqueMetrics = new Set<ForecastAdjustmentMetric>();
+
+  // validate every adjusted metric contribution
+  for (const metric of appliedMetrics) {
+    // reject duplicates and unsupported metrics
+    if (
+      typeof metric !== "string" ||
+      !FORECAST_ADJUSTMENT_METRIC_KEYS.has(metric as ForecastAdjustmentMetric) ||
+      uniqueMetrics.has(metric as ForecastAdjustmentMetric)
+    ) {
+      return null;
+    }
+
+    const typedMetric = metric as ForecastAdjustmentMetric;
+    const rawValue = record.metrics[typedMetric];
+    const adjustedValue = adjustedMetrics[typedMetric];
+
+    // require usable raw and adjusted values
+    if (
+      rawValue === null ||
+      !Number.isFinite(rawValue) ||
+      !isForecastAdjustmentMetricValue(typedMetric, adjustedValue)
+    ) {
+      return null;
+    }
+
+    uniqueMetrics.add(typedMetric);
+  }
+
+  // require a nonempty exact adjusted metric set
+  if (
+    uniqueMetrics.size === 0 ||
+    Object.keys(adjustedMetrics).length !== uniqueMetrics.size ||
+    Object.keys(adjustedMetrics).some((metric) => !uniqueMetrics.has(metric as ForecastAdjustmentMetric))
+  ) {
+    return null;
+  }
+
+  return value as unknown as ForecastAdjustmentActiveDecision;
+}
+
+// parse one row decision without affecting raw values
+function parseForecastAdjustmentDecision(
+  value: unknown,
+  record: WeatherRecord,
+  runtime: ForecastAdjustmentRuntimeStatus,
+): ForecastAdjustmentDecision | null {
+  const decision = forecastAdjustmentObject(value);
+
+  // reject missing and malformed decisions
+  if (decision === null) {
+    return null;
+  }
+
+  return decision.state === "active"
+    ? parseForecastAdjustmentActiveDecision(decision, record, runtime)
+    : parseForecastAdjustmentFailRawDecision(decision);
+}
+
+// remove untrusted adjustment metadata from one raw record
+function rawForecastRecord(value: unknown): WeatherRecord | null {
+  const record = forecastAdjustmentObject(value);
+
+  // require one complete renderable base record
+  if (record === null || !isRawWeatherRecord(record)) {
+    return null;
+  }
+
+  const { adjustment: _adjustment, ...raw } = record;
+  return raw as unknown as WeatherRecord;
+}
+
+// parse one forecast response with a global fail-raw boundary
+export function parseForecastRecordsResponse(value: unknown): ForecastRecordsResponse {
+  const response = forecastAdjustmentObject(value);
+
+  // retain ordinary response failures outside adjustment fallback
+  if (
+    response === null ||
+    !Array.isArray(response.data) ||
+    forecastAdjustmentObject(response.site) === null
+  ) {
+    throw new RangeError("Forecast response is invalid");
+  }
+
+  const responseData = response.data;
+  const rawRecords = responseData.map(rawForecastRecord);
+
+  // reject malformed raw rows normally
+  if (rawRecords.some((record) => record === null)) {
+    throw new RangeError("Forecast response contains an invalid raw record");
+  }
+
+  const records = rawRecords as WeatherRecord[];
+  const runtime = parseForecastAdjustmentRuntime(response.adjustmentRuntime);
+
+  // fail all adjustment metadata to raw together
+  if (runtime === null) {
+    return {
+      ...(response as unknown as RecordsResponse),
+      adjustmentRuntime: invalidForecastAdjustmentRuntime(),
+      data: records,
+    };
+  }
+
+  let invalidDecision = false;
+  const parsedRecords = records.map((record, index) => {
+    const source = forecastAdjustmentObject(responseData[index]);
+    const decision = parseForecastAdjustmentDecision(source?.adjustment, record, runtime);
+
+    // reject any missing decision or active row under a disabled runtime
+    if (decision === null || (runtime.state === "disabled" && decision.state === "active")) {
+      invalidDecision = true;
+      return record;
+    }
+
+    return { ...record, adjustment: decision };
+  });
+
+  // prevent partial activation after any row-contract failure
+  if (invalidDecision) {
+    return {
+      ...(response as unknown as RecordsResponse),
+      adjustmentRuntime: invalidForecastAdjustmentRuntime(),
+      data: records,
+    };
+  }
+
+  return {
+    ...(response as unknown as RecordsResponse),
+    adjustmentRuntime: runtime,
+    data: parsedRecords,
+  };
+}
 
 // coordinate browser reads and pagination
 export class WeatherDashboardController {
@@ -346,6 +1187,7 @@ export class WeatherDashboardController {
     this.#view = options.view ?? "home";
     this.#state = {
       ...EMPTY_STATE,
+      forecastAdjustmentMode: loadForecastAdjustmentMode(this.#storage),
       loading: true,
       selectedSite: PRODUCT_SITE,
       sites: [PRODUCT_SITE],
@@ -402,6 +1244,15 @@ export class WeatherDashboardController {
     this.patch({ units });
   }
 
+  // switch and persist the forecast display source
+  toggleForecastAdjustmentMode(): void {
+    const forecastAdjustmentMode = this.#state.forecastAdjustmentMode === "raw"
+      ? "adjusted"
+      : "raw";
+    persistForecastAdjustmentMode(this.#storage, forecastAdjustmentMode);
+    this.patch({ forecastAdjustmentMode });
+  }
+
   // load the newly selected public application route
   async setView(view: WeatherView): Promise<void> {
     // preserve the current page without duplicate reads
@@ -426,12 +1277,19 @@ export class WeatherDashboardController {
     this.patch({ error: null, forecastDays: days, loading: true });
 
     try {
-      const response = await getJson<RecordsResponse>(
+      const response = await getForecastJson(
         this.#fetcher,
         buildForecastUrl(this.#apiBaseUrl, site.slug, days),
       );
       const responseSite = requireProductSite(response.site);
-      this.patch({ error: null, forecast: response.data, loading: false, selectedSite: responseSite, sites: [responseSite] });
+      this.patch({
+        error: null,
+        forecast: response.data,
+        forecastAdjustmentRuntime: response.adjustmentRuntime,
+        loading: false,
+        selectedSite: responseSite,
+        sites: [responseSite],
+      });
     } catch (error) {
       this.#state = { ...this.#state, forecastDays: previousDays };
       this.fail(error);
@@ -667,7 +1525,7 @@ export class WeatherDashboardController {
           : Promise.resolve(null),
         // load modeled hours only where rendered
         needsForecast
-          ? getJson<RecordsResponse>(
+          ? getForecastJson(
             this.#fetcher,
             buildForecastUrl(this.#apiBaseUrl, site.slug, this.#state.forecastDays),
           )
@@ -708,6 +1566,7 @@ export class WeatherDashboardController {
           : dailyPrecipitation.data,
         error: null,
         forecast: forecast?.data ?? this.#state.forecast,
+        forecastAdjustmentRuntime: forecast?.adjustmentRuntime ?? this.#state.forecastAdjustmentRuntime,
         loading: false,
         propertySensorLayout: propertySensorLayout?.data ?? this.#state.propertySensorLayout,
         selectedSite: responseSite,
@@ -911,8 +1770,24 @@ export function mountWeatherDashboard(
 
   // redraw and wire one state snapshot
   controller.subscribe((state) => {
+    const toggleHadFocus = root.querySelector("[data-forecast-adjustment-toggle]") === document.activeElement;
+    const forecastPosition = root.querySelector<HTMLElement>("[data-forecast-charts]")
+      ?.dataset.forecastSelectedPosition;
     root.innerHTML = renderWeatherDashboard(state, controller.view);
+
+    // retain the selected forecast hour across preference redraws
+    if (toggleHadFocus && forecastPosition !== undefined && forecastPosition !== null) {
+      root.querySelector<HTMLElement>("[data-forecast-charts]")
+        ?.setAttribute("data-forecast-initial-index", forecastPosition);
+    }
+
     bindDashboardControls(root, controller);
+
+    // retain keyboard focus on the replaced preference switch
+    if (toggleHadFocus) {
+      root.querySelector<HTMLButtonElement>("[data-forecast-adjustment-toggle]")
+        ?.focus({ preventScroll: true });
+    }
   });
   void controller.initialize();
   return controller;
@@ -929,6 +1804,7 @@ export function renderWeatherDashboard(
         <h1>Ballydídean Weather</h1>
         <div class="masthead-actions">
           ${renderLoadingIndicator(state)}
+          ${renderForecastAdjustmentToggle(state, view)}
         </div>
       </header>
       ${renderSectionNavigation(view)}
@@ -939,6 +1815,43 @@ export function renderWeatherDashboard(
       </div>
     </main>
   `;
+}
+
+// render the shared home and forecast adjustment switch
+function renderForecastAdjustmentToggle(
+  state: DashboardState,
+  view: WeatherView,
+): string {
+  // limit the preference to forecast-bearing pages
+  if (view !== "home" && view !== "forecast") {
+    return "";
+  }
+
+  const available = forecastAdjustmentsAvailable(state);
+  const adjusted = available && state.forecastAdjustmentMode !== "raw";
+  return `
+    <button
+      type="button"
+      class="forecast-adjustment-toggle"
+      role="switch"
+      aria-checked="${String(adjusted)}"
+      aria-label="Use locally adjusted forecasts"
+      data-forecast-adjustment-toggle
+      data-forecast-adjustment-available="${String(available)}"
+      ${available ? "" : 'disabled title="Local adjustments are unavailable"'}
+    >
+      <span class="forecast-adjustment-toggle-mode">${adjusted ? "Adjusted" : "Regional"}</span>
+      <span class="forecast-adjustment-toggle-track" aria-hidden="true"><span></span></span>
+    </button>
+  `;
+}
+
+// detect one usable adjusted forecast value
+function forecastAdjustmentsAvailable(state: DashboardState): boolean {
+  return state.forecastAdjustmentRuntime?.state === "active" && state.forecast.some(
+    // require one validated active row
+    (record) => record.adjustment?.state === "active",
+  );
 }
 
 // render one route body
@@ -1156,6 +2069,7 @@ function renderCurrent(state: DashboardState): string {
     current.validAt,
     state.selectedSite?.timezone ?? current.metadata.upstream.timezone,
   );
+  const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
   return `
     <section class="current-conditions" aria-label="Current conditions">
       ${renderConditionCard({
@@ -1164,7 +2078,7 @@ function renderCurrent(state: DashboardState): string {
           icon: "device_thermostat",
           label: "Temperature",
           measurement: formatMeasurement(current.metrics.temperatureC, "temperature", state.units, 0),
-          forecast: forecastTemperature(forecast, state.units),
+          forecast: forecastTemperature(forecast, state.units, useForecastAdjustments),
           secondary: {
             label: "Feels like",
             measurement: formatMeasurement(current.metrics.apparentTemperatureC, "temperature", state.units, 0),
@@ -1176,7 +2090,7 @@ function renderCurrent(state: DashboardState): string {
           icon: "air",
           label: "Wind",
           measurement: directionalWindMeasurement,
-          forecast: forecastWind(forecast, state.units),
+          forecast: forecastWind(forecast, state.units, useForecastAdjustments),
           secondary: {
             label: "Gusts",
             measurement: formatMeasurement(windGust, "windSpeed", state.units, 0),
@@ -1188,7 +2102,7 @@ function renderCurrent(state: DashboardState): string {
           icon: "rainy",
           label: "Rain",
           measurement: formatPrecipitationRate(rainRate, state.units),
-          forecast: forecastRain(forecast, state.units),
+          forecast: forecastRain(forecast, state.units, useForecastAdjustments),
           secondary: {
             label: "Accumulation",
             measurement: formatPrecipitationAccumulation(dailyRain, state.units),
@@ -1201,7 +2115,7 @@ function renderCurrent(state: DashboardState): string {
           icon: "humidity_percentage",
           label: "Humidity",
           measurement: formatFixedMeasurement(current.metrics.relativeHumidityPercent, "%"),
-          forecast: forecastMaximumFixed(forecast, "relativeHumidityPercent", "%", 0, humidityBand),
+          forecast: forecastMaximumFixed(forecast, "relativeHumidityPercent", "%", 0, humidityBand, useForecastAdjustments),
         })}
       ${renderConditionCard({
           band: airQualityBand(airQuality),
@@ -1209,7 +2123,7 @@ function renderCurrent(state: DashboardState): string {
           icon: "masks",
           label: "Air quality",
           measurement: formatFixedMeasurement(airQuality, "", 0),
-          forecast: forecastMaximumFixed(forecast, "pm25MicrogramsPerCubicMeter", "", 0, airQualityBand),
+          forecast: forecastMaximumFixed(forecast, "pm25MicrogramsPerCubicMeter", "", 0, airQualityBand, useForecastAdjustments),
         })}
       ${renderConditionCard({
           band: pressureBand(current.metrics.pressureHpa, state.units),
@@ -1225,6 +2139,7 @@ function renderCurrent(state: DashboardState): string {
             1,
             // classify pressure in the active display preference
             (value) => pressureBand(value, state.units),
+            useForecastAdjustments,
           ),
         })}
       ${renderConditionCard({
@@ -1233,7 +2148,7 @@ function renderCurrent(state: DashboardState): string {
           icon: "wb_sunny",
           label: "UV index",
           measurement: formatFixedMeasurement(uvIndex, ""),
-          forecast: forecastMaximumFixed(forecast, "uvIndex", "", 1, uvBand),
+          forecast: forecastMaximumFixed(forecast, "uvIndex", "", 1, uvBand, useForecastAdjustments),
         })}
     </section>
   `;
@@ -1523,6 +2438,25 @@ interface ForecastChartSeries {
   readonly values: readonly (number | null)[];
 }
 
+// describe one selected-hour model value
+interface ForecastAdjustmentValuePresentation {
+  readonly adjusted: string;
+  readonly label: string;
+  readonly raw: string;
+}
+
+// describe one selected-hour adjustment status
+interface ForecastAdjustmentSelectionPresentation {
+  readonly leadBand: string;
+  readonly rawSource: string;
+  readonly referenceAt: string;
+  readonly sourceConfigFingerprint: string;
+  readonly state: "active" | "raw";
+  readonly summary: string;
+  readonly title: string;
+  readonly values: readonly ForecastAdjustmentValuePresentation[];
+}
+
 type ForecastChartFormat =
   | "airQuality"
   | "humidity"
@@ -1576,15 +2510,17 @@ function renderAlerts(state: DashboardState): string {
 // derive bounded operational watches from normalized values
 function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   const alerts: LocalWeatherAlert[] = [];
-  const forecastLow = minimumMetric(state.forecast, "temperatureC");
+  const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
+  const forecastLow = minimumMetric(state.forecast, "temperatureC", useForecastAdjustments);
   const apparentHigh = maximumMetric(state.current, "apparentTemperatureC");
   const wetBulbHigh = maximumMetric(state.current, "wetBulbGlobeTemperatureC");
   const windHigh = maximumMetric(
     [...state.current, ...state.forecast],
     "windGustMps",
+    useForecastAdjustments,
   );
   const rainRate = maximumMetric(state.current, "precipitationRateMmPerHour");
-  const forecastRain = maximumMetric(state.forecast, "precipitationMm");
+  const forecastRain = maximumMetric(state.forecast, "precipitationMm", useForecastAdjustments);
   const pm25 = maximumMetric(state.current, "pm25MicrogramsPerCubicMeter");
 
   // flag forecast frost
@@ -1643,6 +2579,201 @@ function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   return alerts;
 }
 
+// label one adjusted metric for readers
+function forecastAdjustmentMetricLabel(metric: ForecastAdjustmentMetric): string {
+  switch (metric) {
+    case "relativeHumidityPercent":
+      return "Humidity";
+    case "temperatureC":
+      return "Temperature";
+    case "windDirectionDegrees":
+      return "Wind direction";
+    case "windGustMps":
+      return "Wind gust";
+    case "windSpeedMps":
+      return "Wind speed";
+  }
+}
+
+// format one adjusted metric in preferred units
+function formatForecastAdjustmentMetric(
+  metric: ForecastAdjustmentMetric,
+  value: number,
+  units: UnitPreferences,
+): string {
+  // format temperature preferences
+  if (metric === "temperatureC") {
+    return compactMeasurement(formatMeasurement(value, "temperature", units, 1)) ?? "—";
+  }
+
+  // format wind preferences
+  if (metric === "windSpeedMps" || metric === "windGustMps") {
+    return compactMeasurement(formatMeasurement(value, "windSpeed", units, 1)) ?? "—";
+  }
+
+  // retain fixed humidity units
+  if (metric === "relativeHumidityPercent") {
+    return compactMeasurement(formatFixedMeasurement(value, "%", 1)) ?? "—";
+  }
+
+  return compactMeasurement(formatFixedMeasurement(value, "°", 0)) ?? "—";
+}
+
+// build one selected-hour status contract
+function forecastAdjustmentSelection(
+  record: WeatherRecord,
+  units: UnitPreferences,
+  useAdjustments: boolean,
+): ForecastAdjustmentSelectionPresentation {
+  const decision = record.adjustment;
+
+  // expose raw and adjusted values only for valid active rows
+  if (decision?.state === "active") {
+    const values = decision.appliedMetrics.map(
+      // preserve the API metric order
+      (metric) => ({
+        adjusted: formatForecastAdjustmentMetric(metric, decision.adjustedMetrics[metric]!, units),
+        label: forecastAdjustmentMetricLabel(metric),
+        raw: formatForecastAdjustmentMetric(metric, record.metrics[metric]!, units),
+      }),
+    );
+    const provenance = decision.rawForecastProvenance;
+
+    // describe an explicit regional display choice
+    if (!useAdjustments) {
+      return {
+        leadBand: `${decision.leadBand} hours`,
+        rawSource: `${provenance.sourceKey} · ${provenance.dataset} · ${provenance.upstreamModel}`,
+        referenceAt: provenance.referenceAt,
+        sourceConfigFingerprint: provenance.sourceConfigFingerprint,
+        state: "raw",
+        summary: "Local adjustment turned off",
+        title: "Regional forecast",
+        values,
+      };
+    }
+
+    return {
+      leadBand: `${decision.leadBand} hours`,
+      rawSource: `${provenance.sourceKey} · ${provenance.dataset} · ${provenance.upstreamModel}`,
+      referenceAt: provenance.referenceAt,
+      sourceConfigFingerprint: provenance.sourceConfigFingerprint,
+      state: "active",
+      summary: `${values.map((value) => value.label).join(", ")} adjusted for this location`,
+      title: "Locally adjusted",
+      values,
+    };
+  }
+
+  const beyondRange = decision?.state === "not_applicable" && decision.reasonCode === "unsupported_lead";
+  return {
+    leadBand: beyondRange ? "Beyond 168 hours" : "Not applied",
+    rawSource: `${record.provenance.sourceKey} · ${record.metadata.provider?.dataset ?? "unknown dataset"} · ${record.metadata.upstream.model ?? "unknown model"}`,
+    referenceAt: record.productRunAt ?? record.receivedAt,
+    sourceConfigFingerprint: "Not supplied for an unadjusted hour",
+    state: "raw",
+    summary: beyondRange
+      ? "No local adjustment beyond 168 hours"
+      : "No local adjustment for this forecast hour",
+    title: "Raw forecast",
+    values: [],
+  };
+}
+
+// render one raw-versus-adjusted value list
+function renderForecastAdjustmentValues(
+  values: readonly ForecastAdjustmentValuePresentation[],
+): string {
+  // keep raw-only hours concise
+  if (values.length === 0) {
+    return '<p class="forecast-adjustment-raw-note">This hour uses the raw regional forecast.</p>';
+  }
+
+  return `
+    <div class="forecast-adjustment-values" aria-label="Raw and adjusted forecast values">
+      ${values.map(
+        // show one exact raw and adjusted pair
+        (value) => `<div><span>${escapeHtml(value.label)}</span><small>Raw ${escapeHtml(value.raw)}</small><strong>Adjusted ${escapeHtml(value.adjusted)}</strong></div>`,
+      ).join("")}
+    </div>
+  `;
+}
+
+// render bounded adjustment status and provenance
+function renderForecastAdjustmentStatus(
+  state: DashboardState,
+  hours: readonly WeatherRecord[],
+  selectedIndex: number,
+  useAdjustments: boolean,
+): string {
+  const runtime = state.forecastAdjustmentRuntime ?? null;
+
+  // preserve the initial inactive product exactly
+  if (runtime === null || (runtime.state === "disabled" && runtime.reasonCode === "registry_inactive")) {
+    return "";
+  }
+
+  // keep degraded adjustment separate from raw forecast availability
+  if (runtime.state === "disabled") {
+    return `
+      <aside class="forecast-adjustment-status forecast-adjustment-status-raw" data-forecast-adjustment-status data-forecast-adjustment-state="raw" data-forecast-adjustment-reason="${escapeHtml(runtime.reasonCode ?? "adjustment_error")}">
+        <p role="status"><strong>Raw forecast</strong><span>Local adjustment unavailable</span></p>
+      </aside>
+    `;
+  }
+
+  const selections = hours.map(
+    // retain one bounded selected-hour presentation
+    (record) => forecastAdjustmentSelection(record, state.units, useAdjustments),
+  );
+  const selected = selections[selectedIndex] ?? selections[0];
+
+  // fail a structurally impossible active render to raw
+  if (selected === undefined || runtime.activeBundle === null) {
+    return `
+      <aside class="forecast-adjustment-status forecast-adjustment-status-raw" data-forecast-adjustment-status data-forecast-adjustment-state="raw" data-forecast-adjustment-reason="adjustment_error">
+        <p role="status"><strong>Raw forecast</strong><span>Local adjustment unavailable</span></p>
+      </aside>
+    `;
+  }
+
+  const includesExtendedRaw = selections.some(
+    // identify visible hours beyond model scope
+    (selection) => selection.summary === "No local adjustment beyond 168 hours",
+  );
+  return `
+    <aside
+      class="forecast-adjustment-status${selected.state === "raw" ? " forecast-adjustment-status-raw" : ""}"
+      data-forecast-adjustment-status
+      data-forecast-adjustment-state="${selected.state}"
+      data-forecast-adjustment-selections="${escapeHtml(JSON.stringify(selections))}"
+    >
+      <p class="forecast-adjustment-summary" role="status" aria-live="polite">
+        <strong data-forecast-adjustment-title>${escapeHtml(selected.title)}</strong>
+        <span data-forecast-adjustment-summary>${escapeHtml(selected.summary)}</span>
+      </p>
+      <details class="forecast-adjustment-details">
+        <summary>Raw and adjusted source details</summary>
+        <div data-forecast-adjustment-values>${renderForecastAdjustmentValues(selected.values)}</div>
+        <dl>
+          <dt>Raw source</dt><dd data-forecast-adjustment-source>${escapeHtml(selected.rawSource)}</dd>
+          <dt>Reference</dt><dd><time data-forecast-adjustment-reference datetime="${escapeHtml(selected.referenceAt)}">${escapeHtml(selected.referenceAt)}</time></dd>
+          <dt>Lead band</dt><dd data-forecast-adjustment-lead-band>${escapeHtml(selected.leadBand)}</dd>
+          <dt>Model</dt><dd>robust-hierarchical-median/v1</dd>
+          <dt>Bundle hash</dt><dd><code>${escapeHtml(runtime.activeBundle)}</code></dd>
+          <dt>Candidate/model hash</dt><dd><code>${escapeHtml(runtime.candidateArtifactSha256 ?? "unavailable")}</code></dd>
+          <dt>Report hash</dt><dd><code>${escapeHtml(runtime.evaluationReportSha256 ?? "unavailable")}</code></dd>
+          <dt>Receipt hash</dt><dd><code>${escapeHtml(runtime.qualificationReceiptSha256 ?? "unavailable")}</code></dd>
+          <dt>Raw model source hash</dt><dd><code data-forecast-adjustment-source-fingerprint>${escapeHtml(selected.sourceConfigFingerprint)}</code></dd>
+        </dl>
+      </details>
+      ${includesExtendedRaw
+        ? '<p class="forecast-adjustment-limit">Hours 169–240 use the raw regional forecast with no local adjustment.</p>'
+        : ""}
+    </aside>
+  `;
+}
+
 // render the site-local forecast day
 function renderForecast(state: DashboardState): string {
   const days = state.forecastDays ?? 1;
@@ -1674,7 +2805,8 @@ function renderForecast(state: DashboardState): string {
     `;
   }
 
-  const charts = buildForecastCharts(hours, state.tides);
+  const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
+  const charts = buildForecastCharts(hours, state.tides, useForecastAdjustments);
   const hourlyTimes = hours.map(
     // retain one shared continuous clock
     (record) => record.validAt,
@@ -1694,10 +2826,10 @@ function renderForecast(state: DashboardState): string {
   const currentPosition = forecastPositionForInstant(hours, reference ?? hours[0]?.validAt);
   const selectedIndex = Math.max(0, Math.min(hours.length - 1, Math.round(currentPosition)));
   const selectedTime = interpolateForecastInstant(forecastTimes, currentPosition);
-
   return `
     <section class="panel forecast-panel" aria-label="Weather forecast">
       <div class="forecast-controls">${renderForecastRangeSelector(days, state.loading)}</div>
+      ${renderForecastAdjustmentStatus(state, hours, selectedIndex, useForecastAdjustments)}
       <div class="forecast-chart-shell">
         <div class="forecast-current-time-line" aria-hidden="true"></div>
         <div class="forecast-shared-crosshair" aria-hidden="true"></div>
@@ -2061,10 +3193,11 @@ function renderForecastSkeleton(state: DashboardState): string {
 function buildForecastCharts(
   hours: readonly WeatherRecord[],
   tides: readonly TideRecord[],
+  useAdjustments: boolean,
 ): readonly ForecastChartDefinition[] {
   const metric = (key: WeatherMetricKey): readonly (number | null)[] => hours.map(
     // align every weather metric to the shared hourly index
-    (record) => record.metrics[key],
+    (record) => forecastMetricValue(record, key, useAdjustments),
   );
 
   return [
@@ -2100,7 +3233,8 @@ function buildForecastCharts(
         label: "Rate",
         values: hours.map(
           // prefer the direct forecast rate
-          (record) => record.metrics.precipitationRateMmPerHour ?? record.metrics.precipitationMm,
+          (record) => forecastMetricValue(record, "precipitationRateMmPerHour", useAdjustments) ??
+            forecastMetricValue(record, "precipitationMm", useAdjustments),
         ),
       }],
     },
@@ -5832,6 +6966,7 @@ function bindDashboardControls(
   root: HTMLElement,
   controller: WeatherDashboardController,
 ): void {
+  bindForecastAdjustmentToggle(root, controller);
   bindUnitSettings(root, controller);
   bindForecastCharts(root, controller);
   bindTrendMetricControl(root, controller);
@@ -5908,6 +7043,24 @@ function bindDashboardControls(
       void controller.nextPage();
     });
   }
+}
+
+// connect the shared forecast adjustment switch
+function bindForecastAdjustmentToggle(
+  root: HTMLElement,
+  controller: WeatherDashboardController,
+): void {
+  const toggle = root.querySelector<HTMLButtonElement>("[data-forecast-adjustment-toggle]");
+
+  // skip routes without forecast controls
+  if (toggle === null) {
+    return;
+  }
+
+  // switch the persisted display source
+  toggle.addEventListener("click", () => {
+    controller.toggleForecastAdjustmentMode();
+  });
 }
 
 // keep map markers fixed-size while their coordinate anchors move
@@ -6326,6 +7479,110 @@ function bindPropertySensorAdmin(
   });
 }
 
+// render selected-hour adjustment values without HTML injection
+function replaceForecastAdjustmentValues(
+  target: HTMLElement,
+  values: readonly ForecastAdjustmentValuePresentation[],
+): void {
+  target.replaceChildren();
+
+  // render one concise raw-only message
+  if (values.length === 0) {
+    const message = document.createElement("p");
+    message.className = "forecast-adjustment-raw-note";
+    message.textContent = "This hour uses the raw regional forecast.";
+    target.append(message);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "forecast-adjustment-values";
+  list.setAttribute("aria-label", "Raw and adjusted forecast values");
+
+  // append every selected metric pair
+  for (const value of values) {
+    const row = document.createElement("div");
+    const label = document.createElement("span");
+    const raw = document.createElement("small");
+    const adjusted = document.createElement("strong");
+    label.textContent = value.label;
+    raw.textContent = `Raw ${value.raw}`;
+    adjusted.textContent = `Adjusted ${value.adjusted}`;
+    row.append(label, raw, adjusted);
+    list.append(row);
+  }
+
+  target.append(list);
+}
+
+// create one safe selected-hour status updater
+function forecastAdjustmentStatusUpdater(
+  root: HTMLElement,
+): ((selectedIndex: number) => void) | null {
+  const status = root.querySelector<HTMLElement>("[data-forecast-adjustment-selections]");
+
+  // skip inactive and degraded runtime summaries
+  if (status === null) {
+    return null;
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(status.dataset.forecastAdjustmentSelections ?? "[]");
+  } catch {
+    // ignore a damaged rendered contract
+    return null;
+  }
+
+  // require a rendered selection list
+  if (!Array.isArray(parsed)) {
+    return null;
+  }
+
+  const selections = parsed as ForecastAdjustmentSelectionPresentation[];
+  const title = status.querySelector<HTMLElement>("[data-forecast-adjustment-title]");
+  const summary = status.querySelector<HTMLElement>("[data-forecast-adjustment-summary]");
+  const source = status.querySelector<HTMLElement>("[data-forecast-adjustment-source]");
+  const reference = status.querySelector<HTMLTimeElement>("[data-forecast-adjustment-reference]");
+  const leadBand = status.querySelector<HTMLElement>("[data-forecast-adjustment-lead-band]");
+  const fingerprint = status.querySelector<HTMLElement>("[data-forecast-adjustment-source-fingerprint]");
+  const values = status.querySelector<HTMLElement>("[data-forecast-adjustment-values]");
+
+  // update every selected-hour field together
+  return (selectedIndex: number): void => {
+    const selection = selections[Math.max(0, Math.min(selections.length - 1, selectedIndex))];
+
+    // retain the last usable presentation after malformed DOM changes
+    if (
+      selection === undefined ||
+      (selection.state !== "active" && selection.state !== "raw") ||
+      !Array.isArray(selection.values)
+    ) {
+      return;
+    }
+
+    status.dataset.forecastAdjustmentState = selection.state;
+    status.classList.toggle("forecast-adjustment-status-raw", selection.state === "raw");
+    title?.replaceChildren(selection.title);
+    summary?.replaceChildren(selection.summary);
+    source?.replaceChildren(selection.rawSource);
+    leadBand?.replaceChildren(selection.leadBand);
+    fingerprint?.replaceChildren(selection.sourceConfigFingerprint);
+
+    // update the raw reference instant
+    if (reference !== null) {
+      reference.dateTime = selection.referenceAt;
+      reference.textContent = selection.referenceAt;
+    }
+
+    // update the raw and adjusted pairs
+    if (values !== null) {
+      replaceForecastAdjustmentValues(values, selection.values);
+    }
+  };
+}
+
 // connect the synchronized forecast crosshair
 function bindForecastCharts(
   root: HTMLElement,
@@ -6368,6 +7625,7 @@ function bindForecastCharts(
   );
   const shell = grid.closest<HTMLElement>(".forecast-chart-shell") ?? grid;
   const time = shell.querySelector<HTMLTimeElement>("[data-forecast-crosshair-time]");
+  const updateAdjustmentStatus = forecastAdjustmentStatusUpdater(root);
   const timezone = controller.state.selectedSite?.timezone;
   let position = Math.max(0, Math.min(times.length - 1, Number(grid.dataset.forecastInitialIndex ?? 0)));
   let gesture: null | {
@@ -6391,6 +7649,7 @@ function bindForecastCharts(
     const selectedIndex = Math.max(0, Math.min(times.length - 1, Math.round(position)));
     const selectedTime = interpolateForecastInstant(times, position);
     const summaries: string[] = [];
+    grid.dataset.forecastSelectedPosition = String(position);
     shell.style.setProperty("--forecast-crosshair-position", `${String(ratio * 100)}%`);
     shell.classList.toggle("forecast-crosshair-start", ratio < 0.1);
     shell.classList.toggle("forecast-crosshair-end", ratio > 0.9);
@@ -6443,6 +7702,7 @@ function bindForecastCharts(
       controller.state.forecastDays,
     );
     grid.setAttribute("aria-valuetext", `${clock}. ${summaries.join(". ")}`);
+    updateAdjustmentStatus?.(selectedIndex);
     mapBinding?.updateTime(selectedTime, immediateMap);
   };
 
@@ -8239,13 +9499,35 @@ function findMetric(
   return record?.metrics[metric] ?? null;
 }
 
+// resolve the safe prominent value for one metric
+export function forecastMetricValue(
+  record: WeatherRecord,
+  metric: WeatherMetricKey,
+  useAdjustments = true,
+): number | null {
+  const decision = record.adjustment;
+
+  // use only an explicitly applied active value
+  if (
+    useAdjustments &&
+    decision?.state === "active" &&
+    FORECAST_ADJUSTMENT_METRIC_KEYS.has(metric as ForecastAdjustmentMetric) &&
+    decision.appliedMetrics.includes(metric as ForecastAdjustmentMetric)
+  ) {
+    return decision.adjustedMetrics[metric as ForecastAdjustmentMetric] ?? record.metrics[metric];
+  }
+
+  return record.metrics[metric];
+}
+
 // find the largest available metric value
 function maximumMetric(
   records: readonly WeatherRecord[],
   metric: WeatherMetricKey,
+  useAdjustments = false,
 ): number | null {
   const values = records.flatMap((record) => {
-    const value = record.metrics[metric];
+    const value = forecastMetricValue(record, metric, useAdjustments);
     return value === null ? [] : [value];
   });
   return values.length === 0 ? null : Math.max(...values);
@@ -8255,9 +9537,10 @@ function maximumMetric(
 function minimumMetric(
   records: readonly WeatherRecord[],
   metric: WeatherMetricKey,
+  useAdjustments = false,
 ): number | null {
   const values = records.flatMap((record) => {
-    const value = record.metrics[metric];
+    const value = forecastMetricValue(record, metric, useAdjustments);
     return value === null ? [] : [value];
   });
   return values.length === 0 ? null : Math.min(...values);
@@ -8317,9 +9600,10 @@ function forecastRange(
   units: UnitPreferences,
   maximumFractionDigits: number,
   classify: (value: number | null) => ConditionBand,
+  useAdjustments: boolean,
 ): ForecastCardValue {
-  const maximumValue = maximumMetric(records, metric);
-  const minimumValue = minimumMetric(records, metric);
+  const maximumValue = maximumMetric(records, metric, useAdjustments);
+  const minimumValue = minimumMetric(records, metric, useAdjustments);
   const maximum = formatMeasurement(maximumValue, kind, units, maximumFractionDigits);
   const minimum = formatMeasurement(minimumValue, kind, units, maximumFractionDigits);
   return {
@@ -8342,6 +9626,7 @@ function forecastRange(
 function forecastTemperature(
   records: readonly WeatherRecord[],
   units: UnitPreferences,
+  useAdjustments: boolean,
 ): ForecastCardValue {
   const air = forecastRange(
     records,
@@ -8350,6 +9635,7 @@ function forecastTemperature(
     units,
     0,
     temperatureBand,
+    useAdjustments,
   );
   const apparent = forecastRange(
     records,
@@ -8358,6 +9644,7 @@ function forecastTemperature(
     units,
     0,
     temperatureBand,
+    useAdjustments,
   );
   return { readings: [...air.readings, ...apparent.readings] };
 }
@@ -8380,9 +9667,10 @@ function forecastRangeTone(
 function forecastWind(
   records: readonly WeatherRecord[],
   units: UnitPreferences,
+  useAdjustments: boolean,
 ): ForecastCardValue {
-  const windValue = maximumMetric(records, "windSpeedMps");
-  const gustValue = maximumMetric(records, "windGustMps");
+  const windValue = maximumMetric(records, "windSpeedMps", useAdjustments);
+  const gustValue = maximumMetric(records, "windGustMps", useAdjustments);
   const wind = formatMeasurement(windValue, "windSpeed", units, 0);
   const gust = formatMeasurement(gustValue, "windSpeed", units, 0);
   return {
@@ -8397,9 +9685,10 @@ function forecastWind(
 function forecastRain(
   records: readonly WeatherRecord[],
   units: UnitPreferences,
+  useAdjustments: boolean,
 ): ForecastCardValue {
-  const maximumRate = maximumMetric(records, "precipitationRateMmPerHour");
-  const accumulation = totalMetric(records, "precipitationMm");
+  const maximumRate = maximumMetric(records, "precipitationRateMmPerHour", useAdjustments);
+  const accumulation = totalMetric(records, "precipitationMm", useAdjustments);
   return {
     readings: [
       {
@@ -8419,9 +9708,10 @@ function forecastRain(
 function totalMetric(
   records: readonly WeatherRecord[],
   metric: WeatherMetricKey,
+  useAdjustments: boolean,
 ): number | null {
   const values = records.flatMap((record) => {
-    const value = record.metrics[metric];
+    const value = forecastMetricValue(record, metric, useAdjustments);
     return value === null ? [] : [value];
   });
   return values.length === 0
@@ -8440,8 +9730,9 @@ function forecastMaximumFixed(
   unit: string,
   maximumFractionDigits: number,
   classify: (value: number | null) => ConditionBand,
+  useAdjustments: boolean,
 ): ForecastCardValue {
-  const value = maximumMetric(records, metric);
+  const value = maximumMetric(records, metric, useAdjustments);
   const measurement = formatFixedMeasurement(
     value,
     unit,
@@ -8739,6 +10030,14 @@ async function getJson<ResponseBody>(
   }
 
   return (await response.json()) as ResponseBody;
+}
+
+// load and sanitize one forecast response
+async function getForecastJson(
+  fetcher: typeof fetch,
+  url: string,
+): Promise<ForecastRecordsResponse> {
+  return parseForecastRecordsResponse(await getJson<unknown>(fetcher, url));
 }
 
 // write one authenticated JSON contract

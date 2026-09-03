@@ -30,11 +30,13 @@ require_secret_file WEATHER_ADMIN_PASSWORD_FILE
 require_secret_file WEATHER_OWNER_PASSWORD_FILE
 require_secret_file WEATHER_API_PASSWORD_FILE
 require_secret_file WEATHER_INGEST_PASSWORD_FILE
+require_secret_file WEATHER_TRAINING_EXPORT_PASSWORD_FILE
 
 admin_password="$(<"$WEATHER_ADMIN_PASSWORD_FILE")"
 owner_password="$(<"$WEATHER_OWNER_PASSWORD_FILE")"
 api_password="$(<"$WEATHER_API_PASSWORD_FILE")"
 ingest_password="$(<"$WEATHER_INGEST_PASSWORD_FILE")"
+training_export_password="$(<"$WEATHER_TRAINING_EXPORT_PASSWORD_FILE")"
 
 # separate administrator authority
 if [[ -z "$admin_password" || "$admin_password" == *$'\n'* || "$admin_password" == *$'\r'* ]]; then
@@ -48,9 +50,19 @@ if [[ "$admin_password" == "$owner_password" ]]; then
   exit 1
 fi
 
+# reject shared training-export authority
+if [[ "$training_export_password" == "$admin_password" ||
+  "$training_export_password" == "$owner_password" ||
+  "$training_export_password" == "$api_password" ||
+  "$training_export_password" == "$ingest_password" ]]; then
+  printf 'training export password must differ from every runtime password\n' >&2
+  exit 1
+fi
+
 owner_literal="$(sql_literal "$owner_password")"
 api_literal="$(sql_literal "$api_password")"
 ingest_literal="$(sql_literal "$ingest_password")"
+training_export_literal="$(sql_literal "$training_export_password")"
 
 # create roles without exposing credentials in arguments or output
 psql --set=ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}" --dbname "${POSTGRES_DB:-postgres}" <<SQL
@@ -71,10 +83,35 @@ WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'weather_ingest')
 ALTER ROLE weather_ingest WITH LOGIN PASSWORD $ingest_literal NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 
 SELECT format(
+  'CREATE ROLE weather_training_export LOGIN PASSWORD %L NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  $training_export_literal
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'weather_training_export')
+\gexec
+ALTER ROLE weather_training_export WITH LOGIN PASSWORD $training_export_literal NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+-- clear database-specific role defaults
+SELECT format(
+  'ALTER ROLE weather_training_export IN DATABASE %I RESET ALL',
+  database.datname
+)
+FROM pg_db_role_setting setting
+JOIN pg_database database ON database.oid = setting.setdatabase
+WHERE setting.setrole = 'weather_training_export'::regrole
+ORDER BY database.datname
+\gexec
+ALTER ROLE weather_training_export RESET ALL;
+ALTER ROLE weather_training_export SET default_transaction_read_only = on;
+
+SELECT format(
   'CREATE ROLE weather_owner LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',
   $owner_literal
 )
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'weather_owner')
+\gexec
+SELECT format('REVOKE %I FROM weather_training_export', granted_role.rolname)
+FROM pg_auth_members membership
+JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+WHERE membership.member = 'weather_training_export'::regrole
 \gexec
 
 SELECT format('ALTER DATABASE %I OWNER TO weather_owner', current_database())
@@ -85,11 +122,12 @@ SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', current_database())
 SELECT format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database())
 \gexec
 SELECT format(
-  'GRANT CONNECT ON DATABASE %I TO weather_owner, weather_api, weather_ingest',
+  'GRANT CONNECT ON DATABASE %I TO weather_owner, weather_api, weather_ingest, weather_training_export',
   current_database()
 )
 \gexec
 ALTER ROLE weather_owner WITH LOGIN PASSWORD $owner_literal NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
 SQL
 
-unset admin_password owner_password api_password ingest_password owner_literal api_literal ingest_literal
+unset admin_password owner_password api_password ingest_password training_export_password
+unset owner_literal api_literal ingest_literal training_export_literal

@@ -22,6 +22,7 @@ import {
   getCurrentWeather,
   getDailyPrecipitation,
   getScheduledCheckpoint,
+  getWeatherForecast,
   hasSuccessfulBackfillChunk,
   listActiveSites,
   loadEcowittConfiguration,
@@ -63,6 +64,7 @@ test(
     let configuration;
     let bootstrap;
     let currentSource;
+    let forecastSource;
     let reanalysisSource;
     let currentFirstRunId;
     let backfillRunId;
@@ -85,9 +87,13 @@ test(
           "0006_station_coordinates.sql",
           "0007_tide_sources.sql",
           "0008_ecowitt_property_sensors.sql",
+          "0009_forecast_anchor_records.sql",
+          "0010_forecast_training_export.sql",
+          "0011_forecast_runtime_provenance.sql",
+          "0012_hide_archive_only_forecasts_from_live_reads.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 8);
+        assert.equal(ledger.rowCount, 12);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -117,6 +123,10 @@ test(
             "0006_station_coordinates.sql",
             "0007_tide_sources.sql",
             "0008_ecowitt_property_sensors.sql",
+            "0009_forecast_anchor_records.sql",
+            "0010_forecast_training_export.sql",
+            "0011_forecast_runtime_provenance.sql",
+            "0012_hide_archive_only_forecasts_from_live_reads.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -148,8 +158,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 8);
-          assert.equal(first.current.length + second.current.length, 8);
+          assert.equal(first.applied.length + second.applied.length, 12);
+          assert.equal(first.current.length + second.current.length, 12);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -173,9 +183,46 @@ test(
         assert.deepEqual(counts.rows[0], {
           providers: 1,
           sites: 1,
-          sources: 6,
+          sources: 7,
           stations: 1,
         });
+        const expectedPublicSourceKeys = [
+          "open-meteo-current-v1",
+          "open-meteo-forecast-v4",
+          "open-meteo-reanalysis-v1",
+        ];
+        const publicSources = await listActiveSites(pool);
+        assert.deepEqual(
+          publicSources.map(
+            // retain exact public source identities
+            (source) => source.sourceKey,
+          ),
+          expectedPublicSourceKeys,
+        );
+        assert.equal(
+          publicSources.some(
+            // reject the archive-only source from discovery
+            (source) => source.sourceKey === "open-meteo-previous-runs-v1",
+          ),
+          false,
+        );
+        const legacyPublicSources = await pool.query(`
+          SELECT s.source_key
+          FROM sites si
+          JOIN stations st ON st.site_id = si.id AND st.active
+          JOIN sources s ON s.station_id = st.id AND s.active
+          JOIN providers p ON p.id = s.provider_id AND p.active
+          WHERE si.active
+            AND weather_source_is_current(s.id)
+          ORDER BY si.slug, st.slug, s.source_key
+        `);
+        assert.deepEqual(
+          legacyPublicSources.rows.map(
+            // prove rollback discovery compatibility
+            (source) => source.source_key,
+          ),
+          expectedPublicSourceKeys,
+        );
         const station = await pool.query(
           "SELECT latitude, longitude FROM stations WHERE id = $1",
           [bootstrap.stationId],
@@ -185,7 +232,7 @@ test(
           longitude: -122.42797012608193,
         });
         const sources = await pool.query(
-          "SELECT id, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind",
+          "SELECT active, id, source_key, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind, source_key",
         );
         currentSource = sources.rows.find(
           (source) => source.source_kind === "model_current",
@@ -193,7 +240,12 @@ test(
         reanalysisSource = sources.rows.find(
           (source) => source.source_kind === "reanalysis",
         );
+        forecastSource = sources.rows.find(
+          // select the checked active v4 source
+          (source) => source.source_key === "open-meteo-forecast-v4" && source.active,
+        );
         assert.ok(currentSource);
+        assert.ok(forecastSource);
         assert.ok(reanalysisSource);
       });
 
@@ -266,6 +318,24 @@ test(
 
         try {
           assert.equal((await apiPool.query("SELECT * FROM sites")).rowCount, 1);
+          const runtimeProvenance = await apiPool.query(
+            "SELECT * FROM forecast_runtime_provenance_v1",
+          );
+          assert.equal(runtimeProvenance.rowCount, 0);
+          assert.deepEqual(
+            runtimeProvenance.fields.map(
+              // retain the exact least-privilege projection
+              (field) => field.name,
+            ),
+            [
+              "weather_record_id",
+              "source_id",
+              "source_key",
+              "source_config_fingerprint",
+              "adapter_version",
+              "contract_epoch",
+            ],
+          );
           await assert.rejects(
             () => apiPool.query("DELETE FROM sites"),
             hasDatabaseCode("42501"),
@@ -276,6 +346,26 @@ test(
           );
           await assert.rejects(
             () => apiPool.query("SELECT material_provider_config FROM sources"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () => apiPool.query("SELECT source_config_fingerprint FROM sources"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () => apiPool.query("SELECT * FROM ingestion_runs"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () => apiPool.query("SELECT * FROM forecast_anchor_records"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () => apiPool.query("SELECT * FROM forecast_training_export_rows_v1"),
+            hasDatabaseCode("42501"),
+          );
+          await assert.rejects(
+            () => apiPool.query("SELECT * FROM forecast_training_export_manifest_v1"),
             hasDatabaseCode("42501"),
           );
           await assert.rejects(
@@ -302,12 +392,12 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0008_ecowitt_property_sensors.sql" },
+            { version: "0012_hide_archive_only_forecasts_from_live_reads.sql" },
           );
           try {
             // reject unproven candidate history
             await pool.query(
-              "INSERT INTO schema_migrations (name, checksum) VALUES ('0009_candidate_only.sql', $1)",
+              "INSERT INTO schema_migrations (name, checksum) VALUES ('9999_candidate_only.sql', $1)",
               ["3".repeat(64)],
             );
             await assert.rejects(
@@ -333,7 +423,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0008_ecowitt_property_sensors.sql" },
+              { version: "0012_hide_archive_only_forecasts_from_live_reads.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
@@ -357,7 +447,7 @@ test(
               [knownMigration.rows[0].checksum],
             );
             await pool.query(
-              "DELETE FROM schema_migrations WHERE name = '0009_candidate_only.sql'",
+              "DELETE FROM schema_migrations WHERE name = '9999_candidate_only.sql'",
             );
           }
           await ingestPool.query(
@@ -370,7 +460,7 @@ test(
               VALUES ('role-test', clock_timestamp(), 'test/v1')
             `,
           );
-          assert.equal((await ingestPool.query("SELECT * FROM sources")).rowCount, 6);
+          assert.equal((await ingestPool.query("SELECT * FROM sources")).rowCount, 7);
           await assert.rejects(
             () => ingestPool.query("ALTER TABLE weather_records ADD COLUMN escaped text"),
             hasDatabaseCode("42501"),
@@ -667,6 +757,172 @@ test(
             }),
           hasDatabaseCode("23503"),
         );
+      });
+
+      // lock the raw v4 read query before additive storage work
+      await context.test("legacy forecast reads only the newest product in horizon order and limit", async () => {
+        assert.equal(
+          forecastSource.source_config_fingerprint,
+          "ceb83ac4ba3ddc421a31043794ad450a859ecc31643506f93f64a28feb15e5b4",
+        );
+        const forecastSession = await requireSession(pool, forecastSource.id);
+
+        try {
+          const olderRun = await createRun(
+            forecastSession,
+            forecastSource,
+            "scheduled",
+            "2026-08-22T06:00:00.000Z",
+            "2026-08-22T07:00:00.000Z",
+          );
+          await completeScheduledIngestion(forecastSession, {
+            attempts: 1,
+            expectedCheckpointVersion: null,
+            lastValidAt: "2026-08-22T07:00:00.000Z",
+            providerCursor: { product_run_at: "2026-08-22T04:00:00.000Z" },
+            records: [
+              makeRecord(
+                forecastSource.id,
+                "forecast",
+                "2026-08-22T07:00:00.000Z",
+              {
+                productRunAt: "2026-08-22T04:00:00.000Z",
+                providerDataset: "forecast",
+                temperatureC: -10,
+                upstreamModel: "best_match",
+              },
+              ),
+            ],
+            runId: olderRun.id,
+            windowEndExclusive: "2026-08-22T07:00:00.000Z",
+            windowStart: "2026-08-22T06:00:00.000Z",
+          });
+          const checkpoint = await getScheduledCheckpoint(forecastSession);
+          assert.equal(checkpoint?.version, 1);
+          const newestRun = await createRun(
+            forecastSession,
+            forecastSource,
+            "scheduled",
+            "2026-08-22T07:00:00.000Z",
+            "2026-08-22T12:00:00.000Z",
+          );
+          const newestRecords = Array.from(
+            { length: 265 },
+            // create one more row than the repository limit
+            (_unused, index) => makeRecord(
+              forecastSource.id,
+              "forecast",
+              new Date(Date.parse("2026-08-22T07:00:00.000Z") + index * 60_000)
+                .toISOString(),
+              {
+                productRunAt: "2026-08-22T05:00:00.000Z",
+                providerDataset: "forecast",
+                temperatureC: 20 + (index % 10) / 10,
+                upstreamModel: "best_match",
+              },
+            ),
+          ).reverse();
+          await completeScheduledIngestion(forecastSession, {
+            attempts: 2,
+            expectedCheckpointVersion: checkpoint?.version ?? null,
+            lastValidAt: "2026-08-22T11:24:00.000Z",
+            providerCursor: { product_run_at: "2026-08-22T05:00:00.000Z" },
+            records: newestRecords,
+            runId: newestRun.id,
+            windowEndExclusive: "2026-08-22T12:00:00.000Z",
+            windowStart: "2026-08-22T07:00:00.000Z",
+          });
+
+          const horizon = await getWeatherForecast(pool, {
+            asOf: "2026-08-22T07:00:00.000Z",
+            hours: 3,
+            siteSlug: configuration.site.key,
+          });
+          assert.equal(horizon.length, 180);
+          assert.equal(
+            horizon[0].adapterVersion,
+            "open-meteo-forecast-daily/v4",
+          );
+          assert.equal(
+            horizon[0].sourceConfigFingerprint,
+            "ceb83ac4ba3ddc421a31043794ad450a859ecc31643506f93f64a28feb15e5b4",
+          );
+          assert.equal(
+            horizon[0].contractEpoch,
+            "legacy-v4/9d26d9c46dcaacc422c28e854327b11cd710625e092110786010f0687a100d83",
+          );
+          assert.equal(horizon[0].providerMetadata.dataset, "forecast");
+          assert.equal(horizon[0].upstreamModel, "best_match");
+          assert.deepEqual(
+            horizon.map(
+              // expose the complete newest-product ordering proof
+              (record) => ({
+                productRunAt: record.productRunAt.toISOString(),
+                temperatureC: record.temperatureC,
+                validAt: record.validAt.toISOString(),
+              }),
+            ),
+            Array.from(
+              { length: 180 },
+              // build the literal expected ordered horizon
+              (_unused, index) => ({
+                productRunAt: "2026-08-22T05:00:00.000Z",
+                temperatureC: 20 + (index % 10) / 10,
+                validAt: new Date(
+                  Date.parse("2026-08-22T07:00:00.000Z") + index * 60_000,
+                ).toISOString(),
+              }),
+            ),
+          );
+          const apiPool = createTestPool(
+            server,
+            "weather_test",
+            "weather_api",
+            "api-test",
+          );
+
+          try {
+            await pool.query(
+              "REVOKE SELECT ON forecast_runtime_provenance_v1 FROM weather_api",
+            );
+            const rawHorizon = await getWeatherForecast(apiPool, {
+              asOf: "2026-08-22T07:00:00.000Z",
+              hours: 3,
+              siteSlug: configuration.site.key,
+            });
+            const expectedRawHorizon = horizon.map(
+              // remove only optional runtime provenance
+              (record) => ({
+                ...record,
+                adapterVersion: null,
+                contractEpoch: null,
+                sourceConfigFingerprint: null,
+              }),
+            );
+
+            assert.equal(
+              JSON.stringify(rawHorizon),
+              JSON.stringify(expectedRawHorizon),
+            );
+          } finally {
+            await pool.query(
+              "GRANT SELECT ON forecast_runtime_provenance_v1 TO weather_api",
+            );
+            await apiPool.end();
+          }
+          const bounded = await getWeatherForecast(pool, {
+            asOf: "2026-08-22T07:00:00.000Z",
+            hours: 264,
+            siteSlug: configuration.site.key,
+          });
+          assert.equal(bounded.length, 264);
+          assert.equal(
+            bounded.at(-1).validAt.toISOString(),
+            "2026-08-22T11:23:00.000Z",
+          );
+        } finally {
+          await forecastSession.release();
+        }
       });
 
       // verify forecast identity requirements and separation
@@ -1374,6 +1630,7 @@ async function runRuntimeRoleBootstrap(server) {
   const ownerPath = join(directory, "owner");
   const apiPath = join(directory, "api");
   const ingestPath = join(directory, "ingest");
+  const trainingExportPath = join(directory, "training-export");
 
   try {
     await Promise.all([
@@ -1381,6 +1638,7 @@ async function runRuntimeRoleBootstrap(server) {
       writeFile(ownerPath, "owner-test\n", { mode: 0o600 }),
       writeFile(apiPath, "api-test\n", { mode: 0o600 }),
       writeFile(ingestPath, "ingest-test\n", { mode: 0o600 }),
+      writeFile(trainingExportPath, "training-export-test\n", { mode: 0o600 }),
     ]);
     await executeFile(
       join(repositoryRoot, "deploy/postgres/010-create-runtime-roles.sh"),
@@ -1397,6 +1655,7 @@ async function runRuntimeRoleBootstrap(server) {
           WEATHER_API_PASSWORD_FILE: apiPath,
           WEATHER_INGEST_PASSWORD_FILE: ingestPath,
           WEATHER_OWNER_PASSWORD_FILE: ownerPath,
+          WEATHER_TRAINING_EXPORT_PASSWORD_FILE: trainingExportPath,
         },
         timeout: 30_000,
       },
@@ -1426,8 +1685,15 @@ async function createRun(
   requestedStart = "2026-08-22T00:00:00.000Z",
   requestedEndExclusive = "2026-08-22T01:00:00.000Z",
 ) {
+  // preserve the checked live-v4 adapter identity
+  const adapterVersion = mode === "backfill"
+    ? "archive/v1"
+    : source.source_key === "open-meteo-forecast-v4"
+      ? "open-meteo-forecast-daily/v4"
+      : "current/v1";
+
   return startIngestionRun(session, {
-    adapterVersion: mode === "backfill" ? "archive/v1" : "current/v1",
+    adapterVersion,
     chunkPlanVersion: mode === "backfill" ? "archive-hourly/v1" : null,
     deadlineAt: new Date(Date.now() + 120_000).toISOString(),
     mode,
@@ -1442,8 +1708,8 @@ function makeRecord(sourceId, sourceKind, validAt, overrides = {}) {
   return createNormalizedWeatherRecord({
     metadata: {
       device: null,
-      model: "test-grid/v1",
-      provider: { dataset: "integration" },
+      model: overrides.upstreamModel ?? "test-grid/v1",
+      provider: { dataset: overrides.providerDataset ?? "integration" },
       quality: { status: "validated" },
       upstreamTimezone: "America/Los_Angeles",
     },

@@ -233,3 +233,7 @@ docker compose --env-file deploy/.env.example \
 
 The local web test URL is <http://127.0.0.1:3000/>. Local database/web bindings
 remain on loopback and the local override replaces the real connector command.
+
+For the separate read-only production snapshot, model-evidence, activation,
+and restart-only rollback boundaries, see
+[`forecast adjustment operations and governance`](forecast-adjustment.md).

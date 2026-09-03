@@ -41,6 +41,9 @@
     "test:urls:remote": "node scripts/test-urls.mjs --remote",
     "typecheck": "npm run typecheck --workspaces",
     "weather:backfill": "npm run weather:backfill --workspace @weather/worker --",
+    "weather:forecast-adjustment:bundle": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-bundle-cli.js",
+    "weather:forecast-adjustment:evaluate": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evaluate-cli.js",
+    "weather:forecast-adjustment:evidence": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evidence-cli.js",
     "weather:public-stations:backfill": "npm run weather:public-stations:backfill --workspace @weather/worker --",
     "weather:tides:backfill": "npm run weather:tides:backfill --workspace @weather/worker --",
     "weather:tempest:backfill": "npm run weather:tempest:backfill --workspace @weather/worker --"

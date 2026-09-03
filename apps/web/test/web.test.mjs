@@ -10,6 +10,8 @@ import {
   buildTidesUrl,
   buildTrendsUrl,
   DEFAULT_UNIT_PREFERENCES,
+  FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+  forecastMetricValue,
   forecastForSiteDay,
   forecastForSiteDays,
   formatMeasurement,
@@ -17,6 +19,7 @@ import {
   humidityBand,
   interpolateForecastInstant,
   loadUnitPreferences,
+  parseForecastRecordsResponse,
   pressureBand,
   renderWeatherDashboard,
   temperatureBand,
@@ -132,7 +135,12 @@ const record = {
   id: "101",
   metadata: {
     device: { model: "virtual-grid", serial: null, vendor: "Open-Meteo" },
-    provider: { dataset: "best_match", elevationM: 17, gridCell: null },
+    provider: {
+      dataset: "best_match",
+      elevationM: 17,
+      gridCell: null,
+      propertySensors: null,
+    },
     quality: null,
     upstream: {
       model: "best_match",
@@ -375,6 +383,280 @@ const tides = [
   },
 ];
 
+const adjustmentHashes = {
+  bundle: "a".repeat(64),
+  candidate: "b".repeat(64),
+  report: "c".repeat(64),
+  receipt: "d".repeat(64),
+  source: "e".repeat(64),
+};
+
+// create one exact response runtime
+function adjustmentRuntime(state = "active", reasonCode = null) {
+  // create one fail-raw runtime
+  if (state === "disabled") {
+    return {
+      activeBundle: null,
+      candidateArtifactSha256: null,
+      evaluationReportSha256: null,
+      loadedAt: "2026-08-22T05:00:00.000Z",
+      qualificationReceiptSha256: null,
+      reasonCode,
+      state,
+    };
+  }
+
+  return {
+    activeBundle: adjustmentHashes.bundle,
+    candidateArtifactSha256: adjustmentHashes.candidate,
+    evaluationReportSha256: adjustmentHashes.report,
+    loadedAt: "2026-08-22T05:00:00.000Z",
+    qualificationReceiptSha256: adjustmentHashes.receipt,
+    reasonCode: null,
+    state: "active",
+  };
+}
+
+// create one exact active row decision
+function activeAdjustment(recordValue, targetLeadHours = 1) {
+  const referenceAt = new Date(
+    Date.parse(recordValue.validAt) - targetLeadHours * 3_600_000,
+  ).toISOString();
+  return {
+    adjustedMetrics: {
+      relativeHumidityPercent: recordValue.metrics.relativeHumidityPercent - 5,
+      temperatureC: recordValue.metrics.temperatureC + 2,
+    },
+    algorithmContractVersion: "robust-hierarchical-median/v1",
+    appliedMetrics: ["temperatureC", "relativeHumidityPercent"],
+    candidateArtifactSha256: adjustmentHashes.candidate,
+    contractVersion: "forecast-adjustment-decision/v1",
+    evaluationReportSha256: adjustmentHashes.report,
+    leadBand: targetLeadHours <= 24 ? "001-024" : "145-168",
+    qualificationReceiptSha256: adjustmentHashes.receipt,
+    rawForecastProvenance: {
+      adapterVersion: "open-meteo-forecast-daily/v4",
+      cohort: "legacy_v4_retrieval_snapshot",
+      contractEpoch:
+        "legacy-v4/9d26d9c46dcaacc422c28e854327b11cd710625e092110786010f0687a100d83",
+      dataset: recordValue.metadata.provider.dataset,
+      referenceAt,
+      referenceKind: "retrieval_snapshot",
+      sourceConfigFingerprint: adjustmentHashes.source,
+      sourceKey: recordValue.provenance.sourceKey,
+      targetLeadHours,
+      upstreamModel: recordValue.metadata.upstream.model,
+      validAt: recordValue.validAt,
+    },
+    reasonCode: null,
+    state: "active",
+  };
+}
+
+// create one exact fail-raw row decision
+function failRawAdjustment(state, reasonCode) {
+  return {
+    adjustedMetrics: {},
+    appliedMetrics: [],
+    contractVersion: "forecast-adjustment-decision/v1",
+    reasonCode,
+    state,
+  };
+}
+
+// create one complete forecast rendering state
+function forecastState(records, runtime, forecastDays = 1) {
+  return {
+    current: [record],
+    dailyPrecipitation: null,
+    error: null,
+    filters: {},
+    forecastAdjustmentMode: "adjusted",
+    forecast: records,
+    forecastAdjustmentRuntime: runtime,
+    forecastDays,
+    history: [],
+    loading: false,
+    mapLayer: "roads",
+    nextCursor: null,
+    page: 0,
+    propertyMapLayer: "satellite",
+    propertySensorLayout: [],
+    selectedPropertySensorKey: null,
+    selectedStationSlug: null,
+    selectedSite: site,
+    selectedTrendMetric: "temperatureC",
+    selectedTrendYear: null,
+    sites: [site],
+    tideGeneratedAt: null,
+    tides: [],
+    trendDetail: "rolling",
+    trendDisplayMode: "aggregate",
+    trendExtremeKind: "heat",
+    trendExtremeThreshold: 30,
+    trendGeneratedAt: null,
+    trends: [],
+    units: DEFAULT_UNIT_PREFERENCES,
+  };
+}
+
+test("forecast adjustment boundary preserves raw and validates active metadata", () => {
+  const raw = {
+    ...forecastRecord,
+    futureApiField: { contractVersion: 2 },
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+    metrics: { ...forecastRecord.metrics, futureMetric: 123 },
+  };
+  const active = { ...raw, adjustment: activeAdjustment(raw) };
+  const parsed = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime(),
+    data: [active],
+    site,
+  });
+  const parsedRecord = parsed.data[0];
+
+  assert.equal(parsedRecord.metrics.temperatureC, raw.metrics.temperatureC);
+  assert.deepEqual(parsedRecord.futureApiField, raw.futureApiField);
+  assert.equal(parsedRecord.metrics.futureMetric, raw.metrics.futureMetric);
+  assert.equal(forecastMetricValue(parsedRecord, "temperatureC"), raw.metrics.temperatureC + 2);
+  assert.equal(forecastMetricValue(parsedRecord, "temperatureC", false), raw.metrics.temperatureC);
+  assert.equal(forecastMetricValue(parsedRecord, "pressureHpa"), raw.metrics.pressureHpa);
+
+  const html = renderWeatherDashboard(
+    forecastState(parsed.data, parsed.adjustmentRuntime),
+    "forecast",
+  );
+  assert.match(html, /data-forecast-adjustment-available="true"/u);
+  assert.match(html, /data-forecast-adjustment-state="active"[\s\S]*Locally adjusted/u);
+  assert.match(html, /Raw and adjusted source details[\s\S]*Raw 61\.2 °F[\s\S]*Adjusted 64\.8 °F/u);
+  assert.match(html, new RegExp(`Bundle hash[\\s\\S]*${adjustmentHashes.bundle}`, "u"));
+  assert.match(html, new RegExp(`Candidate/model hash[\\s\\S]*${adjustmentHashes.candidate}`, "u"));
+  assert.match(html, new RegExp(`Report hash[\\s\\S]*${adjustmentHashes.report}`, "u"));
+  assert.match(html, new RegExp(`Receipt hash[\\s\\S]*${adjustmentHashes.receipt}`, "u"));
+  assert.match(html, new RegExp(`Raw model source hash[\\s\\S]*${adjustmentHashes.source}`, "u"));
+
+  const rawHtml = renderWeatherDashboard(
+    {
+      ...forecastState(parsed.data, parsed.adjustmentRuntime),
+      forecastAdjustmentMode: "raw",
+    },
+    "forecast",
+  );
+  assert.match(rawHtml, /class="forecast-adjustment-toggle"[\s\S]*aria-checked="false"[\s\S]*data-forecast-adjustment-toggle/u);
+  assert.match(rawHtml, /Regional forecast[\s\S]*Local adjustment turned off/u);
+  assert.doesNotMatch(rawHtml, /data-forecast-adjustment-state="active"/u);
+});
+
+test("inactive and invalid adjustment metadata remain usable raw", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+  const inactive = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime("disabled", "registry_inactive"),
+    data: [{ ...raw, adjustment: failRawAdjustment("disabled", "registry_inactive") }],
+    site,
+  });
+  const inactiveHtml = renderWeatherDashboard(
+    forecastState(inactive.data, inactive.adjustmentRuntime),
+    "forecast",
+  );
+  assert.match(
+    inactiveHtml,
+    /class="forecast-adjustment-toggle"[\s\S]*aria-checked="false"[\s\S]*data-forecast-adjustment-available="false"[\s\S]*disabled/u,
+  );
+  assert.doesNotMatch(inactiveHtml, /forecast-adjustment-status|Locally adjusted/u);
+
+  const invalid = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime(),
+    data: [{
+      ...raw,
+      adjustment: {
+        ...activeAdjustment(raw),
+        candidateArtifactSha256: "f".repeat(64),
+      },
+    }],
+    site,
+  });
+  assert.equal(invalid.adjustmentRuntime.state, "disabled");
+  assert.equal(invalid.adjustmentRuntime.reasonCode, "adjustment_error");
+  assert.equal(invalid.data[0].adjustment, undefined);
+  assert.equal(forecastMetricValue(invalid.data[0], "temperatureC"), raw.metrics.temperatureC);
+  assert.match(
+    renderWeatherDashboard(forecastState(invalid.data, invalid.adjustmentRuntime), "forecast"),
+    /Raw forecast[\s\S]*Local adjustment unavailable/u,
+  );
+
+  const missing = parseForecastRecordsResponse({ data: [raw], site });
+  assert.equal(missing.adjustmentRuntime.reasonCode, "adjustment_error");
+  assert.equal(forecastMetricValue(missing.data[0], "temperatureC"), raw.metrics.temperatureC);
+});
+
+test("forecast adjustment boundary rejects malformed raw records", () => {
+  assert.throws(
+    () => parseForecastRecordsResponse({ data: [{}], site }),
+    { message: "Forecast response contains an invalid raw record" },
+  );
+  assert.throws(
+    () => parseForecastRecordsResponse({
+      data: [{
+        ...forecastRecord,
+        metrics: { ...forecastRecord.metrics, temperatureC: Number.NaN },
+      }],
+      site,
+    }),
+    { message: "Forecast response contains an invalid raw record" },
+  );
+});
+
+test("extended forecast visibly returns to raw after 168 hours", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+  const extendedRaw = {
+    ...raw,
+    id: "extended-169",
+    adjustment: failRawAdjustment("not_applicable", "unsupported_lead"),
+    validAt: new Date(Date.parse(raw.validAt) + 169 * 3_600_000).toISOString(),
+  };
+  const parsed = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime(),
+    data: [{ ...raw, adjustment: activeAdjustment(raw) }, extendedRaw],
+    site,
+  });
+  const html = renderWeatherDashboard(
+    forecastState(parsed.data, parsed.adjustmentRuntime, 10),
+    "forecast",
+  );
+
+  assert.equal(forecastMetricValue(parsed.data[0], "temperatureC"), raw.metrics.temperatureC + 2);
+  assert.equal(forecastMetricValue(parsed.data[1], "temperatureC"), raw.metrics.temperatureC);
+  assert.match(html, /Hours 169–240 use the raw regional forecast with no local adjustment/u);
+  assert.match(html, /No local adjustment beyond 168 hours/u);
+
+  const invalidActive = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime(),
+    data: [{
+      ...extendedRaw,
+      adjustment: activeAdjustment(extendedRaw, 169),
+    }],
+    site,
+  });
+  assert.equal(invalidActive.adjustmentRuntime.reasonCode, "adjustment_error");
+  assert.equal(invalidActive.data[0].adjustment, undefined);
+  assert.equal(forecastMetricValue(invalidActive.data[0], "temperatureC"), raw.metrics.temperatureC);
+});
+
 test("dashboard separates current conditions from the historical logs route", () => {
   const state = {
     current: [record, physicalRecord],
@@ -552,6 +834,12 @@ test("dashboard separates current conditions from the historical logs route", ()
   });
 
   assert.match(html, /<header class="masthead">[\s\S]*?<h1>Ballydídean Weather<\/h1>/u);
+  assert.match(html, /data-forecast-adjustment-toggle/u);
+  assert.match(forecastHtml, /data-forecast-adjustment-toggle/u);
+  assert.doesNotMatch(logsHtml, /data-forecast-adjustment-toggle/u);
+  assert.doesNotMatch(mapHtml, /data-forecast-adjustment-toggle/u);
+  assert.doesNotMatch(settingsHtml, /data-forecast-adjustment-toggle/u);
+  assert.doesNotMatch(trendsHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(html, /brand-link|brand-mark|ballydidean-wide\.svg/u);
   assert.doesNotMatch(html, /aria-label="Weather location"|data-site-selector/u);
   assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-current="page">[\s\S]*?>home<\/span><\/span><span>Home<\/span><\/a>/u);
@@ -1113,6 +1401,11 @@ test("controller loads validated unit preferences and persists changes", () => {
     waterLevel: "meters",
     windSpeed: "kilometers_per_hour",
   });
+  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
+  controller.toggleForecastAdjustmentMode();
+  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "raw");
+  assert.equal(new WeatherDashboardController({ storage }).state.forecastAdjustmentMode, "raw");
 });
 
 test("weather URLs use the versioned API and frozen query contracts", () => {

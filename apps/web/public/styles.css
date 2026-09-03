@@ -170,6 +170,61 @@ a {
   gap: 0.5rem;
 }
 
+.forecast-adjustment-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.65rem 0.4rem 0.8rem;
+  border-color: var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-lowest);
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+.forecast-adjustment-toggle:hover:not(:disabled) {
+  border-color: var(--md-sys-color-outline);
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.forecast-adjustment-toggle-mode {
+  min-width: 4.25rem;
+  font-size: 0.76rem;
+  font-weight: 750;
+  text-align: right;
+}
+
+.forecast-adjustment-toggle-track {
+  display: flex;
+  align-items: center;
+  width: 2.25rem;
+  height: 1.3rem;
+  padding: 0.14rem;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-full);
+  background: var(--md-sys-color-surface-container-highest);
+  transition: background-color 160ms ease, border-color 160ms ease;
+}
+
+.forecast-adjustment-toggle-track > span {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: var(--md-sys-shape-full);
+  background: var(--md-sys-color-outline);
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-track {
+  border-color: #248b54;
+  background: #248b54;
+}
+
+.forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-track > span {
+  background: var(--brand-white);
+  transform: translateX(0.95rem);
+}
+
 .weather-content {
   grid-column: 2;
   min-width: 0;
@@ -851,6 +906,99 @@ h2 {
 
 .forecast-range-selector button {
   min-width: 4rem;
+}
+
+.forecast-adjustment-status {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(in srgb, #248b54 38%, var(--md-sys-color-outline-variant));
+  border-radius: var(--md-sys-shape-medium);
+  background: color-mix(in srgb, #248b54 7%, var(--md-sys-color-surface-container-lowest));
+}
+
+.forecast-adjustment-status-raw {
+  border-color: var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.forecast-adjustment-summary,
+.forecast-adjustment-status-raw > p {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.78rem;
+}
+
+.forecast-adjustment-summary strong,
+.forecast-adjustment-status-raw > p strong {
+  color: var(--md-sys-color-on-surface);
+  font-size: 0.82rem;
+}
+
+.forecast-adjustment-details {
+  margin-top: 0.35rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.72rem;
+}
+
+.forecast-adjustment-details summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.forecast-adjustment-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.forecast-adjustment-values > div {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--md-sys-shape-small);
+  background: var(--md-sys-color-surface-container-lowest);
+}
+
+.forecast-adjustment-values span {
+  font-weight: 700;
+}
+
+.forecast-adjustment-values strong {
+  color: var(--md-sys-color-on-surface);
+}
+
+.forecast-adjustment-details dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.25rem 0.65rem;
+  margin: 0.6rem 0 0;
+}
+
+.forecast-adjustment-details dt {
+  font-weight: 700;
+}
+
+.forecast-adjustment-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.forecast-adjustment-details code {
+  font-size: 0.68rem;
+}
+
+.forecast-adjustment-raw-note,
+.forecast-adjustment-limit {
+  margin: 0.45rem 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.7rem;
 }
 
 .forecast-chart-shell {
@@ -3650,8 +3798,23 @@ td small {
   }
 
   .masthead h1 {
-    font-size: clamp(1.8rem, 8.5vw, 2.5rem);
+    min-width: 0;
+    overflow: hidden;
+    font-size: clamp(1.25rem, 6.25vw, 1.65rem);
     line-height: 1;
+    text-overflow: ellipsis;
+  }
+
+  .forecast-adjustment-toggle {
+    flex: 0 0 auto;
+    gap: 0.35rem;
+    min-height: 2.35rem;
+    padding: 0.3rem 0.45rem;
+  }
+
+  .forecast-adjustment-toggle-mode {
+    min-width: 3.75rem;
+    font-size: 0.68rem;
   }
 
   h2 {

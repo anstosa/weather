@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # print SSH usage
 usage() {
   cat <<'EOF'
-Usage: ssh-run.sh [--config SSH_CONFIG] status|yolo RELEASE|stage RELEASE|activate RELEASE|rollback|recover|backup|backup-stream|preflight|tempest-backfill|public-stations-backfill|tide-backfill
+Usage: ssh-run.sh [--config SSH_CONFIG] status|yolo RELEASE|stage RELEASE|activate RELEASE|rollback|recover|backup|backup-stream|preflight|tempest-backfill|public-stations-backfill|tide-backfill|forecast-training-export FROM_DATE TO_DATE
 
 Runs one allowlisted operation through a loaded SSH agent and the isolated
 weather-ssh forced-command account.
@@ -34,6 +34,11 @@ case "$action" in
   yolo|stage|activate)
     (($# == 1)) || die "$action requires one release"
     validate_release "$1"
+    ;;
+  # forward only two canonical export dates
+  forecast-training-export)
+    (($# == 2)) || die "$action requires FROM_DATE TO_DATE"
+    validate_calendar_date_range "$1" "$2" 450
     ;;
   --help|-h)
     usage

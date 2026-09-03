@@ -12,6 +12,18 @@ const metricUnits = {
   wind_gusts_10m: "m/s",
   wind_speed_10m: "m/s",
 };
+const forecastBase = new Date();
+forecastBase.setUTCMinutes(0, 0, 0);
+const dynamicForecastTimes = [
+  forecastBase.toISOString().slice(0, 16),
+  new Date(forecastBase.getTime() + 3_600_000).toISOString().slice(0, 16),
+  new Date(forecastBase.getTime() + 7_200_000).toISOString().slice(0, 16),
+];
+
+// keep normal fixtures fixed while compatibility reads track the runtime day
+const forecastTimes = process.env.WEATHER_COMPATIBILITY_DYNAMIC_FORECAST === "1"
+  ? dynamicForecastTimes
+  : ["2026-08-22T05:00", "2026-08-22T06:00", "2026-08-22T07:00"];
 const currentPayload = {
   current: {
     apparent_temperature: 11.8,
@@ -67,7 +79,7 @@ const forecastPayload = {
     relative_humidity_2m: [83, 80, 77],
     surface_pressure: [1018.1, 1018.3, 1018.5],
     temperature_2m: [12.1, 12.8, 13.4],
-    time: ["2026-08-22T05:00", "2026-08-22T06:00", "2026-08-22T07:00"],
+    time: forecastTimes,
     uv_index: [0.2, 0.5, 0.9],
     wind_direction_10m: [180, 185, 190],
     wind_gusts_10m: [3.1, 3.6, 4.2],
@@ -84,7 +96,7 @@ const airQualityPayload = {
   generationtime_ms: 0,
   hourly: {
     pm2_5: [5, 8, 12],
-    time: ["2026-08-22T05:00", "2026-08-22T06:00", "2026-08-22T07:00"],
+    time: forecastTimes,
   },
   hourly_units: { pm2_5: "μg/m³", time: "iso8601" },
   latitude: 47.95043,

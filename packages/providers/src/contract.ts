@@ -20,11 +20,12 @@ export interface ProviderRequestPlan {
   readonly url: URL;
 }
 
-export interface ProviderBatch {
+// carry one typed provider result batch
+export interface ProviderBatch<RecordType = NormalizedWeatherRecord> {
   readonly attempts: number;
   readonly checksum: string;
   readonly providerCursor: Readonly<Record<string, JsonValue>> | null;
-  readonly records: readonly NormalizedWeatherRecord[];
+  readonly records: readonly RecordType[];
   readonly responseMetadata: Readonly<Record<string, JsonValue>>;
 }
 
@@ -40,20 +41,29 @@ export interface ProviderFetchOptions {
   readonly timeoutMs?: number;
 }
 
-export type CurrentProviderOperation<Input> = (
+// type one current provider operation
+export type CurrentProviderOperation<Input, RecordType = NormalizedWeatherRecord> = (
   input: Input,
   options?: ProviderFetchOptions,
-) => Promise<ProviderBatch>;
+) => Promise<ProviderBatch<RecordType>>;
 
-export type HistoricalProviderOperation<Input> = (
+// type one historical provider operation
+export type HistoricalProviderOperation<
+  Input,
+  RecordType = NormalizedWeatherRecord,
+> = (
   input: Input,
   options?: ProviderFetchOptions,
-) => Promise<ProviderBatch>;
+) => Promise<ProviderBatch<RecordType>>;
 
-export type ForecastProviderOperation<Input> = (
+// type one forecast provider operation
+export type ForecastProviderOperation<
+  Input,
+  RecordType = NormalizedWeatherRecord,
+> = (
   input: Input,
   options?: ProviderFetchOptions,
-) => Promise<ProviderBatch>;
+) => Promise<ProviderBatch<RecordType>>;
 
 export class ProviderFailure extends Error {
   readonly attempts: number;

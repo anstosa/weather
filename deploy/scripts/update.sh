@@ -303,6 +303,7 @@ require_deployment_secrets() {
   require_secret_source "$deploy_dir/secrets/weather_postgres_owner_password" 999 999
   require_secret_source "$deploy_dir/secrets/weather_postgres_api_password" 999 999
   require_secret_source "$deploy_dir/secrets/weather_postgres_ingest_password" 999 999
+  require_secret_source "$deploy_dir/secrets/weather_postgres_training_export_password" 999 999
   require_secret_source "$deploy_dir/secrets/weather_migration_owner_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_api_password" 10002 10002
   require_secret_source "$deploy_dir/secrets/weather_worker_ingest_password" 10002 10002
@@ -321,6 +322,16 @@ require_deployment_secrets() {
   cmp -s "$deploy_dir/secrets/weather_postgres_ingest_password" \
     "$deploy_dir/secrets/weather_worker_ingest_password" ||
     die "ingest password copies differ"
+  # reject shared training-export authority
+  for runtime_secret in \
+    weather_postgres_admin_password \
+    weather_postgres_owner_password \
+    weather_postgres_api_password \
+    weather_postgres_ingest_password; do
+    ! cmp -s "$deploy_dir/secrets/weather_postgres_training_export_password" \
+      "$deploy_dir/secrets/$runtime_secret" ||
+      die "training export password must differ from every runtime password"
+  done
 }
 
 # record success with the current marker as commit point
@@ -347,11 +358,16 @@ verify_previous_image_compatibility() (
   local previous_history_sha256
   local invalid_history_sha256 unproven_status
   local non_compatibility_source_ids compatibility_source_count
+  local anchor_migration_count export_migration_count runtime_provenance_migration_count
+  local live_visibility_migration_count baseline_acl_verified
+  local baseline_schema_state
+  local migrations_changed=false
   local candidate_created=false
   local api_started=false
   local unproven_api_started=false
   local provider_started=false
   local before_successes after_successes
+  local before_v4_records=0 after_v4_records=0
   candidate="weather_compat_$(date -u +%Y%m%d%H%M%S)_$$"
   api_container="${candidate}_api"
   unproven_api_container="${candidate}_api_unproven"
@@ -407,10 +423,46 @@ verify_previous_image_compatibility() (
       pg_restore --username postgres --dbname "$candidate" \
         --no-owner --role weather_owner --exit-on-error
 
+  # restore the exact migration boundary shipped by the previous Git image
+  WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
+      --command "CREATE OR REPLACE FUNCTION weather_source_is_current(candidate_id bigint) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS \$function\$ SELECT NOT EXISTS (SELECT 1 FROM public.sources candidate JOIN public.sources successor ON successor.station_id = candidate.station_id AND successor.active AND successor.material_provider_config->>'supersedesSourceKey' = candidate.source_key WHERE candidate.id = candidate_id); \$function\$; DROP VIEW IF EXISTS forecast_runtime_provenance_v1; DROP VIEW IF EXISTS forecast_training_export_manifest_v1; DROP VIEW IF EXISTS forecast_training_export_rows_v1; DROP TABLE IF EXISTS forecast_anchor_records; DROP FUNCTION IF EXISTS weather_require_historical_forecast_anchor_source(); DROP FUNCTION IF EXISTS weather_guard_forecast_anchor_record_update(); GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC; ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO PUBLIC; REVOKE SELECT (capabilities) ON sources FROM weather_api; DELETE FROM schema_migrations WHERE name IN ('0009_forecast_anchor_records.sql', '0010_forecast_training_export.sql', '0011_forecast_runtime_provenance.sql', '0012_hide_archive_only_forecasts_from_live_reads.sql')"
+  baseline_schema_state=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+    psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+      --command "SELECT count(*)::text || ':' || COALESCE(to_regclass('forecast_anchor_records')::text, '') || ':' || COALESCE(to_regclass('forecast_training_export_rows_v1')::text, '') FROM schema_migrations")
+  [[ "$baseline_schema_state" == "8::" ]] ||
+    die "previous compatibility database does not match the eight-migration Git baseline"
+
   previous_history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
   WEATHER_ENV_FILE=$target_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" migration
   history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
+
+  # identify a real trailing migration compatibility run
+  if [[ "$history_sha256" != "$previous_history_sha256" ]]; then
+    migrations_changed=true
+    anchor_migration_count=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM schema_migrations WHERE name = '0009_forecast_anchor_records.sql'")
+    [[ "$anchor_migration_count" == 1 ]] ||
+      die "forecast anchor migration is missing from the compatibility database"
+    export_migration_count=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM schema_migrations WHERE name = '0010_forecast_training_export.sql'")
+    [[ "$export_migration_count" == 1 ]] ||
+      die "forecast training export migration is missing from the compatibility database"
+    runtime_provenance_migration_count=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM schema_migrations WHERE name = '0011_forecast_runtime_provenance.sql'")
+    [[ "$runtime_provenance_migration_count" == 1 ]] ||
+      die "forecast runtime provenance migration is missing from the compatibility database"
+    live_visibility_migration_count=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM schema_migrations WHERE name = '0012_hide_archive_only_forecasts_from_live_reads.sql'")
+    [[ "$live_visibility_migration_count" == 1 ]] ||
+      die "forecast live visibility migration is missing from the compatibility database"
+  fi
+
   non_compatibility_source_ids=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT COALESCE(string_agg(s.id::text, ',' ORDER BY s.id), '') FROM sources s JOIN providers p ON p.id = s.provider_id WHERE s.active AND p.provider_key <> 'open-meteo'")
@@ -422,8 +474,20 @@ verify_previous_image_compatibility() (
       --command "SELECT count(*) FROM sources s JOIN providers p ON p.id = s.provider_id WHERE s.active AND p.provider_key = 'open-meteo'")
   [[ "$compatibility_source_count" =~ ^[1-9][0-9]*$ ]] ||
     die "Open-Meteo compatibility source is missing"
-  apply_runtime_database_acl "$previous_env" "$candidate"
-  verify_runtime_database_acl "$previous_env" "$candidate"
+  # apply the ACL version matching the candidate schema
+  if [[ "$migrations_changed" == true ]]; then
+    apply_runtime_database_acl "$previous_env" "$candidate"
+    verify_runtime_database_acl "$previous_env" "$candidate"
+  else
+    WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
+        <"$deploy_dir/postgres/runtime-acl-v1.sql"
+    baseline_acl_verified=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
+        --tuples-only --no-align --command "SELECT has_table_privilege('weather_api', 'sites', 'SELECT') AND NOT has_column_privilege('weather_api', 'sources', 'capabilities', 'SELECT') AND has_table_privilege('weather_ingest', 'weather_records', 'INSERT') AND to_regclass('forecast_anchor_records') IS NULL")
+    [[ "$baseline_acl_verified" == t ]] ||
+      die "previous runtime ACL verification failed"
+  fi
   WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
       --command "UPDATE ingestion_checkpoints SET last_committed_at = TIMESTAMPTZ '1970-01-01 00:00:00+00'; UPDATE sources SET cadence_seconds = 60 WHERE active"
@@ -437,6 +501,7 @@ verify_previous_image_compatibility() (
 
   docker run --detach --rm --name "$provider_container" \
     --network "$provider_network" --network-alias "$provider_container" \
+    --env WEATHER_COMPATIBILITY_DYNAMIC_FORECAST=1 \
     "$provider_image" node deploy/scripts/compatibility-provider.mjs >/dev/null
   provider_started=true
 
@@ -455,6 +520,13 @@ verify_previous_image_compatibility() (
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
 
+  # snapshot the legacy v4 product only for a migrated-schema proof
+  if [[ "$migrations_changed" == true ]]; then
+    before_v4_records=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM weather_records wr JOIN sources s ON s.id = wr.source_id WHERE s.source_key = 'open-meteo-forecast-v4'")
+  fi
+
   WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
     --env WEATHER_DATABASE_NAME="$candidate" \
     --env WEATHER_MIGRATION_AUTHORIZATION_RELEASE="$previous_release" \
@@ -464,6 +536,20 @@ verify_previous_image_compatibility() (
   after_successes=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*) FROM ingestion_runs WHERE state='succeeded'")
+
+  # require the previous worker to insert legacy v4 rows after migration
+  if [[ "$migrations_changed" == true ]]; then
+    after_v4_records=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM weather_records wr JOIN sources s ON s.id = wr.source_id WHERE s.source_key = 'open-meteo-forecast-v4'")
+    [[ "$before_v4_records" =~ ^[0-9]+$ && "$after_v4_records" =~ ^[0-9]+$ ]] ||
+      die "previous worker returned an invalid legacy v4 row count"
+
+    # require at least one newly persisted forecast row
+    if (( after_v4_records <= before_v4_records )); then
+      die "previous worker did not insert a legacy v4 forecast row after migration"
+    fi
+  fi
 
   # expose only the bounded persisted failure diagnosis
   if (( after_successes <= before_successes )); then
@@ -481,7 +567,7 @@ verify_previous_image_compatibility() (
   fi
 
   # prove authorization only for trailing history
-  if [[ "$history_sha256" != "$previous_history_sha256" ]]; then
+  if [[ "$migrations_changed" == true ]]; then
     # reuse the refreshed worker heartbeat
     if WEATHER_ENV_FILE=$previous_env compose run --rm --no-deps \
       --env WEATHER_DATABASE_NAME="$candidate" \
@@ -523,8 +609,9 @@ verify_previous_image_compatibility() (
   # wait for every previous API read contract
   for ((_attempt = 0; _attempt < 30; _attempt += 1)); do
     # accept only complete read success
-    if docker exec "$api_container" node -e \
-      "const origin='http://127.0.0.1:3001';Promise.all([fetch(origin+'/api/v1/health'),fetch(origin+'/api/v1/sites')]).then(async([health,sites])=>{if(!health.ok||!sites.ok)process.exit(1);const healthBody=await health.json();const sitesBody=await sites.json();const site=sitesBody.data?.[0]?.slug;if(healthBody.data?.ready!==true||healthBody.data?.version!=='$previous_release'||typeof site!=='string')process.exit(1);const sitePath=origin+'/api/v1/sites/'+encodeURIComponent(site);const [current,history]=await Promise.all([fetch(sitePath+'/current'),fetch(sitePath+'/history?limit=1')]);if(!current.ok||!history.ok)process.exit(1);const currentBody=await current.json();const historyBody=await history.json();if(!Array.isArray(currentBody.data)||!Array.isArray(historyBody.data))process.exit(1)}).catch(()=>process.exit(1))"; then
+    if docker exec --env WEATHER_REQUIRE_FORECAST_READ="$migrations_changed" \
+      "$api_container" node -e \
+      "const origin='http://127.0.0.1:3001';Promise.all([fetch(origin+'/api/v1/health'),fetch(origin+'/api/v1/sites')]).then(async([health,sites])=>{if(!health.ok||!sites.ok)process.exit(1);const healthBody=await health.json();const sitesBody=await sites.json();const site=sitesBody.data?.[0]?.slug;if(healthBody.data?.ready!==true||healthBody.data?.version!=='$previous_release'||typeof site!=='string')process.exit(1);const sitePath=origin+'/api/v1/sites/'+encodeURIComponent(site);const [current,history,forecast]=await Promise.all([fetch(sitePath+'/current'),fetch(sitePath+'/history?limit=1'),fetch(sitePath+'/forecast')]);if(!current.ok||!history.ok||!forecast.ok)process.exit(1);const currentBody=await current.json();const historyBody=await history.json();const forecastBody=await forecast.json();if(!Array.isArray(currentBody.data)||!Array.isArray(historyBody.data)||!Array.isArray(forecastBody.data))process.exit(1);if(process.env.WEATHER_REQUIRE_FORECAST_READ==='true'&&forecastBody.data.length===0)process.exit(1)}).catch(()=>process.exit(1))"; then
       break
     fi
     sleep 1
@@ -576,6 +663,8 @@ restore_images() (
 
   prepare_xweather_usage_directory
   start_postgres "$env_file"
+  apply_runtime_database_acl "$env_file" "$(env_value "$env_file" WEATHER_DATABASE_NAME)"
+  verify_runtime_database_acl "$env_file" "$(env_value "$env_file" WEATHER_DATABASE_NAME)"
   WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait api worker web cloudflared
 )
 
@@ -643,6 +732,8 @@ yolo_release() {
   printf 'Applying release %s directly...\n' "$release"
   WEATHER_ENV_FILE=$target compose up -d --no-deps --wait postgres
   WEATHER_ENV_FILE=$target compose run --rm migration
+  apply_runtime_database_acl "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)"
+  verify_runtime_database_acl "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)"
   write_private_state "$state_dir/schema-release" "$release"
   start_exact_release "$target"
   record_release_success "$release" "$current"
@@ -714,6 +805,10 @@ start_release() (
   write_private_state "$state_dir/schema-release" "$target"
   printf 'Applying candidate migrations...\n'
   WEATHER_ENV_FILE=$activation_env compose run --rm migration
+  apply_runtime_database_acl \
+    "$activation_env" "$(env_value "$activation_env" WEATHER_DATABASE_NAME)"
+  verify_runtime_database_acl \
+    "$activation_env" "$(env_value "$activation_env" WEATHER_DATABASE_NAME)"
 
   printf 'Starting release %s...\n' "$target"
   if ! start_exact_release "$activation_env"; then

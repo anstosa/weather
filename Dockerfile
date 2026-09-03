@@ -11,6 +11,7 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/domain/package.json packages/domain/package.json
+COPY packages/forecast-adjustment/package.json packages/forecast-adjustment/package.json
 COPY packages/providers/package.json packages/providers/package.json
 RUN npm ci --ignore-scripts
 
@@ -36,19 +37,28 @@ COPY --from=build --chown=10002:10002 /opt/weather/apps/api/dist apps/api/dist
 COPY --from=build --chown=10002:10002 /opt/weather/apps/worker/dist apps/worker/dist
 COPY --from=build --chown=10002:10002 /opt/weather/packages/database/dist packages/database/dist
 COPY --from=build --chown=10002:10002 /opt/weather/packages/domain/dist packages/domain/dist
+COPY --from=build --chown=10002:10002 /opt/weather/packages/forecast-adjustment/dist packages/forecast-adjustment/dist
 COPY --from=build --chown=10002:10002 /opt/weather/packages/providers/dist packages/providers/dist
 COPY --chown=10002:10002 apps/api/package.json apps/api/package.json
 COPY --chown=10002:10002 apps/worker/package.json apps/worker/package.json
 COPY --chown=10002:10002 packages/database/package.json packages/database/package.json
 COPY --chown=10002:10002 packages/domain/package.json packages/domain/package.json
+COPY --chown=10002:10002 packages/forecast-adjustment/package.json packages/forecast-adjustment/package.json
 COPY --chown=10002:10002 packages/providers/package.json packages/providers/package.json
 COPY --chown=10002:10002 packages/database/migrations packages/database/migrations
-COPY --chown=10002:10002 config config
+COPY --chown=10002:10002 config/ecowitt config/ecowitt
+COPY --chown=10002:10002 config/forecast-adjustments config/forecast-adjustments
+COPY --chown=10002:10002 config/public-stations config/public-stations
+COPY --chown=10002:10002 config/runtime-targets.json config/runtime-targets.json
+COPY --chown=10002:10002 config/sites config/sites
+COPY --chown=10002:10002 config/tempest config/tempest
+COPY --chown=10002:10002 config/tides config/tides
 COPY --chown=10002:10002 deploy/scripts/*.mjs deploy/scripts/
 USER 10002:10002
 CMD ["node", "apps/api/dist/main.js"]
 
 FROM runtime AS web
+RUN unlink node_modules/@weather/forecast-adjustment
 COPY --from=build --chown=10002:10002 /opt/weather/apps/web/dist apps/web/dist
 COPY --chown=10002:10002 apps/web/package.json apps/web/package.json
 COPY --chown=10002:10002 apps/web/public apps/web/public

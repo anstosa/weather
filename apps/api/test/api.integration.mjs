@@ -38,7 +38,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     const configuration = await loadSiteConfiguration(siteConfigurationPath);
     await bootstrapSiteConfiguration(admin, configuration);
     const sources = await admin.query(
-      "SELECT active, id, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind",
+      "SELECT active, id, source_key, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind, source_key",
     );
     const currentSource = sources.rows.find(
       // select the current source
@@ -49,8 +49,8 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       (source) => source.source_kind === "reanalysis",
     );
     const forecastSource = sources.rows.find(
-      // select the forecast source
-      (source) => source.source_kind === "forecast" && source.active,
+      // select only the checked live-v4 forecast source
+      (source) => source.source_key === "open-meteo-forecast-v4" && source.active,
     );
 
     assert.ok(currentSource);
@@ -125,10 +125,23 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(response.status, 200);
       assert.deepEqual(body.data.map((site) => site.slug), ["ballydidean"]);
       assert.equal(body.data[0].stations.length, 1);
-      assert.equal(body.data[0].stations[0].sources.length, 3);
+      assert.deepEqual(
+        body.data[0].stations[0].sources.map(
+          // retain the complete public source contract
+          (source) => source.key,
+        ),
+        [
+          "open-meteo-current-v1",
+          "open-meteo-forecast-v4",
+          "open-meteo-reanalysis-v1",
+        ],
+      );
       assert.equal(body.data[0].stations[0].latitude, 47.950429954185445);
       assert.equal(body.data[0].stations[0].longitude, -122.42797012608193);
-      assert.doesNotMatch(JSON.stringify(body), /inactive|material_provider_config/u);
+      assert.doesNotMatch(
+        JSON.stringify(body),
+        /inactive|material_provider_config|open-meteo-previous-runs-v1/u,
+      );
     });
 
     await context.test("current filters active station and source", async () => {
@@ -160,6 +173,10 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         const page = await response.json();
         assert.equal(response.status, 200);
         assert.equal(page.data.length, 1);
+        assert.notEqual(
+          page.data[0].provenance.sourceKey,
+          "open-meteo-previous-runs-v1",
+        );
         pagedIds.push(page.data[0].id);
         cursor = page.page.nextCursor ?? undefined;
       } while (cursor !== undefined);
@@ -191,6 +208,20 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         forecast.data.map((entry) => entry.metrics.temperatureC),
         [16.8, 17.1],
       );
+      assert.equal(
+        forecast.data.every(
+          // retain only authoritative live-v4 rows
+          (entry) => entry.provenance.sourceKey === "open-meteo-forecast-v4",
+        ),
+        true,
+      );
+      assert.equal(
+        forecast.data.every(
+          // retain fail-raw decisions while the registry is inactive
+          (entry) => entry.adjustment.state === "disabled",
+        ),
+        true,
+      );
       assert.equal(forecast.data[0].provenance.sourceKind, "forecast");
       assert.equal(trendResponse.status, 200);
       assert.equal(typeof trend.generatedAt, "string");
@@ -200,6 +231,33 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(trend.data.at(-1).metrics.temperatureMaximumC, 14.9);
       assert.equal(trend.data.at(-1).metrics.temperatureMinimumC, 14.9);
       assert.ok(Math.abs(trend.data.at(-1).metrics.windDirectionDegrees + 135) < 0.000_001);
+    });
+
+    await context.test("forecast provenance permission faults preserve the raw response", async () => {
+      const baselineResponse = await fetch(
+        `${origin}/api/v1/sites/ballydidean/forecast`,
+      );
+      const baselineBody = await baselineResponse.json();
+
+      await admin.query(
+        "REVOKE SELECT ON forecast_runtime_provenance_v1 FROM weather_api",
+      );
+
+      // restore the production role grant after fault injection
+      try {
+        const faultResponse = await fetch(
+          `${origin}/api/v1/sites/ballydidean/forecast`,
+        );
+        const faultBody = await faultResponse.json();
+
+        assert.equal(baselineResponse.status, 200);
+        assert.equal(faultResponse.status, 200);
+        assert.equal(JSON.stringify(faultBody), JSON.stringify(baselineBody));
+      } finally {
+        await admin.query(
+          "GRANT SELECT ON forecast_runtime_provenance_v1 TO weather_api",
+        );
+      }
     });
 
     await context.test("deactivated sources disappear from current and history", async () => {
@@ -235,13 +293,13 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0008_ecowitt_property_sensors.sql",
+        version: "0012_hide_archive_only_forecasts_from_live_reads.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
       await admin.query(
         "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
-        ["0009_future.sql", "1".repeat(64)],
+        ["9999_future.sql", "1".repeat(64)],
       );
       const unprovenResponse = await fetch(`${origin}/api/v1/health`);
       const unproven = await unprovenResponse.json();
@@ -281,7 +339,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0008_ecowitt_property_sensors.sql",
+        version: "0012_hide_archive_only_forecasts_from_live_reads.sql",
       });
 
       const ledger = await admin.query(
@@ -304,7 +362,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         [ledger.rows[0].checksum],
       );
       await admin.query(
-        "DELETE FROM schema_migrations WHERE name = '0009_future.sql'",
+        "DELETE FROM schema_migrations WHERE name = '9999_future.sql'",
       );
     });
 
@@ -331,6 +389,10 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
 
 // insert one finalized ingestion run
 async function insertSucceededRun(pool, source, mode) {
+  // preserve the real live-v4 adapter identity
+  const adapterVersion = source.source_key === "open-meteo-forecast-v4"
+    ? "open-meteo-forecast-daily/v4"
+    : "integration/v1";
   const result = await pool.query(
     `
       INSERT INTO ingestion_runs (
@@ -354,7 +416,7 @@ async function insertSucceededRun(pool, source, mode) {
         '2026-08-22T03:00:00.000Z',
         '2026-08-22T05:00:00.000Z',
         $3,
-        'integration/v1',
+        $5,
         $4,
         '2026-08-22T04:00:00.000Z',
         '2026-08-22T05:10:00.000Z',
@@ -370,6 +432,7 @@ async function insertSucceededRun(pool, source, mode) {
       mode,
       source.source_config_fingerprint,
       mode === "backfill" ? "integration-plan/v1" : null,
+      adapterVersion,
     ],
   );
   return result.rows[0].id;
@@ -378,6 +441,10 @@ async function insertSucceededRun(pool, source, mode) {
 // insert one normalized integration record
 async function insertRecord(pool, source, runId, input) {
   const contentHash = Buffer.from(input.idSuffix).toString("hex").padEnd(64, "0").slice(0, 64);
+  // preserve the checked live-v4 dataset identity
+  const dataset = source.source_key === "open-meteo-forecast-v4"
+    ? "forecast"
+    : "integration";
   await pool.query(
     `
       INSERT INTO weather_records (
@@ -413,7 +480,11 @@ async function insertRecord(pool, source, runId, input) {
         'Open-Meteo',
         'virtual-grid',
         '{"confidence_percent":93,"flags":["integration"],"status":"accepted"}'::jsonb,
-        '{"dataset":"integration","elevation_m":17,"request_id":"private"}'::jsonb,
+        jsonb_build_object(
+          'dataset', $9::text,
+          'elevation_m', 17,
+          'request_id', 'private'
+        ),
         $5,
         $8,
         $6
@@ -428,6 +499,7 @@ async function insertRecord(pool, source, runId, input) {
       contentHash,
       input.productRunAt ?? null,
       input.windDirectionDegrees ?? null,
+      dataset,
     ],
   );
 }

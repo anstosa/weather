@@ -34,6 +34,36 @@ validate_release() {
   [[ "$release" != latest && "$release" != dev ]] || die "release must be immutable"
 }
 
+# validate one canonical calendar date
+validate_calendar_date() {
+  local value=$1
+  [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] ||
+    die "date must use YYYY-MM-DD"
+  [[ "$(date -u --date "$value" +%F 2>/dev/null)" == "$value" ]] ||
+    die "date contains an invalid calendar day"
+}
+
+# validate one bounded inclusive date range
+validate_calendar_date_range() {
+  local from_date=$1
+  local to_date=$2
+  local max_days=$3
+  local from_epoch
+  local to_epoch
+  local inclusive_days
+  [[ "$max_days" =~ ^[1-9][0-9]*$ ]] || die "maximum days must be positive"
+  validate_calendar_date "$from_date"
+  validate_calendar_date "$to_date"
+  from_epoch=$(date -u --date "$from_date" +%s)
+  to_epoch=$(date -u --date "$to_date" +%s)
+  inclusive_days=$(( (to_epoch - from_epoch) / 86400 + 1 ))
+
+  # reject reversed and oversized windows
+  if ((inclusive_days < 1 || inclusive_days > max_days)); then
+    die "export range must contain 1 to $max_days inclusive dates"
+  fi
+}
+
 # require one digest-pinned image reference
 validate_image_reference() {
   local image=$1
@@ -151,7 +181,7 @@ apply_runtime_database_acl() {
   validate_database_name "$database_name"
   WEATHER_ENV_FILE=$env_file compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$database_name" \
-      <"$deploy_dir/postgres/runtime-acl-v1.sql"
+      <"$deploy_dir/postgres/runtime-acl-v2.sql"
 }
 
 # verify effective runtime grants and denials
@@ -171,6 +201,7 @@ verify_runtime_database_acl() {
         AND has_table_privilege('weather_api', 'sites', 'SELECT')
         AND NOT has_table_privilege('weather_api', 'sites', 'INSERT')
         AND has_column_privilege('weather_api', 'sources', 'source_key', 'SELECT')
+        AND has_column_privilege('weather_api', 'sources', 'capabilities', 'SELECT')
         AND NOT has_column_privilege('weather_api', 'sources', 'material_provider_config', 'SELECT')
         AND has_database_privilege('weather_ingest', current_database(), 'CONNECT')
         AND NOT has_database_privilege('weather_ingest', current_database(), 'CREATE')
@@ -183,7 +214,119 @@ verify_runtime_database_acl() {
         AND has_table_privilege('weather_ingest', 'ingestion_runs', 'UPDATE')
         AND NOT has_table_privilege('weather_ingest', 'ingestion_runs', 'DELETE')
         AND has_column_privilege('weather_ingest', 'weather_records', 'water_level_m', 'UPDATE')
-        AND has_sequence_privilege('weather_ingest', 'weather_records_id_seq', 'USAGE')")
+        AND NOT has_table_privilege('weather_api', 'forecast_anchor_records', 'SELECT')
+        AND NOT has_table_privilege('weather_api', 'forecast_anchor_records', 'INSERT')
+        AND NOT has_table_privilege('weather_ingest', 'forecast_anchor_records', 'SELECT')
+        AND has_table_privilege('weather_ingest', 'forecast_anchor_records', 'INSERT')
+        AND NOT has_table_privilege('weather_ingest', 'forecast_anchor_records', 'DELETE')
+        AND has_column_privilege('weather_ingest', 'forecast_anchor_records', 'content_hash', 'SELECT')
+        AND has_column_privilege('weather_ingest', 'forecast_anchor_records', 'revision_count', 'SELECT')
+        AND NOT has_column_privilege('weather_ingest', 'forecast_anchor_records', 'id', 'SELECT')
+        AND NOT has_column_privilege('weather_ingest', 'forecast_anchor_records', 'source_id', 'UPDATE')
+        AND has_column_privilege('weather_ingest', 'forecast_anchor_records', 'revision_count', 'UPDATE')
+        AND has_sequence_privilege('weather_ingest', 'forecast_anchor_records_id_seq', 'USAGE')
+        AND has_sequence_privilege('weather_ingest', 'weather_records_id_seq', 'USAGE')
+        AND has_database_privilege('weather_training_export', current_database(), 'CONNECT')
+        AND NOT has_database_privilege('weather_training_export', current_database(), 'CREATE')
+        AND NOT has_database_privilege('weather_training_export', current_database(), 'TEMP')
+        AND has_schema_privilege('weather_training_export', 'public', 'USAGE')
+        AND NOT has_schema_privilege('weather_training_export', 'public', 'CREATE')
+        AND has_table_privilege('weather_training_export', 'forecast_training_export_rows_v1', 'SELECT')
+        AND has_table_privilege('weather_training_export', 'forecast_training_export_manifest_v1', 'SELECT')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_namespace namespace
+          WHERE namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+            AND has_schema_privilege(
+              'weather_training_export', namespace.oid, 'CREATE'
+            )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_namespace namespace
+          CROSS JOIN LATERAL aclexplode(coalesce(
+            namespace.nspacl,
+            acldefault('n', namespace.nspowner)
+          )) schema_acl
+          WHERE namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+            AND schema_acl.grantee = 'weather_training_export'::regrole
+            AND schema_acl.privilege_type IN ('CREATE', 'USAGE')
+            AND NOT (
+              namespace.nspname = 'public'
+              AND schema_acl.privilege_type = 'USAGE'
+            )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_class relation
+          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+          CROSS JOIN LATERAL unnest(ARRAY[
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+          ]) privilege(name)
+          WHERE namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+            AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+            AND has_table_privilege(
+              'weather_training_export', relation.oid, privilege.name
+            )
+            AND NOT (
+              namespace.nspname = 'public'
+              AND relation.relname IN (
+                'forecast_training_export_rows_v1',
+                'forecast_training_export_manifest_v1'
+              )
+              AND privilege.name = 'SELECT'
+            )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_class sequence
+          JOIN pg_namespace namespace ON namespace.oid = sequence.relnamespace
+          CROSS JOIN LATERAL unnest(ARRAY['SELECT', 'UPDATE', 'USAGE']) privilege(name)
+          WHERE namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+            AND sequence.relkind = 'S'
+            AND has_sequence_privilege(
+              'weather_training_export', sequence.oid, privilege.name
+            )
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_proc procedure
+          JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+          WHERE namespace.nspname <> 'information_schema'
+            AND namespace.nspname NOT LIKE 'pg_%'
+            AND procedure.prosecdef
+            AND has_function_privilege(
+              'weather_training_export', procedure.oid, 'EXECUTE'
+            )
+        )
+        AND EXISTS (
+          SELECT 1
+          FROM pg_roles
+          WHERE rolname = 'weather_training_export'
+            AND rolcanlogin
+            AND NOT rolinherit
+            AND NOT rolsuper
+            AND NOT rolcreatedb
+            AND NOT rolcreaterole
+            AND NOT rolreplication
+            AND NOT rolbypassrls
+            AND rolconfig = ARRAY['default_transaction_read_only=on']
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_auth_members
+          WHERE member = 'weather_training_export'::regrole
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_db_role_setting
+          WHERE setrole = 'weather_training_export'::regrole
+            AND setdatabase <> 0
+        )")
   [[ "$verified" == t ]] || die "runtime database ACL verification failed"
 }
 

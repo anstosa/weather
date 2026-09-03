@@ -45,6 +45,11 @@ test("restore recreates PostgreSQL before starting runtime images", async () => 
 transcript=$2
 compose() { printf '%s:%s\n' "$WEATHER_ENV_FILE" "$*" >>"$transcript"; }
 prepare_xweather_usage_directory() { :; }
+env_value() {
+  if [[ "$2" == WEATHER_DATABASE_NAME ]]; then printf 'weather_test\n'; else awk -F= -v key="$2" '$1 == key { print substr($0, length(key) + 2) }' "$1"; fi
+}
+apply_runtime_database_acl() { :; }
+verify_runtime_database_acl() { :; }
 restore_images /releases/current.env`,
       [transcript],
     );
@@ -129,6 +134,11 @@ write_migration_authorization "$4" "2026.08.22-1" "2026.08.22-2" "${"a".repeat(6
 start_postgres() { :; }
 compose() { printf '%s|%s\n' "\${WEATHER_MIGRATION_AUTHORIZATION_RELEASE-unset}" "\${WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256-unset}" >>"$transcript"; }
 prepare_xweather_usage_directory() { :; }
+env_value() {
+  if [[ "$2" == WEATHER_DATABASE_NAME ]]; then printf 'weather_test\n'; else awk -F= -v key="$2" '$1 == key { print substr($0, length(key) + 2) }' "$1"; fi
+}
+apply_runtime_database_acl() { :; }
+verify_runtime_database_acl() { :; }
 restore_images /releases/previous.env 2026.08.22-1 2026.08.22-2
 export WEATHER_MIGRATION_AUTHORIZATION_RELEASE=untrusted
 export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=untrusted
@@ -231,6 +241,9 @@ require_deployment_secrets() { :; }
 start_postgres() { :; }
 compose() { printf 'compose:%s\n' "$*" >>"$transcript"; }
 write_private_state() { printf 'state:%s:%s\n' "$1" "$2" >>"$transcript"; }
+env_value() { printf 'weather_test\n'; }
+apply_runtime_database_acl() { printf 'apply-acl:%s:%s\n' "$1" "$2" >>"$transcript"; }
+verify_runtime_database_acl() { printf 'verify-acl:%s:%s\n' "$1" "$2" >>"$transcript"; }
 start_exact_release() { printf 'start-exact:%s\n' "$1" >>"$transcript"; return 1; }
 migration_authorization() { printf '/releases/%s.migration-authorization\n' "$1"; }
 validate_migration_authorization() { printf 'validate-auth:%s:%s:%s\n' "$1" "$2" "$3" >>"$transcript"; }
@@ -246,7 +259,7 @@ start_release 2026.08.22-2`,
     );
     assert.match(
       output,
-      /compose:run --rm migration[\s\S]*start-exact:.*2026\.08\.22-2\.env[\s\S]*validate-auth:.*2026\.08\.22-2\.migration-authorization:2026\.08\.22-1:2026\.08\.22-2[\s\S]*restore:.*2026\.08\.22-1\.env:2026\.08\.22-1:2026\.08\.22-2/u,
+      /compose:run --rm migration[\s\S]*apply-acl:.*2026\.08\.22-2\.env:weather_test[\s\S]*verify-acl:.*2026\.08\.22-2\.env:weather_test[\s\S]*start-exact:.*2026\.08\.22-2\.env[\s\S]*validate-auth:.*2026\.08\.22-2\.migration-authorization:2026\.08\.22-1:2026\.08\.22-2[\s\S]*restore:.*2026\.08\.22-1\.env:2026\.08\.22-1:2026\.08\.22-2/u,
     );
   } finally {
     await rm(directory, { force: true, recursive: true });
@@ -380,7 +393,8 @@ test("persistent authorization is written only after API and worker compatibilit
   );
   const workerGate = compatibility.indexOf("previous worker compatibility failed");
   const schemaChangeGate = compatibility.indexOf(
-    'if [[ "$history_sha256" != "$previous_history_sha256" ]]',
+    'if [[ "$migrations_changed" == true ]]',
+    workerGate,
   );
   const unprovenWorkerHealth = compatibility.indexOf(
     "worker node apps/worker/dist/health.js",
@@ -448,7 +462,7 @@ test("release environment validator requires exact current control metadata", as
   }
 });
 
-test("deployment secret validation rejects equal administrator and owner credentials", async () => {
+test("deployment secret validation rejects shared database credentials", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-secret-separation-"));
   const secrets = join(directory, "secrets");
 
@@ -462,6 +476,7 @@ test("deployment secret validation rejects equal administrator and owner credent
       weather_postgres_api_password: "api",
       weather_postgres_ingest_password: "ingest",
       weather_postgres_owner_password: "owner",
+      weather_postgres_training_export_password: "api",
       weather_tempest_api_key: "tempest",
       weather_worker_ingest_password: "ingest",
       weather_xweather_client_id: "xweather-id",
@@ -478,6 +493,16 @@ test("deployment secret validation rejects equal administrator and owner credent
     );
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /administrator and owner passwords must differ/u);
+    await writeFile(join(secrets, "weather_postgres_admin_password"), "admin\n");
+    const sharedExport = runBash(
+      'source "$1"; deploy_dir="$2"; require_secret_source() { :; }; require_deployment_secrets',
+      [directory],
+    );
+    assert.notEqual(sharedExport.status, 0);
+    assert.match(
+      sharedExport.stderr,
+      /training export password must differ from every runtime password/u,
+    );
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
@@ -567,6 +592,9 @@ require_capacity_gate() { :; }
 require_deployment_secrets() { :; }
 require_control_plane_compatibility() { :; }
 record_release_success() { printf 'recorded\\n' >>"$transcript"; }
+env_value() { printf 'weather_test\\n'; }
+apply_runtime_database_acl() { printf 'apply-acl\\n' >>"$transcript"; }
+verify_runtime_database_acl() { printf 'verify-acl\\n' >>"$transcript"; }
 compose() {
   printf 'compose:%s\\n' "$*" >>"$transcript"
   # fail the selected lifecycle stage

@@ -60,6 +60,8 @@ services:
       WEATHER_OWNER_PASSWORD_FILE: /run/secrets/weather_owner_password
       WEATHER_API_PASSWORD_FILE: /run/secrets/weather_api_password
       WEATHER_INGEST_PASSWORD_FILE: /run/secrets/weather_ingest_password
+      WEATHER_TRAINING_EXPORT_PASSWORD_FILE: /run/secrets/weather_training_export_password
+      WEATHER_RUNTIME_ACL_PATH: /usr/local/share/weather/runtime-acl-v2.sql
     secrets:
       - source: weather_postgres_admin_password
         target: weather_admin_password
@@ -69,10 +71,13 @@ services:
         target: weather_api_password
       - source: weather_postgres_ingest_password
         target: weather_ingest_password
+      - source: weather_postgres_training_export_password
+        target: weather_training_export_password
     volumes:
       - ${WEATHER_POSTGRES_DIR:-/var/lib/weather/postgres}:/var/lib/postgresql/data
       - ./postgres/010-create-runtime-roles.sh:/docker-entrypoint-initdb.d/010-create-runtime-roles.sh:ro
       - ./postgres/postgres-admin-entrypoint.sh:/usr/local/bin/weather-postgres-entrypoint:ro
+      - ./postgres/runtime-acl-v2.sql:/usr/local/share/weather/runtime-acl-v2.sql:ro
     networks: [data]
     healthcheck:
       test: [CMD, /usr/local/bin/weather-postgres-entrypoint, health]
@@ -344,6 +349,8 @@ secrets:
     file: ./secrets/weather_api_password
   weather_postgres_ingest_password:
     file: ./secrets/weather_postgres_ingest_password
+  weather_postgres_training_export_password:
+    file: ./secrets/weather_postgres_training_export_password
   weather_worker_ingest_password:
     file: ./secrets/weather_worker_ingest_password
   weather_tempest_api_key:

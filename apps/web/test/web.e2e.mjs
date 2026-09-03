@@ -150,6 +150,13 @@ const physicalCurrent = {
   },
 };
 const forecast = Array.from({ length: 240 }, (_, index) => makeForecastRecord(index));
+const adjustmentHashes = {
+  bundle: "a".repeat(64),
+  candidate: "b".repeat(64),
+  report: "c".repeat(64),
+  receipt: "d".repeat(64),
+  source: "e".repeat(64),
+};
 const dailyPrecipitation = {
   accumulationMm: 2.54,
   source: {
@@ -288,7 +295,12 @@ function makeRecord(id, validAt, temperatureC) {
     id,
     metadata: {
       device: { model: "virtual-grid", serial: null, vendor: "Open-Meteo" },
-      provider: { dataset: "best_match", elevationM: 17, gridCell: null },
+      provider: {
+        dataset: "best_match",
+        elevationM: 17,
+        gridCell: null,
+        propertySensors: null,
+      },
       quality: null,
       upstream: {
         model: "best_match",
@@ -344,6 +356,10 @@ function makeForecastRecord(index) {
   );
   return {
     ...value,
+    metadata: {
+      ...value.metadata,
+      provider: { ...value.metadata.provider, dataset: "forecast" },
+    },
     metrics: {
       ...value.metrics,
       pm25MicrogramsPerCubicMeter: 5 + hour % 6,
@@ -362,6 +378,106 @@ function makeForecastRecord(index) {
       sourceKey: "open-meteo-forecast-v1",
       sourceKind: "forecast",
     },
+  };
+}
+
+// resolve one exact lead band
+function adjustmentLeadBand(targetLeadHours) {
+  const minimum = Math.floor((targetLeadHours - 1) / 24) * 24 + 1;
+  return `${String(minimum).padStart(3, "0")}-${String(minimum + 23).padStart(3, "0")}`;
+}
+
+// create one exact active decision
+function activeForecastAdjustment(record, targetLeadHours) {
+  return {
+    adjustedMetrics: {
+      temperatureC: record.metrics.temperatureC + 2,
+      windSpeedMps: record.metrics.windSpeedMps + 0.4,
+    },
+    algorithmContractVersion: "robust-hierarchical-median/v1",
+    appliedMetrics: ["temperatureC", "windSpeedMps"],
+    candidateArtifactSha256: adjustmentHashes.candidate,
+    contractVersion: "forecast-adjustment-decision/v1",
+    evaluationReportSha256: adjustmentHashes.report,
+    leadBand: adjustmentLeadBand(targetLeadHours),
+    qualificationReceiptSha256: adjustmentHashes.receipt,
+    rawForecastProvenance: {
+      adapterVersion: "open-meteo-forecast-daily/v4",
+      cohort: "legacy_v4_retrieval_snapshot",
+      contractEpoch:
+        "legacy-v4/9d26d9c46dcaacc422c28e854327b11cd710625e092110786010f0687a100d83",
+      dataset: record.metadata.provider.dataset,
+      referenceAt: new Date(
+        Date.parse(record.validAt) - targetLeadHours * 3_600_000,
+      ).toISOString(),
+      referenceKind: "retrieval_snapshot",
+      sourceConfigFingerprint: adjustmentHashes.source,
+      sourceKey: record.provenance.sourceKey,
+      targetLeadHours,
+      upstreamModel: record.metadata.upstream.model,
+      validAt: record.validAt,
+    },
+    reasonCode: null,
+    state: "active",
+  };
+}
+
+// create one exact raw decision
+function rawForecastAdjustment(state, reasonCode) {
+  return {
+    adjustedMetrics: {},
+    appliedMetrics: [],
+    contractVersion: "forecast-adjustment-decision/v1",
+    reasonCode,
+    state,
+  };
+}
+
+// create one bounded runtime summary
+function forecastAdjustmentRuntime(mode) {
+  // expose one synthetic verified bundle
+  if (mode === "active") {
+    return {
+      activeBundle: adjustmentHashes.bundle,
+      candidateArtifactSha256: adjustmentHashes.candidate,
+      evaluationReportSha256: adjustmentHashes.report,
+      loadedAt: "2026-08-22T05:00:00.000Z",
+      qualificationReceiptSha256: adjustmentHashes.receipt,
+      reasonCode: null,
+      state: "active",
+    };
+  }
+
+  return {
+    activeBundle: null,
+    candidateArtifactSha256: null,
+    evaluationReportSha256: null,
+    loadedAt: "2026-08-22T05:00:00.000Z",
+    qualificationReceiptSha256: null,
+    reasonCode: mode === "fault" ? "bundle_invalid" : "registry_inactive",
+    state: "disabled",
+  };
+}
+
+// create one complete adjusted forecast response
+function forecastResponse(mode) {
+  return {
+    adjustmentRuntime: forecastAdjustmentRuntime(mode),
+    data: forecast.map(
+      // attach one exact per-row decision
+      (record, index) => ({
+        ...record,
+        adjustment: mode === "active"
+          ? index < 168
+            ? activeForecastAdjustment(record, index + 1)
+            : rawForecastAdjustment("not_applicable", "unsupported_lead")
+          : rawForecastAdjustment(
+              "disabled",
+              mode === "fault" ? "bundle_invalid" : "registry_inactive",
+            ),
+      }),
+    ),
+    site,
   };
 }
 
@@ -481,6 +597,7 @@ async function assertForecastTitleClearance(page) {
 // start a bounded static and fake API server
 async function startFixtureServer() {
   const state = {
+    adjustmentMode: "inactive",
     adminUpdates: 0,
     failReads: false,
     mutations: 0,
@@ -586,7 +703,7 @@ async function startFixtureServer() {
 
     // serve normalized forecast hours
     if (url.pathname === "/api/v1/sites/ballydidean/forecast") {
-      sendJson(response, { data: forecast, site });
+      sendJson(response, forecastResponse(state.adjustmentMode));
       return;
     }
 
@@ -811,6 +928,153 @@ test("manifest and service worker provide an installable application shell", { t
     await page.context().setOffline(false);
   } finally {
     // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // verify every Stage 7 browser state at both responsive widths
+    for (const viewport of [
+      { height: 900, width: 960 },
+      { height: 844, width: 390 },
+    ]) {
+      const page = await createFixturePage(browser, {
+        hasTouch: viewport.width < 600,
+        viewport,
+      });
+
+      // prove the inactive registry preserves the raw presentation
+      fixture.state.adjustmentMode = "inactive";
+      await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+      assert.equal(await page.locator(".forecast-chart").count(), 8);
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
+      assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
+      const inactiveToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
+      assert.equal(await inactiveToggle.getAttribute("aria-checked"), "false");
+      assert.equal(await inactiveToggle.isDisabled(), true);
+      assert.match(await inactiveToggle.textContent() ?? "", /Regional/u);
+
+      // prove a verified bundle labels prominent adjusted values
+      fixture.state.adjustmentMode = "active";
+      await page.reload({ waitUntil: "networkidle" });
+      const status = page.locator("[data-forecast-adjustment-status]");
+      const adjustmentToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
+      await status.waitFor();
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
+      assert.equal(await adjustmentToggle.isEnabled(), true);
+      assert.equal(
+        await adjustmentToggle.evaluate(
+          // require the switch inside the top-right masthead actions
+          (toggle) => toggle.parentElement?.classList.contains("masthead-actions") === true,
+        ),
+        true,
+      );
+      assert.equal(await status.getAttribute("data-forecast-adjustment-state"), "active");
+      assert.match(await status.textContent() ?? "", /Locally adjusted[\s\S]*Temperature, Wind speed adjusted/u);
+      assert.equal(
+        (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim(),
+        "58 °F",
+      );
+      await status.locator("summary").click();
+      assert.match(await status.textContent() ?? "", /Raw 54\.5 °F[\s\S]*Adjusted 58\.1 °F/u);
+      assert.match(await status.textContent() ?? "", /open-meteo-forecast-v1 · forecast · best_match/u);
+      assert.match(await status.textContent() ?? "", /robust-hierarchical-median\/v1/u);
+
+      // require every bounded runtime and model hash
+      for (const hash of Object.values(adjustmentHashes)) {
+        assert.match(await status.textContent() ?? "", new RegExp(hash, "u"));
+      }
+
+      const activeScreen = await status.screenshot();
+      assert.ok(activeScreen.byteLength > 1_000);
+
+      const forecastScrubber = page.getByRole("slider", { name: "Forecast time scrubber" });
+      await forecastScrubber.press("ArrowRight");
+      const forecastScrubberBounds = await forecastScrubber.boundingBox();
+      assert.notEqual(forecastScrubberBounds, null);
+      await forecastScrubber.click({
+        position: {
+          x: forecastScrubberBounds.width * 0.437,
+          y: forecastScrubberBounds.height / 2,
+        },
+      });
+      const selectedForecastPosition = await forecastScrubber.getAttribute("data-forecast-selected-position");
+      assert.equal(Number.isInteger(Number(selectedForecastPosition)), false);
+      const adjustedTemperature = (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim();
+      await adjustmentToggle.click();
+      const regionalToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
+      assert.equal(await regionalToggle.getAttribute("aria-checked"), "false");
+      assert.match(await regionalToggle.textContent() ?? "", /Regional/u);
+      assert.equal(await regionalToggle.evaluate((toggle) => document.activeElement === toggle), true);
+      assert.equal(
+        await forecastScrubber.getAttribute("data-forecast-selected-position"),
+        selectedForecastPosition,
+      );
+      assert.notEqual(
+        (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim(),
+        adjustedTemperature,
+      );
+      assert.equal(await status.getAttribute("data-forecast-adjustment-state"), "raw");
+      assert.match(await status.textContent() ?? "", /Regional forecast[\s\S]*Local adjustment turned off/u);
+
+      // preserve the preference across reloads and both forecast-bearing routes
+      await page.reload({ waitUntil: "networkidle" });
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
+      const rawHomeTemperature = await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent();
+      await adjustmentToggle.click();
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
+      assert.notEqual(
+        await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent(),
+        rawHomeTemperature,
+      );
+      await page.getByRole("link", { name: "Forecast" }).click();
+      await page.locator("[data-forecast-charts]").waitFor();
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
+
+      // prove extended hours switch back to explicit raw values
+      await page.getByRole("button", { name: "10 days" }).click();
+      await page.locator('[data-forecast-charts][data-forecast-days="10"]').waitFor();
+      assert.match(
+        await page.locator(".forecast-adjustment-limit").textContent() ?? "",
+        /Hours 169–240 use the raw regional forecast with no local adjustment/u,
+      );
+      await page.locator("[data-forecast-charts]").press("End");
+      assert.equal(await status.getAttribute("data-forecast-adjustment-state"), "raw");
+      assert.match(await status.textContent() ?? "", /Raw forecast[\s\S]*No local adjustment beyond 168 hours/u);
+      await status.locator("summary").click();
+      assert.equal(await status.locator(".forecast-adjustment-values").count(), 0);
+      assert.match(await status.locator(".forecast-adjustment-raw-note").textContent() ?? "", /raw regional forecast/u);
+
+      // prove a bundle cross-link fault cannot interrupt raw charts
+      fixture.state.adjustmentMode = "fault";
+      await page.reload({ waitUntil: "networkidle" });
+      const fallback = page.locator('[data-forecast-adjustment-reason="bundle_invalid"]');
+      await fallback.waitFor();
+      assert.match(await fallback.textContent() ?? "", /Raw forecast[\s\S]*Local adjustment unavailable/u);
+      assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
+      assert.equal(await page.locator(".forecast-chart").count(), 8);
+      assert.equal(
+        await page.locator("body").evaluate(
+          // reject adjustment status horizontal overflow
+          (body) => body.scrollWidth > document.documentElement.clientWidth,
+        ),
+        false,
+      );
+      const fallbackScreen = await fallback.screenshot();
+      assert.ok(fallbackScreen.byteLength > 500);
+      await page.close();
+    }
+  } finally {
     await browser?.close();
     fixture.server.close();
     await once(fixture.server, "close");

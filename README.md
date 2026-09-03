@@ -139,6 +139,28 @@ systemd timer runs that same command nightly at 02:30.
 
 The current Weather tunnel origin is <https://weather.ballydidean.farm>.
 
+## Open-Meteo forecast adjustment
+
+The platform includes an inactive, fail-raw path for evaluating hyperlocal
+adjustments to the existing Open-Meteo v4 forecast. Training uses a frozen
+network of eleven Ecowitt, Tempest, Ambient/Weather Underground, and Netatmo
+physical stations. Historical Open-Meteo Previous Runs anchors remain isolated
+from the live v4 retrieval-snapshot cohort and cannot enter the public forecast
+route.
+
+Production-derived evaluation uses only a forced, bounded, read-only export.
+Ignored `.weather-data/` and `.weather-models/` paths may hold an
+`insufficient_data` dry run, but raw observations and external model evidence
+must never be committed. The checked registry starts with `activeBundle: null`;
+activation requires a retained and redundant qualified evidence graph, a
+reviewed sanitized bundle, a server-image rebuild, deployment, and API restart.
+
+See the
+[`forecast adjustment operations and governance runbook`](docs/operations/forecast-adjustment.md)
+for the literal station/source/QC matrix, export and evaluation commands,
+qualification splits, bootstrap contract, holdout burn rules, evidence
+retention, activation, and rollback.
+
 ## First-party Ecowitt ingestion
 
 The checked gateway catalog is
@@ -258,8 +280,9 @@ token.
 | `@weather/domain` | Shared domain contracts | None |
 | `@weather/database` | PostgreSQL boundary | `@weather/domain` |
 | `@weather/providers` | Weather-provider adapters | `@weather/domain` |
-| `@weather/worker` | Ingestion composition | Domain, database, providers |
-| `@weather/api` | Read-only API | Domain, database |
+| `@weather/forecast-adjustment` | Pure training, evaluation, bundle, and application contracts | `@weather/domain` |
+| `@weather/worker` | Ingestion and operator CLI composition | Domain, database, forecast adjustment, providers |
+| `@weather/api` | Read-only API and fail-raw adjustment application | Domain, database, forecast adjustment |
 | `@weather/web` | Browser experience over JSON contracts | None |
 
 The root linter enforces manifest dependencies and project-local source imports
