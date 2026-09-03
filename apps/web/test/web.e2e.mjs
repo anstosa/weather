@@ -2562,6 +2562,29 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     assert.equal(await grid.getAttribute("data-forecast-days"), "1");
     assert.equal(await page.locator(".forecast-chart-days").count(), 0);
     assert.equal(await page.getByRole("button", { name: "Today" }).getAttribute("aria-pressed"), "true");
+    assert.deepEqual(
+      await page.locator(".forecast-range-selector").evaluate(
+        // keep the active range distinct inside one grouped surface
+        (selector) => {
+          const selected = selector.querySelector('[aria-pressed="true"]');
+          const unselected = selector.querySelector('[aria-pressed="false"]');
+          const selectorStyle = getComputedStyle(selector);
+          const selectedStyle = selected === null ? null : getComputedStyle(selected);
+          const unselectedStyle = unselected === null ? null : getComputedStyle(unselected);
+          return {
+            grouped: selectorStyle.backgroundColor !== "rgba(0, 0, 0, 0)",
+            selectedBackgroundDistinct:
+              selectedStyle?.backgroundColor !== unselectedStyle?.backgroundColor,
+            selectedTextDistinct: selectedStyle?.color !== unselectedStyle?.color,
+          };
+        },
+      ),
+      {
+        grouped: true,
+        selectedBackgroundDistinct: true,
+        selectedTextDistinct: true,
+      },
+    );
     assert.match(await page.locator("[data-forecast-crosshair-time]").textContent() ?? "", /\d{1,2}:\d{2}\s[AP]M/u);
     assert.equal(await page.locator(".forecast-chart-heading-top").count(), 8);
     assert.equal(await page.locator(".forecast-chart-heading-bottom").count(), 0);
