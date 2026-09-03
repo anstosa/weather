@@ -2232,8 +2232,14 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     await page.locator("select[name='sourceKind']").selectOption("reanalysis");
     await page.locator("input[name='from']").fill("2026-08-21T21:30");
     await page.locator("input[name='to']").fill("2026-08-21T22:30");
+    const filteredHistoryResponse = page.waitForResponse(
+      // await the submitted SPA request rather than the document load state
+      (response) =>
+        new URL(response.url()).pathname ===
+        "/api/v1/sites/ballydidean/history",
+    );
     await page.getByRole("button", { name: "Apply filters" }).click();
-    await page.waitForLoadState("networkidle");
+    await filteredHistoryResponse;
     assert.equal(
       fixture.state.requests.filter((entry) => entry.includes("/current")).length,
       currentReadCount,
