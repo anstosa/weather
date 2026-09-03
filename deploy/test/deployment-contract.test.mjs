@@ -1431,6 +1431,7 @@ test("production release reaches the API and deployment status exposes operation
 // verify pull-request quality gates
 test("check workflow runs every substantive root and deployment gate", () => {
   const workflow = read(".github/workflows/check.yml");
+  assert.match(workflow, /actions\/checkout@v4[\s\S]*fetch-depth: 0/u);
   assert.match(workflow, /npm run check/u);
   assert.match(workflow, /npm run test:integration/u);
   assert.match(workflow, /npm run test:e2e/u);
