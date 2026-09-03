@@ -8,3 +8,4 @@ export * from "./evidence.js";
 export * from "./holdout-ledger.js";
 export * from "./runtime-bundle.js";
 export * from "./runtime-loader.js";
+export * from "./wind-canary.js";

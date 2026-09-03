@@ -6,7 +6,10 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { chromium } from "playwright";
-import { UNIT_PREFERENCE_STORAGE_KEY } from "../dist/index.js";
+import {
+  FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+  UNIT_PREFERENCE_STORAGE_KEY,
+} from "../dist/index.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const publicRoot = join(repositoryRoot, "apps/web/public");
@@ -422,6 +425,28 @@ function activeForecastAdjustment(record, targetLeadHours) {
   };
 }
 
+// create one wind-only canary decision
+function windCanaryForecastAdjustment(record, targetLeadHours) {
+  const qualified = activeForecastAdjustment(record, targetLeadHours);
+  return {
+    activationKind: "wind_transfer_canary",
+    adjustedMetrics: {
+      windGustMps: record.metrics.windGustMps + 0.8,
+      windSpeedMps: record.metrics.windSpeedMps + 0.4,
+    },
+    algorithmContractVersion: qualified.algorithmContractVersion,
+    appliedMetrics: ["windGustMps", "windSpeedMps"],
+    authorizationSha256: adjustmentHashes.receipt,
+    candidateArtifactSha256: qualified.candidateArtifactSha256,
+    contractVersion: qualified.contractVersion,
+    leadBand: qualified.leadBand,
+    rawForecastProvenance: qualified.rawForecastProvenance,
+    reasonCode: null,
+    state: "active",
+    transferReportSha256: adjustmentHashes.report,
+  };
+}
+
 // create one exact raw decision
 function rawForecastAdjustment(state, reasonCode) {
   return {
@@ -436,26 +461,38 @@ function rawForecastAdjustment(state, reasonCode) {
 // create one bounded runtime summary
 function forecastAdjustmentRuntime(mode) {
   // expose one synthetic verified bundle
-  if (mode === "active") {
+  if (mode === "active" || mode === "canary") {
     return {
+      activationMode: mode === "canary" ? "wind_canary" : "qualified",
       activeBundle: adjustmentHashes.bundle,
+      authorizationSha256: mode === "canary" ? adjustmentHashes.receipt : null,
       candidateArtifactSha256: adjustmentHashes.candidate,
-      evaluationReportSha256: adjustmentHashes.report,
+      enabledMetrics: mode === "canary"
+        ? ["windGustMps", "windSpeedMps"]
+        : ["temperatureC", "windSpeedMps"],
+      evaluationReportSha256: mode === "canary" ? null : adjustmentHashes.report,
+      expiresAt: mode === "canary" ? "2026-09-10T05:00:00.000Z" : null,
       loadedAt: "2026-08-22T05:00:00.000Z",
-      qualificationReceiptSha256: adjustmentHashes.receipt,
+      qualificationReceiptSha256: mode === "canary" ? null : adjustmentHashes.receipt,
       reasonCode: null,
       state: "active",
+      transferReportSha256: mode === "canary" ? adjustmentHashes.report : null,
     };
   }
 
   return {
+    activationMode: null,
     activeBundle: null,
+    authorizationSha256: null,
     candidateArtifactSha256: null,
+    enabledMetrics: [],
     evaluationReportSha256: null,
+    expiresAt: null,
     loadedAt: "2026-08-22T05:00:00.000Z",
     qualificationReceiptSha256: null,
     reasonCode: mode === "fault" ? "bundle_invalid" : "registry_inactive",
     state: "disabled",
+    transferReportSha256: null,
   };
 }
 
@@ -467,9 +504,11 @@ function forecastResponse(mode) {
       // attach one exact per-row decision
       (record, index) => ({
         ...record,
-        adjustment: mode === "active"
+        adjustment: mode === "active" || mode === "canary"
           ? index < 168
-            ? activeForecastAdjustment(record, index + 1)
+            ? mode === "canary"
+              ? windCanaryForecastAdjustment(record, index + 1)
+              : activeForecastAdjustment(record, index + 1)
             : rawForecastAdjustment("not_applicable", "unsupported_lead")
           : rawForecastAdjustment(
               "disabled",
@@ -1084,6 +1123,84 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
       assert.ok(fallbackScreen.byteLength > 500);
       await page.close();
     }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+test("wind canary starts regional and persists an explicit wind-only opt-in", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "canary";
+    const page = await createFixturePage(browser, {
+      hasTouch: true,
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 844, width: 390 },
+    });
+    await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+
+    const toggle = page.getByRole("switch", { name: "Use wind-adjusted canary forecasts" });
+    const status = page.locator("[data-forecast-adjustment-status]");
+    const rawTemperature = await page.locator('[data-forecast-chart="temperature"]').textContent();
+    const rawWind = await page.locator('[data-forecast-chart="wind"]').textContent();
+
+    assert.equal(await toggle.isEnabled(), true);
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.match(await toggle.textContent() ?? "", /Regional/u);
+    assert.match(
+      await status.textContent() ?? "",
+      /Regional[\s\S]*Wind canary turned off[\s\S]*Temperature and humidity remain regional/u,
+    );
+    assert.equal(
+      await page.locator("body").evaluate(
+        // keep the longer canary label inside mobile width
+        (body) => body.scrollWidth > document.documentElement.clientWidth,
+      ),
+      false,
+    );
+    assert.equal(
+      await page.evaluate(
+        // prove the default is not an implicit stored opt-in
+        (key) => localStorage.getItem(key),
+        FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+      ),
+      null,
+    );
+
+    await toggle.click();
+    assert.equal(await toggle.getAttribute("aria-checked"), "true");
+    assert.match(await toggle.textContent() ?? "", /Wind adjusted \(canary\)/u);
+    assert.match(
+      await status.textContent() ?? "",
+      /Wind adjusted \(canary\)[\s\S]*Temperature and humidity remain regional/u,
+    );
+    assert.doesNotMatch(await status.textContent() ?? "", /Wind direction adjusted/u);
+    assert.equal(
+      await page.locator('[data-forecast-chart="temperature"]').textContent(),
+      rawTemperature,
+    );
+    assert.notEqual(
+      await page.locator('[data-forecast-chart="wind"]').textContent(),
+      rawWind,
+    );
+    assert.equal(
+      await page.evaluate(
+        // retain only an explicit user selection
+        (key) => localStorage.getItem(key),
+        FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+      ),
+      "adjusted",
+    );
+
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await toggle.getAttribute("aria-checked"), "true");
+    assert.match(await toggle.textContent() ?? "", /Wind adjusted \(canary\)/u);
+    await page.close();
   } finally {
     await browser?.close();
     fixture.server.close();

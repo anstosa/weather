@@ -22,6 +22,11 @@ export const FORECAST_ADJUSTMENT_CONTRACT_VERSIONS = {
   registry: "forecast-adjustment-registry/v1",
   runtimeBundle: "forecast-adjustment-runtime-bundle/v2",
   trainingRow: "forecast-training-row/v1",
+  windCanaryAuthorization: "forecast-adjustment-wind-canary-authorization/v1",
+  windCanaryCandidate: "forecast-adjustment-wind-canary-candidate/v1",
+  windCanaryRegistry: "forecast-adjustment-wind-canary-registry/v1",
+  windCanaryRuntimeBundle: "forecast-adjustment-wind-canary-runtime-bundle/v1",
+  windCanaryTransferReport: "forecast-adjustment-wind-canary-transfer-report/v1",
 } as const;
 
 // freeze the only adjustable v1 metrics
@@ -36,6 +41,17 @@ export const FORECAST_ADJUSTMENT_METRICS = [
 // name one adjustable metric
 export type ForecastAdjustmentMetric =
   (typeof FORECAST_ADJUSTMENT_METRICS)[number];
+
+// freeze the canary-only metric allowlist
+export const FORECAST_ADJUSTMENT_WIND_CANARY_METRICS = [
+  "windDirectionDegrees",
+  "windGustMps",
+  "windSpeedMps",
+] as const satisfies readonly ForecastAdjustmentMetric[];
+
+// name one canary-only metric
+export type ForecastAdjustmentWindCanaryMetric =
+  (typeof FORECAST_ADJUSTMENT_WIND_CANARY_METRICS)[number];
 
 // freeze lexically sortable lead-band keys
 export const FORECAST_LEAD_BANDS = [
@@ -1045,6 +1061,113 @@ export interface ForecastAdjustmentRuntimeBundleV2
   readonly timezone: "America/Los_Angeles";
 }
 
+// describe the fixed-lead source used only for canary fitting
+export interface ForecastAdjustmentWindCanaryTrainingIdentity {
+  readonly adapterVersion: string;
+  readonly cohort: "fixed_lead_anchor";
+  readonly contractEpoch: string;
+  readonly dataset: "previous_runs";
+  readonly referenceKind: "fixed_lead_anchor";
+  readonly sourceConfigFingerprint: string;
+  readonly sourceKey: string;
+  readonly upstreamModel: "best_match";
+}
+
+// define one separately versioned transfer-canary candidate
+export interface ForecastAdjustmentWindCanaryCandidateV1 {
+  readonly algorithmContractVersion: "robust-hierarchical-median/v1";
+  readonly artifactKind: "wind_transfer_canary_candidate";
+  readonly candidateArtifactSha256: string;
+  readonly coefficientPayloadSha256: string;
+  readonly coefficients: readonly ForecastAdjustmentCoefficient[];
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryCandidate;
+  readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
+  readonly exportManifestSha256: string;
+  readonly finalTrainingCutoff: string;
+  readonly runtimeFingerprint: {
+    readonly icuVersion: string;
+    readonly tzdataVersion: string;
+  };
+  readonly servedForecastIdentity: ForecastAdjustmentForecastIdentity;
+  readonly siteKey: "ballydidean";
+  readonly timezone: "America/Los_Angeles";
+  readonly trainingEnvelopes: readonly ForecastAdjustmentTrainingEnvelope[];
+  readonly trainingForecastIdentity: ForecastAdjustmentWindCanaryTrainingIdentity;
+  readonly trainingProvenance: ForecastAdjustmentTrainingProvenance;
+}
+
+// report one live-v4 bridge score
+export interface ForecastAdjustmentWindCanaryBridgeScore {
+  readonly adjustedLoss: number;
+  readonly eventCount: number;
+  readonly rawLoss: number;
+  readonly skill: number;
+}
+
+// report one live-v4 bridge metric-band result
+export interface ForecastAdjustmentWindCanaryBridgeEvaluation {
+  readonly metricBand: ForecastAdjustmentMetricBand;
+  readonly network: ForecastAdjustmentWindCanaryBridgeScore;
+}
+
+// define immutable cross-cohort transfer evidence
+export interface ForecastAdjustmentWindCanaryTransferReportV1 {
+  readonly artifactKind: "wind_transfer_canary_transfer_report";
+  readonly bridgeEndExclusive: string;
+  readonly bridgeEvaluations: readonly ForecastAdjustmentWindCanaryBridgeEvaluation[];
+  readonly bridgeStartInclusive: string;
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryTransferReport;
+  readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
+  readonly passed: true;
+  readonly servedForecastIdentity: ForecastAdjustmentForecastIdentity;
+  readonly trainingForecastIdentity: ForecastAdjustmentWindCanaryTrainingIdentity;
+  readonly transferReportSha256: string;
+}
+
+// record one explicit short-lived operator authorization
+export interface ForecastAdjustmentWindCanaryAuthorizationV1 {
+  readonly activatedAt: string;
+  readonly artifactKind: "wind_transfer_canary_authorization";
+  readonly authorizationReason: string;
+  readonly authorizationSha256: string;
+  readonly authorized: true;
+  readonly authorizedAt: string;
+  readonly authorizedBy: string;
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryAuthorization;
+  readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
+  readonly expiresAt: string;
+  readonly transferReportSha256: string;
+}
+
+// define the isolated canary runtime bundle
+export interface ForecastAdjustmentWindCanaryRuntimeBundleV1 {
+  readonly artifactKind: "wind_transfer_canary_runtime_bundle";
+  readonly authorization: ForecastAdjustmentWindCanaryAuthorizationV1;
+  readonly bundleSha256: string;
+  readonly candidate: ForecastAdjustmentWindCanaryCandidateV1;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryRuntimeBundle;
+  readonly siteKey: "ballydidean";
+  readonly timezone: "America/Los_Angeles";
+  readonly transferReport: ForecastAdjustmentWindCanaryTransferReportV1;
+}
+
+// identify one separately selected canary bundle
+export interface ForecastAdjustmentWindCanaryRegistryActiveBundleV1 {
+  readonly authorizationSha256: string;
+  readonly bundleSha256: string;
+  readonly candidateArtifactSha256: string;
+  readonly path: string;
+  readonly transferReportSha256: string;
+}
+
+// define the isolated canary registry
+export interface ForecastAdjustmentWindCanaryRegistryV1 {
+  readonly activeBundle: ForecastAdjustmentWindCanaryRegistryActiveBundleV1 | null;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryRegistry;
+}
+
 // freeze lifecycle states
 export const FORECAST_ADJUSTMENT_LIFECYCLE_STATES = [
   "insufficient_data",
@@ -1064,6 +1187,8 @@ export const FORECAST_ADJUSTMENT_REASON_CODES = [
   "adjustment_error",
   "bundle_invalid",
   "bundle_missing",
+  "canary_expired",
+  "canary_killed",
   "coefficient_missing",
   "cross_link_mismatch",
   "direction_calm",
@@ -1125,9 +1250,26 @@ export interface ForecastAdjustmentActiveDecision {
   readonly state: "active";
 }
 
+// define an active wind-transfer canary decision
+export interface ForecastAdjustmentWindCanaryActiveDecision {
+  readonly activationKind: "wind_transfer_canary";
+  readonly adjustedMetrics: Readonly<Partial<Record<ForecastAdjustmentWindCanaryMetric, number>>>;
+  readonly algorithmContractVersion: "robust-hierarchical-median/v1";
+  readonly appliedMetrics: readonly ForecastAdjustmentWindCanaryMetric[];
+  readonly authorizationSha256: string;
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.decision;
+  readonly leadBand: ForecastLeadBandKey;
+  readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
+  readonly reasonCode: null;
+  readonly state: "active";
+  readonly transferReportSha256: string;
+}
+
 // unite active and fail-raw decisions
 export type ForecastAdjustmentDecision =
   | ForecastAdjustmentActiveDecision
+  | ForecastAdjustmentWindCanaryActiveDecision
   | ForecastAdjustmentFailRawDecision;
 
 // freeze fitted candidate fields
@@ -1296,6 +1438,21 @@ const ACTIVE_DECISION_KEYS = new Set([
   "reasonCode",
   "state",
 ]);
+// freeze canary decision fields
+const WIND_CANARY_ACTIVE_DECISION_KEYS = new Set([
+  "activationKind",
+  "adjustedMetrics",
+  "algorithmContractVersion",
+  "appliedMetrics",
+  "authorizationSha256",
+  "candidateArtifactSha256",
+  "contractVersion",
+  "leadBand",
+  "rawForecastProvenance",
+  "reasonCode",
+  "state",
+  "transferReportSha256",
+]);
 // freeze raw forecast provenance fields
 const RAW_FORECAST_PROVENANCE_KEYS = new Set([
   "adapterVersion",
@@ -1394,6 +1551,68 @@ export function validateForecastAdjustmentActiveDecision(
     // reject missing or impossible derived values
     if (value === undefined) {
       throw new RangeError(`adjusted metric is missing: ${metric}`);
+    }
+
+    validateMetricValue(metric, value);
+  }
+}
+
+// validate one active canary response decision
+export function validateForecastAdjustmentWindCanaryActiveDecision(
+  decision: ForecastAdjustmentWindCanaryActiveDecision,
+): void {
+  rejectUnknownKeys(
+    decision,
+    WIND_CANARY_ACTIVE_DECISION_KEYS,
+    "active wind canary decision",
+  );
+
+  // require the exact canary response identity
+  if (
+    decision.activationKind !== "wind_transfer_canary" ||
+    decision.contractVersion !== FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.decision ||
+    decision.algorithmContractVersion !== "robust-hierarchical-median/v1" ||
+    decision.state !== "active" ||
+    decision.reasonCode !== null
+  ) {
+    throw new RangeError("active wind canary decision identity mismatch");
+  }
+
+  validateSha256Hex(decision.authorizationSha256, "authorizationSha256");
+  validateSha256Hex(decision.candidateArtifactSha256, "candidateArtifactSha256");
+  validateSha256Hex(decision.transferReportSha256, "transferReportSha256");
+  validateRawForecastProvenance(decision.rawForecastProvenance);
+  const expectedLeadBand = forecastLeadBandFor(
+    decision.rawForecastProvenance.targetLeadHours,
+  );
+
+  // require the reported band to match raw provenance
+  if (decision.leadBand !== expectedLeadBand) {
+    throw new RangeError("active wind canary lead band does not match raw provenance");
+  }
+
+  const adjustedMetricKeys = Object.keys(decision.adjustedMetrics);
+
+  // require at least one unique allowlisted metric
+  if (
+    decision.appliedMetrics.length === 0 ||
+    new Set(decision.appliedMetrics).size !== decision.appliedMetrics.length ||
+    decision.appliedMetrics.some(
+      (metric) => !FORECAST_ADJUSTMENT_WIND_CANARY_METRICS.includes(metric),
+    ) ||
+    adjustedMetricKeys.length !== decision.appliedMetrics.length ||
+    decision.appliedMetrics.some((metric) => !(metric in decision.adjustedMetrics))
+  ) {
+    throw new RangeError("active wind canary metrics are invalid");
+  }
+
+  // validate every derived wind value
+  for (const metric of decision.appliedMetrics) {
+    const value = decision.adjustedMetrics[metric];
+
+    // reject missing derived values
+    if (value === undefined) {
+      throw new RangeError(`adjusted canary metric is missing: ${metric}`);
     }
 
     validateMetricValue(metric, value);

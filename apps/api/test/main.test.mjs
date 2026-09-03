@@ -14,8 +14,9 @@ function recordingServer(events) {
   };
 }
 
-test("I-BND-03 startup loads exactly once before server preparation and listen", async () => {
+test("I-BND-03 startup loads each eligible runtime once before preparation and listen", async () => {
   const events = [];
+  let canaryLoads = 0;
   let loads = 0;
   const runtime = {
     bundle: null,
@@ -24,6 +25,16 @@ test("I-BND-03 startup loads exactly once before server preparation and listen",
   };
   let preparedAdjustment;
   const started = await startWeatherApi({
+    // return an inactive canary selection
+    async loadForecastAdjustmentWindCanaryRuntime() {
+      canaryLoads += 1;
+      events.push("canary");
+      return {
+        bundle: null,
+        reasonCode: "registry_inactive",
+        state: "disabled",
+      };
+    },
     // return the cached startup selection
     async loadForecastAdjustmentRuntime() {
       loads += 1;
@@ -43,8 +54,9 @@ test("I-BND-03 startup loads exactly once before server preparation and listen",
     },
   });
 
+  assert.equal(canaryLoads, 1);
   assert.equal(loads, 1);
-  assert.deepEqual(events, ["load", "time", "prepare", "listen:0.0.0.0:8080"]);
+  assert.deepEqual(events, ["canary", "load", "time", "prepare", "listen:0.0.0.0:8080"]);
   assert.equal(started.adjustment, preparedAdjustment);
   assert.equal(started.adjustment.runtime, runtime);
   assert.equal(started.adjustment.loadedAt, "2026-09-02T01:02:03.000Z");
@@ -53,6 +65,14 @@ test("I-BND-03 startup loads exactly once before server preparation and listen",
 test("loader exceptions keep startup healthy with a disabled cached runtime", async () => {
   const events = [];
   const started = await startWeatherApi({
+    // keep the canary path inactive
+    async loadForecastAdjustmentWindCanaryRuntime() {
+      return {
+        bundle: null,
+        reasonCode: "registry_inactive",
+        state: "disabled",
+      };
+    },
     // simulate an unexpected fixed loader failure
     async loadForecastAdjustmentRuntime() {
       events.push("load");
@@ -105,6 +125,14 @@ test("I-BND-04 runtime selection changes only across simulated restarts", async 
   async function simulatedRestart() {
     let loads = 0;
     const started = await startWeatherApi({
+      // keep the canary path inactive
+      async loadForecastAdjustmentWindCanaryRuntime() {
+        return {
+          bundle: null,
+          reasonCode: "registry_inactive",
+          state: "disabled",
+        };
+      },
       // snapshot the selection once for this process
       async loadForecastAdjustmentRuntime() {
         loads += 1;
@@ -133,4 +161,62 @@ test("I-BND-04 runtime selection changes only across simulated restarts", async 
   assert.equal(firstBundle, firstBundleRuntime);
   assert.equal(secondBundle, secondBundleRuntime);
   assert.deepEqual(loadCounts, [1, 1, 1]);
+});
+
+test("active wind canary is selected without loading the qualified runtime", async () => {
+  const events = [];
+  const runtime = {
+    bundle: { artifactKind: "wind_transfer_canary_runtime_bundle" },
+    reasonCode: null,
+    state: "active",
+  };
+  const started = await startWeatherApi({
+    // return the active isolated canary
+    async loadForecastAdjustmentWindCanaryRuntime() {
+      events.push("canary");
+      return runtime;
+    },
+    // reject any fallback qualified load
+    async loadForecastAdjustmentRuntime() {
+      events.push("qualified");
+      throw new Error("qualified runtime should not load");
+    },
+    // freeze the selected canary
+    async prepareServer(adjustment) {
+      events.push(`prepare:${adjustment.runtime.state}`);
+      return { port: 8080, server: recordingServer(events) };
+    },
+  });
+
+  assert.equal(started.adjustment.runtime, runtime);
+  assert.deepEqual(events, ["canary", "prepare:active", "listen:0.0.0.0:8080"]);
+});
+
+test("canary safety failures stay fail-raw without qualified fallback", async () => {
+  const events = [];
+  const runtime = {
+    bundle: null,
+    reasonCode: "canary_killed",
+    state: "disabled",
+  };
+  const started = await startWeatherApi({
+    // return one explicit canary stop state
+    async loadForecastAdjustmentWindCanaryRuntime() {
+      events.push("canary");
+      return runtime;
+    },
+    // reject unsafe fallback after a canary stop
+    async loadForecastAdjustmentRuntime() {
+      events.push("qualified");
+      throw new Error("qualified runtime should not load");
+    },
+    // freeze the disabled canary selection
+    async prepareServer(adjustment) {
+      events.push(`prepare:${adjustment.runtime.reasonCode}`);
+      return { port: 8080, server: recordingServer(events) };
+    },
+  });
+
+  assert.equal(started.adjustment.runtime, runtime);
+  assert.deepEqual(events, ["canary", "prepare:canary_killed", "listen:0.0.0.0:8080"]);
 });

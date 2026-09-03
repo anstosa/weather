@@ -23,6 +23,7 @@ import {
   applyForecastAdjustment,
   type ApplyForecastAdjustmentInputV1,
   type LoadedForecastAdjustmentRuntimeV1,
+  type LoadedForecastAdjustmentWindCanaryRuntimeV1,
 } from "@weather/forecast-adjustment";
 import {
   createForecastAdjustmentFailRawDecision,
@@ -32,12 +33,16 @@ import {
   validateUtcInstant,
   type CanonicalWeatherMetrics,
   type ForecastAdjustmentDecision,
+  type ForecastAdjustmentMetric,
   type JsonValue,
   type SourceKind,
   type StationKind,
 } from "@weather/domain";
 
 type DatabasePool = Parameters<typeof listActiveSites>[0];
+type LoadedApiForecastAdjustmentRuntime =
+  | LoadedForecastAdjustmentRuntimeV1
+  | LoadedForecastAdjustmentWindCanaryRuntimeV1;
 
 export interface HealthSnapshot {
   readonly database: "ready" | "unavailable";
@@ -183,13 +188,18 @@ export interface ApiForecastWeatherRecord extends ApiWeatherRecord {
 
 // expose only bounded startup selection metadata
 export interface ApiForecastAdjustmentRuntime {
+  readonly activationMode: "qualified" | "wind_canary" | null;
   readonly activeBundle: string | null;
+  readonly authorizationSha256: string | null;
   readonly candidateArtifactSha256: string | null;
+  readonly enabledMetrics: readonly ForecastAdjustmentMetric[];
   readonly evaluationReportSha256: string | null;
+  readonly expiresAt: string | null;
   readonly loadedAt: string;
   readonly qualificationReceiptSha256: string | null;
-  readonly reasonCode: LoadedForecastAdjustmentRuntimeV1["reasonCode"];
-  readonly state: LoadedForecastAdjustmentRuntimeV1["state"];
+  readonly reasonCode: LoadedApiForecastAdjustmentRuntime["reasonCode"];
+  readonly state: LoadedApiForecastAdjustmentRuntime["state"];
+  readonly transferReportSha256: string | null;
 }
 
 export interface ApiPropertySensorSnapshot {
@@ -240,11 +250,11 @@ export interface ApiDailyPrecipitation {
 export interface ApiOptions {
   readonly forecastAdjustment?: {
     readonly apply?: (
-      runtime: LoadedForecastAdjustmentRuntimeV1,
+      runtime: LoadedApiForecastAdjustmentRuntime,
       input: ApplyForecastAdjustmentInputV1,
     ) => ForecastAdjustmentDecision;
     readonly loadedAt: string;
-    readonly runtime: LoadedForecastAdjustmentRuntimeV1;
+    readonly runtime: LoadedApiForecastAdjustmentRuntime;
   };
   readonly logDiagnostic?: (diagnostic: ApiDiagnostic) => void;
   readonly now?: () => Date;
@@ -446,10 +456,6 @@ export function createWeatherApi(
     loadedAt: now().toISOString(),
     runtime: disabledForecastAdjustmentRuntime(),
   };
-  const adjustmentRuntime = projectForecastAdjustmentRuntime(
-    forecastAdjustment.runtime,
-    forecastAdjustment.loadedAt,
-  );
   const applyAdjustment =
     forecastAdjustment.apply ?? applyForecastAdjustment;
 
@@ -460,6 +466,12 @@ export function createWeatherApi(
     try {
       const url = new URL(request.url);
       const route = matchRoute(url.pathname);
+      const generatedAt = now().toISOString();
+      const adjustmentRuntime = projectForecastAdjustmentRuntime(
+        forecastAdjustment.runtime,
+        forecastAdjustment.loadedAt,
+        generatedAt,
+      );
 
       // keep every exact endpoint read-only
       if (request.method !== "GET" && request.method !== "HEAD") {
@@ -473,7 +485,7 @@ export function createWeatherApi(
           store,
           route,
           url,
-          now,
+          generatedAt,
           version,
           forecastAdjustment.runtime,
           adjustmentRuntime,
@@ -512,35 +524,85 @@ function disabledForecastAdjustmentRuntime(): LoadedForecastAdjustmentRuntimeV1 
 
 // project the cached runtime through a strict response allowlist
 function projectForecastAdjustmentRuntime(
-  runtime: LoadedForecastAdjustmentRuntimeV1,
+  runtime: LoadedApiForecastAdjustmentRuntime,
   loadedAtInput: string,
+  evaluatedAtInput: string,
 ): ApiForecastAdjustmentRuntime {
   const loadedAt = validateUtcInstant(loadedAtInput, "forecastAdjustment.loadedAt");
+  const evaluatedAt = Date.parse(
+    validateUtcInstant(evaluatedAtInput, "forecastAdjustment.evaluatedAt"),
+  );
 
   // redact all model content while the runtime is inactive
   if (runtime.state === "disabled") {
     return {
+      activationMode: null,
       activeBundle: null,
+      authorizationSha256: null,
       candidateArtifactSha256: null,
+      enabledMetrics: [],
       evaluationReportSha256: null,
+      expiresAt: null,
       loadedAt,
       qualificationReceiptSha256: null,
       reasonCode: runtime.reasonCode,
       state: runtime.state,
+      transferReportSha256: null,
     };
   }
 
+  const canary = "artifactKind" in runtime.bundle;
+  const expiresAt = canary ? runtime.bundle.authorization.expiresAt : null;
+
+  // fail raw outside the canary window
+  if (
+    canary &&
+    (evaluatedAt < Date.parse(runtime.bundle.authorization.activatedAt) ||
+      evaluatedAt >= Date.parse(runtime.bundle.authorization.expiresAt))
+  ) {
+    return {
+      activationMode: null,
+      activeBundle: null,
+      authorizationSha256: null,
+      candidateArtifactSha256: null,
+      enabledMetrics: [],
+      evaluationReportSha256: null,
+      expiresAt: null,
+      loadedAt,
+      qualificationReceiptSha256: null,
+      reasonCode: "canary_expired",
+      state: "disabled",
+      transferReportSha256: null,
+    };
+  }
+
+  const enabledMetrics = [...new Set(runtime.bundle.candidate.enabledMetricBands.map(
+    // project each enabled pair to its public metric identity
+    (metricBand) => metricBand.metric,
+  ))] as ForecastAdjustmentMetric[];
+
   return {
+    activationMode: canary ? "wind_canary" : "qualified",
     activeBundle: runtime.bundle.bundleSha256,
+    authorizationSha256: canary
+      ? runtime.bundle.authorization.authorizationSha256
+      : null,
     candidateArtifactSha256:
       runtime.bundle.candidate.candidateArtifactSha256,
-    evaluationReportSha256:
-      runtime.bundle.evaluationReport.evaluationReportSha256,
+    enabledMetrics,
+    evaluationReportSha256: canary
+      ? null
+      : runtime.bundle.evaluationReport.evaluationReportSha256,
+    expiresAt,
     loadedAt,
-    qualificationReceiptSha256:
-      runtime.bundle.qualificationReceipt.qualificationReceiptSha256,
+    qualificationReceiptSha256: canary
+      ? null
+      : runtime.bundle.qualificationReceipt.qualificationReceiptSha256,
     reasonCode: null,
     state: runtime.state,
+    transferReportSha256: canary
+      ? runtime.bundle.transferReport.transferReportSha256
+      : null,
   };
 }
 
@@ -750,12 +812,12 @@ async function handleReadRoute(
   store: WeatherReadStore,
   route: Route,
   url: URL,
-  now: () => Date,
+  generatedAt: string,
   version: string,
-  forecastAdjustmentRuntime: LoadedForecastAdjustmentRuntimeV1,
+  forecastAdjustmentRuntime: LoadedApiForecastAdjustmentRuntime,
   adjustmentRuntime: ApiForecastAdjustmentRuntime,
   applyAdjustment: (
-    runtime: LoadedForecastAdjustmentRuntimeV1,
+    runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
   ) => ForecastAdjustmentDecision,
 ): Promise<Response> {
@@ -764,7 +826,7 @@ async function handleReadRoute(
     rejectUnexpectedParameters(url.searchParams, new Set());
     return await healthResponse(
       store,
-      now().toISOString(),
+      generatedAt,
       version,
       adjustmentRuntime,
     );
@@ -787,7 +849,6 @@ async function handleReadRoute(
       () => parseCurrentQuery(url.searchParams, site),
     );
     const rows = await store.getCurrent(route.siteSlug, query);
-    const generatedAt = now().toISOString();
     const records = mapWeatherRecords(rows, indexSources(site), generatedAt);
     return jsonResponse({ data: records, generatedAt, site });
   }
@@ -795,7 +856,6 @@ async function handleReadRoute(
   // serve today's nearest physical rain accumulation
   if (route.kind === "dailyPrecipitation") {
     rejectUnexpectedParameters(url.searchParams, new Set());
-    const generatedAt = now().toISOString();
     const window = siteForecastDayWindow(generatedAt, site.timezone);
     const row = await store.getDailyPrecipitation(
       route.siteSlug,
@@ -818,7 +878,6 @@ async function handleReadRoute(
   // serve the latest normalized forecast product
   if (route.kind === "forecast") {
     rejectUnexpectedParameters(url.searchParams, new Set(["days"]));
-    const generatedAt = now().toISOString();
     const days = parsePublicQuery(
       // parse only the reviewed forecast horizon
       () => parseForecastDays(url.searchParams),
@@ -852,7 +911,6 @@ async function handleReadRoute(
       // retain bounded compatibility with cached range clients
       () => parseLegacyTrendRange(url.searchParams),
     );
-    const generatedAt = now().toISOString();
     const window = calendarTrendWindow(generatedAt, site.timezone);
     const rows = await store.listTrends(
       route.siteSlug,
@@ -869,7 +927,6 @@ async function handleReadRoute(
   // serve recent observations and the local tide forecast
   if (route.kind === "tides") {
     rejectUnexpectedParameters(url.searchParams, new Set(["from", "to"]));
-    const generatedAt = now().toISOString();
     const range = parsePublicQuery(
       // parse only the bounded tide range
       () => parseTideRange(url.searchParams, generatedAt),
@@ -889,7 +946,6 @@ async function handleReadRoute(
   const rows = await store.listHistory(parsed.query);
   const hasMore = rows.length > parsed.requestedLimit;
   const visibleRows = hasMore ? rows.slice(0, parsed.requestedLimit) : rows;
-  const generatedAt = now().toISOString();
   const records = mapWeatherRecords(visibleRows, indexSources(site), generatedAt);
   const last = records.at(-1);
   const nextCursor =
@@ -1264,9 +1320,9 @@ function mapForecastWeatherRecords(
   rows: readonly WeatherRecordRow[],
   sources: ReadonlyMap<string, SourceDetails>,
   generatedAt: string,
-  runtime: LoadedForecastAdjustmentRuntimeV1,
+  runtime: LoadedApiForecastAdjustmentRuntime,
   applyAdjustment: (
-    runtime: LoadedForecastAdjustmentRuntimeV1,
+    runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
   ) => ForecastAdjustmentDecision,
 ): readonly ApiForecastWeatherRecord[] {
@@ -1278,6 +1334,7 @@ function mapForecastWeatherRecords(
     adjustment: applyForecastAdjustmentSafely(
       runtime,
       rows[index]!,
+      generatedAt,
       applyAdjustment,
     ),
   }));
@@ -1285,16 +1342,17 @@ function mapForecastWeatherRecords(
 
 // contain every model or projection exception at the row boundary
 function applyForecastAdjustmentSafely(
-  runtime: LoadedForecastAdjustmentRuntimeV1,
+  runtime: LoadedApiForecastAdjustmentRuntime,
   row: WeatherRecordRow,
+  evaluatedAt: string,
   applyAdjustment: (
-    runtime: LoadedForecastAdjustmentRuntimeV1,
+    runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
   ) => ForecastAdjustmentDecision,
 ): ForecastAdjustmentDecision {
   // contain every adjustment failure
   try {
-    return applyAdjustment(runtime, forecastAdjustmentInput(row));
+    return applyAdjustment(runtime, forecastAdjustmentInput(row, evaluatedAt));
   } catch {
     return createForecastAdjustmentFailRawDecision(
       "not_applicable",
@@ -1306,6 +1364,7 @@ function applyForecastAdjustmentSafely(
 // derive the immutable v4 retrieval identity from one selected row
 function forecastAdjustmentInput(
   row: WeatherRecordRow,
+  evaluatedAt: string,
 ): ApplyForecastAdjustmentInputV1 {
   // retain missing reference identity for fail-raw handling
   const referenceAt = row.productRunAt === null
@@ -1318,6 +1377,7 @@ function forecastAdjustmentInput(
   const dataset = row.providerMetadata?.dataset;
 
   return {
+    evaluatedAt,
     metrics: canonicalWeatherMetrics(row),
     rawForecastProvenance: {
       adapterVersion: row.adapterVersion ?? "",

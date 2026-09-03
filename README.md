@@ -141,19 +141,21 @@ The current Weather tunnel origin is <https://weather.ballydidean.farm>.
 
 ## Open-Meteo forecast adjustment
 
-The platform includes an inactive, fail-raw path for evaluating hyperlocal
-adjustments to the existing Open-Meteo v4 forecast. Training uses a frozen
-network of eleven Ecowitt, Tempest, Ambient/Weather Underground, and Netatmo
-physical stations. Historical Open-Meteo Previous Runs anchors remain isolated
-from the live v4 retrieval-snapshot cohort and cannot enter the public forecast
-route.
+The platform includes fail-raw paths for evaluating hyperlocal adjustments to
+the existing Open-Meteo v4 forecast. Training uses a frozen network of eleven
+Ecowitt, Tempest, Ambient/Weather Underground, and Netatmo physical stations.
+Historical Open-Meteo Previous Runs anchors remain isolated from the live v4
+retrieval-snapshot cohort and cannot enter the public forecast route.
 
 Production-derived evaluation uses only a forced, bounded, read-only export.
 Ignored `.weather-data/` and `.weather-models/` paths may hold an
 `insufficient_data` dry run, but raw observations and external model evidence
-must never be committed. The checked registry starts with `activeBundle: null`;
-activation requires a retained and redundant qualified evidence graph, a
-reviewed sanitized bundle, a server-image rebuild, deployment, and API restart.
+must never be committed. The normal qualified registry remains inactive until
+it has a retained and redundant qualified evidence graph. A separately
+versioned, operator-authorized wind canary may adjust only wind speed and gust
+after positive live-v4 transfer evidence; temperature, humidity, and wind
+direction remain regional. Both paths require a reviewed sanitized bundle, a
+server-image rebuild, deployment, and API restart.
 
 See the
 [`forecast adjustment operations and governance runbook`](docs/operations/forecast-adjustment.md)

@@ -99,6 +99,8 @@ if (mode === "web") {
   const packageLink = join(root, "node_modules/@weather/forecast-adjustment");
   process.stdout.write(JSON.stringify({
     bundleNodes: nodes.filter(({ path }) => /config\\\/forecast-adjustments\\\/ballydidean\\\/bundles\\\/sha256-[a-f0-9]{64}\\.json$/u.test(path)),
+    windCanaryBundleNodes: nodes.filter(({ path }) => /config\\\/forecast-adjustments\\\/ballydidean\\\/wind-canary-bundles\\\/sha256-[a-f0-9]{64}\\.json$/u.test(path)),
+    windCanaryRegistry: readFileSync(join(root, "config/forecast-adjustments/ballydidean-wind-canary.json"), "utf8"),
     linkRealpath: realpathSync(packageLink),
     linkType: lstatSync(packageLink).isSymbolicLink() ? "link" : "other",
     packageFiles: hashes(packageRoot),
@@ -175,6 +177,16 @@ test("built server and web images enforce the adjustment filesystem boundary", {
       '{"activeBundle":null,"contractVersion":"forecast-adjustment-registry/v1"}\n',
     );
     assert.deepEqual(server.bundleNodes, []);
+    const expectedWindCanaryRegistry = await readFile(
+      join(repoRoot, "config/forecast-adjustments/ballydidean-wind-canary.json"),
+      "utf8",
+    );
+    assert.equal(server.windCanaryRegistry, expectedWindCanaryRegistry);
+    const windCanaryRegistry = JSON.parse(server.windCanaryRegistry);
+    assert.deepEqual(server.windCanaryBundleNodes, [{
+      path: `config/forecast-adjustments/ballydidean/${windCanaryRegistry.activeBundle.path}`,
+      type: "file",
+    }]);
   } finally {
     // remove only the disposable test images
     if (buildImages) {

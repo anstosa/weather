@@ -9,6 +9,7 @@ import {
   FORECAST_ADJUSTMENT_METRIC_POLICIES_V1,
   FORECAST_ADJUSTMENT_QUALIFICATION_GATE_NAMES,
   FORECAST_ADJUSTMENT_REASON_CODES,
+  FORECAST_ADJUSTMENT_WIND_CANARY_METRICS,
   FORECAST_OBSERVATION_MANIFEST_V1,
   FORECAST_OBSERVATION_EXCLUDED_SOURCE_LINEAGES,
   FORECAST_OBSERVATION_SOURCE_LINEAGES,
@@ -23,6 +24,7 @@ import {
   forecastNetworkEventKey,
   validateForecastAdjustmentRegistry,
   validateForecastAdjustmentActiveDecision,
+  validateForecastAdjustmentWindCanaryActiveDecision,
   validateForecastAdjustmentRuntimeBundleLinks,
   validateMetricValue,
   validatePromotableForecastAdjustmentEvidence,
@@ -872,6 +874,53 @@ test("U-MOD-13 active decisions expose exact algorithm and raw forecast provenan
         algorithmContractVersion: "invented/v2",
       }),
     /identity mismatch/u,
+  );
+});
+
+// verify canary decisions expose only wind and honest transfer evidence
+test("wind canary decisions reject temperature and humidity fields", () => {
+  const decision = {
+    activationKind: "wind_transfer_canary",
+    adjustedMetrics: { windGustMps: 10, windSpeedMps: 6 },
+    algorithmContractVersion: "robust-hierarchical-median/v1",
+    appliedMetrics: ["windGustMps", "windSpeedMps"],
+    authorizationSha256: hashes.qualification,
+    candidateArtifactSha256: hashes.candidate,
+    contractVersion: FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.decision,
+    leadBand: "001-024",
+    rawForecastProvenance: {
+      adapterVersion: "open-meteo-forecast/v4",
+      cohort: "legacy_v4_retrieval_snapshot",
+      contractEpoch: "forecast-daily/v4:source-fingerprint",
+      dataset: "forecast",
+      referenceAt: "2026-08-22T04:00:00.000Z",
+      referenceKind: "retrieval_snapshot",
+      sourceConfigFingerprint: hashes.sourceFingerprint,
+      sourceKey: "open-meteo-forecast-v4",
+      targetLeadHours: 24,
+      upstreamModel: "best_match",
+      validAt: "2026-08-23T04:00:00.000Z",
+    },
+    reasonCode: null,
+    state: "active",
+    transferReportSha256: hashes.evaluation,
+  };
+  assert.deepEqual(FORECAST_ADJUSTMENT_WIND_CANARY_METRICS, [
+    "windDirectionDegrees",
+    "windGustMps",
+    "windSpeedMps",
+  ]);
+  assert.doesNotThrow(() =>
+    validateForecastAdjustmentWindCanaryActiveDecision(decision),
+  );
+  assert.throws(
+    () =>
+      validateForecastAdjustmentWindCanaryActiveDecision({
+        ...decision,
+        adjustedMetrics: { temperatureC: 20 },
+        appliedMetrics: ["temperatureC"],
+      }),
+    /canary metrics are invalid/u,
   );
 });
 

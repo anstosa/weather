@@ -20,11 +20,16 @@ import {
   forecastLeadBandFor,
   type ForecastAdjustmentMetric,
   type ForecastAdjustmentMetricBand,
+  type ForecastAdjustmentWindCanaryMetric,
   type ForecastSeasonDaypartKey,
   type ForecastAdjustmentCandidateV2,
   type ForecastAdjustmentEvaluationReportV2,
   type ForecastAdjustmentEvidenceTripleV2,
   type ForecastAdjustmentQualificationReceiptV2,
+  type ForecastAdjustmentWindCanaryAuthorizationV1,
+  type ForecastAdjustmentWindCanaryCandidateV1,
+  type ForecastAdjustmentWindCanaryRuntimeBundleV1,
+  type ForecastAdjustmentWindCanaryTransferReportV1,
   validatePromotableForecastAdjustmentEvidence,
   canonicalizeJson,
   type JsonValue,
@@ -48,6 +53,13 @@ import {
   verifyForecastAdjustmentEvaluationReport,
   verifyForecastAdjustmentQualificationReceipt,
 } from "./evaluate.js";
+import {
+  FORECAST_ADJUSTMENT_WIND_CANARY_TRAINING_IDENTITY_V1,
+  createForecastAdjustmentWindCanaryAuthorization,
+  createForecastAdjustmentWindCanaryCandidate,
+  createForecastAdjustmentWindCanaryRuntimeBundle,
+  createForecastAdjustmentWindCanaryTransferReport,
+} from "./wind-canary.js";
 import {
   type HoldoutAccessMarkerV1,
   appendEvidenceLifecycleRecord,
@@ -212,6 +224,26 @@ export interface RetainedForecastAdjustmentEvaluationResultV1
   readonly state: "promoted";
 }
 
+// accept explicit operator material for one canary build
+export interface RetainedForecastAdjustmentWindCanaryAuthorizationInputV1 {
+  readonly activatedAt: string;
+  readonly authorizationReason: string;
+  readonly authorizedAt: string;
+  readonly authorizedBy: string;
+  readonly expiresAt: string;
+}
+
+// return one verified bundle-ready canary evidence graph
+export interface RetainedForecastAdjustmentWindCanaryResultV1 {
+  readonly accessTrace: readonly string[];
+  readonly authorization: ForecastAdjustmentWindCanaryAuthorizationV1;
+  readonly bundle: ForecastAdjustmentWindCanaryRuntimeBundleV1;
+  readonly candidate: ForecastAdjustmentWindCanaryCandidateV1;
+  readonly contractVersion: "forecast-adjustment-retained-wind-canary-result/v1";
+  readonly snapshotManifestSha256: string;
+  readonly transferReport: ForecastAdjustmentWindCanaryTransferReportV1;
+}
+
 interface RetainedTrainingEventV1 {
   readonly actual: number;
   readonly leadBand: ForecastAdjustmentMetricBand["leadBand"];
@@ -219,7 +251,7 @@ interface RetainedTrainingEventV1 {
   readonly metric: ForecastAdjustmentMetric;
   readonly rawForecast: number;
   readonly rawWindSpeedMps: number | null;
-  readonly referenceAt: string;
+  readonly referenceAt: string | null;
   readonly stableId: string;
   readonly stationRows: readonly SanitizedStationHourRow[];
   readonly targetLeadHours: number;
@@ -774,11 +806,263 @@ export async function evaluateRetainedForecastAdjustmentSnapshot(
   });
 }
 
+// fit and bridge-score one separately authorized wind-transfer canary
+export async function evaluateRetainedForecastAdjustmentWindCanarySnapshot(
+  input: {
+    readonly authorization: RetainedForecastAdjustmentWindCanaryAuthorizationInputV1;
+    readonly enabledMetrics: readonly ForecastAdjustmentWindCanaryMetric[];
+    readonly evidenceRoot: string;
+    readonly snapshotPath: string;
+  },
+): Promise<RetainedForecastAdjustmentWindCanaryResultV1> {
+  const enabledMetrics = [...input.enabledMetrics].sort(compareText);
+
+  // require an explicit nonempty unique wind-only request
+  if (
+    enabledMetrics.length === 0 ||
+    new Set(enabledMetrics).size !== enabledMetrics.length ||
+    enabledMetrics.some(
+      (metric) =>
+        metric !== "windDirectionDegrees" &&
+        metric !== "windGustMps" &&
+        metric !== "windSpeedMps",
+    )
+  ) {
+    throw new RangeError("wind canary enabled metrics are invalid");
+  }
+
+  const evidenceRoot = await requireCanonicalDirectory(
+    input.evidenceRoot,
+    "evidence root",
+  );
+  const snapshotRoot = await requireCanonicalDirectory(
+    input.snapshotPath,
+    "retained snapshot",
+  );
+
+  // require the snapshot below the durable evidence root
+  if (!snapshotRoot.startsWith(`${evidenceRoot}${sep}`)) {
+    throw new RangeError("retained snapshot is outside the durable evidence root");
+  }
+
+  const accessTrace: string[] = [];
+  const manifestBytes = (
+    await readVerifiedRegularFile(
+      join(snapshotRoot, "manifest.json"),
+      snapshotRoot,
+      "retained snapshot manifest",
+      accessTrace,
+      "control",
+      "manifest.json",
+    )
+  ).toString("utf8");
+  const snapshotManifestSha256 = sha256(manifestBytes);
+  const checksumBytes = (
+    await readVerifiedRegularFile(
+      join(snapshotRoot, "manifest.sha256"),
+      snapshotRoot,
+      "retained snapshot checksum",
+      accessTrace,
+      "control",
+      "manifest.sha256",
+    )
+  ).toString("utf8");
+
+  // bind the content-addressed snapshot identity
+  if (
+    checksumBytes !== `${snapshotManifestSha256}  manifest.json\n` ||
+    basename(snapshotRoot) !== snapshotManifestSha256
+  ) {
+    throw new RangeError("snapshot manifest identity mismatch");
+  }
+
+  const manifest = JSON.parse(manifestBytes) as SnapshotManifestV1;
+
+  // verify control bytes before opening row members
+  if (manifestBytes !== canonicalJsonBytes(manifest as unknown as JsonValue)) {
+    throw new RangeError("snapshot manifest is not canonical JSON");
+  }
+
+  validateSnapshotManifestBoundary(manifest);
+  accessTrace.push("manifest_schema_verified");
+
+  // verify all member metadata before row access
+  for (const member of manifest.members) {
+    validateSnapshotMember(member, snapshotRoot);
+  }
+  accessTrace.push("member_metadata_verified");
+  const rows = await readSnapshotPhaseRows(
+    snapshotRoot,
+    manifest.members,
+    "canary",
+    accessTrace,
+  );
+  const bridgeRows = rows.filter(
+    (row): row is SanitizedForecastRow =>
+      row.recordKind === "legacy_v4_retrieval_snapshot",
+  );
+
+  // require a separate live-v4 transfer cohort
+  if (bridgeRows.length === 0) {
+    throw new RangeError("wind canary snapshot lacks live-v4 bridge rows");
+  }
+
+  const bridgeStartInclusive = bridgeRows
+    .map((row) => row.validAt)
+    .sort(compareText)[0] as string;
+  const bridgeEndInclusive = bridgeRows
+    .map((row) => row.validAt)
+    .sort(compareText)
+    .at(-1) as string;
+  const fixedEvents = buildRetainedTrainingEvents(
+    rows,
+    "fixed_lead_anchor",
+    enabledMetrics,
+  ).filter((event) => event.validAt < bridgeStartInclusive);
+  const bridgeEvents = buildRetainedTrainingEvents(
+    rows,
+    "legacy_v4_retrieval_snapshot",
+    enabledMetrics,
+  );
+  const pairKeys = [...new Set(
+    bridgeEvents.map((event) => `${event.metric}:${event.leadBand}`),
+  )].sort(compareText);
+  const fitted = pairKeys.flatMap((key) => {
+    const [metric, leadBand] = key.split(":") as [
+      ForecastAdjustmentWindCanaryMetric,
+      ForecastAdjustmentMetricBand["leadBand"],
+    ];
+    const pair = { leadBand, metric };
+    const trainingEvents = fixedEvents.filter(
+      (event) => event.metric === metric && event.leadBand === leadBand,
+    );
+    const coefficients = fitEventHierarchy(trainingEvents, pair);
+
+    // require the literal hierarchy root before bridge scoring
+    if (!coefficients.some((coefficient) => coefficient.level === 1)) {
+      return [];
+    }
+
+    const trainingEnvelope =
+      metric === "windDirectionDegrees"
+        ? null
+        : createTrainingEnvelope(
+            metric,
+            leadBand,
+            trainingEvents.map((event) => event.rawForecast),
+          );
+
+    const scoredEvents = scoreFittedCanaryBridgeEvents(
+      coefficients,
+      bridgeEvents.filter(
+        (event) => event.metric === metric && event.leadBand === leadBand,
+      ),
+      pair,
+      trainingEnvelope,
+    );
+
+    // omit unscoreable transfer pairs
+    if (scoredEvents.length === 0) {
+      return [];
+    }
+
+    const losses = pairedLoss(scoredEvents, metric === "windDirectionDegrees");
+    const score = { ...losses, eventCount: scoredEvents.length };
+
+    // retain only wind pairs with positive live-v4 transfer
+    if (
+      score.eventCount < 30 ||
+      !Number.isFinite(score.skill) ||
+      score.skill <= 0
+    ) {
+      return [];
+    }
+
+    return [{ coefficients, pair, score, trainingEnvelope }];
+  });
+
+  // refuse a canary without positive cross-cohort evidence
+  if (
+    fitted.length === 0 ||
+    enabledMetrics.some(
+      (metric) => !fitted.some((item) => item.pair.metric === metric),
+    )
+  ) {
+    throw new RangeError("wind canary snapshot lacks positive live-v4 bridge evidence");
+  }
+
+  const enabledMetricBands = fitted.map((item) => item.pair);
+  const finalTrainingCutoff = fixedEvents
+    .map((event) => event.validAt)
+    .sort(compareText)
+    .at(-1) as string;
+  const candidate = createForecastAdjustmentWindCanaryCandidate({
+    coefficients: fitted.flatMap((item) => item.coefficients),
+    enabledMetricBands,
+    exportManifestSha256: snapshotManifestSha256,
+    finalTrainingCutoff,
+    runtimeFingerprint: runtimeCalendarFingerprint(),
+    servedForecastIdentity: {
+      adapterVersion: bridgeRows[0]?.adapterVersion as string,
+      cohort: "legacy_v4_retrieval_snapshot",
+      contractEpoch: bridgeRows[0]?.contractEpoch as string,
+      dataset: bridgeRows[0]?.dataset as string,
+      referenceKind: "retrieval_snapshot",
+      sourceConfigFingerprint:
+        bridgeRows[0]?.sourceConfigFingerprints[0] as string,
+      sourceKey: bridgeRows[0]?.sourceKeys[0] as string,
+      upstreamModel: bridgeRows[0]?.upstreamModel as string,
+    },
+    trainingEnvelopes: fitted.flatMap((item) =>
+      item.trainingEnvelope === null ? [] : [item.trainingEnvelope],
+    ),
+    trainingForecastIdentity:
+      FORECAST_ADJUSTMENT_WIND_CANARY_TRAINING_IDENTITY_V1,
+    trainingProvenance: {
+      aggregationContractSha256: manifest.aggregationContractSha256,
+      coordinateManifestSha256: manifest.coordinateManifestSha256,
+      metricEligibilitySha256: manifest.metricEligibilitySha256,
+      observationSourceLineageSha256: manifest.sourceLineageSha256,
+      observationStationManifestSha256: manifest.stationManifestSha256,
+      spatialWeightSha256: manifest.spatialWeightsSha256,
+    },
+  });
+  const transferReport = createForecastAdjustmentWindCanaryTransferReport({
+    bridgeEndExclusive: new Date(Date.parse(bridgeEndInclusive) + 1).toISOString(),
+    bridgeEvaluations: fitted.map((item) => ({
+      metricBand: item.pair,
+      network: item.score,
+    })),
+    bridgeStartInclusive,
+    candidate,
+  });
+  const authorization = createForecastAdjustmentWindCanaryAuthorization({
+    ...input.authorization,
+    candidate,
+    transferReport,
+  });
+  const bundle = createForecastAdjustmentWindCanaryRuntimeBundle({
+    authorization,
+    candidate,
+    transferReport,
+  });
+
+  return deepFreeze({
+    accessTrace: [...accessTrace, "wind_canary_bundle_ready"],
+    authorization,
+    bundle,
+    candidate,
+    contractVersion: "forecast-adjustment-retained-wind-canary-result/v1" as const,
+    snapshotManifestSha256,
+    transferReport,
+  });
+}
+
 // parse one authorized phase of compressed date shards through the core boundary
 async function readSnapshotPhaseRows(
   snapshotRoot: string,
   members: readonly SnapshotMemberV1[],
-  phase: "holdout" | "preholdout",
+  phase: "canary" | "holdout" | "preholdout",
   accessTrace: string[],
 ): Promise<readonly SanitizedTrainingExportRow[]> {
   const rows: SanitizedTrainingExportRow[] = [];
@@ -867,7 +1151,7 @@ async function readVerifiedSnapshotMember(
   snapshotRoot: string,
   memberPath: string,
   accessTrace?: string[],
-  phase?: "holdout" | "preholdout",
+  phase?: "canary" | "holdout" | "preholdout",
 ): Promise<Buffer> {
   return readVerifiedRegularFile(
     resolve(snapshotRoot, memberPath),
@@ -885,7 +1169,7 @@ async function readVerifiedRegularFile(
   root: string,
   description: string,
   accessTrace?: string[],
-  phase?: "control" | "holdout" | "preholdout",
+  phase?: "canary" | "control" | "holdout" | "preholdout",
   tracePath?: string,
 ): Promise<Buffer> {
   const absoluteRoot = resolve(root);
@@ -2268,6 +2552,9 @@ async function fitRetainedDevelopment(input: {
 // construct metric-correct network events from one verified row phase
 function buildRetainedTrainingEvents(
   rows: readonly SanitizedTrainingExportRow[],
+  cohort: "fixed_lead_anchor" | "legacy_v4_retrieval_snapshot" =
+    "legacy_v4_retrieval_snapshot",
+  metrics: readonly ForecastAdjustmentMetric[] = FORECAST_ADJUSTMENT_METRICS,
 ): readonly RetainedTrainingEventV1[] {
   const stationsByInstant = new Map<string, SanitizedStationHourRow[]>();
 
@@ -2287,12 +2574,12 @@ function buildRetainedTrainingEvents(
     readonly stableId: string;
   }>();
   const candidates = rows.flatMap((row, rowIndex) => {
-    // isolate the served legacy cohort
-    if (row.recordKind !== "legacy_v4_retrieval_snapshot") {
+    // isolate the requested immutable forecast cohort
+    if (row.recordKind !== cohort) {
       return [];
     }
 
-    return FORECAST_ADJUSTMENT_METRICS.flatMap((metric) => {
+    return metrics.flatMap((metric) => {
       const raw = row.metrics[metric];
 
       // omit missing metric values
@@ -2307,10 +2594,12 @@ function buildRetainedTrainingEvents(
       const stableId = `${row.contentHashes[0]}:${rowIndex}:${metric}`;
       materials.set(stableId, { metric, row, stableId });
       return [{
-        cohort: "legacy_v4_retrieval_snapshot" as const,
+        cohort,
         continuousLeadHours:
-          (Date.parse(row.validAt) - Date.parse(row.referenceAt as string)) /
-          3_600_000,
+          row.referenceAt === null
+            ? row.targetLeadHours
+            : (Date.parse(row.validAt) - Date.parse(row.referenceAt)) /
+              3_600_000,
         metric,
         referenceAt: row.referenceAt,
         referenceKind: row.referenceKind,
@@ -2969,6 +3258,53 @@ function scoreCandidateEvents(
       rawPrediction: event.rawForecast,
       stableId: event.stableId,
       validAt: event.validAt,
+    }];
+  });
+}
+
+// score one fixed-lead fit against separate live-v4 bridge events
+function scoreFittedCanaryBridgeEvents(
+  coefficients: readonly ForecastAdjustmentCandidateV2["coefficients"][number][],
+  events: readonly RetainedTrainingEventV1[],
+  pair: ForecastAdjustmentMetricBand,
+  trainingEnvelope: {
+    readonly maximum: number;
+    readonly minimum: number;
+  } | null,
+): readonly (BootstrapPairedEvent & {
+  readonly localDate: string;
+})[] {
+  return events.flatMap((event) => {
+    // match the runtime scalar training-envelope guard
+    if (
+      trainingEnvelope !== null &&
+      (event.rawForecast < trainingEnvelope.minimum ||
+        event.rawForecast > trainingEnvelope.maximum)
+    ) {
+      return [];
+    }
+
+    const coefficient = selectHierarchyCoefficient(
+      coefficients,
+      pair.metric,
+      pair.leadBand,
+      localCalendarFeaturesFor(event.validAt),
+    );
+
+    // score only an exact fitted hierarchy cell
+    if (coefficient === null) {
+      return [];
+    }
+
+    return [{
+      actual: event.actual,
+      adjustedPrediction: applyCappedCorrection(
+        pair.metric,
+        event.rawForecast,
+        coefficient,
+      ),
+      localDate: event.localDate,
+      rawPrediction: event.rawForecast,
     }];
   });
 }

@@ -123,6 +123,53 @@ separate. Only `legacy_v4_retrieval_snapshot` can qualify a correction served
 beside v4. There is no v5 source, source cutover, scheduled duplication, or
 transfer of anchor coefficients into v4.
 
+## Bounded wind transfer canary
+
+The wind canary is a separately versioned exception path, not a qualified v2
+model. It fits fixed-lead Previous Runs against the same frozen all-station
+network target, then scores those coefficients against the separate retained
+live-v4 retrieval cohort. The committed canary enables exactly:
+
+- `windSpeedMps`
+- `windGustMps`
+
+Temperature, relative humidity, and wind direction remain the unmodified
+regional forecast. An enabled metric-band requires at least 30 scoreable
+live-v4 bridge events and strictly positive point skill. This small transfer
+cohort does not satisfy the normal seven-local-date moving-block bootstrap or
+the full qualified-v2 evidence graph, so its artifacts must never be placed in
+the normal bundle registry or described as qualified.
+
+The isolated selection is:
+
+```text
+config/forecast-adjustments/ballydidean-wind-canary.json
+config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-<bundleSha256>.json
+```
+
+Each bundle contains a candidate, live-v4 transfer report, and explicit
+operator authorization. Authorization begins no earlier than its review time,
+expires within 14 days, and is enforced at every application. The API reads the
+canary once at startup and prefers it only while active. Any expiry, explicit
+kill, missing bundle, invalid hash, lineage drift, runtime fingerprint drift,
+or application error fails raw without falling through to another adjustment.
+Only a genuinely inactive canary registry permits the normal qualified loader
+to run.
+
+Set the following deployment variable to the literal value `1`, then restart
+the API, for an immediate fail-raw kill:
+
+```dotenv
+WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1
+```
+
+Only `1` activates the kill switch; `0` permits normal operation. Rollback may also
+set the canary registry's `activeBundle` to `null` in a reviewed image. Do not
+edit an existing content-addressed bundle. The UI starts new canary sessions in
+Regional mode; a user may explicitly select **Wind adjusted (canary)**. High
+wind alerts always use the greater of raw and adjusted gust so a negative
+correction cannot suppress a regional warning.
+
 ## Bounded production snapshot
 
 Run the production export only with explicit authority. The command accepts

@@ -24,13 +24,18 @@ import {
 import { createQualifiedFixture } from "../../../packages/forecast-adjustment/test/evidence-fixtures.mjs";
 
 const inactiveAdjustmentRuntime = {
+  activationMode: null,
   activeBundle: null,
+  authorizationSha256: null,
   candidateArtifactSha256: null,
+  enabledMetrics: [],
   evaluationReportSha256: null,
+  expiresAt: null,
   loadedAt: "2026-08-22T05:00:00.000Z",
   qualificationReceiptSha256: null,
   reasonCode: "registry_inactive",
   state: "disabled",
+  transferReportSha256: null,
 };
 
 const siteRows = [
@@ -301,6 +306,31 @@ async function createActiveForecastRuntime() {
   const triple = await createQualifiedFixture(directory);
   const bundle = createForecastAdjustmentRuntimeBundle(triple);
   return { bundle, reasonCode: null, state: "active" };
+}
+
+// build one bounded canary status fixture
+function createWindCanaryRuntime() {
+  return {
+    bundle: {
+      artifactKind: "wind_transfer_canary_runtime_bundle",
+      authorization: {
+        activatedAt: "2026-09-03T05:00:00.000Z",
+        authorizationSha256: "e".repeat(64),
+        expiresAt: "2026-09-10T05:00:00.000Z",
+      },
+      bundleSha256: "a".repeat(64),
+      candidate: {
+        candidateArtifactSha256: "b".repeat(64),
+        enabledMetricBands: [
+          { leadBand: "001-024", metric: "windGustMps" },
+          { leadBand: "001-024", metric: "windSpeedMps" },
+        ],
+      },
+      transferReport: { transferReportSha256: "f".repeat(64) },
+    },
+    reasonCode: null,
+    state: "active",
+  };
 }
 
 // build one row matching the candidate's immutable v4 identity
@@ -705,21 +735,121 @@ test("I-API-02 active runtime adjusts only its enabled metric-band pairs", async
   assert.deepEqual(decision.adjustedMetrics, { temperatureC: 14.1 });
   assert.equal("cloudCoverPercent" in decision.adjustedMetrics, false);
   assert.deepEqual(body.adjustmentRuntime, {
+    activationMode: "qualified",
     activeBundle: runtime.bundle.bundleSha256,
+    authorizationSha256: null,
     candidateArtifactSha256:
       runtime.bundle.candidate.candidateArtifactSha256,
+    enabledMetrics: ["temperatureC"],
     evaluationReportSha256:
       runtime.bundle.evaluationReport.evaluationReportSha256,
+    expiresAt: null,
     loadedAt: "2026-08-22T04:59:00.000Z",
     qualificationReceiptSha256:
       runtime.bundle.qualificationReceipt.qualificationReceiptSha256,
     reasonCode: null,
     state: "active",
+    transferReportSha256: null,
   });
   assert.doesNotMatch(
     JSON.stringify(body.adjustmentRuntime),
     /coefficient|evidence|path|station|training/u,
   );
+  const healthResponse = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const health = await healthResponse.json();
+  assert.deepEqual(health.data.adjustmentRuntime, body.adjustmentRuntime);
+});
+
+test("wind canary runtime status exposes only bounded activation metadata", async () => {
+  const runtime = createWindCanaryRuntime();
+  const { handler } = createFixture({}, {
+    forecastAdjustment: {
+      // keep the row projection independent from status metadata
+      apply() {
+        return {
+          adjustedMetrics: {},
+          appliedMetrics: [],
+          contractVersion: "forecast-adjustment-decision/v1",
+          reasonCode: "metric_not_enabled",
+          state: "not_applicable",
+        };
+      },
+      loadedAt: "2026-09-03T05:00:00.000Z",
+      runtime,
+    },
+    now: () => new Date("2026-09-03T06:00:00.000Z"),
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.adjustmentRuntime, {
+    activationMode: "wind_canary",
+    activeBundle: runtime.bundle.bundleSha256,
+    authorizationSha256: runtime.bundle.authorization.authorizationSha256,
+    candidateArtifactSha256: runtime.bundle.candidate.candidateArtifactSha256,
+    enabledMetrics: ["windGustMps", "windSpeedMps"],
+    evaluationReportSha256: null,
+    expiresAt: "2026-09-10T05:00:00.000Z",
+    loadedAt: "2026-09-03T05:00:00.000Z",
+    qualificationReceiptSha256: null,
+    reasonCode: null,
+    state: "active",
+    transferReportSha256: runtime.bundle.transferReport.transferReportSha256,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(body.adjustmentRuntime),
+    /coefficient|evidence|path|station|training/u,
+  );
+});
+
+test("expired wind canary metadata and rows fail raw on the same clock", async () => {
+  const runtime = createWindCanaryRuntime();
+  const evaluatedAt = [];
+  const { handler } = createFixture({}, {
+    forecastAdjustment: {
+      // capture the exact per-request application clock
+      apply(_runtime, input) {
+        evaluatedAt.push(input.evaluatedAt);
+        return {
+          adjustedMetrics: {},
+          appliedMetrics: [],
+          contractVersion: "forecast-adjustment-decision/v1",
+          reasonCode: "canary_expired",
+          state: "disabled",
+        };
+      },
+      loadedAt: "2026-09-03T05:00:00.000Z",
+      runtime,
+    },
+    now: () => new Date("2026-09-10T05:00:00.000Z"),
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.deepEqual(evaluatedAt, ["2026-09-10T05:00:00.000Z"]);
+  assert.deepEqual(body.adjustmentRuntime, {
+    activationMode: null,
+    activeBundle: null,
+    authorizationSha256: null,
+    candidateArtifactSha256: null,
+    enabledMetrics: [],
+    evaluationReportSha256: null,
+    expiresAt: null,
+    loadedAt: "2026-09-03T05:00:00.000Z",
+    qualificationReceiptSha256: null,
+    reasonCode: "canary_expired",
+    state: "disabled",
+    transferReportSha256: null,
+  });
+  assert.equal(body.data[0].adjustment.reasonCode, "canary_expired");
+
   const healthResponse = await handler(
     new Request("http://weather.test/api/v1/health"),
   );

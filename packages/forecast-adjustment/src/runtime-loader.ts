@@ -6,6 +6,8 @@ import {
   type ForecastAdjustmentReasonCode,
   type ForecastAdjustmentRegistryV1,
   type ForecastAdjustmentRuntimeBundleV2,
+  type ForecastAdjustmentWindCanaryRegistryV1,
+  type ForecastAdjustmentWindCanaryRuntimeBundleV1,
   validateForecastAdjustmentRegistry,
   validateForecastAdjustmentRuntimeBundleLinks,
   type JsonValue,
@@ -14,10 +16,19 @@ import {
 import { canonicalJsonBytes, deepFreeze } from "./candidate.js";
 import { runtimeCalendarFingerprintMatches } from "./calendar.js";
 import { verifyForecastAdjustmentRuntimeBundle } from "./runtime-bundle.js";
+import {
+  forecastAdjustmentWindCanaryIsActiveAt,
+  forecastAdjustmentWindCanaryIsKilled,
+  validateForecastAdjustmentWindCanaryRegistry,
+  validateForecastAdjustmentWindCanaryRuntimeBundleLinks,
+  verifyForecastAdjustmentWindCanaryRuntimeBundle,
+} from "./wind-canary.js";
 
 export const FORECAST_ADJUSTMENT_RUNTIME_ROOT =
   "/opt/weather/config/forecast-adjustments";
 export const FORECAST_ADJUSTMENT_REGISTRY_FILENAME = "ballydidean.json";
+export const FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME =
+  "ballydidean-wind-canary.json";
 
 // cache one startup adjustment provider state
 export type LoadedForecastAdjustmentRuntimeV1 =
@@ -40,6 +51,38 @@ export interface ForecastAdjustmentRuntimeLoaderV1 {
   readonly load: () => Promise<LoadedForecastAdjustmentRuntimeV1>;
 }
 
+// cache one startup wind-canary state
+export type LoadedForecastAdjustmentWindCanaryRuntimeV1 =
+  | {
+      readonly bundle: ForecastAdjustmentWindCanaryRuntimeBundleV1;
+      readonly reasonCode: null;
+      readonly state: "active";
+    }
+  | {
+      readonly bundle: null;
+      readonly reasonCode: Extract<
+        ForecastAdjustmentReasonCode,
+        | "bundle_invalid"
+        | "bundle_missing"
+        | "canary_expired"
+        | "canary_killed"
+        | "registry_inactive"
+        | "registry_invalid"
+      >;
+      readonly state: "disabled";
+    };
+
+// define one startup-only canary loader
+export interface ForecastAdjustmentWindCanaryRuntimeLoaderV1 {
+  readonly load: () => Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1>;
+}
+
+// inject the one-way environment control and clock
+export interface ForecastAdjustmentWindCanaryRuntimeOptionsV1 {
+  readonly environmentKillSwitch?: string;
+  readonly now?: () => string;
+}
+
 // create the production fixed-root startup loader
 export function createForecastAdjustmentRuntimeLoader(): ForecastAdjustmentRuntimeLoaderV1 {
   return createForecastAdjustmentRuntimeLoaderForRoot(
@@ -57,6 +100,32 @@ export function createForecastAdjustmentRuntimeLoaderForRoot(
     // cache both success and failure for process lifetime
     load(): Promise<LoadedForecastAdjustmentRuntimeV1> {
       cached ??= loadRuntimeFromRoot(root);
+      return cached;
+    },
+  });
+}
+
+// create the isolated production-root canary loader
+export function createForecastAdjustmentWindCanaryRuntimeLoader(
+  options: ForecastAdjustmentWindCanaryRuntimeOptionsV1 = {},
+): ForecastAdjustmentWindCanaryRuntimeLoaderV1 {
+  return createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(
+    FORECAST_ADJUSTMENT_RUNTIME_ROOT,
+    options,
+  );
+}
+
+// create a test-injected isolated canary loader
+export function createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(
+  root: string,
+  options: ForecastAdjustmentWindCanaryRuntimeOptionsV1 = {},
+): ForecastAdjustmentWindCanaryRuntimeLoaderV1 {
+  let cached: Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> | null = null;
+
+  return deepFreeze({
+    // cache both success and fail-raw results for process lifetime
+    load(): Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> {
+      cached ??= loadWindCanaryRuntimeFromRoot(root, options);
       return cached;
     },
   });
@@ -144,6 +213,105 @@ async function loadRuntimeFromRoot(
         ? "bundle_missing"
         : "bundle_invalid";
     return disabled(code);
+  }
+}
+
+// load one separately reviewed short-lived canary bundle
+async function loadWindCanaryRuntimeFromRoot(
+  root: string,
+  options: ForecastAdjustmentWindCanaryRuntimeOptionsV1,
+): Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> {
+  // let the one-way switch fail raw before filesystem access
+  if (forecastAdjustmentWindCanaryIsKilled(options.environmentKillSwitch)) {
+    return disabledWindCanary("canary_killed");
+  }
+
+  const absoluteRoot = resolve(root);
+  let registry: ForecastAdjustmentWindCanaryRegistryV1;
+
+  // reject relative or normalized roots
+  if (!isAbsolute(root) || root !== absoluteRoot) {
+    return disabledWindCanary("registry_invalid");
+  }
+
+  try {
+    const rootReal = await realpath(absoluteRoot);
+    const rootMetadata = await lstat(absoluteRoot);
+
+    // reject root aliases and special nodes
+    if (
+      rootReal !== absoluteRoot ||
+      !rootMetadata.isDirectory() ||
+      rootMetadata.isSymbolicLink()
+    ) {
+      throw new RangeError("wind canary runtime root is not canonical");
+    }
+
+    registry = await readRegularJson<ForecastAdjustmentWindCanaryRegistryV1>(
+      join(absoluteRoot, FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME),
+      absoluteRoot,
+    );
+
+    validateForecastAdjustmentWindCanaryRegistry(registry);
+  } catch {
+    return disabledWindCanary("registry_invalid");
+  }
+
+  // preserve the reviewed inactive default
+  if (registry.activeBundle === null) {
+    return disabledWindCanary("registry_inactive");
+  }
+
+  try {
+    const active = registry.activeBundle;
+
+    // require one closed content-addressed filename
+    if (
+      isAbsolute(active.path) ||
+      active.path.includes("..") ||
+      active.path !==
+        `wind-canary-bundles/sha256-${active.bundleSha256}.json`
+    ) {
+      throw new RangeError("wind canary bundle selection path is invalid");
+    }
+
+    const bundleRoot = join(absoluteRoot, "ballydidean");
+    const bundlePath = resolve(bundleRoot, active.path);
+
+    // keep canary bytes under the site root
+    if (!bundlePath.startsWith(`${bundleRoot}${sep}`)) {
+      throw new RangeError("wind canary bundle path escapes the site root");
+    }
+
+    const bundle = await readRegularJson<ForecastAdjustmentWindCanaryRuntimeBundleV1>(
+      bundlePath,
+      absoluteRoot,
+    );
+    verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle);
+    validateForecastAdjustmentWindCanaryRuntimeBundleLinks(registry, bundle);
+
+    // require the fitted calendar runtime
+    if (!runtimeCalendarFingerprintMatches(bundle.candidate.runtimeFingerprint)) {
+      throw new RangeError("wind canary runtime fingerprint does not match candidate");
+    }
+
+    const now = options.now?.() ?? new Date().toISOString();
+
+    // fail raw outside the explicit short-lived window
+    if (!forecastAdjustmentWindCanaryIsActiveAt(bundle, now)) {
+      return disabledWindCanary("canary_expired");
+    }
+
+    return deepFreeze({ bundle: deepFreeze(bundle), reasonCode: null, state: "active" });
+  } catch (error: unknown) {
+    const code =
+      error !== null &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+        ? "bundle_missing"
+        : "bundle_invalid";
+    return disabledWindCanary(code);
   }
 }
 
@@ -274,5 +442,20 @@ function disabled(
     "bundle_invalid" | "bundle_missing" | "registry_inactive" | "registry_invalid"
   >,
 ): LoadedForecastAdjustmentRuntimeV1 {
+  return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
+}
+
+// create one deeply frozen disabled canary provider
+function disabledWindCanary(
+  reasonCode: Extract<
+    ForecastAdjustmentReasonCode,
+    | "bundle_invalid"
+    | "bundle_missing"
+    | "canary_expired"
+    | "canary_killed"
+    | "registry_inactive"
+    | "registry_invalid"
+  >,
+): LoadedForecastAdjustmentWindCanaryRuntimeV1 {
   return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
 }

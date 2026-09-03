@@ -27,9 +27,9 @@ EOF
 releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
-control_plane_version=6
-legacy_control_plane_version=5
-legacy_control_plane_sha256=4fb0af02b5a03e782cd08e7c643cafce79b2c1fa1becf87dcef447274f54fb57
+control_plane_version=7
+legacy_control_plane_version=6
+legacy_control_plane_sha256=4df971f7af5da3710a9df69d4c05abda4c5f5efd329886b1e87cd753df32e238
 migration_authorization_version=1
 
 # locate one validated release environment
@@ -169,18 +169,25 @@ resolve_arm64_image() {
 validate_release_env() {
   local path=$1
   local expected_release=${2:-}
-  local release database_name postgres_dir control_plane control_version
+  local release database_name postgres_dir control_plane control_version wind_canary_kill_switch
   local meaningful_lines allowed_fields
   require_file "$path"
   [[ ! -L "$path" ]] || die "release environment must not be a symbolic link: $path"
   meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
-  [[ "$meaningful_lines" -eq 9 ]] ||
-    die "release environment must contain the exact current control-plane format"
-  allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
+  allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
   control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
   control_version=$(env_value "$path" WEATHER_CONTROL_PLANE_VERSION)
   grep -qEv "$allowed_fields" "$path" &&
     die "release environment contains an unknown or malformed value"
+
+  # accept only the exact field counts for current and legacy releases
+  if [[ "$meaningful_lines" -eq 10 ]]; then
+    wind_canary_kill_switch=$(env_value "$path" WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH)
+    [[ "$wind_canary_kill_switch" =~ ^[01]$ ]] ||
+      die "wind canary kill switch must be 0 or 1"
+  elif [[ "$meaningful_lines" -ne 9 || "$control_version" != "$legacy_control_plane_version" || "$control_plane" != "$legacy_control_plane_sha256" ]]; then
+    die "release environment must contain the exact current or allowlisted legacy control-plane format"
+  fi
   release=$(env_value "$path" WEATHER_RELEASE)
   validate_release "$release"
 
@@ -202,6 +209,28 @@ validate_release_env() {
   [[ "$control_version" =~ ^[1-9][0-9]*$ ]] || die "invalid deployment control-plane version"
 }
 
+# inherit one exact wind canary kill-switch value
+source_wind_canary_kill_switch() {
+  local source_env=$1
+  local value
+  local -a declarations
+  mapfile -t declarations < <(
+    grep -E '^WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH([=[:space:]]|$)' "$source_env" || true
+  )
+
+  # default only an omitted source field
+  if ((${#declarations[@]} == 0)); then
+    printf '0\n'
+    return
+  fi
+
+  ((${#declarations[@]} == 1)) || die "expected exactly one wind canary kill switch in $source_env"
+  value=${declarations[0]#*=}
+  [[ "${declarations[0]}" == WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=* && "$value" =~ ^[01]$ ]] ||
+    die "wind canary kill switch must be 0 or 1"
+  printf '%s\n' "$value"
+}
+
 # require the installed deployment contract
 require_control_plane_compatibility() {
   local env_file=$1
@@ -219,7 +248,7 @@ require_control_plane_compatibility() {
     return
   fi
 
-  # accept only the proven version-five production handoff
+  # accept only the proven version-six production handoff
   if [[ "$expected_version" == "$legacy_control_plane_version" && "$expected_digest" == "$legacy_control_plane_sha256" ]]; then
     return
   fi
@@ -236,9 +265,10 @@ write_release_env() {
   local web_image=$5
   local postgres_image=$6
   local cloudflared_image=$7
-  local database_name postgres_dir control_plane
+  local database_name postgres_dir control_plane wind_canary_kill_switch
   database_name=$(env_value "$source_env" WEATHER_DATABASE_NAME)
   postgres_dir=$(env_value "$source_env" WEATHER_POSTGRES_DIR)
+  wind_canary_kill_switch=$(source_wind_canary_kill_switch "$source_env")
   control_plane=$(control_plane_digest)
   umask 077
   printf '%s\n' \
@@ -249,6 +279,7 @@ write_release_env() {
     "CLOUDFLARED_IMAGE=$cloudflared_image" \
     "WEATHER_DATABASE_NAME=$database_name" \
     "WEATHER_POSTGRES_DIR=$postgres_dir" \
+    "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=$wind_canary_kill_switch" \
     "WEATHER_CONTROL_PLANE_SHA256=$control_plane" \
     "WEATHER_CONTROL_PLANE_VERSION=$control_plane_version" >"$target"
   chmod 600 "$target"

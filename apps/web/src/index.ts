@@ -124,11 +124,16 @@ export type ForecastAdjustmentMetric =
   | "windGustMps"
   | "windSpeedMps";
 
+// name one reviewed runtime activation mode
+export type ForecastAdjustmentActivationMode = "qualified" | "wind_canary";
+
 // name one bounded adjustment failure
 export type ForecastAdjustmentReasonCode =
   | "adjustment_error"
   | "bundle_invalid"
   | "bundle_missing"
+  | "canary_expired"
+  | "canary_killed"
   | "coefficient_missing"
   | "cross_link_mismatch"
   | "direction_calm"
@@ -170,8 +175,8 @@ export interface ForecastAdjustmentRawForecastProvenance {
   readonly validAt: string;
 }
 
-// describe one usable local adjustment
-export interface ForecastAdjustmentActiveDecision {
+// describe one usable qualified adjustment
+export interface ForecastAdjustmentQualifiedActiveDecision {
   readonly adjustedMetrics: Readonly<Partial<Record<ForecastAdjustmentMetric, number>>>;
   readonly algorithmContractVersion: "robust-hierarchical-median/v1";
   readonly appliedMetrics: readonly ForecastAdjustmentMetric[];
@@ -184,6 +189,27 @@ export interface ForecastAdjustmentActiveDecision {
   readonly reasonCode: null;
   readonly state: "active";
 }
+
+// describe one usable wind-canary adjustment
+export interface ForecastAdjustmentWindCanaryActiveDecision {
+  readonly activationKind: "wind_transfer_canary";
+  readonly adjustedMetrics: Readonly<Partial<Record<ForecastAdjustmentMetric, number>>>;
+  readonly algorithmContractVersion: "robust-hierarchical-median/v1";
+  readonly appliedMetrics: readonly ForecastAdjustmentMetric[];
+  readonly authorizationSha256: string;
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: "forecast-adjustment-decision/v1";
+  readonly leadBand: ForecastAdjustmentLeadBand;
+  readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
+  readonly reasonCode: null;
+  readonly state: "active";
+  readonly transferReportSha256: string;
+}
+
+// unite active adjustment modes
+export type ForecastAdjustmentActiveDecision =
+  | ForecastAdjustmentQualifiedActiveDecision
+  | ForecastAdjustmentWindCanaryActiveDecision;
 
 // unite API decision states
 export type ForecastAdjustmentDecision =
@@ -202,13 +228,18 @@ export type ForecastAdjustmentLeadBand =
 
 // describe the bounded runtime summary
 export interface ForecastAdjustmentRuntimeStatus {
+  readonly activationMode: ForecastAdjustmentActivationMode | null;
   readonly activeBundle: string | null;
+  readonly authorizationSha256: string | null;
   readonly candidateArtifactSha256: string | null;
+  readonly enabledMetrics: readonly ForecastAdjustmentMetric[];
   readonly evaluationReportSha256: string | null;
+  readonly expiresAt: string | null;
   readonly loadedAt: string | null;
   readonly qualificationReceiptSha256: string | null;
   readonly reasonCode: ForecastAdjustmentReasonCode | null;
   readonly state: "active" | "disabled";
+  readonly transferReportSha256: string | null;
 }
 
 export interface PropertySensorSnapshot {
@@ -438,6 +469,37 @@ function loadForecastAdjustmentMode(
   }
 }
 
+// detect one explicit forecast display choice
+function hasForecastAdjustmentModePreference(
+  storage: UnitPreferenceStorage | null,
+): boolean {
+  // reject unavailable browser storage
+  if (storage === null) {
+    return false;
+  }
+
+  try {
+    const value = storage.getItem(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY);
+    return value === "adjusted" || value === "raw";
+  } catch {
+    return false;
+  }
+}
+
+// default an unselected canary to regional values
+function forecastAdjustmentModeForRuntime(
+  mode: ForecastAdjustmentMode,
+  runtime: ForecastAdjustmentRuntimeStatus,
+  hasExplicitPreference: boolean,
+): ForecastAdjustmentMode {
+  // require opt-in for a new wind canary session
+  if (!hasExplicitPreference && runtime.activationMode === "wind_canary") {
+    return "raw";
+  }
+
+  return mode;
+}
+
 // persist one forecast display preference
 function persistForecastAdjustmentMode(
   storage: UnitPreferenceStorage | null,
@@ -481,6 +543,8 @@ const FORECAST_ADJUSTMENT_REASON_CODE_KEYS = new Set<ForecastAdjustmentReasonCod
   "adjustment_error",
   "bundle_invalid",
   "bundle_missing",
+  "canary_expired",
+  "canary_killed",
   "coefficient_missing",
   "cross_link_mismatch",
   "direction_calm",
@@ -499,13 +563,18 @@ const FORECAST_ADJUSTMENT_REASON_CODE_KEYS = new Set<ForecastAdjustmentReasonCod
   "wrong_cohort",
 ]);
 const FORECAST_ADJUSTMENT_RUNTIME_KEYS = new Set([
+  "activationMode",
   "activeBundle",
+  "authorizationSha256",
   "candidateArtifactSha256",
+  "enabledMetrics",
   "evaluationReportSha256",
+  "expiresAt",
   "loadedAt",
   "qualificationReceiptSha256",
   "reasonCode",
   "state",
+  "transferReportSha256",
 ]);
 const FORECAST_ADJUSTMENT_FAIL_RAW_KEYS = new Set([
   "adjustedMetrics",
@@ -526,6 +595,20 @@ const FORECAST_ADJUSTMENT_ACTIVE_KEYS = new Set([
   "rawForecastProvenance",
   "reasonCode",
   "state",
+]);
+const FORECAST_ADJUSTMENT_WIND_CANARY_ACTIVE_KEYS = new Set([
+  "activationKind",
+  "adjustedMetrics",
+  "algorithmContractVersion",
+  "appliedMetrics",
+  "authorizationSha256",
+  "candidateArtifactSha256",
+  "contractVersion",
+  "leadBand",
+  "rawForecastProvenance",
+  "reasonCode",
+  "state",
+  "transferReportSha256",
 ]);
 const FORECAST_ADJUSTMENT_RAW_PROVENANCE_KEYS = new Set([
   "adapterVersion",
@@ -591,13 +674,18 @@ const WEATHER_RECORD_SOURCE_KINDS = new Set<SiteSource["kind"]>([
 // create one bounded invalid-metadata fallback
 function invalidForecastAdjustmentRuntime(): ForecastAdjustmentRuntimeStatus {
   return {
+    activationMode: null,
     activeBundle: null,
+    authorizationSha256: null,
     candidateArtifactSha256: null,
+    enabledMetrics: [],
     evaluationReportSha256: null,
+    expiresAt: null,
     loadedAt: null,
     qualificationReceiptSha256: null,
     reasonCode: "adjustment_error",
     state: "disabled",
+    transferReportSha256: null,
   };
 }
 
@@ -906,12 +994,22 @@ function parseForecastAdjustmentRuntime(
   value: unknown,
 ): ForecastAdjustmentRuntimeStatus | null {
   const runtime = forecastAdjustmentObject(value);
+  const enabledMetrics = Array.isArray(runtime?.enabledMetrics)
+    ? runtime.enabledMetrics
+    : [];
+  const uniqueMetrics = new Set(enabledMetrics);
 
   // require the exact runtime envelope
   if (
     runtime === null ||
     !hasExactForecastAdjustmentKeys(runtime, FORECAST_ADJUSTMENT_RUNTIME_KEYS) ||
-    !isForecastAdjustmentInstant(runtime.loadedAt)
+    !isForecastAdjustmentInstant(runtime.loadedAt) ||
+    enabledMetrics.length !== uniqueMetrics.size ||
+    enabledMetrics.some(
+      // reject every unknown enabled metric
+      (metric) => typeof metric !== "string" ||
+        !FORECAST_ADJUSTMENT_METRIC_KEYS.has(metric as ForecastAdjustmentMetric),
+    )
   ) {
     return null;
   }
@@ -919,13 +1017,35 @@ function parseForecastAdjustmentRuntime(
   // accept one complete active identity
   if (
     runtime.state === "active" &&
+    (runtime.activationMode === "qualified" || runtime.activationMode === "wind_canary") &&
     runtime.reasonCode === null &&
     isForecastAdjustmentSha256(runtime.activeBundle) &&
     isForecastAdjustmentSha256(runtime.candidateArtifactSha256) &&
-    isForecastAdjustmentSha256(runtime.evaluationReportSha256) &&
-    isForecastAdjustmentSha256(runtime.qualificationReceiptSha256)
+    enabledMetrics.length > 0 &&
+    (runtime.expiresAt === null || isForecastAdjustmentInstant(runtime.expiresAt)) &&
+    (runtime.activationMode !== "wind_canary" || (
+      isForecastAdjustmentInstant(runtime.expiresAt) &&
+      enabledMetrics.every(
+        // confine a canary to wind metrics
+        (metric) => metric === "windDirectionDegrees" ||
+          metric === "windGustMps" ||
+          metric === "windSpeedMps",
+      )
+    )) &&
+    (runtime.activationMode === "wind_canary"
+      ? runtime.evaluationReportSha256 === null &&
+        runtime.qualificationReceiptSha256 === null &&
+        isForecastAdjustmentSha256(runtime.authorizationSha256) &&
+        isForecastAdjustmentSha256(runtime.transferReportSha256)
+      : isForecastAdjustmentSha256(runtime.evaluationReportSha256) &&
+        isForecastAdjustmentSha256(runtime.qualificationReceiptSha256) &&
+        runtime.authorizationSha256 === null &&
+        runtime.transferReportSha256 === null)
   ) {
-    return runtime as unknown as ForecastAdjustmentRuntimeStatus;
+    return {
+      ...runtime,
+      enabledMetrics: enabledMetrics as ForecastAdjustmentMetric[],
+    } as unknown as ForecastAdjustmentRuntimeStatus;
   }
 
   const reasonCode = parseForecastAdjustmentReasonCode(runtime.reasonCode);
@@ -933,11 +1053,16 @@ function parseForecastAdjustmentRuntime(
   // accept one complete disabled identity
   if (
     runtime.state === "disabled" &&
+    runtime.activationMode === null &&
     reasonCode !== null &&
     runtime.activeBundle === null &&
+    runtime.authorizationSha256 === null &&
     runtime.candidateArtifactSha256 === null &&
+    enabledMetrics.length === 0 &&
     runtime.evaluationReportSha256 === null &&
+    runtime.expiresAt === null &&
     runtime.qualificationReceiptSha256 === null
+    && runtime.transferReportSha256 === null
   ) {
     return { ...runtime, reasonCode } as ForecastAdjustmentRuntimeStatus;
   }
@@ -980,18 +1105,28 @@ function parseForecastAdjustmentActiveDecision(
   const appliedMetrics = Array.isArray(value.appliedMetrics)
     ? value.appliedMetrics
     : [];
+  const canary = runtime.activationMode === "wind_canary";
 
   // require the exact active envelope and runtime cross-links
   if (
-    !hasExactForecastAdjustmentKeys(value, FORECAST_ADJUSTMENT_ACTIVE_KEYS) ||
+    !hasExactForecastAdjustmentKeys(
+      value,
+      canary
+        ? FORECAST_ADJUSTMENT_WIND_CANARY_ACTIVE_KEYS
+        : FORECAST_ADJUSTMENT_ACTIVE_KEYS,
+    ) ||
     value.contractVersion !== "forecast-adjustment-decision/v1" ||
     value.algorithmContractVersion !== "robust-hierarchical-median/v1" ||
     value.state !== "active" ||
     value.reasonCode !== null ||
     runtime.state !== "active" ||
     value.candidateArtifactSha256 !== runtime.candidateArtifactSha256 ||
-    value.evaluationReportSha256 !== runtime.evaluationReportSha256 ||
-    value.qualificationReceiptSha256 !== runtime.qualificationReceiptSha256 ||
+    (canary
+      ? value.activationKind !== "wind_transfer_canary" ||
+        value.authorizationSha256 !== runtime.authorizationSha256 ||
+        value.transferReportSha256 !== runtime.transferReportSha256
+      : value.evaluationReportSha256 !== runtime.evaluationReportSha256 ||
+        value.qualificationReceiptSha256 !== runtime.qualificationReceiptSha256) ||
     adjustedMetrics === null ||
     provenance === null ||
     !hasExactForecastAdjustmentKeys(provenance, FORECAST_ADJUSTMENT_RAW_PROVENANCE_KEYS)
@@ -1040,6 +1175,11 @@ function parseForecastAdjustmentActiveDecision(
     if (
       typeof metric !== "string" ||
       !FORECAST_ADJUSTMENT_METRIC_KEYS.has(metric as ForecastAdjustmentMetric) ||
+      !runtime.enabledMetrics.includes(metric as ForecastAdjustmentMetric) ||
+      (canary &&
+        metric !== "windDirectionDegrees" &&
+        metric !== "windGustMps" &&
+        metric !== "windSpeedMps") ||
       uniqueMetrics.has(metric as ForecastAdjustmentMetric)
     ) {
       return null;
@@ -1174,6 +1314,7 @@ export class WeatherDashboardController {
   readonly #fetcher: typeof fetch;
   readonly #listeners = new Set<DashboardListener>();
   readonly #storage: UnitPreferenceStorage | null;
+  #forecastAdjustmentModeExplicit: boolean;
   #view: WeatherView;
   #state: DashboardState;
 
@@ -1184,6 +1325,7 @@ export class WeatherDashboardController {
     this.#storage = options.storage === undefined
       ? browserUnitPreferenceStorage()
       : options.storage;
+    this.#forecastAdjustmentModeExplicit = hasForecastAdjustmentModePreference(this.#storage);
     this.#view = options.view ?? "home";
     this.#state = {
       ...EMPTY_STATE,
@@ -1249,6 +1391,7 @@ export class WeatherDashboardController {
     const forecastAdjustmentMode = this.#state.forecastAdjustmentMode === "raw"
       ? "adjusted"
       : "raw";
+    this.#forecastAdjustmentModeExplicit = true;
     persistForecastAdjustmentMode(this.#storage, forecastAdjustmentMode);
     this.patch({ forecastAdjustmentMode });
   }
@@ -1285,6 +1428,11 @@ export class WeatherDashboardController {
       this.patch({
         error: null,
         forecast: response.data,
+        forecastAdjustmentMode: forecastAdjustmentModeForRuntime(
+          this.#state.forecastAdjustmentMode,
+          response.adjustmentRuntime,
+          this.#forecastAdjustmentModeExplicit,
+        ),
         forecastAdjustmentRuntime: response.adjustmentRuntime,
         loading: false,
         selectedSite: responseSite,
@@ -1566,6 +1714,13 @@ export class WeatherDashboardController {
           : dailyPrecipitation.data,
         error: null,
         forecast: forecast?.data ?? this.#state.forecast,
+        forecastAdjustmentMode: forecast === null
+          ? this.#state.forecastAdjustmentMode
+          : forecastAdjustmentModeForRuntime(
+            this.#state.forecastAdjustmentMode,
+            forecast.adjustmentRuntime,
+            this.#forecastAdjustmentModeExplicit,
+          ),
         forecastAdjustmentRuntime: forecast?.adjustmentRuntime ?? this.#state.forecastAdjustmentRuntime,
         loading: false,
         propertySensorLayout: propertySensorLayout?.data ?? this.#state.propertySensorLayout,
@@ -1828,8 +1983,13 @@ function renderForecastAdjustmentToggle(
   }
 
   const available = forecastAdjustmentsAvailable(state);
+  const canary = state.forecastAdjustmentRuntime?.activationMode === "wind_canary";
   // reflect the persisted preference even during regional fallback
   const adjusted = state.forecastAdjustmentMode !== "raw";
+  const adjustedLabel = canary ? "Wind adjusted (canary)" : "Adjusted";
+  const activeTitle = canary
+    ? "Wind-adjusted canary forecast selected; temperature and humidity remain regional"
+    : "Locally adjusted forecast selected";
   const fallbackTitle = adjusted
     ? "Adjusted mode selected; regional values are shown until the local model qualifies"
     : "Regional forecast selected";
@@ -1839,13 +1999,14 @@ function renderForecastAdjustmentToggle(
       class="forecast-adjustment-toggle"
       role="switch"
       aria-checked="${String(adjusted)}"
-      aria-label="Use locally adjusted forecasts"
+      aria-label="${canary ? "Use wind-adjusted canary forecasts" : "Use locally adjusted forecasts"}"
       data-forecast-adjustment-toggle
+      data-forecast-adjustment-activation-mode="${escapeHtml(state.forecastAdjustmentRuntime?.activationMode ?? "disabled")}"
       data-forecast-adjustment-available="${String(available)}"
       data-forecast-adjustment-fallback="${String(!available && adjusted)}"
-      title="${available ? (adjusted ? "Locally adjusted forecast selected" : "Regional forecast selected") : fallbackTitle}"
+      title="${available ? (adjusted ? activeTitle : "Regional forecast selected") : fallbackTitle}"
     >
-      <span class="forecast-adjustment-toggle-mode">${adjusted ? "Adjusted" : "Regional"}</span>
+      <span class="forecast-adjustment-toggle-mode">${adjusted ? adjustedLabel : "Regional"}</span>
       <span class="forecast-adjustment-toggle-track" aria-hidden="true"><span></span></span>
     </button>
   `;
@@ -2519,11 +2680,10 @@ function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   const forecastLow = minimumMetric(state.forecast, "temperatureC", useForecastAdjustments);
   const apparentHigh = maximumMetric(state.current, "apparentTemperatureC");
   const wetBulbHigh = maximumMetric(state.current, "wetBulbGlobeTemperatureC");
-  const windHigh = maximumMetric(
-    [...state.current, ...state.forecast],
-    "windGustMps",
-    useForecastAdjustments,
-  );
+  const windRecords = [...state.current, ...state.forecast];
+  const rawWindHigh = maximumMetric(windRecords, "windGustMps");
+  const adjustedWindHigh = maximumMetric(windRecords, "windGustMps", true);
+  const windHigh = maximumAvailableMetricValues(rawWindHigh, adjustedWindHigh);
   const rainRate = maximumMetric(state.current, "precipitationRateMmPerHour");
   const forecastRain = maximumMetric(state.forecast, "precipitationMm", useForecastAdjustments);
   const pm25 = maximumMetric(state.current, "pm25MicrogramsPerCubicMeter");
@@ -2584,6 +2744,15 @@ function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   return alerts;
 }
 
+// retain the stronger available safety value
+function maximumAvailableMetricValues(
+  first: number | null,
+  second: number | null,
+): number | null {
+  const values = [first, second].filter((value): value is number => value !== null);
+  return values.length === 0 ? null : Math.max(...values);
+}
+
 // label one adjusted metric for readers
 function forecastAdjustmentMetricLabel(metric: ForecastAdjustmentMetric): string {
   switch (metric) {
@@ -2629,8 +2798,10 @@ function forecastAdjustmentSelection(
   record: WeatherRecord,
   units: UnitPreferences,
   useAdjustments: boolean,
+  activationMode: ForecastAdjustmentActivationMode,
 ): ForecastAdjustmentSelectionPresentation {
   const decision = record.adjustment;
+  const canary = activationMode === "wind_canary";
 
   // expose raw and adjusted values only for valid active rows
   if (decision?.state === "active") {
@@ -2652,8 +2823,10 @@ function forecastAdjustmentSelection(
         referenceAt: provenance.referenceAt,
         sourceConfigFingerprint: provenance.sourceConfigFingerprint,
         state: "raw",
-        summary: "Local adjustment turned off",
-        title: "Regional forecast",
+        summary: canary
+          ? "Wind canary turned off. Temperature and humidity remain regional."
+          : "Local adjustment turned off",
+        title: canary ? "Regional" : "Regional forecast",
         values,
       };
     }
@@ -2664,8 +2837,10 @@ function forecastAdjustmentSelection(
       referenceAt: provenance.referenceAt,
       sourceConfigFingerprint: provenance.sourceConfigFingerprint,
       state: "active",
-      summary: `${values.map((value) => value.label).join(", ")} adjusted for this location`,
-      title: "Locally adjusted",
+      summary: canary
+        ? `${values.map((value) => value.label).join(", ")} adjusted. Temperature and humidity remain regional.`
+        : `${values.map((value) => value.label).join(", ")} adjusted for this location`,
+      title: canary ? "Wind adjusted (canary)" : "Locally adjusted",
       values,
     };
   }
@@ -2740,7 +2915,12 @@ function renderForecastAdjustmentStatus(
 
   const selections = hours.map(
     // retain one bounded selected-hour presentation
-    (record) => forecastAdjustmentSelection(record, state.units, useAdjustments),
+    (record) => forecastAdjustmentSelection(
+      record,
+      state.units,
+      useAdjustments,
+      runtime.activationMode ?? "qualified",
+    ),
   );
   const selected = selections[selectedIndex] ?? selections[0];
 
@@ -2775,11 +2955,17 @@ function renderForecastAdjustmentStatus(
           <dt>Raw source</dt><dd data-forecast-adjustment-source>${escapeHtml(selected.rawSource)}</dd>
           <dt>Reference</dt><dd><time data-forecast-adjustment-reference datetime="${escapeHtml(selected.referenceAt)}">${escapeHtml(selected.referenceAt)}</time></dd>
           <dt>Lead band</dt><dd data-forecast-adjustment-lead-band>${escapeHtml(selected.leadBand)}</dd>
+          <dt>Activation mode</dt><dd>${runtime.activationMode === "wind_canary" ? "Wind canary" : "Qualified model"}</dd>
+          <dt>Enabled metrics</dt><dd>${escapeHtml(runtime.enabledMetrics.map(forecastAdjustmentMetricLabel).join(", "))}</dd>
+          ${runtime.expiresAt === null ? "" : `<dt>Canary expires</dt><dd><time datetime="${escapeHtml(runtime.expiresAt)}">${escapeHtml(runtime.expiresAt)}</time></dd>`}
           <dt>Model</dt><dd>robust-hierarchical-median/v1</dd>
           <dt>Bundle hash</dt><dd><code>${escapeHtml(runtime.activeBundle)}</code></dd>
           <dt>Candidate/model hash</dt><dd><code>${escapeHtml(runtime.candidateArtifactSha256 ?? "unavailable")}</code></dd>
-          <dt>Report hash</dt><dd><code>${escapeHtml(runtime.evaluationReportSha256 ?? "unavailable")}</code></dd>
-          <dt>Receipt hash</dt><dd><code>${escapeHtml(runtime.qualificationReceiptSha256 ?? "unavailable")}</code></dd>
+          ${runtime.activationMode === "wind_canary"
+            ? `<dt>Transfer report hash</dt><dd><code>${escapeHtml(runtime.transferReportSha256 ?? "unavailable")}</code></dd>
+              <dt>Authorization hash</dt><dd><code>${escapeHtml(runtime.authorizationSha256 ?? "unavailable")}</code></dd>`
+            : `<dt>Report hash</dt><dd><code>${escapeHtml(runtime.evaluationReportSha256 ?? "unavailable")}</code></dd>
+              <dt>Receipt hash</dt><dd><code>${escapeHtml(runtime.qualificationReceiptSha256 ?? "unavailable")}</code></dd>`}
           <dt>Raw model source hash</dt><dd><code data-forecast-adjustment-source-fingerprint>${escapeHtml(selected.sourceConfigFingerprint)}</code></dd>
         </dl>
       </details>

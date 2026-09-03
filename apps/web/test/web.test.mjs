@@ -396,24 +396,48 @@ function adjustmentRuntime(state = "active", reasonCode = null) {
   // create one fail-raw runtime
   if (state === "disabled") {
     return {
+      activationMode: null,
       activeBundle: null,
+      authorizationSha256: null,
       candidateArtifactSha256: null,
+      enabledMetrics: [],
       evaluationReportSha256: null,
+      expiresAt: null,
       loadedAt: "2026-08-22T05:00:00.000Z",
       qualificationReceiptSha256: null,
       reasonCode,
       state,
+      transferReportSha256: null,
     };
   }
 
   return {
+    activationMode: "qualified",
     activeBundle: adjustmentHashes.bundle,
+    authorizationSha256: null,
     candidateArtifactSha256: adjustmentHashes.candidate,
+    enabledMetrics: ["relativeHumidityPercent", "temperatureC"],
     evaluationReportSha256: adjustmentHashes.report,
+    expiresAt: null,
     loadedAt: "2026-08-22T05:00:00.000Z",
     qualificationReceiptSha256: adjustmentHashes.receipt,
     reasonCode: null,
     state: "active",
+    transferReportSha256: null,
+  };
+}
+
+// create one bounded wind-canary runtime
+function windCanaryRuntime() {
+  return {
+    ...adjustmentRuntime(),
+    activationMode: "wind_canary",
+    authorizationSha256: adjustmentHashes.receipt,
+    enabledMetrics: ["windGustMps", "windSpeedMps"],
+    evaluationReportSha256: null,
+    expiresAt: "2026-09-10T05:00:00.000Z",
+    qualificationReceiptSha256: null,
+    transferReportSha256: adjustmentHashes.report,
   };
 }
 
@@ -450,6 +474,28 @@ function activeAdjustment(recordValue, targetLeadHours = 1) {
     },
     reasonCode: null,
     state: "active",
+  };
+}
+
+// create one wind-only active decision
+function windCanaryAdjustment(recordValue, targetLeadHours = 1) {
+  const qualified = activeAdjustment(recordValue, targetLeadHours);
+  return {
+    activationKind: "wind_transfer_canary",
+    adjustedMetrics: {
+      windGustMps: Math.max(0, recordValue.metrics.windGustMps - 2),
+      windSpeedMps: recordValue.metrics.windSpeedMps + 0.4,
+    },
+    algorithmContractVersion: qualified.algorithmContractVersion,
+    appliedMetrics: ["windGustMps", "windSpeedMps"],
+    authorizationSha256: adjustmentHashes.receipt,
+    candidateArtifactSha256: qualified.candidateArtifactSha256,
+    contractVersion: qualified.contractVersion,
+    leadBand: qualified.leadBand,
+    rawForecastProvenance: qualified.rawForecastProvenance,
+    reasonCode: null,
+    state: "active",
+    transferReportSha256: adjustmentHashes.report,
   };
 }
 
@@ -548,6 +594,58 @@ test("forecast adjustment boundary preserves raw and validates active metadata",
   assert.match(rawHtml, /class="forecast-adjustment-toggle"[\s\S]*aria-checked="false"[\s\S]*data-forecast-adjustment-toggle/u);
   assert.match(rawHtml, /Regional forecast[\s\S]*Local adjustment turned off/u);
   assert.doesNotMatch(rawHtml, /data-forecast-adjustment-state="active"/u);
+});
+
+test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+    metrics: {
+      ...forecastRecord.metrics,
+      windGustMps: 16,
+    },
+  };
+  const parsed = parseForecastRecordsResponse({
+    adjustmentRuntime: windCanaryRuntime(),
+    data: [{ ...raw, adjustment: windCanaryAdjustment(raw) }],
+    site,
+  });
+  const adjustedHtml = renderWeatherDashboard(
+    forecastState(parsed.data, parsed.adjustmentRuntime),
+    "home",
+  );
+  const regionalHtml = renderWeatherDashboard(
+    {
+      ...forecastState(parsed.data, parsed.adjustmentRuntime),
+      forecastAdjustmentMode: "raw",
+    },
+    "forecast",
+  );
+
+  assert.match(adjustedHtml, /Wind adjusted \(canary\)/u);
+  assert.match(
+    adjustedHtml,
+    /temperature and humidity remain regional/iu,
+  );
+  assert.match(adjustedHtml, /High wind/u);
+  assert.doesNotMatch(adjustedHtml, /Wind direction adjusted/u);
+  assert.match(
+    regionalHtml,
+    /forecast-adjustment-toggle-mode">Regional<[\s\S]*Regional[\s\S]*Wind canary turned off/u,
+  );
+  assert.match(regionalHtml, /Canary expires[\s\S]*2026-09-10T05:00:00\.000Z/u);
+
+  const invalid = parseForecastRecordsResponse({
+    adjustmentRuntime: windCanaryRuntime(),
+    data: [{ ...raw, adjustment: activeAdjustment(raw) }],
+    site,
+  });
+  assert.equal(invalid.adjustmentRuntime.state, "disabled");
+  assert.equal(invalid.adjustmentRuntime.reasonCode, "adjustment_error");
+  assert.equal(invalid.data[0].adjustment, undefined);
 });
 
 test("inactive and invalid adjustment metadata remain usable raw", () => {
@@ -1407,6 +1505,61 @@ test("controller loads validated unit preferences and persists changes", () => {
   assert.equal(controller.state.forecastAdjustmentMode, "raw");
   assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "raw");
   assert.equal(new WeatherDashboardController({ storage }).state.forecastAdjustmentMode, "raw");
+});
+
+test("new wind-canary sessions default regional while explicit opt-in persists", async () => {
+  const values = new Map();
+  const storage = {
+    // read one stored choice
+    getItem(key) {
+      return values.get(key) ?? null;
+    },
+    // write one stored choice
+    setItem(key, value) {
+      values.set(key, value);
+    },
+  };
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+
+  // serve one complete forecast view
+  async function fetcher(input) {
+    const url = String(input);
+
+    // serve the current row
+    if (url.includes("/current")) {
+      return Response.json({ data: [record], site });
+    }
+
+    // serve the wind canary
+    if (url.includes("/forecast")) {
+      return Response.json({
+        adjustmentRuntime: windCanaryRuntime(),
+        data: [{ ...raw, adjustment: windCanaryAdjustment(raw) }],
+        site,
+      });
+    }
+
+    return Response.json({ data: [], generatedAt: "2026-09-03T05:00:00.000Z", site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, storage, view: "forecast" });
+  await controller.initialize();
+  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(values.has(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), false);
+
+  controller.toggleForecastAdjustmentMode();
+  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
+  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "adjusted");
+
+  const restored = new WeatherDashboardController({ fetcher, storage, view: "forecast" });
+  await restored.initialize();
+  assert.equal(restored.state.forecastAdjustmentMode, "adjusted");
 });
 
 test("weather URLs use the versioned API and frozen query contracts", () => {

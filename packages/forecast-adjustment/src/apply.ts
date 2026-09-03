@@ -1,14 +1,17 @@
 import {
   FORECAST_ADJUSTMENT_METRICS,
+  FORECAST_ADJUSTMENT_WIND_CANARY_METRICS,
   type CanonicalWeatherMetrics,
   type ForecastAdjustmentActiveDecision,
   type ForecastAdjustmentDecision,
   type ForecastAdjustmentMetric,
   type ForecastAdjustmentRawForecastProvenance,
   type ForecastAdjustmentReasonCode,
+  type ForecastAdjustmentWindCanaryActiveDecision,
   createForecastAdjustmentFailRawDecision,
   forecastLeadBandFor,
   validateForecastAdjustmentActiveDecision,
+  validateForecastAdjustmentWindCanaryActiveDecision,
 } from "@weather/domain";
 
 import {
@@ -23,10 +26,14 @@ import {
   type RuntimeCalendarFingerprint,
 } from "./calendar.js";
 import { deepFreeze, metricBandKey } from "./candidate.js";
-import type { LoadedForecastAdjustmentRuntimeV1 } from "./runtime-loader.js";
+import type {
+  LoadedForecastAdjustmentRuntimeV1,
+  LoadedForecastAdjustmentWindCanaryRuntimeV1,
+} from "./runtime-loader.js";
 
 // accept one unchanged raw v4 forecast row
 export interface ApplyForecastAdjustmentInputV1 {
+  readonly evaluatedAt?: string;
   readonly metrics: CanonicalWeatherMetrics;
   readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
   readonly runtimeFingerprint?: RuntimeCalendarFingerprint;
@@ -34,7 +41,9 @@ export interface ApplyForecastAdjustmentInputV1 {
 
 // apply only exact enabled and in-distribution metrics
 export function applyForecastAdjustment(
-  runtime: LoadedForecastAdjustmentRuntimeV1,
+  runtime:
+    | LoadedForecastAdjustmentRuntimeV1
+    | LoadedForecastAdjustmentWindCanaryRuntimeV1,
   input: ApplyForecastAdjustmentInputV1,
 ): ForecastAdjustmentDecision {
   // preserve raw service when startup loading was disabled
@@ -47,6 +56,27 @@ export function applyForecastAdjustment(
 
   const bundle = runtime.bundle;
   const candidate = bundle.candidate;
+  const windCanary = "artifactKind" in bundle;
+
+  // enforce the canary window for every application after startup
+  if (windCanary) {
+    const evaluatedAt = Date.parse(input.evaluatedAt ?? new Date().toISOString());
+    const activatedAt = Date.parse(bundle.authorization.activatedAt);
+    const expiresAt = Date.parse(bundle.authorization.expiresAt);
+
+    // fail raw outside the authorized half-open interval
+    if (
+      !Number.isFinite(evaluatedAt) ||
+      evaluatedAt < activatedAt ||
+      evaluatedAt >= expiresAt
+    ) {
+      return createForecastAdjustmentFailRawDecision(
+        "disabled",
+        "canary_expired",
+      );
+    }
+  }
+
   let leadBand: ReturnType<typeof forecastLeadBandFor>;
 
   try {
@@ -59,7 +89,12 @@ export function applyForecastAdjustment(
   }
 
   // reject invalid or non-retrieval provenance for the whole row
-  if (!forecastIdentityMatches(candidate.forecastIdentity, input.rawForecastProvenance)) {
+  const servedForecastIdentity = windCanary
+    ? bundle.candidate.servedForecastIdentity
+    : bundle.candidate.forecastIdentity;
+
+  // require the exact live-v4 served identity for either runtime path
+  if (!forecastIdentityMatches(servedForecastIdentity, input.rawForecastProvenance)) {
     return createForecastAdjustmentFailRawDecision(
       "not_applicable",
       input.rawForecastProvenance.cohort === "legacy_v4_retrieval_snapshot"
@@ -78,7 +113,12 @@ export function applyForecastAdjustment(
   const appliedMetrics: ForecastAdjustmentMetric[] = [];
   const failures: CoreAdjustmentApplicationResult["reason"][] = [];
 
-  for (const metric of FORECAST_ADJUSTMENT_METRICS) {
+  const adjustableMetrics = windCanary
+    ? FORECAST_ADJUSTMENT_WIND_CANARY_METRICS
+    : FORECAST_ADJUSTMENT_METRICS;
+
+  // evaluate only the hard-allowlisted canary metrics
+  for (const metric of adjustableMetrics) {
     const rawValue = input.metrics[metric];
 
     // skip absent provider metrics without inventing values
@@ -144,6 +184,41 @@ export function applyForecastAdjustment(
       "not_applicable",
       mapCoreFailure(firstFailure),
     );
+  }
+
+  // emit honest canary evidence identities without a qualification receipt
+  if (windCanary) {
+    const canaryAppliedMetrics = appliedMetrics.filter(
+      (metric): metric is (typeof FORECAST_ADJUSTMENT_WIND_CANARY_METRICS)[number] =>
+        metric === "windDirectionDegrees" ||
+        metric === "windGustMps" ||
+        metric === "windSpeedMps",
+    );
+
+    // reject impossible non-wind accumulation before response creation
+    if (canaryAppliedMetrics.length !== appliedMetrics.length) {
+      return createForecastAdjustmentFailRawDecision(
+        "not_applicable",
+        "metric_not_enabled",
+      );
+    }
+
+    const decision: ForecastAdjustmentWindCanaryActiveDecision = {
+      activationKind: "wind_transfer_canary",
+      adjustedMetrics,
+      algorithmContractVersion: candidate.algorithmContractVersion,
+      appliedMetrics: canaryAppliedMetrics,
+      authorizationSha256: bundle.authorization.authorizationSha256,
+      candidateArtifactSha256: candidate.candidateArtifactSha256,
+      contractVersion: "forecast-adjustment-decision/v1",
+      leadBand,
+      rawForecastProvenance: input.rawForecastProvenance,
+      reasonCode: null,
+      state: "active",
+      transferReportSha256: bundle.transferReport.transferReportSha256,
+    };
+    validateForecastAdjustmentWindCanaryActiveDecision(decision);
+    return deepFreeze(decision);
   }
 
   const decision: ForecastAdjustmentActiveDecision = {

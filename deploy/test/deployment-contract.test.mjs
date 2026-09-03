@@ -483,6 +483,10 @@ test("container commands match the API, worker, and web runtime contracts", () =
     "/opt/weather/config/sites/ballydidean.json",
   );
   assert.equal(compose.services.api.environment.WEATHER_API_PORT, "3001");
+  assert.equal(
+    compose.services.api.environment.WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH,
+    "0",
+  );
   assert.equal(compose.services.worker.environment.WEATHER_DATABASE_USER, "weather_ingest");
   assert.equal(compose.services.web.environment.WEATHER_RELEASE, "2026.08.22-1");
   assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/api\/v1\/health/u);
@@ -523,6 +527,31 @@ test("server image bakes only reviewed forecast adjustment config", () => {
   assert.equal(
     registry,
     '{"activeBundle":null,"contractVersion":"forecast-adjustment-registry/v1"}\n',
+  );
+  const windCanaryRegistry = JSON.parse(
+    read("config/forecast-adjustments/ballydidean-wind-canary.json"),
+  );
+  assert.equal(
+    windCanaryRegistry.contractVersion,
+    "forecast-adjustment-wind-canary-registry/v1",
+  );
+  assert.notEqual(windCanaryRegistry.activeBundle, null);
+  const windCanaryBundle = JSON.parse(
+    read(join(
+      "config/forecast-adjustments/ballydidean",
+      windCanaryRegistry.activeBundle.path,
+    )),
+  );
+  assert.equal(
+    windCanaryBundle.artifactKind,
+    "wind_transfer_canary_runtime_bundle",
+  );
+  assert.deepEqual(
+    [...new Set(windCanaryBundle.candidate.enabledMetricBands.map(
+      // retain the exact deployed metric allowlist
+      (pair) => pair.metric,
+    ))].sort(),
+    ["windGustMps", "windSpeedMps"],
   );
   assert.match(
     serverStage,
