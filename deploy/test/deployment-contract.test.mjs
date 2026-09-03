@@ -1172,7 +1172,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
   const composeIntegration = read("deploy/test/compose.integration.test.mjs");
   assert.match(composeIntegration, /"git",[\s\n]*\["archive"/u);
-  assert.match(composeIntegration, /weather\.test\.git-head/u);
+  assert.match(composeIntegration, /baselineServerRelease = "2026\.09\.01-9"/u);
+  assert.match(composeIntegration, /weather\.test\.baseline/u);
   assert.match(composeIntegration, /0009_forecast_anchor_records\.sql/u);
   assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(

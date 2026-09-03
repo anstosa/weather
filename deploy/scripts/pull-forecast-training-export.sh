@@ -97,7 +97,13 @@ fi
 rm -f -- "$archive"
 chmod -R go-rwx "$package_root"
 sync -f "$package_root/manifest.json" "$package_root/manifest.sha256"
-mv --no-copy --no-target-directory --update=none-fail -- "$package_root" "$destination"
+mv --no-copy --no-target-directory --update=none -- "$package_root" "$destination"
+
+# reject a destination won by another publisher
+if [[ -e "$package_root" || -L "$package_root" ]]; then
+  die "verified forecast-training snapshot publication raced"
+fi
+
 sync -f "$data_root"
 trap - EXIT
 rm -rf -- "$partial_root"

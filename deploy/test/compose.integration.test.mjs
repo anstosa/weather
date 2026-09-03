@@ -12,6 +12,7 @@ const executeFile = promisify(execFile);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const deployRoot = join(repoRoot, "deploy");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
+const baselineServerRelease = "2026.09.01-9";
 const expectedTrainingExportAuthority = {
   databasePrivileges: ["CONNECT"],
   executableFunctions: [],
@@ -174,12 +175,15 @@ async function buildReleaseImage(directory, baseImage, targetImage, release, mig
   );
 }
 
-// build the exact committed baseline server image
-async function buildGitHeadServerImage(directory, targetImage) {
-  const buildRoot = join(directory, "git-head-server");
-  const archivePath = join(directory, "git-head-server.tar");
+// build the exact pre-adjustment production server image
+async function buildBaselineServerImage(directory, targetImage) {
+  const buildRoot = join(directory, "baseline-server");
+  const archivePath = join(directory, "baseline-server.tar");
   const revision = (
-    await executeFile("git", ["rev-parse", "HEAD"], { cwd: repoRoot, timeout: 30_000 })
+    await executeFile("git", ["rev-parse", `${baselineServerRelease}^{commit}`], {
+      cwd: repoRoot,
+      timeout: 30_000,
+    })
   ).stdout.trim();
   await mkdir(buildRoot);
   await executeFile(
@@ -200,7 +204,7 @@ async function buildGitHeadServerImage(directory, targetImage) {
       "--target",
       "server",
       "--label",
-      `weather.test.git-head=${revision}`,
+      `weather.test.baseline=${revision}`,
       "--tag",
       targetImage,
       buildRoot,
@@ -481,7 +485,7 @@ test(
       await provisionSecrets(secretsRoot);
       await writeOverride(override, secretsRoot);
       await compose(environment, override, "up", "--detach", "--build", "--wait");
-      const previousGitHead = await buildGitHeadServerImage(directory, previousServerImage);
+      const baselineRevision = await buildBaselineServerImage(directory, previousServerImage);
       await buildReleaseImage(
         directory,
         environment.WEATHER_LOCAL_SERVER_IMAGE,
@@ -527,8 +531,8 @@ test(
         assert.notEqual(await imageId(previousImage), await imageId(targetImage));
       }
       assert.equal(
-        await imageLabel(previousServerImage, "weather.test.git-head"),
-        previousGitHead,
+        await imageLabel(previousServerImage, "weather.test.baseline"),
+        baselineRevision,
       );
       await executeFile("docker", [
         "run",

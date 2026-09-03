@@ -1392,7 +1392,7 @@ test(
     skip: runDeployIntegration ? false : "set WEATHER_RUN_DEPLOY_INTEGRATION=1",
     timeout: 300_000,
   },
-  async () => {
+  async (context) => {
     const directory = await mkdtemp(join(tmpdir(), "weather-training-database-smoke-"));
     let server;
     let pool;
@@ -1404,23 +1404,51 @@ test(
       await seedPoisonObservation(pool);
       const harness = await installDatabaseExportHarness(directory);
       const archive = join(directory, "database-export.tar.gz");
+      const namespaceAvailable = spawnSync("unshare", ["-Ur", "true"], {
+        encoding: "utf8",
+      }).status === 0;
+      const sudoAvailable = spawnSync("sudo", ["--non-interactive", "true"], {
+        encoding: "utf8",
+      }).status === 0;
+
+      // require one isolated privileged launcher
+      if (!namespaceAvailable && !sudoAvailable) {
+        context.skip("a privileged export launcher is unavailable");
+        return;
+      }
+
+      const exportEnvironment = {
+        ...process.env,
+        PATH: `${harness.binaries}:${process.env.PATH}`,
+        WEATHER_TEST_DOCKER_REAL: database.dockerExecutable,
+        WEATHER_TEST_EXPORT_SECRET: database.trainingSecret,
+        WEATHER_TEST_POSTGRES_CONTAINER: server.name,
+      };
+      const exportCommand = namespaceAvailable ? "unshare" : "sudo";
+      const exportArguments = namespaceAvailable
+        ? [
+            "-Ur",
+            join(harness.scripts, "forecast-training-export.sh"),
+            "2026-08-23",
+            "2026-08-24",
+          ]
+        : [
+            "--non-interactive",
+            "/usr/bin/env",
+            `PATH=${exportEnvironment.PATH}`,
+            `WEATHER_TEST_DOCKER_REAL=${exportEnvironment.WEATHER_TEST_DOCKER_REAL}`,
+            `WEATHER_TEST_EXPORT_SECRET=${exportEnvironment.WEATHER_TEST_EXPORT_SECRET}`,
+            `WEATHER_TEST_POSTGRES_CONTAINER=${exportEnvironment.WEATHER_TEST_POSTGRES_CONTAINER}`,
+            join(harness.scripts, "forecast-training-export.sh"),
+            "2026-08-23",
+            "2026-08-24",
+          ];
       const exported = spawnSync(
-        "unshare",
-        [
-          "-Ur",
-          join(harness.scripts, "forecast-training-export.sh"),
-          "2026-08-23",
-          "2026-08-24",
-        ],
+        exportCommand,
+        exportArguments,
         {
           cwd: directory,
-          env: {
-            ...process.env,
-            PATH: `${harness.binaries}:${process.env.PATH}`,
-            WEATHER_TEST_DOCKER_REAL: database.dockerExecutable,
-            WEATHER_TEST_EXPORT_SECRET: database.trainingSecret,
-            WEATHER_TEST_POSTGRES_CONTAINER: server.name,
-          },
+          env: exportEnvironment,
           maxBuffer: 32 * 1024 * 1024,
         },
       );
@@ -1640,7 +1668,8 @@ test("remote contracts expose no caller-selected database, source, SQL, or path"
   );
   assert.match(joined, /LIMIT 4000001/u);
   assert.ok(files[0].indexOf("manifest_hash=$(node") < files[0].indexOf("tar --create"));
-  assert.match(files[1], /mv --no-copy --no-target-directory --update=none-fail/u);
+  assert.match(files[1], /mv --no-copy --no-target-directory --update=none/u);
+  assert.match(files[1], /forecast-training snapshot publication raced/u);
   assert.doesNotMatch(joined, /--(?:database-url|source-key|sql|output)\b/u);
   assert.doesNotMatch(joined, /eval\s/u);
 
@@ -1656,15 +1685,21 @@ test("remote contracts expose no caller-selected database, source, SQL, or path"
 
   // keep evidence and export keys outside application surfaces
   for (const surface of forbiddenSurfaces) {
-    const result = spawnSync("rg", [
+    const result = spawnSync("git", [
+      "grep",
+      "--extended-regexp",
       "weather_training_export_password|\\.weather-data|model-evidence",
+      "--",
       surface,
     ], { cwd: repoRoot, encoding: "utf8" });
     assert.equal(result.status, 1, `${surface} gained export evidence or key access`);
   }
 
-  const workerSecrets = spawnSync("rg", [
+  const workerSecrets = spawnSync("git", [
+    "grep",
+    "--extended-regexp",
     "weather_training_export_password|model-evidence",
+    "--",
     "apps/worker",
   ], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(workerSecrets.status, 1, "apps/worker gained export key or evidence-store access");
