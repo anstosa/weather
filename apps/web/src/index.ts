@@ -1828,7 +1828,11 @@ function renderForecastAdjustmentToggle(
   }
 
   const available = forecastAdjustmentsAvailable(state);
-  const adjusted = available && state.forecastAdjustmentMode !== "raw";
+  // reflect the persisted preference even during regional fallback
+  const adjusted = state.forecastAdjustmentMode !== "raw";
+  const fallbackTitle = adjusted
+    ? "Adjusted mode selected; regional values are shown until the local model qualifies"
+    : "Regional forecast selected";
   return `
     <button
       type="button"
@@ -1838,7 +1842,8 @@ function renderForecastAdjustmentToggle(
       aria-label="Use locally adjusted forecasts"
       data-forecast-adjustment-toggle
       data-forecast-adjustment-available="${String(available)}"
-      ${available ? "" : 'disabled title="Local adjustments are unavailable"'}
+      data-forecast-adjustment-fallback="${String(!available && adjusted)}"
+      title="${available ? (adjusted ? "Locally adjusted forecast selected" : "Regional forecast selected") : fallbackTitle}"
     >
       <span class="forecast-adjustment-toggle-mode">${adjusted ? "Adjusted" : "Regional"}</span>
       <span class="forecast-adjustment-toggle-track" aria-hidden="true"><span></span></span>
@@ -2708,9 +2713,20 @@ function renderForecastAdjustmentStatus(
 ): string {
   const runtime = state.forecastAdjustmentRuntime ?? null;
 
-  // preserve the initial inactive product exactly
-  if (runtime === null || (runtime.state === "disabled" && runtime.reasonCode === "registry_inactive")) {
+  // wait for the forecast runtime response
+  if (runtime === null) {
     return "";
+  }
+
+  // explain the honest regional fallback for an adjusted preference
+  if (runtime.state === "disabled" && runtime.reasonCode === "registry_inactive") {
+    return useAdjustments
+      ? `
+        <aside class="forecast-adjustment-status forecast-adjustment-status-raw" data-forecast-adjustment-status data-forecast-adjustment-state="raw" data-forecast-adjustment-reason="registry_inactive">
+          <p role="status"><strong>Regional fallback</strong><span>Adjusted mode will apply automatically after the local model qualifies.</span></p>
+        </aside>
+      `
+      : "";
   }
 
   // keep degraded adjustment separate from raw forecast availability

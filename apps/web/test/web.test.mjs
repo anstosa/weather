@@ -569,9 +569,10 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
   );
   assert.match(
     inactiveHtml,
-    /class="forecast-adjustment-toggle"[\s\S]*aria-checked="false"[\s\S]*data-forecast-adjustment-available="false"[\s\S]*disabled/u,
+    /class="forecast-adjustment-toggle"[\s\S]*aria-checked="true"[\s\S]*data-forecast-adjustment-available="false"[\s\S]*data-forecast-adjustment-fallback="true"/u,
   );
-  assert.doesNotMatch(inactiveHtml, /forecast-adjustment-status|Locally adjusted/u);
+  assert.doesNotMatch(inactiveHtml, /\sdisabled(?:\s|>)/u);
+  assert.match(inactiveHtml, /Regional fallback[\s\S]*Adjusted mode will apply automatically after the local model qualifies/u);
 
   const invalid = parseForecastRecordsResponse({
     adjustmentRuntime: adjustmentRuntime(),

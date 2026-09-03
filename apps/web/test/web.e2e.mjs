@@ -955,12 +955,22 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
       fixture.state.adjustmentMode = "inactive";
       await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
       assert.equal(await page.locator(".forecast-chart").count(), 8);
-      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 1);
       assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
       const inactiveToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
+      assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
+      assert.equal(await inactiveToggle.getAttribute("data-forecast-adjustment-fallback"), "true");
+      assert.equal(await inactiveToggle.isEnabled(), true);
+      assert.match(await inactiveToggle.textContent() ?? "", /Adjusted/u);
+      assert.match(
+        await page.locator('[data-forecast-adjustment-reason="registry_inactive"]').textContent() ?? "",
+        /Regional fallback[\s\S]*Adjusted mode will apply automatically/u,
+      );
+      await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "false");
-      assert.equal(await inactiveToggle.isDisabled(), true);
       assert.match(await inactiveToggle.textContent() ?? "", /Regional/u);
+      await inactiveToggle.click();
+      assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
 
       // prove a verified bundle labels prominent adjusted values
       fixture.state.adjustmentMode = "active";
