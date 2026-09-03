@@ -1045,7 +1045,13 @@ test("yolo deployment skips clone, capacity, and deployment-time backup gates", 
   assert.match(prepareFunction, /resolve_arm64_image/u);
   assert.match(prepareFunction, /compose config --quiet/u);
   assert.match(prepareFunction, /compose pull/u);
+  assert.match(yoloFunction, /start_postgres "\$target"/u);
   assert.match(yoloFunction, /compose run --rm migration/u);
+  assert.equal(
+    yoloFunction.indexOf('start_postgres "$target"') <
+      yoloFunction.indexOf("compose run --rm migration"),
+    true,
+  );
   assert.match(yoloFunction, /start_exact_release/u);
   assert.match(yoloFunction, /record_release_success/u);
   assert.doesNotMatch(

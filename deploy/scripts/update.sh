@@ -730,7 +730,7 @@ yolo_release() {
   require_deployment_secrets
 
   printf 'Applying release %s directly...\n' "$release"
-  WEATHER_ENV_FILE=$target compose up -d --no-deps --wait postgres
+  start_postgres "$target"
   WEATHER_ENV_FILE=$target compose run --rm migration
   apply_runtime_database_acl "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)"
   verify_runtime_database_acl "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)"
