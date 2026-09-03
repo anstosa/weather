@@ -43,6 +43,7 @@
     "weather:backfill": "npm run weather:backfill --workspace @weather/worker --",
     "weather:forecast-adjustment:bundle": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-bundle-cli.js",
     "weather:forecast-adjustment:evaluate": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evaluate-cli.js",
+    "weather:forecast-adjustment:evaluate-retained": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evaluate-retained-cli.js",
     "weather:forecast-adjustment:evidence": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evidence-cli.js",
     "weather:public-stations:backfill": "npm run weather:public-stations:backfill --workspace @weather/worker --",
     "weather:tides:backfill": "npm run weather:tides:backfill --workspace @weather/worker --",

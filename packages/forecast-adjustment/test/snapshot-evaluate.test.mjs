@@ -148,13 +148,16 @@ async function createShortSnapshot(root, mutateManifest = () => {}) {
 }
 
 // build a long empty-grid snapshot
-async function createLongSparseSnapshot(root) {
+async function createLongSparseSnapshot(
+  root,
+  { envelopeDays = 402, liveV4DateCount = 330 } = {},
+) {
   const memberBytes = Buffer.from("compressed-fixture-bytes");
   const fromLocalDate = "2025-06-28";
   const members = [];
 
-  // create one target-site member on every epoch date
-  for (let index = 0; index < 402; index += 1) {
+  // create one station member on every epoch date
+  for (let index = 0; index < envelopeDays; index += 1) {
     const localDate = addDays(fromLocalDate, index);
     const memberPath =
       `members/${localDate}/station-hour/ballydidean-ecowitt.jsonl.gz`;
@@ -170,7 +173,26 @@ async function createLongSparseSnapshot(root) {
       sizeBytes: memberBytes.byteLength,
       stationKey: "ballydidean-ecowitt",
     });
+
+    // add only truthful served-cohort date coverage
+    if (index < liveV4DateCount) {
+      members.push({
+        localDate,
+        maxValidAt: `${localDate}T23:00:00.000Z`,
+        minValidAt: `${localDate}T00:00:00.000Z`,
+        path: `members/${localDate}/legacy-v4-retrieval/open-meteo.jsonl.gz`,
+        plaintextBytes: 100,
+        recordKind: "legacy-v4-retrieval",
+        rowCount: 24,
+        sha256: sha256(memberBytes),
+        sizeBytes: memberBytes.byteLength,
+        stationKey: null,
+      });
+    }
   }
+
+  // preserve canonical member order
+  members.sort((left, right) => left.path.localeCompare(right.path));
 
   const manifest = {
     ...provenance,
@@ -203,8 +225,8 @@ async function createLongSparseSnapshot(root) {
     siteTimezone: "America/Los_Angeles",
     sourceIdentities: [],
     stationMetricCoverage: stationMetricCoverage(4),
-    toLocalDate: addDays(fromLocalDate, 401),
-    totalRowCount: 402 * 24,
+    toLocalDate: addDays(fromLocalDate, envelopeDays - 1),
+    totalRowCount: members.reduce((sum, member) => sum + member.rowCount, 0),
     transaction: {
       idleInTransactionSessionTimeout: "30s",
       isolationLevel: "repeatable read",
@@ -247,9 +269,8 @@ test("snapshot evaluation verifies all member hashes then emits deterministic in
   assert.equal(result.state, "insufficient_data");
   assert.equal(result.exitCode, 2);
   assert.deepEqual(result.failedGates, [
-    "ecowitt_complete_local_dates",
-    "ecowitt_metric_matches",
     "epoch_402_local_dates",
+    "network_330_local_dates",
   ]);
   assert.ok(
     result.accessTrace.indexOf("member_metadata_verified") <
@@ -271,15 +292,30 @@ test("snapshot evaluation fails before reporting when a member is substituted", 
   );
 });
 
-test("snapshot evaluation proves sparse Ecowitt metric dates despite a long member grid", async () => {
+test("snapshot evaluation does not treat sparse Ecowitt coverage as a hard veto", async () => {
   const root = await mkdtemp(join(tmpdir(), "weather-snapshot-sparse-"));
   const snapshot = await createLongSparseSnapshot(root);
+  await assert.rejects(
+    evaluateForecastAdjustmentSnapshot({
+      outputPath: join(root, ".weather-models", "run-1"),
+      snapshotPath: snapshot,
+    }),
+    /durable external retention/u,
+  );
+});
+
+test("snapshot evaluation requires 330 live-v4 dates inside a long envelope", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-snapshot-live-v4-sparse-"));
+  const snapshot = await createLongSparseSnapshot(root, {
+    envelopeDays: 450,
+    liveV4DateCount: 7,
+  });
   const result = await evaluateForecastAdjustmentSnapshot({
     outputPath: join(root, ".weather-models", "run-1"),
     snapshotPath: snapshot,
   });
   assert.equal(result.state, "insufficient_data");
-  assert.deepEqual(result.failedGates, ["ecowitt_complete_local_dates"]);
+  assert.deepEqual(result.failedGates, ["network_330_local_dates"]);
 });
 
 test("snapshot evaluation rejects station metric coverage schema drift", async () => {

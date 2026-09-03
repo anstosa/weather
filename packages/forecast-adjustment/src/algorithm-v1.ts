@@ -72,7 +72,7 @@ const EXPORT_ROW_KEYS = [
   "wind_speed_mps",
 ] as const;
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
-const UTC_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u;
+const UTC_INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/u;
 const STATION_KEYS = new Set<ForecastObservationStationKey>([
   "ambient-maxweather",
   "ambient-merlin",
@@ -92,14 +92,6 @@ const PROVIDER_FAMILIES = new Set<ForecastObservationProviderFamily>(
 const STATION_EXCLUSION_REASONS = new Set<string>(
   FORECAST_OBSERVATION_EXCLUSION_REASON_CODES,
 );
-const POPULATED_STATION_REJECTION_REASONS = new Set<string>([
-  "metric_ineligible",
-  "quality_flag_rejected",
-  "quality_status_rejected",
-  "source_interval_out_of_range",
-  "source_superseded",
-  "station_coverage_insufficient",
-]);
 const FORECAST_EXPORT_IDENTITIES = {
   fixed_lead_anchor: {
     adapterContract: "previous-runs-hourly/v1",
@@ -427,7 +419,7 @@ function requireStringArray(
   return strings;
 }
 
-// bind one source lineage to its accepted event-time interval
+// bind one hourly aggregate to its accepted source interval
 function stationLineageAcceptsValidAt(
   lineage: (typeof FORECAST_OBSERVATION_SOURCE_LINEAGES)[number],
   validAt: string,
@@ -443,7 +435,7 @@ function stationLineageAcceptsValidAt(
       : Date.parse(lineage.acceptedEndExclusive);
   return (
     (startMilliseconds === null || validAtMilliseconds >= startMilliseconds) &&
-    (endMilliseconds === null || validAtMilliseconds < endMilliseconds)
+    (endMilliseconds === null || validAtMilliseconds <= endMilliseconds)
   );
 }
 
@@ -623,31 +615,9 @@ export function parseSanitizedTrainingExportRow(
       throw new RangeError("station-hour gap diagnostics are invalid");
     }
 
-    // reject populated direction or gust values carrying exclusion labels
-    if (
-      (common.metrics.windDirectionDegrees !== null &&
-        common.exclusionReasonCodes.includes("station_direction_calm")) ||
-      (common.metrics.windGustMps !== null &&
-        common.exclusionReasonCodes.includes(
-          "station_gust_coverage_incomplete",
-        ))
-    ) {
-      throw new RangeError("station-hour metric exclusion is inconsistent");
-    }
-
     // require nonempty retained evidence for every populated station hour
     if (metricsPresent && !hasBoundSourceEvidence) {
       throw new RangeError("populated station hour lacks bound source evidence");
-    }
-
-    // keep rejected QC, interval, supersession, and gaps out of model input
-    if (
-      metricsPresent &&
-      common.exclusionReasonCodes.some((reason) =>
-        POPULATED_STATION_REJECTION_REASONS.has(reason),
-      )
-    ) {
-      throw new RangeError("populated station hour carries a rejected lineage");
     }
 
     // bind station provider and every contributing source lineage

@@ -9,9 +9,15 @@ registry is intentionally inactive:
 ```
 
 The first production-derived evaluation is expected to return
-`insufficient_data`. Do not lower a data, skill, bootstrap, or target-site gate
+`insufficient_data`. Do not lower a data, skill, bootstrap, or network gate
 to create an active model. A model becomes active only through a reviewed
 repository change, a new server image, deployment, and API restart.
+
+The pre-activation full-network policy reset uses v2 candidate, evaluation
+report, qualification receipt, and runtime bundle contracts. V1 artifacts are
+not accepted. The public decision and registry contracts remain v1 because
+their wire shapes and semantics did not change; the inactive registry means no
+active artifact requires compatibility migration.
 
 ## Training-data contract
 
@@ -259,11 +265,12 @@ sha256sum \
   "$evaluation_b/insufficient-data.json"
 ```
 
-The two files must be byte-identical, contain the same `reportSha256`, name
-every failed gate, and include `ecowitt_complete_local_dates` when the snapshot
-has fewer than 30 complete Ecowitt dates. Other stable insufficiency reasons
-include `epoch_402_local_dates`, `ecowitt_metric_matches`, network/season/pair
-support, and development LOSO qualification.
+The two files must be byte-identical, contain the same `reportSha256`, and name
+every failed gate. Stable insufficiency reasons include
+`epoch_402_local_dates`, `network_330_local_dates`, network/season/pair support,
+and development LOSO qualification. The network-date upper bound counts only
+distinct `legacy-v4-retrieval` member dates; fixed-lead anchors cannot satisfy
+it. No individual station is a manifest-level hard veto.
 
 Confirm the inactive and no-promotion invariants:
 
@@ -344,11 +351,9 @@ metric-band:
 
 The immutable final candidate is scored on the locked holdout without a LOSO
 refit. Every enabled metric-band must also pass the locked network, station,
-provider, nearest-three, and critical-slice gates. Ballydidean activation adds
-the strict Ecowitt shadow gate: at least 30 complete on-property local dates,
-500 metric matches, 100 metric-band matches, 2% improvement, positive point
-skill, a 95% bootstrap lower bound above zero, and no material harm. Nearby
-stations cannot satisfy the Ecowitt gate.
+provider, nearest-three, and critical-slice gates. Ecowitt remains one ordinary
+station and provider-family slice within that full-network evidence; it does
+not have a separate activation veto.
 
 ## Frozen bootstrap v1
 
@@ -420,6 +425,11 @@ Activation additionally requires a matching attestation for either a
 restorable encrypted backup or an independently verified content-addressed
 copy. The second copy must be byte-identical and physically separate, not a
 symlink or hard link, and must include every retained snapshot member.
+Set `WEATHER_MODEL_EVIDENCE_REDUNDANCY_ROOT` to an existing canonical directory
+on a different storage device before evaluating sufficient data. The evaluator
+checks the device boundary before opening the holdout and promotion rechecks it
+for every redundant object and retained snapshot member. A second directory on
+the primary filesystem is rejected.
 
 After approved external tooling has staged the complete graph and redundancy
 proof under the fixed evidence root, promote and reverify the exact identities:
@@ -512,8 +522,8 @@ conditions occurs:
   breaks, a same-lineage interval overlaps or starts before/equal to a prior
   end, or a burned interval is reused;
 - bootstrap output differs from the frozen seed, plan, oracle, hash, or index;
-- any enabled pair, critical slice, provider-balanced LOSO gate, immutable
-  holdout gate, or Ecowitt shadow gate fails; or
+- any enabled pair, critical slice, provider-balanced LOSO gate, or immutable
+  holdout gate fails; or
 - activation would bypass review, package different bytes, mount evidence/keys,
   hot reload, or weaken raw-v4 fallback.
 

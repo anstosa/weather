@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
-  type ForecastAdjustmentCandidateV1,
+  type ForecastAdjustmentCandidateV2,
   canonicalizeJson,
   type JsonValue,
 } from "@weather/domain";
@@ -108,7 +108,7 @@ export interface GuardedHoldoutAccessInputV1 {
   readonly afterDurableAppendBeforeLockRelease?: (
     marker: HoldoutAccessMarkerV1,
   ) => void | Promise<void>;
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly directory?: string;
   readonly lineage: HoldoutLineageV1;
   readonly now?: () => string;
@@ -124,7 +124,7 @@ export function createHoldoutLineageId(lineage: HoldoutLineageV1): string {
 
 // derive lineage only from verified immutable candidate evidence
 export function deriveHoldoutLineage(
-  candidate: ForecastAdjustmentCandidateV1,
+  candidate: ForecastAdjustmentCandidateV2,
 ): HoldoutLineageV1 {
   const identity = candidate.forecastIdentity;
   const provenance = candidate.trainingProvenance;
@@ -620,7 +620,7 @@ export async function isHoldoutLedgerLocked(directory?: string): Promise<boolean
 // create one marker from preregistered evidence
 function createHoldoutAccessMarker(input: {
   readonly accessedAtUtc: string;
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly lineage: HoldoutLineageV1;
   readonly predecessorSha256: string;
   readonly preregistration: ForecastAdjustmentPreregistrationV1;

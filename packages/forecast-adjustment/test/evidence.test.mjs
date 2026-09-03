@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
   copyFile,
-  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -26,6 +25,7 @@ import { createQualifiedFixture } from "./evidence-fixtures.mjs";
 
 test("evidence promotion requires and verifies an independent exact copy", async () => {
   const evidenceRoot = await mkdtemp(join(tmpdir(), "weather-evidence-"));
+  const redundancyRoot = await mkdtemp("/dev/shm/weather-evidence-redundancy-");
   const triple = await createQualifiedFixture(evidenceRoot);
   await stageEvidenceRedundancyAttestation(evidenceRoot, triple.attestation);
 
@@ -40,7 +40,7 @@ test("evidence promotion requires and verifies an independent exact copy", async
   ]) {
     await stageForecastAdjustmentEvidenceObject(evidenceRoot, kind, value);
     await stageRedundantEvidenceObject(
-      evidenceRoot,
+      redundancyRoot,
       "independent_content_addressed_copy",
       kind,
       value,
@@ -53,35 +53,26 @@ test("evidence promotion requires and verifies an independent exact copy", async
     qualificationReceiptSha256:
       triple.qualificationReceipt.qualificationReceiptSha256,
   };
-  const candidateName = `sha256-${hashes.candidateArtifactSha256}.json`;
-  const primaryCandidate = join(
-    evidenceRoot,
-    "staging",
-    "candidate",
-    candidateName,
-  );
-  const redundantCandidate = join(
-    evidenceRoot,
-    "independent-copy",
-    "candidate",
-    candidateName,
-  );
-  await rm(redundantCandidate);
-  await link(primaryCandidate, redundantCandidate);
   await assert.rejects(
     promoteForecastAdjustmentEvidenceAtRoot(evidenceRoot, hashes),
-    /hard-link/u,
+    /distinct storage device/u,
   );
-  await rm(redundantCandidate);
-  await copyFile(primaryCandidate, redundantCandidate);
   assert.equal(
-    (await promoteForecastAdjustmentEvidenceAtRoot(evidenceRoot, hashes)).state,
+    (
+      await promoteForecastAdjustmentEvidenceAtRoot(
+        evidenceRoot,
+        hashes,
+        redundancyRoot,
+      )
+    ).state,
     "promoted",
   );
   assert.deepEqual(
-    await verifyForecastAdjustmentEvidenceAtRoot(evidenceRoot, {
-      qualificationReceiptSha256: hashes.qualificationReceiptSha256,
-    }),
+    await verifyForecastAdjustmentEvidenceAtRoot(
+      evidenceRoot,
+      { qualificationReceiptSha256: hashes.qualificationReceiptSha256 },
+      redundancyRoot,
+    ),
     {
       ...hashes,
       contractVersion: "forecast-adjustment-evidence-result/v1",
@@ -93,17 +84,20 @@ test("evidence promotion requires and verifies an independent exact copy", async
     evidenceRoot,
     bundleRoot,
     hashes,
+    redundancyRoot,
   );
   assert.equal(
     staged.outputPath,
     join(bundleRoot, `sha256-${staged.bundleSha256}.json`),
   );
-  assert.match(await readFile(staged.outputPath, "utf8"), /runtime-bundle\/v1/u);
+  assert.match(await readFile(staged.outputPath, "utf8"), /runtime-bundle\/v2/u);
   await rm(join(evidenceRoot, "ledger.jsonl"));
   await assert.rejects(
-    verifyForecastAdjustmentEvidenceAtRoot(evidenceRoot, {
-      qualificationReceiptSha256: hashes.qualificationReceiptSha256,
-    }),
+    verifyForecastAdjustmentEvidenceAtRoot(
+      evidenceRoot,
+      { qualificationReceiptSha256: hashes.qualificationReceiptSha256 },
+      redundancyRoot,
+    ),
     /ledger/u,
   );
 });
@@ -127,6 +121,7 @@ test("sufficient local training requires durable retention", () => {
 
 test("evidence reads reject an intermediate directory symlink outside the root", async () => {
   const evidenceRoot = await mkdtemp(join(tmpdir(), "weather-evidence-link-"));
+  const redundancyRoot = await mkdtemp("/dev/shm/weather-evidence-link-redundancy-");
   const outsideRoot = await mkdtemp(join(tmpdir(), "weather-evidence-outside-"));
   const triple = await createQualifiedFixture(evidenceRoot);
   await stageEvidenceRedundancyAttestation(evidenceRoot, triple.attestation);
@@ -143,7 +138,7 @@ test("evidence reads reject an intermediate directory symlink outside the root",
   ]) {
     await stageForecastAdjustmentEvidenceObject(evidenceRoot, kind, value);
     await stageRedundantEvidenceObject(
-      evidenceRoot,
+      redundancyRoot,
       "independent_content_addressed_copy",
       kind,
       value,
@@ -164,12 +159,16 @@ test("evidence reads reject an intermediate directory symlink outside the root",
   const ledgerBefore = await readFile(join(evidenceRoot, "ledger.jsonl"), "utf8");
 
   await assert.rejects(
-    promoteForecastAdjustmentEvidenceAtRoot(evidenceRoot, {
-      candidateArtifactSha256: triple.candidate.candidateArtifactSha256,
-      evaluationReportSha256: triple.evaluationReport.evaluationReportSha256,
-      qualificationReceiptSha256:
-        triple.qualificationReceipt.qualificationReceiptSha256,
-    }),
+    promoteForecastAdjustmentEvidenceAtRoot(
+      evidenceRoot,
+      {
+        candidateArtifactSha256: triple.candidate.candidateArtifactSha256,
+        evaluationReportSha256: triple.evaluationReport.evaluationReportSha256,
+        qualificationReceiptSha256:
+          triple.qualificationReceipt.qualificationReceiptSha256,
+      },
+      redundancyRoot,
+    ),
     /noncanonical|escapes/u,
   );
   assert.equal(

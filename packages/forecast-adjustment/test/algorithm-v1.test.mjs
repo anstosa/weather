@@ -199,6 +199,18 @@ test("parses only exact sanitized forecast export rows", () => {
   );
 });
 
+// accept PostgreSQL microseconds and normalize to milliseconds
+test("sanitized rows normalize canonical UTC microseconds", () => {
+  const parsed = parseSanitizedTrainingExportRow({
+    ...forecastExportRow(),
+    received_at: "2025-01-01T00:01:00.000000Z",
+    valid_at: "2025-01-02T00:00:00.000000Z",
+  });
+
+  assert.equal(parsed.receivedAt, "2025-01-01T00:01:00.000Z");
+  assert.equal(parsed.validAt, "2025-01-02T00:00:00.000Z");
+});
+
 // verify populated station metrics require complete exact source evidence
 test("rejects populated station hours without exact bound lineage", () => {
   assert.equal(
@@ -235,7 +247,7 @@ test("rejects populated station hours without exact bound lineage", () => {
   );
 });
 
-// verify exact half-open source intervals and MaxWeather cutover ownership
+// verify source intervals and the MaxWeather aggregate-hour handoff
 test("enforces source intervals and the MaxWeather handoff", () => {
   assert.equal(
     parseSanitizedTrainingExportRow(
@@ -256,12 +268,11 @@ test("enforces source intervals and the MaxWeather handoff", () => {
       ),
     /source lineage/u,
   );
-  assert.throws(
-    () =>
-      parseSanitizedTrainingExportRow(
-        maxWeatherStationRow("wunderground", "2026-08-24T00:00:00.000Z"),
-      ),
-    /source lineage/u,
+  assert.equal(
+    parseSanitizedTrainingExportRow(
+      maxWeatherStationRow("wunderground", "2026-08-24T00:00:00.000Z"),
+    ).physicalStationKey,
+    "ambient-maxweather",
   );
   assert.throws(
     () =>
@@ -290,8 +301,8 @@ test("rejects superseded Tempest v1 station evidence", () => {
   );
 });
 
-// verify QC rejection diagnostics never coexist with retained metrics
-test("keeps QC rejected station values out of retained model input", () => {
+// retain rejected-sample diagnostics beside independently selected metrics
+test("accepts rejected-sample diagnostics beside selected metrics", () => {
   for (const reason of [
     "metric_ineligible",
     "quality_flag_rejected",
@@ -299,12 +310,11 @@ test("keeps QC rejected station values out of retained model input", () => {
     "source_interval_out_of_range",
     "source_superseded",
   ]) {
-    assert.throws(
-      () =>
-        parseSanitizedTrainingExportRow(
-          stationExportRow({ exclusion_reason_codes: [reason] }),
-        ),
-      /rejected lineage/u,
+    assert.equal(
+      parseSanitizedTrainingExportRow(
+        stationExportRow({ exclusion_reason_codes: [reason] }),
+      ).metrics.temperatureC,
+      10,
     );
   }
 
@@ -328,6 +338,16 @@ test("keeps QC rejected station values out of retained model input", () => {
     ).metrics.windSpeedMps,
     5,
   );
+});
+
+// retain diagnostics from discarded samples beside selected hourly metrics
+test("accepts calm-sample diagnostics beside a selected direction", () => {
+  const parsed = parseSanitizedTrainingExportRow(
+    stationExportRow({ exclusion_reason_codes: ["station_direction_calm"] }),
+  );
+
+  assert.equal(parsed.metrics.windDirectionDegrees, 180);
+  assert.deepEqual(parsed.exclusionReasonCodes, ["station_direction_calm"]);
 });
 
 // verify explicit gaps remain missing while populated gaps and collisions reject

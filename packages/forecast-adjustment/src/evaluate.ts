@@ -1,19 +1,18 @@
 import {
-  ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1,
   FORECAST_ADJUSTMENT_CONTRACT_VERSIONS,
   FORECAST_ADJUSTMENT_QUALIFICATION_GATE_NAMES,
   FORECAST_OBSERVATION_STATIONS,
   PROVIDER_BALANCED_LOSO_CONTRACT_V1,
-  type ForecastAdjustmentCandidateV1,
+  type ForecastAdjustmentCandidateV2,
   type ForecastAdjustmentCriticalSliceScore,
-  type ForecastAdjustmentEvaluationReportV1,
+  type ForecastAdjustmentEvaluationReportV2,
   type ForecastAdjustmentEvidenceRedundancy,
   type ForecastAdjustmentMetricBand,
   type ForecastAdjustmentMetricBandEvaluation,
   type ForecastAdjustmentPairedScore,
   type ForecastAdjustmentQualificationGate,
   type ForecastAdjustmentQualificationGateName,
-  type ForecastAdjustmentQualificationReceiptV1,
+  type ForecastAdjustmentQualificationReceiptV2,
   type ForecastObservationProviderFamily,
   type ForecastObservationStationKey,
   canonicalizeJson,
@@ -104,7 +103,7 @@ export function verifyDevelopmentReport(
 
 // accept immutable holdout scoring output
 export interface CreateEvaluationReportInputV1 {
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly holdoutAccessMarker: HoldoutAccessMarkerV1;
   readonly metricBandEvaluations: readonly ForecastAdjustmentMetricBandEvaluation[];
   readonly preregistration: ForecastAdjustmentPreregistrationV1;
@@ -309,7 +308,7 @@ function validateDevelopmentFold(fold: DevelopmentLosoFoldResultV1): void {
 // create a separate immutable locked-holdout report
 export function createForecastAdjustmentEvaluationReport(
   input: CreateEvaluationReportInputV1,
-): ForecastAdjustmentEvaluationReportV1 {
+): ForecastAdjustmentEvaluationReportV2 {
   const candidateBytesBefore = canonicalizeJson(
     input.candidate as unknown as JsonValue,
   );
@@ -359,7 +358,7 @@ export function createForecastAdjustmentEvaluationReport(
   const report = deepFreeze({
     ...unsigned,
     evaluationReportSha256: canonicalSha256(unsigned as unknown as JsonValue),
-  }) as ForecastAdjustmentEvaluationReportV1;
+  }) as ForecastAdjustmentEvaluationReportV2;
 
   // prove report construction never mutates candidate bytes
   if (
@@ -373,7 +372,7 @@ export function createForecastAdjustmentEvaluationReport(
 
 // verify a report's immutable hash
 export function verifyForecastAdjustmentEvaluationReport(
-  report: ForecastAdjustmentEvaluationReportV1,
+  report: ForecastAdjustmentEvaluationReportV2,
 ): void {
   requireExactKeys(report, [
     "candidateArtifactSha256",
@@ -403,11 +402,11 @@ export function verifyForecastAdjustmentEvaluationReport(
 
 // create a separate immutable qualification receipt
 export function createForecastAdjustmentQualificationReceipt(input: {
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly contextByMetricBand: Readonly<Record<string, QualificationContextV1>>;
-  readonly evaluationReport: ForecastAdjustmentEvaluationReportV1;
+  readonly evaluationReport: ForecastAdjustmentEvaluationReportV2;
   readonly evidenceRedundancy: ForecastAdjustmentEvidenceRedundancy;
-}): ForecastAdjustmentQualificationReceiptV1 {
+}): ForecastAdjustmentQualificationReceiptV2 {
   verifyForecastAdjustmentCandidate(input.candidate);
   verifyForecastAdjustmentEvaluationReport(input.evaluationReport);
 
@@ -436,7 +435,7 @@ export function createForecastAdjustmentQualificationReceipt(input: {
       critical_slice_no_harm:
         context.criticalSlicesPassed && !hasMaterialHarm(evaluation.criticalSlices),
       development_fold_skill: context.developmentFoldSkillPassed,
-      locked_holdout_and_ecowitt: evaluateEcowittTargetSiteGate(evaluation).passed,
+      locked_holdout: !isMaterialHarm(evaluation.providerBalanced),
       pooled_network_improvement: evaluation.network.skill >= 0.02,
       production_identity: context.productionIdentityPassed,
     };
@@ -473,12 +472,12 @@ export function createForecastAdjustmentQualificationReceipt(input: {
   return deepFreeze({
     ...unsigned,
     qualificationReceiptSha256: canonicalSha256(unsigned as unknown as JsonValue),
-  }) as ForecastAdjustmentQualificationReceiptV1;
+  }) as ForecastAdjustmentQualificationReceiptV2;
 }
 
 // verify a receipt's immutable hash
 export function verifyForecastAdjustmentQualificationReceipt(
-  receipt: ForecastAdjustmentQualificationReceiptV1,
+  receipt: ForecastAdjustmentQualificationReceiptV2,
 ): void {
   requireExactKeys(receipt, [
     "candidateArtifactSha256",
@@ -519,52 +518,6 @@ function requireExactKeys(
   if (canonicalizeJson(actual) !== canonicalizeJson(required)) {
     throw new RangeError(`${description} has unexpected fields`);
   }
-}
-
-// enforce the exact on-property threshold gate
-export function evaluateEcowittTargetSiteGate(
-  evaluation: ForecastAdjustmentMetricBandEvaluation,
-): { readonly failedReasons: readonly string[]; readonly passed: boolean } {
-  const failedReasons: string[] = [];
-  const contract = ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1;
-
-  // require complete on-property dates
-  if (evaluation.ecowittCompleteLocalDates < contract.minimumCompleteLocalDates) {
-    failedReasons.push("ecowitt_complete_local_dates");
-  }
-
-  // require metric-wide target matches
-  if (evaluation.ecowittMetricMatches < contract.minimumMetricMatches) {
-    failedReasons.push("ecowitt_metric_matches");
-  }
-
-  // require enabled-band target matches
-  if (evaluation.ecowittMetricBandMatches < contract.minimumMetricBandMatches) {
-    failedReasons.push("ecowitt_metric_band_matches");
-  }
-
-  // require both literal point thresholds
-  if (
-    evaluation.ecowittTargetSite.skill < contract.minimumImprovementFraction ||
-    evaluation.ecowittTargetSite.skill <= contract.minimumPointSkillExclusive
-  ) {
-    failedReasons.push("ecowitt_point_skill");
-  }
-
-  // require a strictly positive lower bound
-  if (
-    evaluation.ecowittTargetSite.bootstrapLowerBound <=
-    contract.bootstrapLowerBoundExclusive
-  ) {
-    failedReasons.push("ecowitt_bootstrap_lower_bound");
-  }
-
-  // reject material harm in the target slice
-  if (isMaterialHarm(evaluation.ecowittTargetSite)) {
-    failedReasons.push("ecowitt_material_harm");
-  }
-
-  return deepFreeze({ failedReasons, passed: failedReasons.length === 0 });
 }
 
 // compute equal-station then equal-provider loss

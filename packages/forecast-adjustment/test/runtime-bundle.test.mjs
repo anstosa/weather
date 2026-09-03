@@ -57,11 +57,39 @@ test("runtime bundle embeds the exact immutable evidence triple", async () => {
   const receiptBytes = canonicalJsonBytes(triple.qualificationReceipt);
   const bundle = createForecastAdjustmentRuntimeBundle(triple);
   verifyForecastAdjustmentRuntimeBundle(bundle);
+  assert.equal(bundle.contractVersion, "forecast-adjustment-runtime-bundle/v2");
+  assert.equal(bundle.candidate.contractVersion, "forecast-adjustment-candidate/v2");
+  assert.equal(
+    bundle.evaluationReport.contractVersion,
+    "forecast-adjustment-evaluation-report/v2",
+  );
+  assert.equal(
+    bundle.qualificationReceipt.contractVersion,
+    "forecast-adjustment-qualification-receipt/v2",
+  );
   assert.equal(canonicalJsonBytes(bundle.candidate), candidateBytes);
   assert.equal(canonicalJsonBytes(bundle.evaluationReport), reportBytes);
   assert.equal(canonicalJsonBytes(bundle.qualificationReceipt), receiptBytes);
   assert.equal(Object.isFrozen(bundle.candidate.coefficients), true);
   assert.equal(bundle.candidate.evaluationEpochId, "epoch-2026-01");
+});
+
+test("runtime bundle rejects the superseded v1 bundle contract", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-bundle-v1-"));
+  const triple = await createQualifiedFixture(directory);
+  const bundle = createForecastAdjustmentRuntimeBundle(triple);
+  const superseded = {
+    ...bundle,
+    contractVersion: "forecast-adjustment-runtime-bundle/v1",
+  };
+  superseded.bundleSha256 = canonicalObjectSha256(
+    superseded,
+    "bundleSha256",
+  );
+  assert.throws(
+    () => verifyForecastAdjustmentRuntimeBundle(superseded),
+    /unsupported forecast adjustment runtime bundle/u,
+  );
 });
 
 test("runtime bundle rejects forbidden evidence rather than stripping it", async () => {

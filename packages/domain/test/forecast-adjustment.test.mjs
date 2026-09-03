@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import {
-  ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1,
   FORECAST_ADJUSTMENT_CONTRACT_VERSIONS,
   FORECAST_ADJUSTMENT_METRICS,
   FORECAST_ADJUSTMENT_METRIC_POLICIES_V1,
@@ -243,10 +242,6 @@ function createEvidenceTriple() {
     metricBandEvaluations: [
       {
         criticalSlices,
-        ecowittCompleteLocalDates: 30,
-        ecowittMetricBandMatches: 100,
-        ecowittMetricMatches: 500,
-        ecowittTargetSite: pairedScore,
         evaluatedSeasonDaypartKeys: ["winter-night"],
         metricBand: enabledMetricBands[0],
         network: pairedScore,
@@ -463,8 +458,8 @@ test("U-MOS-10 and U-MOS-11 network identity keeps cohorts disjoint", () => {
   );
 });
 
-// verify development-only LOSO and strict target-site gates
-test("U-MOD-10 and U-MOD-22 freeze provider-balanced and Ecowitt thresholds", () => {
+// verify development-only LOSO and full-network qualification gates
+test("U-MOD-10 and U-MOD-22 freeze provider-balanced thresholds", () => {
   assert.equal(PROVIDER_BALANCED_LOSO_CONTRACT_V1.developmentOnly, true);
   assert.equal(PROVIDER_BALANCED_LOSO_CONTRACT_V1.minimumStationTrainingMatches, 500);
   assert.equal(PROVIDER_BALANCED_LOSO_CONTRACT_V1.minimumStationScoreMatches, 100);
@@ -473,12 +468,36 @@ test("U-MOD-10 and U-MOD-22 freeze provider-balanced and Ecowitt thresholds", ()
   assert.equal(PROVIDER_BALANCED_LOSO_CONTRACT_V1.minimumProviderFamiliesPerFold, 3);
   assert.equal(PROVIDER_BALANCED_LOSO_CONTRACT_V1.minimumImprovementFraction, 0.02);
   assert.equal(PROVIDER_BALANCED_LOSO_CONTRACT_V1.minimumNonnegativeStationFraction, 0.8);
-  assert.equal(ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1.minimumCompleteLocalDates, 30);
-  assert.equal(ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1.minimumMetricMatches, 500);
-  assert.equal(ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1.minimumMetricBandMatches, 100);
-  assert.equal(ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1.minimumImprovementFraction, 0.02);
-  assert.equal(ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1.minimumPointSkillExclusive, 0);
-  assert.equal(ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1.bootstrapLowerBoundExclusive, 0);
+  assert.ok(FORECAST_ADJUSTMENT_QUALIFICATION_GATE_NAMES.includes("locked_holdout"));
+  assert.ok(!FORECAST_ADJUSTMENT_QUALIFICATION_GATE_NAMES.includes("locked_holdout_and_ecowitt"));
+});
+
+// freeze the pre-activation artifact reset without changing public control wires
+test("forecast-adjustment artifacts use v2 while decision and registry stay v1", () => {
+  assert.equal(
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.candidate,
+    "forecast-adjustment-candidate/v2",
+  );
+  assert.equal(
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.evaluationReport,
+    "forecast-adjustment-evaluation-report/v2",
+  );
+  assert.equal(
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.qualificationReceipt,
+    "forecast-adjustment-qualification-receipt/v2",
+  );
+  assert.equal(
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.runtimeBundle,
+    "forecast-adjustment-runtime-bundle/v2",
+  );
+  assert.equal(
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.decision,
+    "forecast-adjustment-decision/v1",
+  );
+  assert.equal(
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.registry,
+    "forecast-adjustment-registry/v1",
+  );
 });
 
 // verify lifecycle and bounded fail-raw vocabulary
@@ -538,6 +557,45 @@ test("U-MOD-16 validates exact candidate, report, and receipt links", () => {
         },
       }),
     /redundancy/u,
+  );
+});
+
+// reject artifacts from the superseded pre-activation policy
+test("U-MOD-16 rejects v1 qualification artifacts", () => {
+  const evidence = createEvidenceTriple();
+
+  assert.throws(
+    () =>
+      validatePromotableForecastAdjustmentEvidence({
+        ...evidence,
+        candidate: {
+          ...evidence.candidate,
+          contractVersion: "forecast-adjustment-candidate/v1",
+        },
+      }),
+    /unsupported forecast adjustment candidate/u,
+  );
+  assert.throws(
+    () =>
+      validatePromotableForecastAdjustmentEvidence({
+        ...evidence,
+        evaluationReport: {
+          ...evidence.evaluationReport,
+          contractVersion: "forecast-adjustment-evaluation-report/v1",
+        },
+      }),
+    /unsupported forecast adjustment evaluation report/u,
+  );
+  assert.throws(
+    () =>
+      validatePromotableForecastAdjustmentEvidence({
+        ...evidence,
+        qualificationReceipt: {
+          ...evidence.qualificationReceipt,
+          contractVersion: "forecast-adjustment-qualification-receipt/v1",
+        },
+      }),
+    /unsupported forecast adjustment qualification receipt/u,
   );
 });
 
@@ -644,12 +702,12 @@ test("U-MOD-12, U-MOD-16, and U-MOD-22 reject incomplete nested evidence", () =>
           metricBandEvaluations: [
             {
               ...evidence.evaluationReport.metricBandEvaluations[0],
-              ecowittCompleteLocalDates: 29,
+              ecowittTargetSite: evidence.evaluationReport.metricBandEvaluations[0].network,
             },
           ],
         },
       }),
-    /promotable thresholds/u,
+    /metric-band evaluation does not match its exact schema/u,
   );
   assert.throws(
     () =>

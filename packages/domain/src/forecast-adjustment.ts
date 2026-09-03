@@ -13,14 +13,14 @@ import {
 
 // freeze adjustment contract versions
 export const FORECAST_ADJUSTMENT_CONTRACT_VERSIONS = {
-  candidate: "forecast-adjustment-candidate/v1",
+  candidate: "forecast-adjustment-candidate/v2",
   decision: "forecast-adjustment-decision/v1",
-  evaluationReport: "forecast-adjustment-evaluation-report/v1",
+  evaluationReport: "forecast-adjustment-evaluation-report/v2",
   networkEvent: "forecast-network-event/v1",
   observationManifest: "forecast-observation-station-manifest/v1",
-  qualificationReceipt: "forecast-adjustment-qualification-receipt/v1",
+  qualificationReceipt: "forecast-adjustment-qualification-receipt/v2",
   registry: "forecast-adjustment-registry/v1",
-  runtimeBundle: "forecast-adjustment-runtime-bundle/v1",
+  runtimeBundle: "forecast-adjustment-runtime-bundle/v2",
   trainingRow: "forecast-training-row/v1",
 } as const;
 
@@ -711,20 +711,6 @@ export const PROVIDER_BALANCED_LOSO_CONTRACT_V1 = {
   providerFamilies: FORECAST_OBSERVATION_PROVIDER_FAMILIES,
 } as const;
 
-// freeze on-property qualification thresholds
-export const ECOWITT_TARGET_SITE_QUALIFICATION_CONTRACT_V1 = {
-  bootstrapLowerBoundExclusive: 0,
-  contractVersion: "ecowitt-target-site-qualification/v1",
-  minimumCompleteLocalDates: 30,
-  minimumImprovementFraction: 0.02,
-  minimumMetricBandMatches: 100,
-  minimumMetricMatches: 500,
-  minimumPointSkillExclusive: 0,
-  materialHarmMinimumEvents: 100,
-  noMaterialHarm: true,
-  physicalStationKey: "ballydidean-ecowitt",
-} as const;
-
 // identify one forecast network event
 export interface ForecastNetworkEventIdentity {
   readonly cohort: ForecastTrainingCohort;
@@ -872,7 +858,7 @@ export const FORECAST_ADJUSTMENT_METRIC_POLICIES_V1 = [
 ] as const satisfies readonly ForecastAdjustmentMetricPolicy[];
 
 // define the immutable fitted candidate schema
-export interface ForecastAdjustmentCandidateV1 {
+export interface ForecastAdjustmentCandidateV2 {
   readonly algorithmContractVersion: "robust-hierarchical-median/v1";
   readonly candidateArtifactSha256: string;
   readonly coefficientPayloadSha256: string;
@@ -957,10 +943,6 @@ export type ForecastAdjustmentCriticalSliceScore =
 // report one enabled pair's immutable holdout result
 export interface ForecastAdjustmentMetricBandEvaluation {
   readonly criticalSlices: readonly ForecastAdjustmentCriticalSliceScore[];
-  readonly ecowittCompleteLocalDates: number;
-  readonly ecowittMetricBandMatches: number;
-  readonly ecowittMetricMatches: number;
-  readonly ecowittTargetSite: ForecastAdjustmentPairedScore;
   readonly evaluatedSeasonDaypartKeys: readonly ForecastSeasonDaypartKey[];
   readonly metricBand: ForecastAdjustmentMetricBand;
   readonly network: ForecastAdjustmentPairedScore;
@@ -969,7 +951,7 @@ export interface ForecastAdjustmentMetricBandEvaluation {
 }
 
 // define the immutable evaluation report schema
-export interface ForecastAdjustmentEvaluationReportV1 {
+export interface ForecastAdjustmentEvaluationReportV2 {
   readonly candidateArtifactSha256: string;
   readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.evaluationReport;
   readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
@@ -1000,7 +982,7 @@ export const FORECAST_ADJUSTMENT_QUALIFICATION_GATE_NAMES = [
   "development_fold_skill",
   "critical_slice_no_harm",
   "coefficient_coverage_and_caps",
-  "locked_holdout_and_ecowitt",
+  "locked_holdout",
   "production_identity",
 ] as const;
 
@@ -1016,7 +998,7 @@ export interface ForecastAdjustmentEvidenceRedundancy {
 }
 
 // define the immutable qualification receipt schema
-export interface ForecastAdjustmentQualificationReceiptV1 {
+export interface ForecastAdjustmentQualificationReceiptV2 {
   readonly candidateArtifactSha256: string;
   readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.qualificationReceipt;
   readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
@@ -1033,10 +1015,10 @@ export interface ForecastAdjustmentQualificationReceiptV1 {
 }
 
 // unite the immutable evidence triple
-export interface ForecastAdjustmentEvidenceTripleV1 {
-  readonly candidate: ForecastAdjustmentCandidateV1;
-  readonly evaluationReport: ForecastAdjustmentEvaluationReportV1;
-  readonly qualificationReceipt: ForecastAdjustmentQualificationReceiptV1;
+export interface ForecastAdjustmentEvidenceTripleV2 {
+  readonly candidate: ForecastAdjustmentCandidateV2;
+  readonly evaluationReport: ForecastAdjustmentEvaluationReportV2;
+  readonly qualificationReceipt: ForecastAdjustmentQualificationReceiptV2;
 }
 
 // identify one active immutable runtime bundle
@@ -1055,8 +1037,8 @@ export interface ForecastAdjustmentRegistryV1 {
 }
 
 // define the sanitized runtime bundle schema
-export interface ForecastAdjustmentRuntimeBundleV1
-  extends ForecastAdjustmentEvidenceTripleV1 {
+export interface ForecastAdjustmentRuntimeBundleV2
+  extends ForecastAdjustmentEvidenceTripleV2 {
   readonly bundleSha256: string;
   readonly contractVersion: typeof FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.runtimeBundle;
   readonly siteKey: "ballydidean";
@@ -1281,10 +1263,6 @@ const CRITICAL_SLICE_SCORE_KEYS = new Set([
 // freeze metric-band evaluation fields
 const METRIC_BAND_EVALUATION_KEYS = new Set([
   "criticalSlices",
-  "ecowittCompleteLocalDates",
-  "ecowittMetricBandMatches",
-  "ecowittMetricMatches",
-  "ecowittTargetSite",
   "evaluatedSeasonDaypartKeys",
   "metricBand",
   "network",
@@ -1453,7 +1431,7 @@ export function canTransitionForecastAdjustmentLifecycle(
 
 // validate a promotable candidate/report/receipt triple
 export function validatePromotableForecastAdjustmentEvidence(
-  evidence: ForecastAdjustmentEvidenceTripleV1,
+  evidence: ForecastAdjustmentEvidenceTripleV2,
 ): void {
   const { candidate, evaluationReport, qualificationReceipt } = evidence;
   validateCandidateContract(candidate);
@@ -1585,7 +1563,7 @@ export function validateForecastAdjustmentRegistry(
 // validate registry, bundle, and evidence links without computing hashes
 export function validateForecastAdjustmentRuntimeBundleLinks(
   registry: ForecastAdjustmentRegistryV1,
-  bundle: ForecastAdjustmentRuntimeBundleV1,
+  bundle: ForecastAdjustmentRuntimeBundleV2,
 ): void {
   validateForecastAdjustmentRegistry(registry);
   rejectUnknownKeys(bundle, RUNTIME_BUNDLE_KEYS, "forecast adjustment runtime bundle");
@@ -1630,7 +1608,7 @@ export function validateForecastAdjustmentRuntimeBundleLinks(
 }
 
 // validate candidate fields whose values are immutable identities
-function validateCandidateContract(candidate: ForecastAdjustmentCandidateV1): void {
+function validateCandidateContract(candidate: ForecastAdjustmentCandidateV2): void {
   rejectUnknownKeys(candidate, CANDIDATE_KEYS, "forecast adjustment candidate");
 
   // require exact candidate version
@@ -1710,7 +1688,7 @@ function validateCandidateContract(candidate: ForecastAdjustmentCandidateV1): vo
 
 // validate immutable evaluation report identities
 function validateEvaluationReportContract(
-  report: ForecastAdjustmentEvaluationReportV1,
+  report: ForecastAdjustmentEvaluationReportV2,
 ): void {
   rejectUnknownKeys(
     report,
@@ -1763,29 +1741,10 @@ function validateEvaluationReportContract(
 
     validatePairedScore(evaluation.network, "network score");
     validatePairedScore(evaluation.providerBalanced, "provider-balanced score");
-    validatePairedScore(evaluation.ecowittTargetSite, "Ecowitt target-site score");
-    validateNonnegativeInteger(
-      evaluation.ecowittCompleteLocalDates,
-      "ecowittCompleteLocalDates",
-    );
-    validateNonnegativeInteger(
-      evaluation.ecowittMetricMatches,
-      "ecowittMetricMatches",
-    );
-    validateNonnegativeInteger(
-      evaluation.ecowittMetricBandMatches,
-      "ecowittMetricBandMatches",
-    );
-
-    // require promotable network and target-site thresholds
+    // require promotable network and provider-balanced thresholds
     if (
       evaluation.network.skill < 0.02 ||
       evaluation.network.bootstrapLowerBound <= 0 ||
-      evaluation.ecowittCompleteLocalDates < 30 ||
-      evaluation.ecowittMetricMatches < 500 ||
-      evaluation.ecowittMetricBandMatches < 100 ||
-      evaluation.ecowittTargetSite.skill < 0.02 ||
-      evaluation.ecowittTargetSite.bootstrapLowerBound <= 0 ||
       isMaterialHarm(evaluation.providerBalanced)
     ) {
       throw new RangeError("metric-band evaluation does not meet promotable thresholds");
@@ -1822,7 +1781,7 @@ function validateEvaluationReportContract(
 
 // validate immutable qualification receipt identities
 function validateQualificationReceiptContract(
-  receipt: ForecastAdjustmentQualificationReceiptV1,
+  receipt: ForecastAdjustmentQualificationReceiptV2,
 ): void {
   rejectUnknownKeys(
     receipt,
@@ -1932,7 +1891,7 @@ function validateQualificationReceiptContract(
 
 // validate exact candidate coefficient coverage and caps
 function validateCandidateCoefficientCoverage(
-  candidate: ForecastAdjustmentCandidateV1,
+  candidate: ForecastAdjustmentCandidateV2,
 ): void {
   const enabledKeys = new Set(candidate.enabledMetricBands.map(metricBandKey));
   const rootCounts = new Map<string, number>();
@@ -2071,7 +2030,7 @@ function validateCoefficientHierarchy(
 
 // validate exact scalar training-envelope coverage
 function validateCandidateTrainingEnvelopeCoverage(
-  candidate: ForecastAdjustmentCandidateV1,
+  candidate: ForecastAdjustmentCandidateV2,
 ): void {
   const enabledScalarKeys = new Set(
     candidate.enabledMetricBands
@@ -2172,7 +2131,7 @@ function metricBandKey(pair: ForecastAdjustmentMetricBand): string {
 
 // validate holdout local and UTC bounds
 function validateHoldoutBounds(
-  report: ForecastAdjustmentEvaluationReportV1,
+  report: ForecastAdjustmentEvaluationReportV2,
 ): void {
   const startInclusive = Date.parse(
     validateUtcInstant(report.holdoutStartInclusive, "holdoutStartInclusive"),

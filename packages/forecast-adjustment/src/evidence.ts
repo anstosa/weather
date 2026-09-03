@@ -21,10 +21,10 @@ import {
   type ForecastAdjustmentMetric,
   type ForecastAdjustmentMetricBand,
   type ForecastSeasonDaypartKey,
-  type ForecastAdjustmentCandidateV1,
-  type ForecastAdjustmentEvaluationReportV1,
-  type ForecastAdjustmentEvidenceTripleV1,
-  type ForecastAdjustmentQualificationReceiptV1,
+  type ForecastAdjustmentCandidateV2,
+  type ForecastAdjustmentEvaluationReportV2,
+  type ForecastAdjustmentEvidenceTripleV2,
+  type ForecastAdjustmentQualificationReceiptV2,
   validatePromotableForecastAdjustmentEvidence,
   canonicalizeJson,
   type JsonValue,
@@ -112,13 +112,16 @@ export const MODEL_EVIDENCE_ROOT = join(
   ".weather",
   "model-evidence",
 );
+export const MODEL_EVIDENCE_REDUNDANCY_ROOT =
+  process.env.WEATHER_MODEL_EVIDENCE_REDUNDANCY_ROOT ??
+  join(homedir(), ".weather", "model-evidence-redundancy");
 
 // name one immutable evidence object class
 export type ForecastAdjustmentEvidenceKind = (typeof EVIDENCE_KINDS)[number];
 
 // bind the complete retained qualification evidence graph
 interface CompleteForecastAdjustmentEvidenceV1
-  extends ForecastAdjustmentEvidenceTripleV1 {
+  extends ForecastAdjustmentEvidenceTripleV2 {
   readonly developmentReport: ForecastAdjustmentDevelopmentReportV1;
   readonly holdoutAccessMarker: HoldoutAccessMarkerV1;
   readonly preregistration: ForecastAdjustmentPreregistrationV1;
@@ -127,11 +130,11 @@ interface CompleteForecastAdjustmentEvidenceV1
 
 // accept every immutable evidence object class
 export type ForecastAdjustmentEvidenceObjectV1 =
-  | ForecastAdjustmentCandidateV1
+  | ForecastAdjustmentCandidateV2
   | ForecastAdjustmentDevelopmentReportV1
-  | ForecastAdjustmentEvaluationReportV1
+  | ForecastAdjustmentEvaluationReportV2
   | ForecastAdjustmentPreregistrationV1
-  | ForecastAdjustmentQualificationReceiptV1
+  | ForecastAdjustmentQualificationReceiptV2
   | HoldoutAccessMarkerV1
   | JsonValue;
 
@@ -173,7 +176,7 @@ export interface ForecastAdjustmentSnapshotEvaluationResultV1
 
 // describe a retained sufficient pre-holdout result
 export interface RetainedForecastAdjustmentPreHoldoutV1 {
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly developmentReport: ForecastAdjustmentDevelopmentReportV1;
   readonly lineage: HoldoutLineageV1;
   readonly preregistration: ForecastAdjustmentPreregistrationV1;
@@ -183,14 +186,14 @@ export interface RetainedForecastAdjustmentPreHoldoutV1 {
 // inject the deterministic model engine while retaining filesystem authority here
 export interface RetainedForecastAdjustmentEngineV1 {
   readonly evaluateHoldout: (input: {
-    readonly candidate: ForecastAdjustmentCandidateV1;
+    readonly candidate: ForecastAdjustmentCandidateV2;
     readonly holdoutAccessMarker: HoldoutAccessMarkerV1;
     readonly holdoutRows: readonly SanitizedTrainingExportRow[];
     readonly preregistration: ForecastAdjustmentPreregistrationV1;
   }) => Promise<{
     readonly attestation: ForecastAdjustmentRedundancyAttestationV1;
-    readonly evaluationReport: ForecastAdjustmentEvaluationReportV1;
-    readonly qualificationReceipt: ForecastAdjustmentQualificationReceiptV1;
+    readonly evaluationReport: ForecastAdjustmentEvaluationReportV2;
+    readonly qualificationReceipt: ForecastAdjustmentQualificationReceiptV2;
   }>;
   readonly fitDevelopment: (input: {
     readonly manifest: Readonly<SnapshotManifestV1>;
@@ -509,6 +512,7 @@ export async function evaluateForecastAdjustmentSnapshot(input: {
 export async function evaluateRetainedForecastAdjustmentSnapshot(
   input: {
     readonly evidenceRoot: string;
+    readonly redundancyRoot?: string;
     readonly snapshotPath: string;
   },
   engine?: RetainedForecastAdjustmentEngineV1,
@@ -632,6 +636,20 @@ export async function evaluateRetainedForecastAdjustmentSnapshot(
     });
   }
 
+  const redundancyRoot = await requireCanonicalDirectory(
+    input.redundancyRoot ?? MODEL_EVIDENCE_REDUNDANCY_ROOT,
+    "evidence redundancy root",
+  );
+  const [evidenceRootMetadata, redundancyRootMetadata] = await Promise.all([
+    lstat(evidenceRoot),
+    lstat(redundancyRoot),
+  ]);
+
+  // require a distinct storage device before holdout access
+  if (evidenceRootMetadata.dev === redundancyRootMetadata.dev) {
+    throw new RangeError("evidence redundancy root must use a distinct storage device");
+  }
+
   verifyDevelopmentReport(preHoldout.developmentReport);
   verifyForecastAdjustmentPreregistration(
     preHoldout.preregistration,
@@ -651,8 +669,8 @@ export async function evaluateRetainedForecastAdjustmentSnapshot(
   let evaluated:
     | {
         readonly attestation: ForecastAdjustmentRedundancyAttestationV1;
-        readonly evaluationReport: ForecastAdjustmentEvaluationReportV1;
-        readonly qualificationReceipt: ForecastAdjustmentQualificationReceiptV1;
+        readonly evaluationReport: ForecastAdjustmentEvaluationReportV2;
+        readonly qualificationReceipt: ForecastAdjustmentQualificationReceiptV2;
       }
     | undefined;
   let durableMarker: HoldoutAccessMarkerV1 | undefined;
@@ -721,7 +739,7 @@ export async function evaluateRetainedForecastAdjustmentSnapshot(
   };
   await stageEvidenceRedundancyAttestation(evidenceRoot, evaluated.attestation);
   await stageRedundantRetainedSnapshot(
-    evidenceRoot,
+    redundancyRoot,
     evaluated.attestation.status,
     snapshotRoot,
     manifestSha256,
@@ -730,7 +748,7 @@ export async function evaluateRetainedForecastAdjustmentSnapshot(
     const value = valueForKind(complete, kind);
     await stageForecastAdjustmentEvidenceObject(evidenceRoot, kind, value);
     await stageRedundantEvidenceObject(
-      evidenceRoot,
+      redundancyRoot,
       evaluated.attestation.status,
       kind,
       value,
@@ -743,7 +761,11 @@ export async function evaluateRetainedForecastAdjustmentSnapshot(
     qualificationReceiptSha256:
       evaluated.qualificationReceipt.qualificationReceiptSha256,
   };
-  await promoteForecastAdjustmentEvidenceAtRoot(evidenceRoot, hashes);
+  await promoteForecastAdjustmentEvidenceAtRoot(
+    evidenceRoot,
+    hashes,
+    redundancyRoot,
+  );
   return deepFreeze({
     ...hashes,
     accessTrace: [...accessTrace, "evidence_promoted"],
@@ -960,7 +982,11 @@ export async function promoteForecastAdjustmentEvidence(input: {
   readonly evaluationReportSha256: string;
   readonly qualificationReceiptSha256: string;
 }): Promise<ForecastAdjustmentEvidenceResultV1> {
-  return promoteForecastAdjustmentEvidenceAtRoot(MODEL_EVIDENCE_ROOT, input);
+  return promoteForecastAdjustmentEvidenceAtRoot(
+    MODEL_EVIDENCE_ROOT,
+    input,
+    MODEL_EVIDENCE_REDUNDANCY_ROOT,
+  );
 }
 
 // promote one exact triple under a test-injected evidence root
@@ -971,10 +997,17 @@ export async function promoteForecastAdjustmentEvidenceAtRoot(
     readonly evaluationReportSha256: string;
     readonly qualificationReceiptSha256: string;
   },
+  redundancyRoot = root,
 ): Promise<ForecastAdjustmentEvidenceResultV1> {
   validateRequestedHashes(input);
   const evidence = await readCompleteEvidence(root, "staging", input);
-  await verifyCompleteEvidenceAtRoot(root, evidence, "staging", false);
+  await verifyCompleteEvidenceAtRoot(
+    root,
+    redundancyRoot,
+    evidence,
+    "staging",
+    false,
+  );
 
   for (const kind of EVIDENCE_KINDS) {
     const hash = hashForKind(evidence, kind);
@@ -985,7 +1018,13 @@ export async function promoteForecastAdjustmentEvidenceAtRoot(
 
   const lifecycleHashes = completeEvidenceHashes(evidence);
   await appendEvidenceLifecycleRecord(root, lifecycleHashes);
-  await verifyCompleteEvidenceAtRoot(root, evidence, "objects", true);
+  await verifyCompleteEvidenceAtRoot(
+    root,
+    redundancyRoot,
+    evidence,
+    "objects",
+    true,
+  );
 
   return deepFreeze({
     ...input,
@@ -998,16 +1037,21 @@ export async function promoteForecastAdjustmentEvidenceAtRoot(
 export async function verifyForecastAdjustmentEvidence(input: {
   readonly qualificationReceiptSha256: string;
 }): Promise<ForecastAdjustmentEvidenceResultV1> {
-  return verifyForecastAdjustmentEvidenceAtRoot(MODEL_EVIDENCE_ROOT, input);
+  return verifyForecastAdjustmentEvidenceAtRoot(
+    MODEL_EVIDENCE_ROOT,
+    input,
+    MODEL_EVIDENCE_REDUNDANCY_ROOT,
+  );
 }
 
 // retrieve evidence under a test-injected fixed root
 export async function verifyForecastAdjustmentEvidenceAtRoot(
   root: string,
   input: { readonly qualificationReceiptSha256: string },
+  redundancyRoot = root,
 ): Promise<ForecastAdjustmentEvidenceResultV1> {
   validateHash(input.qualificationReceiptSha256, "qualificationReceiptSha256");
-  const receipt = await readJsonObject<ForecastAdjustmentQualificationReceiptV1>(
+  const receipt = await readJsonObject<ForecastAdjustmentQualificationReceiptV2>(
     evidenceObjectPath(
       root,
       "objects",
@@ -1022,7 +1066,13 @@ export async function verifyForecastAdjustmentEvidenceAtRoot(
     qualificationReceiptSha256: input.qualificationReceiptSha256,
   };
   const evidence = await readCompleteEvidence(root, "objects", hashes);
-  await verifyCompleteEvidenceAtRoot(root, evidence, "objects", true);
+  await verifyCompleteEvidenceAtRoot(
+    root,
+    redundancyRoot,
+    evidence,
+    "objects",
+    true,
+  );
 
   return deepFreeze({
     ...hashes,
@@ -1036,8 +1086,12 @@ export async function loadVerifiedForecastAdjustmentEvidence(input: {
   readonly candidateArtifactSha256: string;
   readonly evaluationReportSha256: string;
   readonly qualificationReceiptSha256: string;
-}): Promise<ForecastAdjustmentEvidenceTripleV1> {
-  return loadVerifiedForecastAdjustmentEvidenceAtRoot(MODEL_EVIDENCE_ROOT, input);
+}): Promise<ForecastAdjustmentEvidenceTripleV2> {
+  return loadVerifiedForecastAdjustmentEvidenceAtRoot(
+    MODEL_EVIDENCE_ROOT,
+    input,
+    MODEL_EVIDENCE_REDUNDANCY_ROOT,
+  );
 }
 
 // load one verified promotable triple under a test root
@@ -1048,10 +1102,17 @@ export async function loadVerifiedForecastAdjustmentEvidenceAtRoot(
     readonly evaluationReportSha256: string;
     readonly qualificationReceiptSha256: string;
   },
-): Promise<ForecastAdjustmentEvidenceTripleV1> {
+  redundancyRoot = root,
+): Promise<ForecastAdjustmentEvidenceTripleV2> {
   validateRequestedHashes(input);
   const evidence = await readCompleteEvidence(root, "objects", input);
-  await verifyCompleteEvidenceAtRoot(root, evidence, "objects", true);
+  await verifyCompleteEvidenceAtRoot(
+    root,
+    redundancyRoot,
+    evidence,
+    "objects",
+    true,
+  );
   return deepFreeze({
     candidate: evidence.candidate,
     evaluationReport: evidence.evaluationReport,
@@ -1138,10 +1199,25 @@ export async function stageRedundantEvidenceObject(
 // verify exact links, hashes, and physical redundancy
 async function verifyCompleteEvidenceAtRoot(
   root: string,
+  redundancyRoot: string,
   triple: CompleteForecastAdjustmentEvidenceV1,
   primaryStore: "objects" | "staging",
   requireLifecycle: boolean,
 ): Promise<void> {
+  const [canonicalRoot, canonicalRedundancyRoot] = await Promise.all([
+    requireCanonicalDirectory(root, "evidence root"),
+    requireCanonicalDirectory(redundancyRoot, "evidence redundancy root"),
+  ]);
+  const [rootMetadata, redundancyMetadata] = await Promise.all([
+    lstat(canonicalRoot),
+    lstat(canonicalRedundancyRoot),
+  ]);
+
+  // require independent failure domains before trusting copied bytes
+  if (rootMetadata.dev === redundancyMetadata.dev) {
+    throw new RangeError("evidence redundancy must use a distinct storage device");
+  }
+
   verifyForecastAdjustmentCandidate(triple.candidate);
   verifyForecastAdjustmentEvaluationReport(triple.evaluationReport);
   verifyForecastAdjustmentQualificationReceipt(triple.qualificationReceipt);
@@ -1235,6 +1311,7 @@ async function verifyCompleteEvidenceAtRoot(
 
   await verifyRetainedSnapshotRedundancy(
     root,
+    redundancyRoot,
     triple.snapshotManifest,
     redundantStore,
     triple.candidate.exportManifestSha256,
@@ -1243,7 +1320,12 @@ async function verifyCompleteEvidenceAtRoot(
   for (const kind of EVIDENCE_KINDS) {
     const hash = hashForKind(triple, kind);
     const primary = evidenceObjectPath(root, primaryStore, kind, hash);
-    const redundant = evidenceObjectPath(root, redundantStore, kind, hash);
+    const redundant = evidenceObjectPath(
+      redundancyRoot,
+      redundantStore,
+      kind,
+      hash,
+    );
     const [primaryReal, redundantReal] = await Promise.all([
       realpath(primary).catch(() => primary),
       realpath(redundant).catch(() => redundant),
@@ -1259,17 +1341,18 @@ async function verifyCompleteEvidenceAtRoot(
       lstat(redundant),
     ]);
 
-    // reject hard links as fake physical redundancy
-    if (
-      primaryMetadata.dev === redundantMetadata.dev &&
-      primaryMetadata.ino === redundantMetadata.ino
-    ) {
-      throw new RangeError("evidence redundancy cannot hard-link the primary object");
+    // require a distinct storage device rather than another local inode
+    if (primaryMetadata.dev === redundantMetadata.dev) {
+      throw new RangeError("evidence redundancy must use a distinct storage device");
     }
 
     const [primaryBytes, redundantBytes] = await Promise.all([
       readVerifiedRegularFile(primary, root, "primary evidence object"),
-      readVerifiedRegularFile(redundant, root, "redundant evidence object"),
+      readVerifiedRegularFile(
+        redundant,
+        redundancyRoot,
+        "redundant evidence object",
+      ),
     ]);
 
     // require exact independently retrievable bytes
@@ -1281,7 +1364,7 @@ async function verifyCompleteEvidenceAtRoot(
 
 // create a separately addressable retained snapshot copy
 async function stageRedundantRetainedSnapshot(
-  root: string,
+  redundancyRoot: string,
   status: ForecastAdjustmentRedundancyAttestationV1["status"],
   snapshotRoot: string,
   snapshotManifestSha256: string,
@@ -1290,7 +1373,7 @@ async function stageRedundantRetainedSnapshot(
     ? "independent-copy"
     : "restored-backup";
   const destination = join(
-    root,
+    redundancyRoot,
     store,
     "snapshots",
     `sha256-${snapshotManifestSha256}`,
@@ -1306,6 +1389,7 @@ async function stageRedundantRetainedSnapshot(
 // verify the complete compressed snapshot and a physically separate copy
 async function verifyRetainedSnapshotRedundancy(
   root: string,
+  redundancyRoot: string,
   snapshotManifest: JsonValue,
   redundantStore: string,
   snapshotManifestSha256: string,
@@ -1322,7 +1406,7 @@ async function verifyRetainedSnapshotRedundancy(
 
   const primaryRoot = join(root, "snapshots", snapshotManifestSha256);
   const redundantRoot = join(
-    root,
+    redundancyRoot,
     redundantStore,
     "snapshots",
     `sha256-${snapshotManifestSha256}`,
@@ -1335,7 +1419,7 @@ async function verifyRetainedSnapshotRedundancy(
     ).then((bytes) => bytes.toString("utf8")),
     readVerifiedRegularFile(
       join(redundantRoot, "manifest.json"),
-      root,
+      redundancyRoot,
       "redundant retained snapshot manifest",
     ).then((bytes) => bytes.toString("utf8")),
   ]);
@@ -1358,12 +1442,11 @@ async function verifyRetainedSnapshotRedundancy(
       lstat(join(redundantRoot, member.path)),
     ]);
 
-    // require exact hashes, bytes, and different inodes
+    // require exact hashes, bytes, and a distinct storage device
     if (
       sha256(primaryBytes) !== member.sha256 ||
       !primaryBytes.equals(redundantBytes) ||
-      (primaryMetadata.dev === redundantMetadata.dev &&
-        primaryMetadata.ino === redundantMetadata.ino)
+      primaryMetadata.dev === redundantMetadata.dev
     ) {
       throw new RangeError("retained snapshot member redundancy mismatch");
     }
@@ -1395,13 +1478,13 @@ async function readEvidenceTriple(
     readonly evaluationReportSha256: string;
     readonly qualificationReceiptSha256: string;
   },
-): Promise<ForecastAdjustmentEvidenceTripleV1> {
+): Promise<ForecastAdjustmentEvidenceTripleV2> {
   const [candidate, evaluationReport, qualificationReceipt] = await Promise.all([
-    readJsonObject<ForecastAdjustmentCandidateV1>(
+    readJsonObject<ForecastAdjustmentCandidateV2>(
       evidenceObjectPath(root, store, "candidate", hashes.candidateArtifactSha256),
       root,
     ),
-    readJsonObject<ForecastAdjustmentEvaluationReportV1>(
+    readJsonObject<ForecastAdjustmentEvaluationReportV2>(
       evidenceObjectPath(
         root,
         store,
@@ -1410,7 +1493,7 @@ async function readEvidenceTriple(
       ),
       root,
     ),
-    readJsonObject<ForecastAdjustmentQualificationReceiptV1>(
+    readJsonObject<ForecastAdjustmentQualificationReceiptV2>(
       evidenceObjectPath(
         root,
         store,
@@ -1535,20 +1618,20 @@ function verifyTypedEvidenceObject(
 
   // dispatch one closed object class
   if (kind === "candidate") {
-    verifyForecastAdjustmentCandidate(value as ForecastAdjustmentCandidateV1);
+    verifyForecastAdjustmentCandidate(value as ForecastAdjustmentCandidateV2);
     return;
   }
 
   // dispatch report verification
   if (kind === "evaluation-report") {
     verifyForecastAdjustmentEvaluationReport(
-      value as ForecastAdjustmentEvaluationReportV1,
+      value as ForecastAdjustmentEvaluationReportV2,
     );
     return;
   }
 
   verifyForecastAdjustmentQualificationReceipt(
-    value as ForecastAdjustmentQualificationReceiptV1,
+    value as ForecastAdjustmentQualificationReceiptV2,
   );
 }
 
@@ -1579,15 +1662,15 @@ function objectHashForKind(
 
   // select the candidate identity
   if (kind === "candidate") {
-    return (value as ForecastAdjustmentCandidateV1).candidateArtifactSha256;
+    return (value as ForecastAdjustmentCandidateV2).candidateArtifactSha256;
   }
 
   // select the report identity
   if (kind === "evaluation-report") {
-    return (value as ForecastAdjustmentEvaluationReportV1).evaluationReportSha256;
+    return (value as ForecastAdjustmentEvaluationReportV2).evaluationReportSha256;
   }
 
-  return (value as ForecastAdjustmentQualificationReceiptV1)
+  return (value as ForecastAdjustmentQualificationReceiptV2)
     .qualificationReceiptSha256;
 }
 
@@ -1993,39 +2076,22 @@ function validateSnapshotMember(member: SnapshotMemberV1, root: string): void {
 function inferManifestInsufficiency(manifest: SnapshotManifestV1): readonly string[] {
   const failed: string[] = [];
   const epochDates = inclusiveDateCount(manifest.fromLocalDate, manifest.toLocalDate);
-  const ecowittMembers = manifest.members.filter(
-    (member) =>
-      member.recordKind === "station-hour" &&
-      member.stationKey === "ballydidean-ecowitt",
-  );
-  const ecowittDates = new Set(ecowittMembers.map((member) => member.localDate)).size;
-  const ecowittCoverage = manifest.stationMetricCoverage.find(
-    (coverage) => coverage.stationKey === "ballydidean-ecowitt",
-  );
-  const ecowittMetricDateUpperBound = Math.max(
-    ...SNAPSHOT_STATION_METRIC_FIELDS.map(
-      (metric) =>
-        ecowittCoverage?.eligibleMetricNonNullLocalDates[metric] ?? 0,
-    ),
-  );
-  const ecowittMetricUpperBound = ecowittMembers.reduce(
-    (sum, member) => sum + member.rowCount,
-    0,
-  );
+
+  // count distinct served-cohort dates
+  const liveV4Dates = new Set(
+    manifest.members
+      .filter((member) => member.recordKind === "legacy-v4-retrieval")
+      .map((member) => member.localDate),
+  ).size;
 
   // require the complete frozen epoch
   if (epochDates < 402) {
     failed.push("epoch_402_local_dates");
   }
 
-  // require 30 complete target-site dates
-  if (ecowittDates < 30 || ecowittMetricDateUpperBound < 30) {
-    failed.push("ecowitt_complete_local_dates");
-  }
-
-  // require at least 500 possible target matches
-  if (ecowittMetricUpperBound < 500) {
-    failed.push("ecowitt_metric_matches");
+  // require enough possible served-cohort network dates
+  if (liveV4Dates < 330) {
+    failed.push("network_330_local_dates");
   }
 
   return failed.sort(compareText);
@@ -2680,7 +2746,7 @@ function providerBalancedBootstrap(
 
 // score one unchanged candidate after the durable holdout burn
 async function evaluateRetainedHoldout(input: {
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly holdoutAccessMarker: HoldoutAccessMarkerV1;
   readonly holdoutRows: readonly SanitizedTrainingExportRow[];
   readonly preregistration: ForecastAdjustmentPreregistrationV1;
@@ -2817,32 +2883,8 @@ async function evaluateRetainedHoldout(input: {
         kind: "station" as const,
       })),
     ];
-    const ecowitt = stationEvidence.find(
-      (station) => station.score.physicalStationKey === "ballydidean-ecowitt",
-    );
-
-    // require exact on-property scoring evidence
-    if (ecowitt === undefined) {
-      throw new RangeError("holdout lacks Ecowitt target-site evidence");
-    }
-
-    const ecowittMetricMatches = events.filter(
-      (event) =>
-        event.metric === pair.metric &&
-        event.stationRows.some(
-          (row) =>
-            row.physicalStationKey === "ballydidean-ecowitt" &&
-            stationMetricValue(row, pair.metric) !== null,
-        ),
-    ).length;
     return {
       criticalSlices,
-      ecowittCompleteLocalDates: new Set(
-        ecowitt.pairedEvents.map((event) => event.localDate),
-      ).size,
-      ecowittMetricBandMatches: ecowitt.pairedEvents.length,
-      ecowittMetricMatches,
-      ecowittTargetSite: ecowitt.summary,
       evaluatedSeasonDaypartKeys: seasonSlices.map((slice) => slice.key),
       metricBand: pair,
       network: toPairedScore(network),
@@ -2895,7 +2937,7 @@ async function evaluateRetainedHoldout(input: {
 
 // apply one candidate without refitting to matched holdout events
 function scoreCandidateEvents(
-  candidate: ForecastAdjustmentCandidateV1,
+  candidate: ForecastAdjustmentCandidateV2,
   events: readonly RetainedTrainingEventV1[],
   pair: ForecastAdjustmentMetricBand,
 ): readonly (BootstrapPairedEvent & {

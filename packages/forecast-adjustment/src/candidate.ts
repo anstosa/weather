@@ -4,7 +4,7 @@ import {
   FORECAST_ADJUSTMENT_CONTRACT_VERSIONS,
   FORECAST_ADJUSTMENT_METRIC_POLICIES_V1,
   FORECAST_OBSERVATION_MANIFEST_V1,
-  type ForecastAdjustmentCandidateV1,
+  type ForecastAdjustmentCandidateV2,
   type ForecastAdjustmentCoefficient,
   type ForecastAdjustmentForecastIdentity,
   type ForecastAdjustmentMetricBand,
@@ -78,7 +78,7 @@ const CANDIDATE_KEYS = new Set([
 ]);
 
 // describe pre-holdout fitted material
-export interface ForecastAdjustmentCandidateInputV1 {
+export interface ForecastAdjustmentCandidateInputV2 {
   readonly coefficients: readonly ForecastAdjustmentCoefficient[];
   readonly developmentReportSha256: string;
   readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
@@ -139,8 +139,8 @@ export function canonicalObjectSha256(
 
 // create a deterministic immutable fitted candidate
 export function createForecastAdjustmentCandidate(
-  input: ForecastAdjustmentCandidateInputV1,
-): ForecastAdjustmentCandidateV1 {
+  input: ForecastAdjustmentCandidateInputV2,
+): ForecastAdjustmentCandidateV2 {
   rejectUnknownKeys(input, CANDIDATE_INPUT_KEYS, "candidate input");
   validateHash(input.developmentReportSha256, "developmentReportSha256");
   validateHash(input.exportManifestSha256, "exportManifestSha256");
@@ -183,12 +183,12 @@ export function createForecastAdjustmentCandidate(
   return deepFreeze({
     ...unsignedCandidate,
     candidateArtifactSha256,
-  }) as ForecastAdjustmentCandidateV1;
+  }) as ForecastAdjustmentCandidateV2;
 }
 
 // verify immutable candidate bytes and hashes
 export function verifyForecastAdjustmentCandidate(
-  candidate: ForecastAdjustmentCandidateV1,
+  candidate: ForecastAdjustmentCandidateV2,
 ): void {
   rejectUnknownKeys(candidate, CANDIDATE_KEYS, "candidate");
   const candidateHash = canonicalObjectSha256(
@@ -267,7 +267,7 @@ function validateCanonicalCandidateProvenance(
 // create one immutable preregistration before holdout access
 export function createForecastAdjustmentPreregistration(input: {
   readonly algorithmImplementationSha256: string;
-  readonly candidate: ForecastAdjustmentCandidateV1;
+  readonly candidate: ForecastAdjustmentCandidateV2;
   readonly holdoutEndExclusive: string;
   readonly holdoutEndLocalDate: string;
   readonly holdoutStartInclusive: string;
@@ -317,7 +317,7 @@ export function createForecastAdjustmentPreregistration(input: {
 // verify preregistration links without holdout access
 export function verifyForecastAdjustmentPreregistration(
   preregistration: ForecastAdjustmentPreregistrationV1,
-  candidate: ForecastAdjustmentCandidateV1,
+  candidate: ForecastAdjustmentCandidateV2,
 ): void {
   verifyForecastAdjustmentCandidate(candidate);
   rejectUnknownKeys(

@@ -248,7 +248,7 @@ test("evaluation forwards only canonical paths and emits stable JSON", async () 
       return {
         exitCode: 2,
         state: "insufficient_data",
-        failedGates: ["ecowitt_complete_local_dates"],
+        failedGates: ["epoch_402_local_dates"],
         reportSha256: hashB,
       };
     },
@@ -263,7 +263,7 @@ test("evaluation forwards only canonical paths and emits stable JSON", async () 
   assert.equal(outputs[0], outputs[1]);
   assert.equal(
     outputs[0],
-    `{"exitCode":2,"failedGates":["ecowitt_complete_local_dates"],"reportSha256":"${hashB}","state":"insufficient_data"}\n`,
+    `{"exitCode":2,"failedGates":["epoch_402_local_dates"],"reportSha256":"${hashB}","state":"insufficient_data"}\n`,
   );
 });
 
@@ -365,9 +365,8 @@ test("evaluation verifies member hashes before deterministic insufficiency", asy
     assert.equal(result.state, "insufficient_data");
     assert.equal(result.snapshotManifestSha256, fixture.manifestSha256);
     assert.deepEqual(result.failedGates, [
-      "ecowitt_complete_local_dates",
-      "ecowitt_metric_matches",
       "epoch_402_local_dates",
+      "network_330_local_dates",
     ]);
     assert.deepEqual(result.accessTrace, [
       "manifest_control_opened",

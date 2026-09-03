@@ -180,10 +180,6 @@ export async function createQualifiedFixture(directory) {
     metricBandEvaluations: [
       {
         criticalSlices: slices,
-        ecowittCompleteLocalDates: 30,
-        ecowittMetricBandMatches: 100,
-        ecowittMetricMatches: 500,
-        ecowittTargetSite: passingScore,
         evaluatedSeasonDaypartKeys: ["winter-night"],
         metricBand: candidate.enabledMetricBands[0],
         network: passingScore,

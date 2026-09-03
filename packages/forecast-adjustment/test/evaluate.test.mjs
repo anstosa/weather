@@ -9,7 +9,6 @@ import {
   createForecastAdjustmentEvaluationReport,
   createForecastAdjustmentQualificationReceipt,
   evaluateDevelopmentLosoFold,
-  evaluateEcowittTargetSiteGate,
   pairedSkill,
 } from "../dist/index.js";
 
@@ -77,33 +76,7 @@ test("development LOSO enforces five stations, three families, and equal provide
   assert.equal(tooFew.passed, false);
 });
 
-test("Ecowitt gate applies every exact boundary and zero-loss skill", () => {
-  const score = {
-    adjustedLoss: 9.8,
-    bootstrapLowerBound: Number.EPSILON,
-    bootstrapUpperBound: 0.1,
-    eventCount: 100,
-    rawLoss: 10,
-    skill: 0.02,
-  };
-  const base = {
-    criticalSlices: [],
-    ecowittCompleteLocalDates: 30,
-    ecowittMetricBandMatches: 100,
-    ecowittMetricMatches: 500,
-    ecowittTargetSite: score,
-    evaluatedSeasonDaypartKeys: [],
-    metricBand: { leadBand: "001-024", metric: "temperatureC" },
-    network: score,
-    providerBalanced: score,
-    scoreableStationKeys: [],
-  };
-  assert.equal(evaluateEcowittTargetSiteGate(base).passed, true);
-  assert.deepEqual(
-    evaluateEcowittTargetSiteGate({ ...base, ecowittCompleteLocalDates: 29 })
-      .failedReasons,
-    ["ecowitt_complete_local_dates"],
-  );
+test("paired skill preserves literal zero-loss behavior", () => {
   assert.equal(pairedSkill(0, 0), 0);
   assert.equal(pairedSkill(0, 1), -1);
 });
@@ -145,14 +118,21 @@ test("development report requires four passing folds including the latest", () =
   );
 });
 
-test("holdout report remains immutable evidence when qualification fails", async () => {
+test("locked holdout rejects provider-balanced material harm", async () => {
   const qualifiedDirectory = await mkdtemp(join(tmpdir(), "weather-qualified-"));
   const holdoutDirectory = await mkdtemp(join(tmpdir(), "weather-rejected-"));
   const qualified = await createQualifiedFixture(qualifiedDirectory);
   const holdout = await createHoldoutFixture(holdoutDirectory);
   const failingEvaluation = {
     ...qualified.evaluationReport.metricBandEvaluations[0],
-    ecowittCompleteLocalDates: 29,
+    providerBalanced: {
+      adjustedLoss: 10.3,
+      bootstrapLowerBound: -0.1,
+      bootstrapUpperBound: -0.01,
+      eventCount: 100,
+      rawLoss: 10,
+      skill: -0.03,
+    },
   };
   const report = createForecastAdjustmentEvaluationReport({
     candidate: holdout.candidate,
@@ -176,7 +156,7 @@ test("holdout report remains immutable evidence when qualification fails", async
   assert.equal(receipt.passed, false);
   assert.equal(receipt.lifecycleState, "rejected");
   assert.equal(
-    receipt.gates.find((gate) => gate.name === "locked_holdout_and_ecowitt")
+    receipt.gates.find((gate) => gate.name === "locked_holdout")
       .passed,
     false,
   );

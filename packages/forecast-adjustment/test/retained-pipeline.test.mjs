@@ -301,9 +301,11 @@ function addMember(members, memberBytes, input) {
 
 test("retained snapshot fits, burns, scores, and promotes without holdout leakage", { timeout: 60_000 }, async () => {
   const evidenceRoot = await mkdtemp(join(tmpdir(), "weather-retained-e2e-"));
+  const redundancyRoot = await mkdtemp("/dev/shm/weather-retained-redundancy-");
   const snapshotPath = await createSufficientSnapshot(evidenceRoot);
   const result = await evaluateRetainedForecastAdjustmentSnapshot({
     evidenceRoot,
+    redundancyRoot,
     snapshotPath,
   });
   assert.equal(result.state, "promoted");

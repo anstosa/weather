@@ -4,8 +4,8 @@ import { dirname, join, resolve } from "node:path";
 
 import {
   FORECAST_ADJUSTMENT_CONTRACT_VERSIONS,
-  type ForecastAdjustmentEvidenceTripleV1,
-  type ForecastAdjustmentRuntimeBundleV1,
+  type ForecastAdjustmentEvidenceTripleV2,
+  type ForecastAdjustmentRuntimeBundleV2,
   validateForecastAdjustmentRuntimeBundleLinks,
   validatePromotableForecastAdjustmentEvidence,
   canonicalizeJson,
@@ -84,8 +84,8 @@ export interface StagedForecastAdjustmentRuntimeBundleV1 {
 
 // build an immutable sanitized runtime bundle
 export function createForecastAdjustmentRuntimeBundle(
-  evidence: ForecastAdjustmentEvidenceTripleV1,
-): ForecastAdjustmentRuntimeBundleV1 {
+  evidence: ForecastAdjustmentEvidenceTripleV2,
+): ForecastAdjustmentRuntimeBundleV2 {
   rejectForbiddenRuntimeContent(evidence);
   verifyEmbeddedEvidence(evidence);
   validatePromotableForecastAdjustmentEvidence(evidence);
@@ -107,7 +107,7 @@ export function createForecastAdjustmentRuntimeBundle(
   const bundle = deepFreeze({
     ...unsigned,
     bundleSha256: canonicalSha256(unsigned as unknown as JsonValue),
-  }) as ForecastAdjustmentRuntimeBundleV1;
+  }) as ForecastAdjustmentRuntimeBundleV2;
 
   // require byte-identical embedded immutable objects
   if (
@@ -125,7 +125,7 @@ export function createForecastAdjustmentRuntimeBundle(
 
 // verify bundle content hash and immutable evidence links
 export function verifyForecastAdjustmentRuntimeBundle(
-  bundle: ForecastAdjustmentRuntimeBundleV1,
+  bundle: ForecastAdjustmentRuntimeBundleV2,
 ): void {
   rejectForbiddenRuntimeContent(bundle);
   const keys = Object.keys(bundle).sort();
@@ -144,6 +144,14 @@ export function verifyForecastAdjustmentRuntimeBundle(
     throw new RangeError("runtime bundle has unexpected fields");
   }
 
+  // reject superseded bundle contracts
+  if (
+    bundle.contractVersion !==
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.runtimeBundle
+  ) {
+    throw new RangeError("unsupported forecast adjustment runtime bundle");
+  }
+
   // reject bundle substitution
   if (
     canonicalObjectSha256(
@@ -159,7 +167,7 @@ export function verifyForecastAdjustmentRuntimeBundle(
 }
 
 // verify every embedded immutable object and its exact cross-links
-function verifyEmbeddedEvidence(evidence: ForecastAdjustmentEvidenceTripleV1): void {
+function verifyEmbeddedEvidence(evidence: ForecastAdjustmentEvidenceTripleV2): void {
   verifyForecastAdjustmentCandidate(evidence.candidate);
   verifyForecastAdjustmentEvaluationReport(evidence.evaluationReport);
   verifyForecastAdjustmentQualificationReceipt(evidence.qualificationReceipt);
@@ -210,17 +218,19 @@ export async function stageForecastAdjustmentRuntimeBundleAtRoot(
     readonly evaluationReportSha256: string;
     readonly qualificationReceiptSha256: string;
   },
+  redundancyRoot = evidenceRoot,
 ): Promise<StagedForecastAdjustmentRuntimeBundleV1> {
   const evidence = await loadVerifiedForecastAdjustmentEvidenceAtRoot(
     evidenceRoot,
     input,
+    redundancyRoot,
   );
   return stageBundleEvidenceAtRoot(outputRoot, evidence);
 }
 
 // validate bundle and registry links with a synthetic exact registry
 export function verifyRuntimeBundleSelection(
-  bundle: ForecastAdjustmentRuntimeBundleV1,
+  bundle: ForecastAdjustmentRuntimeBundleV2,
 ): void {
   verifyForecastAdjustmentRuntimeBundle(bundle);
   validateForecastAdjustmentRuntimeBundleLinks(
@@ -242,7 +252,7 @@ export function verifyRuntimeBundleSelection(
 // stage exact canonical bytes without registry mutation
 async function stageBundleEvidenceAtRoot(
   outputRoot: string,
-  evidence: ForecastAdjustmentEvidenceTripleV1,
+  evidence: ForecastAdjustmentEvidenceTripleV2,
 ): Promise<StagedForecastAdjustmentRuntimeBundleV1> {
   const bundle = createForecastAdjustmentRuntimeBundle(evidence);
   const outputPath = join(outputRoot, `sha256-${bundle.bundleSha256}.json`);

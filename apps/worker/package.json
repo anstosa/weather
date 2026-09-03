@@ -21,6 +21,7 @@
     "weather:backfill": "npm run build && node dist/backfill-cli.js",
     "weather:forecast-adjustment:bundle": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-bundle-cli.js",
     "weather:forecast-adjustment:evaluate": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-evaluate-cli.js",
+    "weather:forecast-adjustment:evaluate-retained": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-evaluate-retained-cli.js",
     "weather:forecast-adjustment:evidence": "npm run build && cd ../.. && node apps/worker/dist/forecast-adjustment-evidence-cli.js",
     "typecheck": "npm run build:dependencies && tsc -p tsconfig.json --noEmit"
   },

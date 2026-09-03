@@ -5,7 +5,7 @@ import { isAbsolute, join, parse, resolve, sep } from "node:path";
 import {
   type ForecastAdjustmentReasonCode,
   type ForecastAdjustmentRegistryV1,
-  type ForecastAdjustmentRuntimeBundleV1,
+  type ForecastAdjustmentRuntimeBundleV2,
   validateForecastAdjustmentRegistry,
   validateForecastAdjustmentRuntimeBundleLinks,
   type JsonValue,
@@ -22,7 +22,7 @@ export const FORECAST_ADJUSTMENT_REGISTRY_FILENAME = "ballydidean.json";
 // cache one startup adjustment provider state
 export type LoadedForecastAdjustmentRuntimeV1 =
   | {
-      readonly bundle: ForecastAdjustmentRuntimeBundleV1;
+      readonly bundle: ForecastAdjustmentRuntimeBundleV2;
       readonly reasonCode: null;
       readonly state: "active";
     }
@@ -122,7 +122,7 @@ async function loadRuntimeFromRoot(
       throw new RangeError("runtime bundle path escapes the site root");
     }
 
-    const bundle = await readRegularJson<ForecastAdjustmentRuntimeBundleV1>(
+    const bundle = await readRegularJson<ForecastAdjustmentRuntimeBundleV2>(
       bundlePath,
       absoluteRoot,
     );
