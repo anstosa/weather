@@ -10,6 +10,8 @@ const root = resolve(process.cwd());
 const publicRoot = join(root, "apps/web/public");
 const compiledRoot = join(root, "apps/web/dist");
 const maximumApiBytes = 1024 * 1024;
+// allow the complete daily trends history
+const maximumTrendsApiBytes = 2 * 1024 * 1024;
 const maximumMapBytes = 4 * 1024 * 1024;
 const apiOrigin = parseApiOrigin(process.env.WEATHER_API_ORIGIN);
 const xweatherOrigin = parseXweatherOrigin(
@@ -460,6 +462,10 @@ async function proxyApi(request, response, requestUrl) {
   }
 
   const target = new URL(`${requestUrl.pathname}${requestUrl.search}`, apiOrigin);
+  // relax only the exact site trends route
+  const maximumResponseBytes = /^\/api\/v1\/sites\/[^/]+\/trends$/u.test(requestUrl.pathname)
+    ? maximumTrendsApiBytes
+    : maximumApiBytes;
 
   try {
     const upstream = await fetch(target, {
@@ -470,10 +476,10 @@ async function proxyApi(request, response, requestUrl) {
     });
     const body = request.method === "HEAD"
       ? Buffer.alloc(0)
-      : await readBoundedBody(upstream, maximumApiBytes, "API");
+      : await readBoundedBody(upstream, maximumResponseBytes, "API");
     const contentLength =
       request.method === "HEAD"
-        ? boundedContentLength(upstream.headers.get("content-length"))
+        ? boundedContentLength(upstream.headers.get("content-length"), maximumResponseBytes)
         : body.byteLength;
     setSecurityHeaders(response);
     response.writeHead(upstream.status, {
@@ -668,6 +674,18 @@ function drainXweatherProviderQueue() {
   drainXweatherProviderQueue();
 }
 
+// classify one provider content type without logging parameters
+function xweatherDiagnosticContentType(value) {
+  const mediaType = value?.split(";", 1)[0]?.trim().toLowerCase();
+
+  // expose only reviewed diagnostic categories
+  return ["application/json", "image/png", "text/html", "text/plain"].includes(mediaType ?? "")
+    ? mediaType
+    : value === null
+      ? "missing"
+      : "other";
+}
+
 // fetch one credentialed tile for the server memory cache
 async function fetchXweatherTile(tile) {
   // reject impossible loader use while the integration is disabled
@@ -686,18 +704,31 @@ async function fetchXweatherTile(tile) {
     `${credentials}/${layer}/${geometry}/${tile.validTime}.png`,
     xweatherOrigin,
   );
-  const upstream = await fetch(target, {
-    headers: {
-      Accept: "image/png",
-      "User-Agent": "Ballydidean-Weather/1.0",
-    },
-    method: "GET",
-    redirect: "follow",
-    signal: AbortSignal.timeout(8_000),
-  });
+  let upstream;
+
+  try {
+    upstream = await fetch(target, {
+      headers: {
+        Accept: "image/png",
+        "User-Agent": "Ballydidean-Weather/1.0",
+      },
+      method: "GET",
+      redirect: "follow",
+      signal: AbortSignal.timeout(8_000),
+    });
+  } catch (error) {
+    // report only one safe transport failure category
+    const errorName = error instanceof TypeError ? "TypeError" : "Error";
+    process.stderr.write(`Xweather tile fetch failed: error=${errorName}\n`);
+    throw error;
+  }
 
   // reject provider errors without exposing credential details
   if (!upstream.ok || !upstream.headers.get("content-type")?.startsWith("image/png")) {
+    const mediaType = xweatherDiagnosticContentType(upstream.headers.get("content-type"));
+    process.stderr.write(
+      `Xweather tile response rejected: status=${String(upstream.status)} content-type=${mediaType}\n`,
+    );
     const error = new Error("Xweather tile provider returned an invalid response");
     const retryAfterSeconds = Number(upstream.headers.get("retry-after"));
 

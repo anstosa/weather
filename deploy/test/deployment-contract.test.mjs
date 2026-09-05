@@ -640,9 +640,19 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
   await writeFile(xweatherClientSecret, "test-client-secret\n");
   await writeFile(adminBootstrapTokenPath, "test-admin-bootstrap-token-with-32-bytes\n");
 
-  // provide one bounded fake API
+  const largeApiBody = Buffer.alloc((1024 * 1024) + 1, "t");
+  const oversizedTrendsApiBody = Buffer.alloc((2 * 1024 * 1024) + 1, "x");
+  // map route fixtures to bounded response bodies
+  const apiFixtureBodies = new Map([
+    ["/api/v1/sites/ballydidean/current?large=1", largeApiBody],
+    ["/api/v1/sites/ballydidean/trends", largeApiBody],
+    ["/api/v1/sites/oversized/trends", oversizedTrendsApiBody],
+  ]);
+  // provide route-specific bounded API fixtures
   const api = createServer((request, response) => {
-    const body = JSON.stringify({ method: request.method, path: request.url });
+    // select one bounded response body
+    const body = apiFixtureBodies.get(request.url ?? "") ??
+      Buffer.from(JSON.stringify({ method: request.method, path: request.url }));
     response.setHeader("Content-Type", "application/json");
     response.setHeader("Content-Length", String(Buffer.byteLength(body)));
     response.end(body);
@@ -654,12 +664,15 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
   let xweatherActive = 0;
   let xweatherMaximumActive = 0;
   const xweatherStartedAt = [];
+  const providerBodySecret =
+    "provider-body-secret https://provider.example/private/fake-client-id_fake-client-secret";
   const mapPng = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
     "base64",
   );
   const xweather = createServer(async (request, response) => {
-    xweatherRequests.push(`${request.method ?? "GET"} ${request.url ?? "/"}`);
+    const requestPath = request.url ?? "/";
+    xweatherRequests.push(`${request.method ?? "GET"} ${requestPath}`);
     xweatherStartedAt.push(Date.now());
     xweatherActive += 1;
     xweatherMaximumActive = Math.max(xweatherMaximumActive, xweatherActive);
@@ -668,6 +681,31 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       // keep concurrent provider requests observable
       (resolveWait) => setTimeout(resolveWait, 20),
     );
+
+    // emulate one non-ok provider response
+    if (requestPath.includes("/satellite-geocolor/")) {
+      response.statusCode = 503;
+      response.setHeader("Content-Type", "application/json; diagnostic-secret=header-secret");
+      response.end(providerBodySecret);
+      xweatherActive -= 1;
+      return;
+    }
+
+    // emulate one unexpected provider media type
+    if (requestPath.includes("/precip-1h/")) {
+      response.setHeader("Content-Type", "text/plain; diagnostic-secret=wrong-type-secret");
+      response.end(providerBodySecret);
+      xweatherActive -= 1;
+      return;
+    }
+
+    // emulate one provider transport failure
+    if (requestPath.includes("/wind-speeds/")) {
+      request.socket.destroy();
+      xweatherActive -= 1;
+      return;
+    }
+
     response.setHeader("Content-Type", "image/png");
     response.setHeader("Content-Length", String(mapPng.byteLength));
     response.end(request.method === "HEAD" ? undefined : mapPng);
@@ -691,8 +729,14 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       WEATHER_XWEATHER_MAP_ORIGIN: `http://127.0.0.1:${xweatherPort}`,
       WEATHER_XWEATHER_USAGE_PATH: xweatherUsagePath,
     },
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "pipe"],
   });
+  const edgeDiagnostics = [];
+  edge.stderr.on(
+    "data",
+    // collect only disposable edge diagnostics
+    (chunk) => edgeDiagnostics.push(String(chunk)),
+  );
 
   try {
     await waitForServer(`http://127.0.0.1:${webPort}/`);
@@ -772,6 +816,11 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const unversionedAsset = await fetch(`http://127.0.0.1:${webPort}/index.js`);
     const proxied = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/current?check=1`);
     const annualTrends = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/trends`);
+    const annualTrendsHead = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/trends`, { method: "HEAD" });
+    const oversizedOrdinary = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/current?large=1`);
+    const oversizedOrdinaryHead = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/current?large=1`, { method: "HEAD" });
+    const oversizedTrends = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/oversized/trends`);
+    const oversizedTrendsHead = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/oversized/trends`, { method: "HEAD" });
     const health = await fetch(`http://127.0.0.1:${webPort}/api/v1/health`);
     const head = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "HEAD" });
     const mutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`, { method: "POST" });
@@ -785,6 +834,10 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const weatherTile = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/history/radar/${mapValidTime}/${frameGeometry}`);
     const weatherTileAgain = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/history/radar/${mapValidTime}/${frameGeometry}`);
     const weatherTileHead = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/forecast/wind/${mapForecastTime}/${frameGeometry}`, { method: "HEAD" });
+    const forecastRadarTile = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/forecast/radar/${mapForecastTime}/${frameGeometry}`);
+    const providerStatusFailure = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/history/clouds/${mapValidTime}/${frameGeometry}`);
+    const providerContentTypeFailure = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/history/precipitation/${mapValidTime}/${frameGeometry}`);
+    const providerFetchFailure = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/history/wind/${mapValidTime}/${frameGeometry}`);
     const refreshMutation = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/forecast/refresh`, { method: "POST" });
     const refreshRead = await fetch(`http://127.0.0.1:${webPort}/maps/xweather/forecast/refresh`);
 
@@ -866,7 +919,14 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.match(stylesheet.headers.get("cache-control"), /immutable/u);
     assert.equal(staleAsset.status, 404);
     assert.equal(annualTrends.status, 200);
+    assert.equal((await annualTrends.arrayBuffer()).byteLength, largeApiBody.byteLength);
     assert.equal(annualTrends.headers.get("cache-control"), "public, max-age=300, s-maxage=1800, stale-while-revalidate=86400");
+    assert.equal(annualTrendsHead.status, 200);
+    assert.equal(Number(annualTrendsHead.headers.get("content-length")), largeApiBody.byteLength);
+    assert.equal(oversizedOrdinary.status, 502);
+    assert.equal(oversizedOrdinaryHead.status, 502);
+    assert.equal(oversizedTrends.status, 502);
+    assert.equal(oversizedTrendsHead.status, 502);
     assert.equal(unversionedAsset.status, 404);
     assert.deepEqual(await proxied.json(), {
       method: "GET",
@@ -894,6 +954,14 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(Number(weatherTileHead.headers.get("content-length")), mapPng.byteLength);
     assert.equal(weatherTileHead.headers.get("x-weather-tile-cache"), "miss");
     assert.equal(weatherTileHead.headers.get("cache-control"), "no-store");
+    assert.equal(forecastRadarTile.status, 200);
+    assert.equal(forecastRadarTile.headers.get("cache-control"), "no-store");
+    assert.equal(providerStatusFailure.status, 502);
+    assert.equal(providerContentTypeFailure.status, 502);
+    assert.equal(providerFetchFailure.status, 502);
+    assert.equal(await providerStatusFailure.text(), "weather tile unavailable\n");
+    assert.equal(await providerContentTypeFailure.text(), "weather tile unavailable\n");
+    assert.equal(await providerFetchFailure.text(), "weather tile unavailable\n");
     assert.equal(refreshMutation.status, 405);
     assert.equal(refreshRead.status, 404);
     assert.equal(forecastTileAgain.status, 200);
@@ -906,13 +974,25 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       1,
     );
     assert.equal(
+      xweatherRequests.filter((entry) => entry.endsWith(`/fradar/256x168/47.950430,-122.427970,10/${mapForecastTime}.png`)).length,
+      1,
+    );
+    assert.equal(
       xweatherRequests.filter((entry) => entry.endsWith(`/fwind-speeds/256x168/47.950430,-122.427970,10/${mapForecastTime}.png`)).length,
       1,
     );
     const usage = JSON.parse(await readFile(xweatherUsagePath, "utf8"));
-    assert.equal(usage.dayUnits, 2);
-    assert.equal(usage.monthUnits, 2);
+    assert.equal(usage.dayUnits, 6);
+    assert.equal(usage.monthUnits, 6);
     assert.ok(xweatherMaximumActive <= 8);
+    const diagnostics = edgeDiagnostics.join("");
+    assert.match(diagnostics, /Xweather tile response rejected: status=503 content-type=application\/json/u);
+    assert.match(diagnostics, /Xweather tile response rejected: status=200 content-type=text\/plain/u);
+    assert.match(diagnostics, /Xweather tile fetch failed: error=TypeError/u);
+    assert.doesNotMatch(
+      diagnostics,
+      /test-client-id|test-client-secret|provider-body-secret|provider\.example|fake-client-id|fake-client-secret|header-secret|wrong-type-secret|satellite-geocolor|precip-1h|wind-speeds/u,
+    );
 
     // keep every provider start below the shared request-rate ceiling
     for (let index = 1; index < xweatherStartedAt.length; index += 1) {

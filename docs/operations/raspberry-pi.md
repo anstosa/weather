@@ -84,6 +84,53 @@ than 1 MiB/minute, at least 10 GiB and `3 * database bytes + 5 GiB` free under
 inodes. A failed diagnostic does not authorize pruning Docker or changing
 neighboring services.
 
+## Database read-latency recovery
+
+The historical archive dominates `weather_records`, so PostgreSQL's default
+table-wide maintenance thresholds can leave the smaller live-source datasets
+with stale planner statistics and poor visibility-map coverage. Check
+`pg_stat_user_tables`, `pg_stat_progress_vacuum`, and the affected query's
+`EXPLAIN (ANALYZE, BUFFERS)` before changing query timeouts or adding indexes.
+
+Run this bounded online maintenance from an authorized host administrator shell.
+The separate `-c` arguments keep `VACUUM` outside a transaction. Cost throttling,
+disabled truncation, and disabled parallel vacuum limit interference with the
+live stack; do not substitute `VACUUM FULL`.
+
+```bash
+sudo docker exec -u postgres weather-postgres-1 psql -X \
+  -v ON_ERROR_STOP=1 -d weather \
+  -c "SET lock_timeout='5s'; SET statement_timeout='30min'; SET vacuum_cost_delay='2ms'; SET vacuum_cost_limit=200; SET maintenance_work_mem='64MB';" \
+  -c "VACUUM (ANALYZE, VERBOSE, TRUNCATE FALSE, PARALLEL 0) public.weather_records;"
+```
+
+After maintenance completes, the production table uses these persistent,
+table-local overrides rather than widening global resource limits:
+
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10s';
+ALTER TABLE public.weather_records SET (
+  autovacuum_vacuum_scale_factor = 0.001,
+  autovacuum_vacuum_insert_scale_factor = 0.001,
+  autovacuum_analyze_scale_factor = 0.001
+);
+COMMIT;
+```
+
+At roughly 11.7 million rows, these retain the default base thresholds while
+making maintenance eligible after approximately 12,000 changed rows instead of
+more than a million. Verify the overrides after restoring a database, and watch
+maintenance duration, application latency, and query heap fetches for 48–72 hours.
+These are workload-specific starting values, not a universal PostgreSQL preset.
+To return to inherited defaults, use the same short lock timeout with
+`ALTER TABLE public.weather_records RESET (autovacuum_vacuum_scale_factor,
+autovacuum_vacuum_insert_scale_factor, autovacuum_analyze_scale_factor)`.
+
+See PostgreSQL 17's [vacuuming guidance](https://www.postgresql.org/docs/17/routine-vacuuming.html)
+and [online VACUUM options](https://www.postgresql.org/docs/17/sql-vacuum.html).
+
 ## Direct deployment
 
 Use the key-based client wrapper:

@@ -100,9 +100,16 @@ function buildTestUrls(origin, siteSlug) {
 
 // verify the configured tunnel surface
 async function checkUrls(urls) {
+  // check every URL within its route budget
   const responses = await Promise.all(
     urls.map(async ([description, url]) => {
-      const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      // allow the edge's bounded annual aggregation
+      const timeoutMilliseconds = /^\/api\/v1\/sites\/[^/]+\/trends$/u.test(new URL(url).pathname)
+        ? 35_000
+        : 10_000;
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(timeoutMilliseconds),
+      });
 
       // reject an unavailable route
       if (!response.ok && !(description === "Property sensor admin" && response.status === 401)) {

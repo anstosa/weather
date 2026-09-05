@@ -10,13 +10,23 @@ const executeFile = promisify(execFile);
 const script = resolve(import.meta.dirname, "test-urls.mjs");
 
 // run the URL generator with isolated configuration
-async function executeWithConfiguration(configuration, argumentsList = []) {
+async function executeWithConfiguration(configuration, argumentsList = [], preloadSource) {
   const directory = await mkdtemp(join(tmpdir(), "weather-test-urls-"));
   const configurationPath = join(directory, "runtime-targets.json");
+  const preloadPath = join(directory, "preload.mjs");
 
   try {
     await writeFile(configurationPath, JSON.stringify(configuration));
-    return await executeFile(process.execPath, [script, ...argumentsList], {
+
+    const preloadArguments = [];
+
+    // install one test-only runtime shim
+    if (preloadSource !== undefined) {
+      await writeFile(preloadPath, preloadSource);
+      preloadArguments.push("--import", preloadPath);
+    }
+
+    return await executeFile(process.execPath, [...preloadArguments, script, ...argumentsList], {
       env: {
         ...process.env,
         WEATHER_RUNTIME_TARGETS_PATH: configurationPath,
@@ -32,6 +42,44 @@ const configuredTargets = {
   local: { origin: "http://127.0.0.1:3000" },
   remote: { tunnel: { origin: "https://weather.ballydidean.farm" } },
 };
+
+// observe request budgets without wall-clock waits
+const timeoutProbePreload = `
+// replace wall-clock timers with observable markers
+AbortSignal.timeout = (milliseconds) => ({ milliseconds });
+
+// emulate every public URL check
+globalThis.fetch = async (url, { signal }) => {
+  const requestUrl = new URL(url);
+  const expectedMilliseconds = requestUrl.pathname === "/api/v1/sites/ballydidean/trends"
+    ? 35_000
+    : 10_000;
+
+  // fail on one inconsistent request budget
+  if (signal?.milliseconds !== expectedMilliseconds) {
+    throw new Error(
+      \`expected \${expectedMilliseconds}ms for \${requestUrl.pathname}, received \${String(signal?.milliseconds)}ms\`,
+    );
+  }
+
+  const unauthorized = requestUrl.pathname === "/admin";
+  return {
+    ok: !unauthorized,
+    status: unauthorized ? 401 : 200,
+    // preserve the health response contract
+    async json() {
+      return {
+        data: {
+          live: true,
+          migration: { version: "test-migration" },
+          ready: true,
+          version: "test-release",
+        },
+      };
+    },
+  };
+};
+`;
 
 test("test URLs prefer the configured tunnel", async () => {
   const result = await executeWithConfiguration(configuredTargets);
@@ -65,4 +113,17 @@ test("automatic URLs fall back locally when no tunnel is configured", async () =
     () => executeWithConfiguration(configuration, ["--remote"]),
     /remote tunnel is not configured/u,
   );
+});
+
+// reserve transport margin for only the trends API
+test("URL checks reserve the extended timeout for only the trends API", async () => {
+  const result = await executeWithConfiguration(
+    configuredTargets,
+    ["--remote", "--check"],
+    timeoutProbePreload,
+  );
+
+  assert.match(result.stdout, /Weather tunnel ready/u);
+  assert.match(result.stdout, /Release: test-release/u);
+  assert.match(result.stdout, /Migration: test-migration/u);
 });
