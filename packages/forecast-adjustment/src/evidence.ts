@@ -90,6 +90,7 @@ import {
   parseSanitizedTrainingExportRow,
   type SanitizedForecastRow,
   type SanitizedStationHourRow,
+  type SanitizedTrainingMetrics,
   type SanitizedTrainingExportRow,
   wrap180,
 } from "./algorithm-v1.js";
@@ -118,6 +119,10 @@ import {
   analyzeTemperatureLeadResearch,
   type TemperatureLeadResearchEvent,
 } from "./temperature-lead-research.js";
+import {
+  analyzeTemperatureWeatherResearch,
+  type TemperatureWeatherResearchEvent,
+} from "./temperature-weather-research.js";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const EVIDENCE_KINDS = [
@@ -358,6 +363,7 @@ interface RetainedTrainingEventV1 {
   readonly localDate: string;
   readonly metric: ForecastAdjustmentMetric;
   readonly rawForecast: number;
+  readonly rawForecastMetrics: SanitizedTrainingMetrics;
   readonly rawWindSpeedMps: number | null;
   readonly referenceAt: string | null;
   readonly stableId: string;
@@ -1424,20 +1430,7 @@ export async function evaluateRetainedForecastAdjustmentTemperatureLeads(
   }
 
   // retain the existing capped archive estimator separately for each broad band
-  const fitted = FORECAST_LEAD_BANDS.map((band) => {
-    const pair = { metric: "temperatureC" as const, leadBand: band.key };
-    // isolate only this exact archive endpoint
-    const events = trainingEvents.filter((event) => event.leadBand === band.key);
-    // fit an envelope only when this endpoint has training support
-    return {
-      pair,
-      coefficients: fitEventHierarchy(events, pair),
-      trainingEventCount: events.length,
-      trainingEnvelope: events.length === 0 ? null : createTrainingEnvelope(
-        "temperatureC", band.key, events.map((event) => event.rawForecast),
-      ),
-    };
-  });
+  const fitted = fitTemperatureResearchBaseline(trainingEvents);
   // index fitted broad-band baselines
   const byBand = new Map(fitted.map((fit) => [fit.pair.leadBand, fit]));
   const coverage = { adjusted: 0, missingCoefficient: 0, outsideTrainingEnvelope: 0 };
@@ -1525,6 +1518,260 @@ export async function evaluateRetainedForecastAdjustmentTemperatureLeads(
     ...unsigned,
     researchArtifactSha256: canonicalSha256(unsigned as unknown as JsonValue),
   });
+}
+
+// compare frozen weather refinements across seasonal archive and live windows
+export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  const experimentPlanSha256 = input.experimentPlanSha256;
+
+  // bind the externally retained pre-analysis policy without authorizing promotion
+  if (!HASH_PATTERN.test(experimentPlanSha256)) {
+    throw new RangeError("temperature weather research requires an experiment plan hash");
+  }
+
+  const material = await readRetainedResearchEvents(input);
+  const liveStartLocalDate = localCalendarFeaturesFor(material.liveFirstRow.validAt).localDate;
+  const liveEndLocalDate = localCalendarFeaturesFor(material.liveLastRow.validAt).localDate;
+  // isolate the target while retaining predictors from its exact selected forecast row
+  const fixedTemperatureEvents = material.fixedEvents.filter((event) => event.metric === "temperatureC");
+  // preserve every matched live temperature forecast
+  const liveTemperatureEvents = material.liveEvents.filter((event) => event.metric === "temperatureC");
+  const archiveWindows = [
+    { key: "winter-2025", fromLocalDate: "2025-01-01", toLocalDate: "2025-01-30" },
+    { key: "spring-2025", fromLocalDate: "2025-04-01", toLocalDate: "2025-04-30" },
+    { key: "summer-2025", fromLocalDate: "2025-07-01", toLocalDate: "2025-07-30" },
+    { key: "autumn-2025", fromLocalDate: "2025-10-01", toLocalDate: "2025-10-30" },
+    {
+      key: "pre-live-30-days",
+      fromLocalDate: addLocalCalendarDays(liveStartLocalDate, -30),
+      toLocalDate: addLocalCalendarDays(liveStartLocalDate, -1),
+    },
+  ];
+  // fit each archive diagnostic strictly before its own score interval
+  const diagnostics = archiveWindows.map((window) => createTemperatureWeatherDiagnostic({
+    ...window,
+    cohort: "fixed_lead_anchor",
+    expectedRange: material.expectedRange,
+    fixedTemperatureEvents,
+    // retain the complete matched window without cherry-picking feature support
+    scoreEvents: fixedTemperatureEvents.filter((event) =>
+      event.localDate >= window.fromLocalDate && event.localDate <= window.toLocalDate),
+  }));
+  diagnostics.push(createTemperatureWeatherDiagnostic({
+    cohort: "legacy_v4_retrieval_snapshot",
+    expectedRange: material.expectedRange,
+    fixedTemperatureEvents,
+    fromLocalDate: liveStartLocalDate,
+    key: "live-v4",
+    scoreEvents: liveTemperatureEvents,
+    toLocalDate: liveEndLocalDate,
+  }));
+  const moduleNames = [
+    "evidence.js",
+    "algorithm-v1.js",
+    "calendar.js",
+    "candidate.js",
+    "wind-canary.js",
+    "temperature-lead-research.js",
+    "temperature-weather-research.js",
+  ];
+  // bind the research pipeline and its shared numerical/scoring dependencies
+  const implementationModules = await Promise.all(moduleNames.map(async (name) => ({
+    name,
+    sha256: sha256(await readFile(new URL(`./${name}`, import.meta.url))),
+  })));
+
+  // bind the domain's policy and canonical serialization implementation
+  for (const name of ["forecast-adjustment.js", "provenance.js"]) {
+    implementationModules.push({
+      name: `@weather/domain/${name}`,
+      sha256: sha256(await readFile(new URL(`./${name}`, import.meta.resolve("@weather/domain")))),
+    });
+  }
+
+  const runtime = { nodeVersion: process.versions.node, ...runtimeCalendarFingerprint() };
+  const unsigned = {
+    contractVersion: "forecast-adjustment-retained-temperature-weather-research/v1" as const,
+    diagnostics,
+    expectedRange: material.expectedRange,
+    experimentPlanSha256,
+    implementationIdentitySha256: canonicalSha256({ implementationModules, runtime }),
+    implementationModules,
+    interpretation: "fixed_exploratory_comparisons_on_consumed_dates_not_qualification" as const,
+    predictorSource: "exact_selected_temperature_forecast_row_not_observations" as const,
+    productionActivationAllowed: false as const,
+    promotable: false as const,
+    runtime,
+    runtimeBundleCreated: false as const,
+    servedForecastIdentity: servedForecastIdentityForResearch(material.liveFirstRow),
+    snapshotIdentitySha256: material.snapshotIdentitySha256,
+    snapshotSetSemantics: "independent_read_only_exports_not_atomic_merged_snapshot" as const,
+    // retain every independently verified child identity
+    snapshots: material.snapshots.map((snapshot) => ({
+      fromLocalDate: snapshot.manifest.fromLocalDate,
+      manifestSha256: snapshot.manifestSha256,
+      toLocalDate: snapshot.manifest.toLocalDate,
+      totalRowCount: snapshot.manifest.totalRowCount,
+    })),
+  };
+  return deepFreeze({
+    ...unsigned,
+    researchArtifactSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+}
+
+// fit one independent pre-window model and retain complete fallback coverage
+function createTemperatureWeatherDiagnostic(input: {
+  readonly cohort: "fixed_lead_anchor" | "legacy_v4_retrieval_snapshot";
+  readonly expectedRange: { readonly fromLocalDate: string; readonly toLocalDate: string };
+  readonly fixedTemperatureEvents: readonly RetainedTrainingEventV1[];
+  readonly fromLocalDate: string;
+  readonly key: string;
+  readonly scoreEvents: readonly RetainedTrainingEventV1[];
+  readonly toLocalDate: string;
+}) {
+  const embargoStartLocalDate = addLocalCalendarDays(input.fromLocalDate, -7);
+  let informationBoundaryMilliseconds = Number.POSITIVE_INFINITY;
+
+  // constrain training against every forecast's actual or conservative information boundary
+  for (const event of input.scoreEvents) {
+    // require truthful live retrieval provenance
+    if (input.cohort === "legacy_v4_retrieval_snapshot" && event.referenceAt === null) {
+      throw new RangeError("weather diagnostic live forecast reference is missing");
+    }
+
+    const boundary = event.referenceAt === null
+      ? Date.parse(event.validAt) - event.targetLeadHours * 3_600_000
+      : Date.parse(event.referenceAt);
+    informationBoundaryMilliseconds = Math.min(informationBoundaryMilliseconds, boundary);
+  }
+
+  // enforce both the local-date embargo and the UTC observation-availability boundary
+  const trainingEvents = input.fixedTemperatureEvents.filter((event) =>
+    event.localDate < embargoStartLocalDate &&
+    Date.parse(event.validAt) + 3_600_000 <= informationBoundaryMilliseconds);
+  const fitted = fitTemperatureResearchBaseline(trainingEvents);
+  const training = temperatureWeatherExamples(trainingEvents, fitted);
+  const scoring = temperatureWeatherExamples(input.scoreEvents, fitted);
+  const analysis = analyzeTemperatureWeatherResearch({
+    scoreCohort: input.cohort,
+    scoreEvents: scoring.examples,
+    trainingEvents: training.examples,
+  });
+  const finalTrainingCutoff = trainingEvents.length === 0
+    ? null
+    : maximumEventInstant(trainingEvents, "weather diagnostic training");
+  const scoreLocalDates = inclusiveLocalDates(input.fromLocalDate, input.toLocalDate);
+  // identify missing dates without imputing or dropping score examples
+  const observedScoreDates = new Set(input.scoreEvents.map((event) => event.localDate));
+  // retain explicit missing-window coverage
+  const missingScoreLocalDates = scoreLocalDates.filter((date) => !observedScoreDates.has(date));
+  const snapshotRangeCoversWindow = input.expectedRange.fromLocalDate <= input.fromLocalDate &&
+    input.expectedRange.toLocalDate >= input.toLocalDate;
+  return {
+    analysis,
+    baseline: {
+      finalTrainingCutoff,
+      fitted,
+      modelSha256: canonicalSha256(fitted as unknown as JsonValue),
+      scoreCoverage: scoring.coverage,
+      trainingCoverage: training.coverage,
+    },
+    cohort: input.cohort,
+    embargoEndLocalDate: addLocalCalendarDays(input.fromLocalDate, -1),
+    embargoStartLocalDate,
+    fromLocalDate: input.fromLocalDate,
+    informationBoundaryAt: Number.isFinite(informationBoundaryMilliseconds)
+      ? new Date(informationBoundaryMilliseconds).toISOString()
+      : null,
+    informationBoundaryKind: input.cohort === "fixed_lead_anchor"
+      ? "validAt_minus_targetLead_not_observed_issue_timestamp" as const
+      : "observed_forecast_retrieval" as const,
+    key: input.key,
+    missingScoreLocalDates,
+    observedScoreLocalDateCount: observedScoreDates.size,
+    refinementModelSha256: canonicalSha256(analysis.models as unknown as JsonValue),
+    snapshotRangeCoversWindow,
+    toLocalDate: input.toLocalDate,
+    trainingBeforeInformationBoundary: finalTrainingCutoff === null ||
+      Date.parse(finalTrainingCutoff) + 3_600_000 <= informationBoundaryMilliseconds,
+  };
+}
+
+// retain exact-row forecast features and the existing raw-fallback policy
+function temperatureWeatherExamples(
+  events: readonly RetainedTrainingEventV1[],
+  fitted: ReturnType<typeof fitTemperatureResearchBaseline>,
+) {
+  // index the complete seven-band baseline inventory
+  const byBand = new Map(fitted.map((fit) => [fit.pair.leadBand, fit]));
+  const coverage = { adjusted: 0, missingCoefficient: 0, outsideTrainingEnvelope: 0 };
+  // project predictors only from the selected temperature forecast material
+  const examples: TemperatureWeatherResearchEvent[] = events.map((event) => {
+    const fit = byBand.get(event.leadBand);
+
+    // reject a broken internal target or band contract
+    if (event.metric !== "temperatureC" || fit === undefined) {
+      throw new RangeError("weather research requires matched temperature events");
+    }
+
+    const coefficient = selectHierarchyCoefficient(
+      fit.coefficients, "temperatureC", event.leadBand, localCalendarFeaturesFor(event.validAt),
+    );
+    let baselineEligible = false;
+    let baselineAdjusted = event.rawForecast;
+
+    // preserve missing baseline support as raw output
+    if (coefficient === null || fit.trainingEnvelope === null) {
+      coverage.missingCoefficient += 1;
+    } else if (event.rawForecast < fit.trainingEnvelope.minimum || event.rawForecast > fit.trainingEnvelope.maximum) {
+      // retain out-of-envelope examples in every strategy denominator
+      coverage.outsideTrainingEnvelope += 1;
+    } else {
+      // apply only the unchanged capped calendar correction
+      coverage.adjusted += 1;
+      baselineEligible = true;
+      baselineAdjusted = applyCappedCorrection("temperatureC", event.rawForecast, coefficient);
+    }
+
+    return {
+      actual: event.actual,
+      baselineAdjusted,
+      baselineEligible,
+      rawForecast: event.rawForecast,
+      rawRelativeHumidityPercent: event.rawForecastMetrics.relativeHumidityPercent,
+      rawWindSpeedMps: event.rawForecastMetrics.windSpeedMps,
+      referenceAt: event.referenceAt,
+      targetLeadHours: event.targetLeadHours,
+      validAt: event.validAt,
+    };
+  });
+  return { coverage, examples };
+}
+
+// reuse the unchanged temperature baseline and its scalar envelopes
+function fitTemperatureResearchBaseline(
+  trainingEvents: readonly RetainedTrainingEventV1[],
+) {
+  return FORECAST_LEAD_BANDS.map(
+    // fit each broad-band archive baseline independently
+    (band) => {
+      const pair = { metric: "temperatureC" as const, leadBand: band.key };
+      // isolate only this exact archive endpoint
+      const events = trainingEvents.filter((event) => event.leadBand === band.key);
+      // fit an envelope only when this endpoint has training support
+      return {
+        pair,
+        coefficients: fitEventHierarchy(events, pair),
+        trainingEventCount: events.length,
+        trainingEnvelope: events.length === 0 ? null : createTrainingEnvelope(
+          "temperatureC", band.key, events.map((event) => event.rawForecast),
+        ),
+      };
+    },
+  );
 }
 
 // share the unchanged verified reader without broadening its export boundary
@@ -3628,6 +3875,7 @@ function buildRetainedTrainingEvents(
       localDate: localCalendarFeaturesFor(selection.validAt).localDate,
       metric: material.metric,
       rawForecast: material.row.metrics[material.metric] as number,
+      rawForecastMetrics: material.row.metrics,
       rawWindSpeedMps: material.row.metrics.windSpeedMps,
       referenceAt: selection.referenceAt as string,
       stableId: selection.stableId,

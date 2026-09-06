@@ -703,3 +703,56 @@ replay does not turn them into untouched qualification data. Both ordinary
 forecast-example and equal-valid-hour errors must be distinguished from counts
 of independent weather events. No result from this experiment authorizes
 production activation; later independent live evidence remains necessary.
+
+## Inactive temperature weather experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureWeather` reuses the same verified
+multi-export reader and requires the SHA-256 of an externally retained plan
+frozen before analysis. Its
+`forecast-adjustment-retained-temperature-weather-research/v1` result is
+non-promotable and never creates a runtime bundle or changes either registry.
+
+Predictors come from the exact forecast row selected for temperature after
+forecast jitter deduplication: forecast temperature, relative humidity, and
+wind speed, plus lead band, local season, and local daypart. Valid-time station
+humidity and wind are never predictors. Clouds, radiation, and precipitation
+are absent from this export contract; the experiment makes no sunshine or
+cloud-regime claim and requires no new production export.
+
+The five frozen comparisons are raw, the existing calendar baseline,
+calendar plus temperature refinement, calendar plus temperature and weather
+refinements, and independently fitted raw-start temperature/weather refinements.
+Temperature cells use `floor(forecastTemperatureC / 5)` with literal half-open
+five-degree bins, including negative temperatures. Weather cells use humidity
+`<50`, `[50,80)`, or `>=80` percent and wind `<2`, `[2,5)`, or `>=5` m/s.
+Both cell families are also partitioned by lead band, season, and daypart.
+
+Each residual cell requires at least fifty unique valid hours across ten local
+dates. Unit-hour weighted medians use the existing scalar estimator with zero
+parent coefficient and pseudocount one hundred. Temperature residuals subtract
+the calendar prediction, or raw prediction for the independent raw-start path.
+Weather residuals subtract that path's **unclipped** additive temperature
+prediction. Component corrections retain the existing five-degree cap. Final
+predictions add the cumulatively capped `[-5,5]` degree correction to raw, then
+apply the existing physical temperature bounds once.
+
+Missing weather features or unsupported cells contribute zero at that stage;
+they do not remove forecasts from scoring. Baseline ineligibility or envelope
+failure forces raw for every comparison, including the raw-start ablation.
+Coverage distinguishes these cases. Every comparison reports both forecast-
+example and equal-valid-hour errors, first-48-hour errors, lead/daypart/date
+diagnostics, and observed forecast-weather slices.
+
+Separate models are fitted for the first thirty dates of January, April, July,
+and October 2025; the thirty dates immediately preceding live v4; and the live-v4
+window itself. Each model trains only before its score window's seven-local-
+date embargo and also satisfies `trainingCutoff + 1h <= scoreInformationBoundary`
+in UTC. Live boundaries use truthful forecast retrieval timestamps. Archive
+boundaries use `validAt - targetLeadHours` only as a conservative horizon
+boundary, never as a fabricated model-run timestamp. Empty or uncovered windows
+remain explicit rather than being treated as successful validation.
+
+These previously consumed dates support retrospective model comparisons, not
+untouched qualification. Seasonal archive results do not establish equivalent
+live-v4 skill. No post-score threshold tuning or best-looking slice permits
+activation; the production qualification and no-harm gates remain unchanged.

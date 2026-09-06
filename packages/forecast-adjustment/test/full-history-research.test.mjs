@@ -19,6 +19,7 @@ import {
   canonicalSha256,
   fitRetainedForecastAdjustmentFullHistoryResearch,
   evaluateRetainedForecastAdjustmentTemperatureLeads,
+  evaluateRetainedForecastAdjustmentTemperatureWeather,
   localCalendarFeaturesFor,
 } from "../dist/index.js";
 
@@ -251,10 +252,29 @@ async function createSnapshot(evidenceRoot, input) {
         FORECAST_LEAD_BANDS.map((leadBand) =>
           ({
             ...liveV4Row(instant, leadBand.maximumHours),
+            relative_humidity_percent: input.liveHumidityPercent === undefined ? 60 : input.liveHumidityPercent,
             temperature_c: input.liveTemperatureC ?? 10,
+            wind_speed_mps: input.liveWindSpeedMps === undefined ? 4 : input.liveWindSpeedMps,
           }),
         ),
       );
+
+      // prefer a different row for other metrics without changing the temperature selection
+      if (input.liveFeatureConflict === true) {
+        liveRows.push(...liveRows.map(
+          // give the competing non-temperature metrics higher jitter priority
+          (row) => ({
+            ...row,
+            content_hashes: [sha256(`conflicting-features:${row.valid_at}:${row.target_lead_hours}`)],
+            reference_at: new Date(
+              Date.parse(row.valid_at) - (row.target_lead_hours - 0.1) * 3_600_000,
+            ).toISOString(),
+            relative_humidity_percent: 95,
+            temperature_c: null,
+            wind_speed_mps: 9,
+          }),
+        ));
+      }
       addMember(members, memberBytes, {
         localDate,
         path: `members/${localDate}/legacy-v4-retrieval/open-meteo.jsonl.gz`,
@@ -372,7 +392,10 @@ async function createCompleteFixture(context, options = {}) {
   const second = await createSnapshot(evidenceRoot, {
     endIndex: options.secondEndIndex ?? 52,
     migrationHistorySha256: options.migrationHistorySha256,
+    liveFeatureConflict: options.liveFeatureConflict,
+    liveHumidityPercent: options.liveHumidityPercent,
     liveTemperatureC: options.liveTemperatureC,
+    liveWindSpeedMps: options.liveWindSpeedMps,
     skipFixedIndex: options.skipFixedIndex,
     startIndex: options.secondStartIndex ?? 27,
   });
@@ -618,4 +641,98 @@ test("retained temperature research scores raw envelope fallbacks", { timeout: 3
   assert.equal(result.baseline.coverage.missingCoefficient, 0);
   assert.equal(result.baseline.coverage.outsideTrainingEnvelope, 3 * 24 * 7);
   assert.equal(result.productionActivationAllowed, false);
+});
+
+// preserve the exact temperature-row features through metric-specific jitter selection
+test("weather research binds selected forecast features and isolated windows", { timeout: 60_000 }, async (context) => {
+  const fixture = await createCompleteFixture(context);
+  const conflicting = await createCompleteFixture(context, { liveFeatureConflict: true });
+  const first = await evaluateRetainedForecastAdjustmentTemperatureWeather({
+    ...fixture, experimentPlanSha256: "a".repeat(64),
+  });
+  const second = await evaluateRetainedForecastAdjustmentTemperatureWeather({
+    ...conflicting, experimentPlanSha256: "a".repeat(64),
+  });
+  assert.equal(first.contractVersion, "forecast-adjustment-retained-temperature-weather-research/v1");
+  assert.equal(first.productionActivationAllowed, false);
+  assert.equal(first.promotable, false);
+  assert.equal(first.runtimeBundleCreated, false);
+  assert.equal(first.predictorSource, "exact_selected_temperature_forecast_row_not_observations");
+  assert.equal(first.experimentPlanSha256, "a".repeat(64));
+  assert.deepEqual(first.diagnostics, second.diagnostics);
+  assert.equal(first.diagnostics.length, 6);
+  assert.deepEqual(
+    first.diagnostics.at(-1).analysis.diagnostics.byWeatherRegime.filter(
+      // isolate only genuinely observed forecast regimes
+      (slice) => slice.comparison.raw.eventCount > 0,
+    ).map(
+      // prove forecast wind is used instead of valid-time station wind
+      (slice) => [slice.humidityBin, slice.windSpeedBin],
+    ),
+    [["[50,80)", "[2,5)"]],
+  );
+  assert.deepEqual(
+    first.diagnostics.slice(0, 4).map(
+      // retain the four predeclared seasonal archive windows
+      (diagnostic) => [diagnostic.fromLocalDate, diagnostic.toLocalDate],
+    ),
+    [
+      ["2025-01-01", "2025-01-30"],
+      ["2025-04-01", "2025-04-30"],
+      ["2025-07-01", "2025-07-30"],
+      ["2025-10-01", "2025-10-30"],
+    ],
+  );
+
+  // verify every available diagnostic obeys both cutoff boundaries
+  for (const diagnostic of first.diagnostics) {
+    assert.equal(diagnostic.trainingBeforeInformationBoundary, true);
+
+    // check only genuine fitted windows
+    if (diagnostic.baseline.finalTrainingCutoff !== null) {
+      assert.ok(localCalendarFeaturesFor(diagnostic.baseline.finalTrainingCutoff).localDate < diagnostic.embargoStartLocalDate);
+      assert.ok(Date.parse(diagnostic.baseline.finalTrainingCutoff) + 3_600_000 <= Date.parse(diagnostic.informationBoundaryAt));
+    }
+  }
+});
+
+// keep all diagnostic models independent from later archive material
+test("weather research models ignore post-cutoff archive changes", { timeout: 60_000 }, async (context) => {
+  const fixture = await createCompleteFixture(context);
+  const changed = await createCompleteFixture(context, { skipFixedIndex: 52 });
+  const first = await evaluateRetainedForecastAdjustmentTemperatureWeather({
+    ...fixture, experimentPlanSha256: "a".repeat(64),
+  });
+  const second = await evaluateRetainedForecastAdjustmentTemperatureWeather({
+    ...changed, experimentPlanSha256: "a".repeat(64),
+  });
+  assert.deepEqual(first.diagnostics, second.diagnostics);
+  assert.notEqual(first.researchArtifactSha256, second.researchArtifactSha256);
+});
+
+// preserve raw output for every variant when the baseline envelope rejects a forecast
+test("weather research retains out-of-envelope temperature examples", { timeout: 30_000 }, async (context) => {
+  const fixture = await createCompleteFixture(context, { liveTemperatureC: 30 });
+  const result = await evaluateRetainedForecastAdjustmentTemperatureWeather({
+    ...fixture, experimentPlanSha256: "a".repeat(64),
+  });
+  const live = result.diagnostics.at(-1);
+  assert.equal(live.baseline.scoreCoverage.outsideTrainingEnvelope, 3 * 24 * 7);
+
+  // require identical raw results rather than dropping unsupported forecasts
+  for (const score of Object.values(live.analysis.overall)) {
+    assert.deepEqual(score, live.analysis.overall.raw);
+  }
+});
+
+// retain forecasts whose weather predictors are missing rather than borrowing observations
+test("weather research preserves missing predictor fallbacks", { timeout: 30_000 }, async (context) => {
+  const fixture = await createCompleteFixture(context, { liveHumidityPercent: null, liveWindSpeedMps: null });
+  const result = await evaluateRetainedForecastAdjustmentTemperatureWeather({
+    ...fixture, experimentPlanSha256: "a".repeat(64),
+  });
+  const live = result.diagnostics.at(-1).analysis;
+  assert.equal(live.inputCoverage.eventCount, 3 * 24 * 7);
+  assert.equal(live.coverage.calendarTemperatureWeather.weatherFeatureMissingCount, 3 * 24 * 7);
+  assert.deepEqual(live.overall.calendarTemperatureWeather, live.overall.calendarTemperature);
 });

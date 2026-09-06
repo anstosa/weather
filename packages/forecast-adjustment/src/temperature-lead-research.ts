@@ -219,8 +219,14 @@ interface CalibrationState {
   readonly validHours: Map<string, HourLossAccumulator>;
 }
 
-interface StrategyPrediction {
-  readonly event: EvaluatedEvent;
+// share scoring for already-validated temperature research predictions
+export interface TemperatureResearchPrediction {
+  readonly event: {
+    readonly actual: number;
+    readonly localDate: string;
+    readonly rawForecast: number;
+    readonly validAt: string;
+  };
   readonly prediction: number;
 }
 
@@ -573,8 +579,8 @@ function pointSkill(adjustedLoss: number, rawLoss: number): number | null {
 }
 
 // score predictions with both event and unique-hour weighting
-function scorePredictions(
-  predictions: readonly StrategyPrediction[],
+export function scoreTemperatureResearchPredictions(
+  predictions: readonly TemperatureResearchPrediction[],
 ): TemperatureLeadResearchScore {
   const localDates = new Set<string>();
   const hourLosses = new Map<
@@ -664,7 +670,7 @@ function scoreStrategy(
   events: readonly EvaluatedEvent[],
   strategy: keyof TemperatureLeadResearchComparison,
 ): TemperatureLeadResearchScore {
-  return scorePredictions(
+  return scoreTemperatureResearchPredictions(
     events.map(
       // project one requested strategy
       (event) => ({ event, prediction: strategyPrediction(event, strategy) }),
@@ -692,7 +698,7 @@ function scoreFixedAlphaGrid(
     // score each fixed alpha descriptively
     (alpha) => ({
       alpha,
-      score: scorePredictions(
+      score: scoreTemperatureResearchPredictions(
         events.map(
           // apply one fixed alpha
           (event) => ({
