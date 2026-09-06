@@ -165,9 +165,10 @@ WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1
 
 Only `1` activates the kill switch; `0` permits normal operation. Rollback may also
 set the canary registry's `activeBundle` to `null` in a reviewed image. Do not
-edit an existing content-addressed bundle. The UI starts new canary sessions in
-Regional mode; a user may explicitly select **Wind adjusted (canary)**. High
-wind alerts always use the greater of raw and adjusted gust so a negative
+edit an existing content-addressed bundle. The UI starts new canary sessions with
+the **Adjusted** switch off; enabling it explicitly opts in. The switch keeps the
+same label in both states, and Forecast has no adjustment infobox. High wind
+alerts always use the greater of raw and adjusted gust so a negative
 correction cannot suppress a regional warning.
 
 ## Bounded production snapshot

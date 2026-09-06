@@ -23,11 +23,26 @@ const shellPaths = [
 ];
 const shellPathSet = new Set(shellPaths);
 
+// reject user-specific navigation responses
+function canCacheNavigation(response) {
+  const directives = (response.headers.get("cache-control") ?? "")
+    .split(",")
+    .map(
+      // normalize one cache directive name
+      (directive) => directive.trim().split("=", 1)[0]?.toLowerCase(),
+    );
+  return response.ok && !directives.includes("private") && !directives.includes("no-store");
+}
+
 // cache the versioned application shell
 self.addEventListener("install", (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(shellCache);
-    await cache.addAll(shellPaths);
+    const shellRequests = shellPaths.map(
+      // keep administrator cookies out of the shared shell
+      (path) => new Request(path, { credentials: "omit" }),
+    );
+    await cache.addAll(shellRequests);
     await self.skipWaiting();
   })());
 });
@@ -94,8 +109,8 @@ async function networkFirstNavigation(request) {
   try {
     const response = await fetch(request);
 
-    // retain successful route shells
-    if (response.ok) {
+    // retain only public route shells
+    if (canCacheNavigation(response)) {
       await cache.put(request, response.clone());
     }
 

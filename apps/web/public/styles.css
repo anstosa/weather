@@ -94,6 +94,121 @@ body {
   background: var(--md-sys-color-surface);
 }
 
+/* framed admin sign-in page */
+.admin-login-body {
+  display: grid;
+  min-height: 100vh;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 1rem;
+  background:
+    radial-gradient(circle at 50% 0, color-mix(in srgb, var(--brand-citron) 34%, transparent), transparent 38%),
+    var(--md-sys-color-surface);
+}
+
+.admin-login-shell {
+  width: min(100%, 27rem);
+}
+
+.admin-login-card {
+  padding: clamp(1.5rem, 6vw, 2.25rem);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-extra-large);
+  background: var(--md-sys-color-surface-container-lowest);
+  box-shadow: var(--md-sys-elevation-2);
+}
+
+.admin-login-icon {
+  display: grid;
+  width: 3.5rem;
+  height: 3.5rem;
+  margin-bottom: 1.1rem;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--brand-black);
+  background: var(--brand-citron);
+  font-size: 2rem;
+}
+
+.admin-login-card h1 {
+  margin: 0;
+  font-size: clamp(2rem, 8vw, 2.8rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.admin-login-intro {
+  margin: 0.75rem 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.admin-login-error {
+  margin: 1rem 0 0;
+  padding: 0.75rem;
+  border-radius: var(--md-sys-shape-small);
+  color: var(--md-sys-color-error);
+  background: var(--md-sys-color-error-container);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.admin-login-form {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1.25rem;
+}
+
+.admin-login-form label {
+  display: grid;
+  gap: 0.3rem;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.admin-login-form input {
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-small);
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container-lowest);
+  font: inherit;
+  font-size: 1rem;
+}
+
+.admin-login-form input:focus-visible {
+  outline: 0.18rem solid color-mix(in srgb, var(--md-sys-color-primary) 70%, transparent);
+  outline-offset: 0.08rem;
+}
+
+.admin-login-form button {
+  margin-top: 0.25rem;
+  border: 0;
+  border-radius: var(--md-sys-shape-full);
+  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-secondary-container);
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.admin-login-form button:hover,
+.admin-login-form button:focus-visible {
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+.admin-login-back {
+  display: block;
+  width: fit-content;
+  margin: 1.1rem auto 0;
+  color: var(--md-sys-color-primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 button,
 input,
 select {
@@ -872,6 +987,178 @@ h2 {
   grid-column: span 3;
 }
 
+/* admin indoor house cross section */
+.indoor-house-panel {
+  margin-top: 1rem;
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 72%, transparent);
+  border-radius: var(--md-sys-shape-large);
+  background:
+    radial-gradient(circle at 50% 0, color-mix(in srgb, var(--brand-citron) 24%, transparent), transparent 42%),
+    var(--md-sys-color-surface-container-lowest);
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+.indoor-house-heading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.indoor-house-heading > .material-symbols-rounded {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--brand-black);
+  background: var(--brand-citron);
+  font-size: 1.65rem;
+}
+
+.indoor-house-heading h2,
+.indoor-house-heading p {
+  margin: 0;
+}
+
+.indoor-house-illustration {
+  --indoor-house-roof-height: 6.25rem;
+
+  position: relative;
+  width: min(100% - 4rem, 34rem);
+  margin: 1.25rem auto 0;
+  padding-top: var(--indoor-house-roof-height);
+}
+
+.indoor-house-roof {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: -2rem;
+  left: -2rem;
+  height: var(--indoor-house-roof-height);
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  background: var(--brand-black);
+}
+
+.indoor-house-roof span {
+  position: absolute;
+  inset: 0.28rem 0.6rem 0;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  background: color-mix(in srgb, var(--brand-citron) 28%, var(--md-sys-color-surface-container-lowest));
+}
+
+.indoor-house-levels {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0.2rem solid var(--brand-black);
+  border-radius: 0 0 var(--md-sys-shape-small) var(--md-sys-shape-small);
+  background: var(--md-sys-color-surface-container-lowest);
+  list-style: none;
+}
+
+.indoor-house-level {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 5rem;
+  padding: 0.8rem clamp(1rem, 4vw, 2rem);
+  border-top: 0.15rem solid var(--brand-black);
+}
+
+.indoor-house-level:first-child {
+  border-top: 0;
+}
+
+.indoor-house-level-second {
+  background: color-mix(in srgb, var(--brand-lavender) 12%, var(--md-sys-color-surface-container-lowest));
+}
+
+.indoor-house-level-first {
+  background: color-mix(in srgb, var(--brand-citron) 16%, var(--md-sys-color-surface-container-lowest));
+}
+
+.indoor-house-level-basement {
+  background: var(--md-sys-color-surface-container);
+}
+
+.indoor-house-level > span:first-child {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.8rem;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.indoor-house-temperature strong {
+  display: block;
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.indoor-house-temperature small {
+  margin-left: 0.2rem;
+  font-size: 0.42em;
+  letter-spacing: 0;
+}
+
+/* admin soil moisture map */
+.admin-soil-map-panel {
+  margin-top: 1rem;
+  padding: clamp(1.25rem, 3vw, 2.25rem);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 72%, transparent);
+  border-radius: var(--md-sys-shape-large);
+  background: var(--md-sys-color-surface-container-lowest);
+  box-shadow: var(--md-sys-elevation-1);
+}
+
+.admin-soil-map {
+  margin-top: 1rem;
+}
+
+.soil-moisture-marker {
+  pointer-events: none;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.3));
+}
+
+.soil-moisture-marker-leader {
+  stroke: rgba(0, 0, 0, 0.72);
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
+.soil-moisture-marker-anchor {
+  fill: var(--brand-black);
+  stroke: var(--brand-citron);
+  stroke-width: 1.5;
+}
+
+.soil-moisture-marker-head circle {
+  fill: var(--brand-citron);
+  stroke: var(--brand-black);
+  stroke-width: 3;
+}
+
+.soil-moisture-marker-head text {
+  fill: var(--brand-black);
+  font-family: "Google Sans Flex", sans-serif;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-anchor: middle;
+}
+
 .alert-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -939,99 +1226,6 @@ h2 {
   color: var(--md-sys-color-on-primary);
   background: var(--md-sys-color-primary);
   box-shadow: var(--md-sys-elevation-1);
-}
-
-.forecast-adjustment-status {
-  margin-top: 0.65rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid color-mix(in srgb, #248b54 38%, var(--md-sys-color-outline-variant));
-  border-radius: var(--md-sys-shape-medium);
-  background: color-mix(in srgb, #248b54 7%, var(--md-sys-color-surface-container-lowest));
-}
-
-.forecast-adjustment-status-raw {
-  border-color: var(--md-sys-color-outline-variant);
-  background: var(--md-sys-color-surface-container-low);
-}
-
-.forecast-adjustment-summary,
-.forecast-adjustment-status-raw > p {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  margin: 0;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: 0.78rem;
-}
-
-.forecast-adjustment-summary strong,
-.forecast-adjustment-status-raw > p strong {
-  color: var(--md-sys-color-on-surface);
-  font-size: 0.82rem;
-}
-
-.forecast-adjustment-details {
-  margin-top: 0.35rem;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: 0.72rem;
-}
-
-.forecast-adjustment-details summary {
-  width: fit-content;
-  cursor: pointer;
-  font-weight: 700;
-}
-
-.forecast-adjustment-values {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
-  gap: 0.35rem;
-  margin-top: 0.55rem;
-}
-
-.forecast-adjustment-values > div {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 0.5rem;
-  padding: 0.4rem 0.5rem;
-  border-radius: var(--md-sys-shape-small);
-  background: var(--md-sys-color-surface-container-lowest);
-}
-
-.forecast-adjustment-values span {
-  font-weight: 700;
-}
-
-.forecast-adjustment-values strong {
-  color: var(--md-sys-color-on-surface);
-}
-
-.forecast-adjustment-details dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: 0.25rem 0.65rem;
-  margin: 0.6rem 0 0;
-}
-
-.forecast-adjustment-details dt {
-  font-weight: 700;
-}
-
-.forecast-adjustment-details dd {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.forecast-adjustment-details code {
-  font-size: 0.68rem;
-}
-
-.forecast-adjustment-raw-note,
-.forecast-adjustment-limit {
-  margin: 0.45rem 0 0;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: 0.7rem;
 }
 
 .forecast-chart-shell {
@@ -3023,6 +3217,31 @@ h2 {
   font-size: 0.78rem;
 }
 
+.admin-logout-form button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-full);
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-lowest);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.admin-logout-form button:hover,
+.admin-logout-form button:focus-visible {
+  color: var(--md-sys-color-on-surface);
+  background: var(--md-sys-color-surface-container);
+}
+
+.admin-logout-form .material-symbols-rounded {
+  font-size: 1rem;
+}
+
 .property-admin-layout {
   display: grid;
   grid-template-columns: minmax(14rem, 0.65fr) minmax(0, 1.35fr);
@@ -3891,6 +4110,42 @@ td small {
   .current-conditions {
     gap: 0.45rem;
     margin-top: 0.65rem;
+  }
+
+  .indoor-house-panel {
+    margin-top: 0.65rem;
+    padding: 1rem 0.75rem;
+    border-radius: var(--md-sys-shape-medium);
+  }
+
+  .admin-soil-map-panel {
+    margin-top: 0.65rem;
+    padding: 1rem 0.75rem;
+    border-radius: var(--md-sys-shape-medium);
+  }
+
+  .indoor-house-heading {
+    justify-content: flex-start;
+  }
+
+  .indoor-house-illustration {
+    --indoor-house-roof-height: 4.8rem;
+
+    width: calc(100% - 2rem);
+  }
+
+  .indoor-house-roof {
+    right: -1rem;
+    left: -1rem;
+  }
+
+  .indoor-house-level {
+    min-height: 4.25rem;
+    padding: 0.65rem 0.9rem;
+  }
+
+  .indoor-house-level > span:first-child {
+    font-size: 0.68rem;
   }
 
   .temperature-condition,

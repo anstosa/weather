@@ -9,6 +9,8 @@ import { WeatherAdminStore } from "./weather-admin-store.mjs";
 const root = resolve(process.cwd());
 const publicRoot = join(root, "apps/web/public");
 const compiledRoot = join(root, "apps/web/dist");
+const adminLoginPath = join(publicRoot, "admin-login.html");
+const adminSessionCookieName = "weather_admin_session";
 const maximumApiBytes = 1024 * 1024;
 // allow the complete daily trends history
 const maximumTrendsApiBytes = 2 * 1024 * 1024;
@@ -72,6 +74,18 @@ const server = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? "/", "http://weather.invalid");
 
+    // exchange the HTML login form for an opaque session cookie
+    if (requestUrl.pathname === "/admin/login") {
+      await loginAdmin(request, response);
+      return;
+    }
+
+    // revoke only the presented administrator session
+    if (requestUrl.pathname === "/admin/logout") {
+      logoutAdmin(request, response);
+      return;
+    }
+
     // initialize admin access through one secret-bound request only
     if (requestUrl.pathname === "/api/v1/admin/bootstrap") {
       await bootstrapAdmin(request, response);
@@ -84,7 +98,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    // update one layout entry behind HTTP Basic authentication
+    // update one layout entry behind the administrator session
     if (requestUrl.pathname.startsWith("/api/v1/admin/sites/ballydidean/property-sensor-layout/")) {
       await updatePropertySensorLayout(request, response, requestUrl.pathname);
       return;
@@ -114,15 +128,6 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    // protect both spellings of the admin application shell
-    if (
-      (requestUrl.pathname === "/admin" || requestUrl.pathname === "/admin/") &&
-      !(await adminStore.authenticate(request.headers.authorization))
-    ) {
-      sendAdminUnauthorized(response);
-      return;
-    }
-
     const asset = resolveAsset(requestUrl.pathname);
 
     // reject traversal and unknown files uniformly
@@ -131,20 +136,38 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // resolve one authenticated HTML representation
+    const isHtmlTemplate = asset.template === true && asset.type === "text/html; charset=utf-8";
+    const isAdminRoute = requestUrl.pathname === "/admin" || requestUrl.pathname === "/admin/";
+    const isAdmin = isHtmlTemplate && adminStore.authenticateSession(
+      readAdminSessionCookie(request.headers.cookie),
+    );
+
+    // render a real login page before the protected application shell
+    if (isAdminRoute && !isAdmin) {
+      await sendAdminLoginPage(
+        response,
+        request.method === "HEAD",
+        requestUrl.searchParams.get("error") === "invalid",
+      );
+      return;
+    }
+
     const source = await readFile(asset.path);
     const body = asset.template === true
-      ? Buffer.from(renderHtmlTemplate(source.toString("utf8"), requestUrl.pathname))
+      ? Buffer.from(renderHtmlTemplate(source.toString("utf8"), requestUrl.pathname, isAdmin))
       : source;
-    // deny framing for the credentialed editor shell
-    if (requestUrl.pathname === "/admin" || requestUrl.pathname === "/admin/") {
-      setAdminSecurityHeaders(response);
+    // permit only HTML documents to render across iframe origins
+    if (isHtmlTemplate) {
+      setHtmlSecurityHeaders(response);
     } else {
       setSecurityHeaders(response);
     }
     response.writeHead(200, {
-      "Cache-Control": asset.cache,
+      "Cache-Control": isAdmin ? "private, no-store" : asset.cache,
       "Content-Length": String(body.byteLength),
       "Content-Type": asset.type,
+      ...(isHtmlTemplate ? { Vary: "Cookie" } : {}),
     });
 
     // omit response bodies for HEAD
@@ -159,6 +182,110 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0");
+
+// create one administrator browser session
+async function loginAdmin(request, response) {
+  // accept only the login form method
+  if (request.method !== "POST") {
+    sendText(response, 405, "method not allowed\n", { Allow: "POST" });
+    return;
+  }
+
+  try {
+    const form = await readRequestForm(request, 2_048);
+    const session = await adminStore.startSession(form.username, form.password);
+
+    // return invalid credentials to the framed login page
+    if (session === null) {
+      sendRedirect(response, 303, "/admin?error=invalid");
+      return;
+    }
+
+    sendRedirect(response, 303, "/admin", {
+      "Set-Cookie": createAdminSessionCookie(
+        session.token,
+        session.maximumAgeSeconds,
+        request,
+      ),
+    });
+  } catch (error) {
+    // reject malformed and oversized form submissions uniformly
+    if (error instanceof RangeError) {
+      sendText(response, 400, "invalid request\n");
+    } else {
+      sendText(response, 500, "internal server error\n");
+    }
+  }
+}
+
+// clear one administrator browser session
+function logoutAdmin(request, response) {
+  // accept only an explicit logout form
+  if (request.method !== "POST") {
+    sendText(response, 405, "method not allowed\n", { Allow: "POST" });
+    return;
+  }
+
+  adminStore.revokeSession(readAdminSessionCookie(request.headers.cookie));
+  sendRedirect(response, 303, "/admin", {
+    "Set-Cookie": clearAdminSessionCookie(request),
+  });
+}
+
+// read one exact opaque administrator cookie
+function readAdminSessionCookie(header) {
+  // reject missing or oversized cookie collections
+  if (typeof header !== "string" || header.length > 8_192) {
+    return null;
+  }
+
+  const prefix = `${adminSessionCookieName}=`;
+  const sessions = header.split(";").flatMap(
+    // retain only exact administrator cookie pairs
+    (entry) => {
+      const cookie = entry.trim();
+      return cookie.startsWith(prefix) ? [cookie.slice(prefix.length)] : [];
+    },
+  );
+  return sessions.length === 1 ? sessions[0] : null;
+}
+
+// create one iframe-compatible administrator cookie
+function createAdminSessionCookie(token, maximumAgeSeconds, request) {
+  return [
+    `${adminSessionCookieName}=${token}`,
+    "Path=/",
+    "HttpOnly",
+    `Max-Age=${String(maximumAgeSeconds)}`,
+    ...adminSessionCookieContext(request),
+  ].join("; ");
+}
+
+// expire one administrator cookie in the matching context
+function clearAdminSessionCookie(request) {
+  return [
+    `${adminSessionCookieName}=`,
+    "Path=/",
+    "HttpOnly",
+    "Max-Age=0",
+    ...adminSessionCookieContext(request),
+  ].join("; ");
+}
+
+// select cookie attributes for local and HTTPS iframe use
+function adminSessionCookieContext(request) {
+  return requestUsesHttps(request)
+    ? ["SameSite=None", "Secure", "Partitioned"]
+    : ["SameSite=Lax"];
+}
+
+// recognize HTTPS termination from the trusted edge proxy
+function requestUsesHttps(request) {
+  const forwarded = Array.isArray(request.headers["x-forwarded-proto"])
+    ? request.headers["x-forwarded-proto"][0]
+    : request.headers["x-forwarded-proto"];
+  return request.socket.encrypted === true || forwarded?.split(",", 1)[0]?.trim() === "https";
+}
 
 // initialize the first admin password without persisting plaintext
 async function bootstrapAdmin(request, response) {
@@ -215,7 +342,7 @@ async function servePropertySensorLayout(request, response) {
 // update one server-persisted sensor layout entry
 async function updatePropertySensorLayout(request, response, pathname) {
   // require one authenticated admin request
-  if (!(await adminStore.authenticate(request.headers.authorization))) {
+  if (!adminStore.authenticateSession(readAdminSessionCookie(request.headers.cookie))) {
     sendAdminUnauthorized(response);
     return;
   }
@@ -244,15 +371,69 @@ async function updatePropertySensorLayout(request, response, pathname) {
   }
 }
 
-// challenge one unauthenticated admin request
+// reject one unauthenticated administrator API request
 function sendAdminUnauthorized(response) {
-  sendText(response, 401, "authentication required\n", {
-    "WWW-Authenticate": 'Basic realm="Ballydidean Weather Admin", charset="UTF-8"',
+  sendText(response, 401, "authentication required\n");
+}
+
+// serve the iframe-compatible administrator login page
+async function sendAdminLoginPage(response, head, invalidCredentials) {
+  const source = await readFile(adminLoginPath, "utf8");
+  const body = Buffer.from(renderAdminLoginTemplate(source, invalidCredentials));
+  setHtmlSecurityHeaders(response);
+  response.writeHead(200, {
+    "Cache-Control": "no-store",
+    "Content-Length": String(body.byteLength),
+    "Content-Type": "text/html; charset=utf-8",
+    Vary: "Cookie",
   });
+  response.end(head ? undefined : body);
 }
 
 // read one bounded JSON request body
 async function readRequestJson(request, maximumBytes) {
+  const content = await readRequestBody(request, maximumBytes);
+  const parsed = JSON.parse(content.toString("utf8"));
+
+  // require one object request body
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new RangeError("request body must be an object");
+  }
+
+  return parsed;
+}
+
+// read one bounded URL-encoded login form
+async function readRequestForm(request, maximumBytes) {
+  const contentType = String(request.headers["content-type"] ?? "")
+    .split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+
+  // require the browser's native form encoding
+  if (contentType !== "application/x-www-form-urlencoded") {
+    throw new RangeError("request body must be URL encoded");
+  }
+
+  const parameters = new URLSearchParams(
+    (await readRequestBody(request, maximumBytes)).toString("utf8"),
+  );
+  const usernames = parameters.getAll("username");
+  const passwords = parameters.getAll("password");
+
+  // require exactly one bounded credential pair
+  if (usernames.length !== 1 || passwords.length !== 1 || [...parameters.keys()].some(
+    // reject every unexpected form field
+    (key) => key !== "username" && key !== "password",
+  )) {
+    throw new RangeError("login form is invalid");
+  }
+
+  return { password: passwords[0], username: usernames[0] };
+}
+
+// read one bounded request body
+async function readRequestBody(request, maximumBytes) {
   const chunks = [];
   let length = 0;
 
@@ -269,14 +450,7 @@ async function readRequestJson(request, maximumBytes) {
     chunks.push(bytes);
   }
 
-  const parsed = JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
-
-  // require one object request body
-  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
-    throw new RangeError("request body must be an object");
-  }
-
-  return parsed;
+  return Buffer.concat(chunks, length);
 }
 
 // resolve only fixed or active-release assets
@@ -324,10 +498,21 @@ function redirectRemoteAgentsBrowser(response, requestUrl) {
 }
 
 // render one route-aware release template
-function renderHtmlTemplate(source, pathname) {
+function renderHtmlTemplate(source, pathname, isAdmin) {
   return source
     .replaceAll("__WEATHER_ASSET_VERSION__", release)
+    .replaceAll("__WEATHER_ADMIN__", String(isAdmin))
     .replaceAll("__WEATHER_ROUTE_PRELOAD__", forecastMapPreloadLink(pathname));
+}
+
+// render one bounded login error state
+function renderAdminLoginTemplate(source, invalidCredentials) {
+  const error = invalidCredentials
+    ? '<p class="admin-login-error" role="alert">The username or password is incorrect.</p>'
+    : "";
+  return source
+    .replaceAll("__WEATHER_ASSET_VERSION__", release)
+    .replaceAll("__WEATHER_ADMIN_LOGIN_ERROR__", error);
 }
 
 // prioritize the first Today radar frame before JavaScript executes
@@ -919,25 +1104,17 @@ async function readBoundedBody(upstream, maximumBytes, description) {
 function setSecurityHeaders(response) {
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; frame-ancestors *; form-action 'none'; img-src 'self' blob: data: https://tile.openstreetmap.org https://basemap.nationalmap.gov https://imagery.nationalmap.gov; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'",
+    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; frame-ancestors *; form-action 'self'; img-src 'self' blob: data: https://tile.openstreetmap.org https://basemap.nationalmap.gov https://imagery.nationalmap.gov; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'",
   );
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   response.setHeader("X-Content-Type-Options", "nosniff");
 }
 
-// harden the authenticated HTML shell against clickjacking
-function setAdminSecurityHeaders(response) {
+// allow protected HTML documents to load in external iframes
+function setHtmlSecurityHeaders(response) {
   setSecurityHeaders(response);
-  const policy = response.getHeader("Content-Security-Policy");
-
-  // replace the public preview embedding rule only for Admin
-  if (typeof policy === "string") {
-    response.setHeader(
-      "Content-Security-Policy",
-      policy.replace("frame-ancestors *", "frame-ancestors 'none'"),
-    );
-  }
+  response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
 }
 
 // send one bounded text response
@@ -964,6 +1141,18 @@ function sendJson(response, status, value, head = false, headers = {}) {
     ...headers,
   });
   response.end(head ? undefined : content);
+}
+
+// send one same-origin browser redirect
+function sendRedirect(response, status, location, headers = {}) {
+  setSecurityHeaders(response);
+  response.writeHead(status, {
+    "Cache-Control": "no-store",
+    "Content-Length": "0",
+    Location: location,
+    ...headers,
+  });
+  response.end();
 }
 
 // close without accepting new work

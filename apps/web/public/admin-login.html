@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en" data-weather-admin="false">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Sign in to Ballydídean Weather administration.">
+    <meta name="theme-color" content="#f0e696">
+    <link rel="icon" href="/brand/ballydidean-weather-icon-32.png" sizes="32x32" type="image/png">
+    <link rel="preload" href="/fonts/google-sans-flex-latin.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/fonts/material-symbols-rounded-v4.woff2" as="font" type="font/woff2" crossorigin>
+    <title>Admin sign in · Ballydídean Weather</title>
+    <link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">
+  </head>
+  <body class="admin-login-body">
+    <main class="admin-login-shell">
+      <section class="admin-login-card" aria-labelledby="admin-login-heading">
+        <span class="admin-login-icon material-symbols-rounded" aria-hidden="true">settings</span>
+        <p class="eyebrow">Ballydídean Weather</p>
+        <h1 id="admin-login-heading">Admin sign in</h1>
+        <p class="admin-login-intro">Use the administrator account to manage property sensors and view indoor conditions.</p>
+        __WEATHER_ADMIN_LOGIN_ERROR__
+        <form class="admin-login-form" action="/admin/login" method="post">
+          <label><span>Username</span><input name="username" autocomplete="username" value="admin" required maxlength="64"></label>
+          <label><span>Password</span><input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+          <button type="submit">Sign in</button>
+        </form>
+        <a class="admin-login-back" href="/">Back to weather</a>
+      </section>
+    </main>
+  </body>
+</html>

@@ -318,6 +318,7 @@ export interface DashboardState {
 export interface DashboardOptions {
   readonly apiBaseUrl?: string;
   readonly fetcher?: typeof fetch;
+  readonly isAdmin?: boolean;
   readonly storage?: UnitPreferenceStorage | null;
   readonly view?: WeatherView;
 }
@@ -348,6 +349,14 @@ export type TrendExtremeKind = "cold" | "heat" | "rain" | "wind";
 export type PropertySensorIcon = "air-quality" | "rain" | "temperature" | "wind";
 export type ForecastMapLayer = "clouds" | "precipitation" | "radar" | "wind";
 type ForecastMapPhase = "forecast" | "history";
+
+// map the three indoor sensors onto their physical floors
+const INDOOR_HOUSE_LEVELS = [
+  { label: "Second floor", sensorKey: "gateway", slug: "second" },
+  { label: "First floor", sensorKey: "temperature-1", slug: "first" },
+  { label: "Basement", sensorKey: "temperature-2", slug: "basement" },
+] as const;
+
 interface ForecastWeatherMapBinding {
   readonly scrubSurface: SVGSVGElement;
   readonly updateTime: (value: string, immediate: boolean) => void;
@@ -1312,6 +1321,7 @@ export class WeatherDashboardController {
   readonly #apiBaseUrl: string;
   readonly #cursors: Array<string | undefined> = [undefined];
   readonly #fetcher: typeof fetch;
+  readonly #isAdmin: boolean;
   readonly #listeners = new Set<DashboardListener>();
   readonly #storage: UnitPreferenceStorage | null;
   #forecastAdjustmentModeExplicit: boolean;
@@ -1322,6 +1332,7 @@ export class WeatherDashboardController {
   constructor(options: DashboardOptions = {}) {
     this.#apiBaseUrl = normalizeBaseUrl(options.apiBaseUrl ?? "/api/v1");
     this.#fetcher = options.fetcher ?? fetch;
+    this.#isAdmin = options.isAdmin ?? (options.view === "admin");
     this.#storage = options.storage === undefined
       ? browserUnitPreferenceStorage()
       : options.storage;
@@ -1345,6 +1356,11 @@ export class WeatherDashboardController {
   // expose the active browser route to the renderer
   get view(): WeatherView {
     return this.#view;
+  }
+
+  // expose the server-authenticated display boundary
+  get isAdmin(): boolean {
+    return this.#isAdmin;
   }
 
   // notify one dashboard view
@@ -1651,7 +1667,10 @@ export class WeatherDashboardController {
       const needsForecast = this.#view === "home" || this.#view === "forecast";
       const needsTides = this.#view === "home" || this.#view === "forecast";
       const needsTrends = this.#view === "trends";
-      const needsPropertySensorLayout = this.#view === "map" || this.#view === "admin";
+      const needsPropertySensorLayout =
+        this.#view === "map" ||
+        this.#view === "admin" ||
+        (this.#view === "home" && this.#isAdmin);
       const [current, dailyPrecipitation, forecast, tides, trends, propertySensorLayout] = await Promise.all([
         // load observations only where rendered
         needsCurrent
@@ -1928,7 +1947,7 @@ export function mountWeatherDashboard(
     const toggleHadFocus = root.querySelector("[data-forecast-adjustment-toggle]") === document.activeElement;
     const forecastPosition = root.querySelector<HTMLElement>("[data-forecast-charts]")
       ?.dataset.forecastSelectedPosition;
-    root.innerHTML = renderWeatherDashboard(state, controller.view);
+    root.innerHTML = renderWeatherDashboard(state, controller.view, controller.isAdmin);
 
     // retain the selected forecast hour across preference redraws
     if (toggleHadFocus && forecastPosition !== undefined && forecastPosition !== null) {
@@ -1952,6 +1971,7 @@ export function mountWeatherDashboard(
 export function renderWeatherDashboard(
   state: DashboardState,
   view: WeatherView = "home",
+  isAdmin = false,
 ): string {
   return `
     <main class="shell">
@@ -1965,14 +1985,14 @@ export function renderWeatherDashboard(
       ${renderSectionNavigation(view)}
       <div class="weather-content">
         ${renderErrorStatus(state)}
-        ${renderWeatherView(state, view)}
+        ${renderWeatherView(state, view, isAdmin)}
         ${renderCredits(state, view)}
       </div>
     </main>
   `;
 }
 
-// render the shared home and forecast adjustment switch
+// keep the adjustment label stable across modes
 function renderForecastAdjustmentToggle(
   state: DashboardState,
   view: WeatherView,
@@ -1983,30 +2003,21 @@ function renderForecastAdjustmentToggle(
   }
 
   const available = forecastAdjustmentsAvailable(state);
-  const canary = state.forecastAdjustmentRuntime?.activationMode === "wind_canary";
   // reflect the persisted preference even during regional fallback
   const adjusted = state.forecastAdjustmentMode !== "raw";
-  const adjustedLabel = canary ? "Wind adjusted (canary)" : "Adjusted";
-  const activeTitle = canary
-    ? "Wind-adjusted canary forecast selected; temperature and humidity remain regional"
-    : "Locally adjusted forecast selected";
-  const fallbackTitle = adjusted
-    ? "Adjusted mode selected; regional values are shown until the local model qualifies"
-    : "Regional forecast selected";
   return `
     <button
       type="button"
       class="forecast-adjustment-toggle"
       role="switch"
       aria-checked="${String(adjusted)}"
-      aria-label="${canary ? "Use wind-adjusted canary forecasts" : "Use locally adjusted forecasts"}"
+      aria-label="Adjusted"
       data-forecast-adjustment-toggle
       data-forecast-adjustment-activation-mode="${escapeHtml(state.forecastAdjustmentRuntime?.activationMode ?? "disabled")}"
       data-forecast-adjustment-available="${String(available)}"
       data-forecast-adjustment-fallback="${String(!available && adjusted)}"
-      title="${available ? (adjusted ? activeTitle : "Regional forecast selected") : fallbackTitle}"
     >
-      <span class="forecast-adjustment-toggle-mode">${adjusted ? adjustedLabel : "Regional"}</span>
+      <span class="forecast-adjustment-toggle-mode">Adjusted</span>
       <span class="forecast-adjustment-toggle-track" aria-hidden="true"><span></span></span>
     </button>
   `;
@@ -2021,7 +2032,7 @@ function forecastAdjustmentsAvailable(state: DashboardState): boolean {
 }
 
 // render one route body
-function renderWeatherView(state: DashboardState, view: WeatherView): string {
+function renderWeatherView(state: DashboardState, view: WeatherView, isAdmin: boolean): string {
   // render the authenticated property sensor editor
   if (view === "admin") {
     return renderPropertySensorAdmin(state);
@@ -2052,14 +2063,15 @@ function renderWeatherView(state: DashboardState, view: WeatherView): string {
     return renderUnitSettings(state.units);
   }
 
-  return renderHomepage(state);
+  return renderHomepage(state, isAdmin);
 }
 
 // render the complete decision-first homepage
-function renderHomepage(state: DashboardState): string {
+function renderHomepage(state: DashboardState, isAdmin: boolean): string {
   return `
     ${renderAlerts(state)}
     ${renderCurrent(state)}
+    ${isAdmin ? `${renderIndoorHouse(state)}${renderAdminSoilMoistureMap(state)}` : ""}
   `;
 }
 
@@ -2316,6 +2328,37 @@ function renderCurrent(state: DashboardState): string {
           measurement: formatFixedMeasurement(uvIndex, ""),
           forecast: forecastMaximumFixed(forecast, "uvIndex", "", 1, uvBand, useForecastAdjustments),
         })}
+    </section>
+  `;
+}
+
+// render the admin-only house cross section
+function renderIndoorHouse(state: DashboardState): string {
+  const sensorsByKey = new Map(
+    propertySensorSnapshots(state).map(
+      // index every current hardware snapshot
+      (sensor) => [sensor.key, sensor],
+    ),
+  );
+  return `
+    <section class="indoor-house-panel" data-indoor-house aria-labelledby="indoor-house-heading">
+      <div class="indoor-house-heading">
+        ${renderMaterialIcon("home")}
+        <div><p class="eyebrow">Inside the house</p><h2 id="indoor-house-heading">Indoor temperatures</h2></div>
+      </div>
+      <div class="indoor-house-illustration">
+        <div class="indoor-house-roof" aria-hidden="true"><span></span></div>
+        <ol class="indoor-house-levels" aria-label="Indoor temperature by floor">
+          ${INDOOR_HOUSE_LEVELS.map(
+            // render every physical floor in top-to-bottom order
+            (level) => {
+              const temperatureC = sensorsByKey.get(level.sensorKey)?.readings.temperatureC ?? null;
+              const measurement = formatMeasurement(temperatureC, "temperature", state.units, 0);
+              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature">${renderConditionMeasurement(measurement)}</span></li>`;
+            },
+          ).join("")}
+        </ol>
+      </div>
     </section>
   `;
 }
@@ -2604,25 +2647,6 @@ interface ForecastChartSeries {
   readonly values: readonly (number | null)[];
 }
 
-// describe one selected-hour model value
-interface ForecastAdjustmentValuePresentation {
-  readonly adjusted: string;
-  readonly label: string;
-  readonly raw: string;
-}
-
-// describe one selected-hour adjustment status
-interface ForecastAdjustmentSelectionPresentation {
-  readonly leadBand: string;
-  readonly rawSource: string;
-  readonly referenceAt: string;
-  readonly sourceConfigFingerprint: string;
-  readonly state: "active" | "raw";
-  readonly summary: string;
-  readonly title: string;
-  readonly values: readonly ForecastAdjustmentValuePresentation[];
-}
-
 type ForecastChartFormat =
   | "airQuality"
   | "humidity"
@@ -2641,6 +2665,7 @@ type MaterialIconName =
   | "history"
   | "home"
   | "humidity_percentage"
+  | "logout"
   | "map"
   | "masks"
   | "partly_cloudy_day"
@@ -2753,229 +2778,6 @@ function maximumAvailableMetricValues(
   return values.length === 0 ? null : Math.max(...values);
 }
 
-// label one adjusted metric for readers
-function forecastAdjustmentMetricLabel(metric: ForecastAdjustmentMetric): string {
-  switch (metric) {
-    case "relativeHumidityPercent":
-      return "Humidity";
-    case "temperatureC":
-      return "Temperature";
-    case "windDirectionDegrees":
-      return "Wind direction";
-    case "windGustMps":
-      return "Wind gust";
-    case "windSpeedMps":
-      return "Wind speed";
-  }
-}
-
-// format one adjusted metric in preferred units
-function formatForecastAdjustmentMetric(
-  metric: ForecastAdjustmentMetric,
-  value: number,
-  units: UnitPreferences,
-): string {
-  // format temperature preferences
-  if (metric === "temperatureC") {
-    return compactMeasurement(formatMeasurement(value, "temperature", units, 1)) ?? "—";
-  }
-
-  // format wind preferences
-  if (metric === "windSpeedMps" || metric === "windGustMps") {
-    return compactMeasurement(formatMeasurement(value, "windSpeed", units, 1)) ?? "—";
-  }
-
-  // retain fixed humidity units
-  if (metric === "relativeHumidityPercent") {
-    return compactMeasurement(formatFixedMeasurement(value, "%", 1)) ?? "—";
-  }
-
-  return compactMeasurement(formatFixedMeasurement(value, "°", 0)) ?? "—";
-}
-
-// build one selected-hour status contract
-function forecastAdjustmentSelection(
-  record: WeatherRecord,
-  units: UnitPreferences,
-  useAdjustments: boolean,
-  activationMode: ForecastAdjustmentActivationMode,
-): ForecastAdjustmentSelectionPresentation {
-  const decision = record.adjustment;
-  const canary = activationMode === "wind_canary";
-
-  // expose raw and adjusted values only for valid active rows
-  if (decision?.state === "active") {
-    const values = decision.appliedMetrics.map(
-      // preserve the API metric order
-      (metric) => ({
-        adjusted: formatForecastAdjustmentMetric(metric, decision.adjustedMetrics[metric]!, units),
-        label: forecastAdjustmentMetricLabel(metric),
-        raw: formatForecastAdjustmentMetric(metric, record.metrics[metric]!, units),
-      }),
-    );
-    const provenance = decision.rawForecastProvenance;
-
-    // describe an explicit regional display choice
-    if (!useAdjustments) {
-      return {
-        leadBand: `${decision.leadBand} hours`,
-        rawSource: `${provenance.sourceKey} · ${provenance.dataset} · ${provenance.upstreamModel}`,
-        referenceAt: provenance.referenceAt,
-        sourceConfigFingerprint: provenance.sourceConfigFingerprint,
-        state: "raw",
-        summary: canary
-          ? "Wind canary turned off. Temperature and humidity remain regional."
-          : "Local adjustment turned off",
-        title: canary ? "Regional" : "Regional forecast",
-        values,
-      };
-    }
-
-    return {
-      leadBand: `${decision.leadBand} hours`,
-      rawSource: `${provenance.sourceKey} · ${provenance.dataset} · ${provenance.upstreamModel}`,
-      referenceAt: provenance.referenceAt,
-      sourceConfigFingerprint: provenance.sourceConfigFingerprint,
-      state: "active",
-      summary: canary
-        ? `${values.map((value) => value.label).join(", ")} adjusted. Temperature and humidity remain regional.`
-        : `${values.map((value) => value.label).join(", ")} adjusted for this location`,
-      title: canary ? "Wind adjusted (canary)" : "Locally adjusted",
-      values,
-    };
-  }
-
-  const beyondRange = decision?.state === "not_applicable" && decision.reasonCode === "unsupported_lead";
-  return {
-    leadBand: beyondRange ? "Beyond 168 hours" : "Not applied",
-    rawSource: `${record.provenance.sourceKey} · ${record.metadata.provider?.dataset ?? "unknown dataset"} · ${record.metadata.upstream.model ?? "unknown model"}`,
-    referenceAt: record.productRunAt ?? record.receivedAt,
-    sourceConfigFingerprint: "Not supplied for an unadjusted hour",
-    state: "raw",
-    summary: beyondRange
-      ? "No local adjustment beyond 168 hours"
-      : "No local adjustment for this forecast hour",
-    title: "Raw forecast",
-    values: [],
-  };
-}
-
-// render one raw-versus-adjusted value list
-function renderForecastAdjustmentValues(
-  values: readonly ForecastAdjustmentValuePresentation[],
-): string {
-  // keep raw-only hours concise
-  if (values.length === 0) {
-    return '<p class="forecast-adjustment-raw-note">This hour uses the raw regional forecast.</p>';
-  }
-
-  return `
-    <div class="forecast-adjustment-values" aria-label="Raw and adjusted forecast values">
-      ${values.map(
-        // show one exact raw and adjusted pair
-        (value) => `<div><span>${escapeHtml(value.label)}</span><small>Raw ${escapeHtml(value.raw)}</small><strong>Adjusted ${escapeHtml(value.adjusted)}</strong></div>`,
-      ).join("")}
-    </div>
-  `;
-}
-
-// render bounded adjustment status and provenance
-function renderForecastAdjustmentStatus(
-  state: DashboardState,
-  hours: readonly WeatherRecord[],
-  selectedIndex: number,
-  useAdjustments: boolean,
-): string {
-  const runtime = state.forecastAdjustmentRuntime ?? null;
-
-  // wait for the forecast runtime response
-  if (runtime === null) {
-    return "";
-  }
-
-  // explain the honest regional fallback for an adjusted preference
-  if (runtime.state === "disabled" && runtime.reasonCode === "registry_inactive") {
-    return useAdjustments
-      ? `
-        <aside class="forecast-adjustment-status forecast-adjustment-status-raw" data-forecast-adjustment-status data-forecast-adjustment-state="raw" data-forecast-adjustment-reason="registry_inactive">
-          <p role="status"><strong>Regional fallback</strong><span>Adjusted mode will apply automatically after the local model qualifies.</span></p>
-        </aside>
-      `
-      : "";
-  }
-
-  // keep degraded adjustment separate from raw forecast availability
-  if (runtime.state === "disabled") {
-    return `
-      <aside class="forecast-adjustment-status forecast-adjustment-status-raw" data-forecast-adjustment-status data-forecast-adjustment-state="raw" data-forecast-adjustment-reason="${escapeHtml(runtime.reasonCode ?? "adjustment_error")}">
-        <p role="status"><strong>Raw forecast</strong><span>Local adjustment unavailable</span></p>
-      </aside>
-    `;
-  }
-
-  const selections = hours.map(
-    // retain one bounded selected-hour presentation
-    (record) => forecastAdjustmentSelection(
-      record,
-      state.units,
-      useAdjustments,
-      runtime.activationMode ?? "qualified",
-    ),
-  );
-  const selected = selections[selectedIndex] ?? selections[0];
-
-  // fail a structurally impossible active render to raw
-  if (selected === undefined || runtime.activeBundle === null) {
-    return `
-      <aside class="forecast-adjustment-status forecast-adjustment-status-raw" data-forecast-adjustment-status data-forecast-adjustment-state="raw" data-forecast-adjustment-reason="adjustment_error">
-        <p role="status"><strong>Raw forecast</strong><span>Local adjustment unavailable</span></p>
-      </aside>
-    `;
-  }
-
-  const includesExtendedRaw = selections.some(
-    // identify visible hours beyond model scope
-    (selection) => selection.summary === "No local adjustment beyond 168 hours",
-  );
-  return `
-    <aside
-      class="forecast-adjustment-status${selected.state === "raw" ? " forecast-adjustment-status-raw" : ""}"
-      data-forecast-adjustment-status
-      data-forecast-adjustment-state="${selected.state}"
-      data-forecast-adjustment-selections="${escapeHtml(JSON.stringify(selections))}"
-    >
-      <p class="forecast-adjustment-summary" role="status" aria-live="polite">
-        <strong data-forecast-adjustment-title>${escapeHtml(selected.title)}</strong>
-        <span data-forecast-adjustment-summary>${escapeHtml(selected.summary)}</span>
-      </p>
-      <details class="forecast-adjustment-details">
-        <summary>Raw and adjusted source details</summary>
-        <div data-forecast-adjustment-values>${renderForecastAdjustmentValues(selected.values)}</div>
-        <dl>
-          <dt>Raw source</dt><dd data-forecast-adjustment-source>${escapeHtml(selected.rawSource)}</dd>
-          <dt>Reference</dt><dd><time data-forecast-adjustment-reference datetime="${escapeHtml(selected.referenceAt)}">${escapeHtml(selected.referenceAt)}</time></dd>
-          <dt>Lead band</dt><dd data-forecast-adjustment-lead-band>${escapeHtml(selected.leadBand)}</dd>
-          <dt>Activation mode</dt><dd>${runtime.activationMode === "wind_canary" ? "Wind canary" : "Qualified model"}</dd>
-          <dt>Enabled metrics</dt><dd>${escapeHtml(runtime.enabledMetrics.map(forecastAdjustmentMetricLabel).join(", "))}</dd>
-          ${runtime.expiresAt === null ? "" : `<dt>Canary expires</dt><dd><time datetime="${escapeHtml(runtime.expiresAt)}">${escapeHtml(runtime.expiresAt)}</time></dd>`}
-          <dt>Model</dt><dd>robust-hierarchical-median/v1</dd>
-          <dt>Bundle hash</dt><dd><code>${escapeHtml(runtime.activeBundle)}</code></dd>
-          <dt>Candidate/model hash</dt><dd><code>${escapeHtml(runtime.candidateArtifactSha256 ?? "unavailable")}</code></dd>
-          ${runtime.activationMode === "wind_canary"
-            ? `<dt>Transfer report hash</dt><dd><code>${escapeHtml(runtime.transferReportSha256 ?? "unavailable")}</code></dd>
-              <dt>Authorization hash</dt><dd><code>${escapeHtml(runtime.authorizationSha256 ?? "unavailable")}</code></dd>`
-            : `<dt>Report hash</dt><dd><code>${escapeHtml(runtime.evaluationReportSha256 ?? "unavailable")}</code></dd>
-              <dt>Receipt hash</dt><dd><code>${escapeHtml(runtime.qualificationReceiptSha256 ?? "unavailable")}</code></dd>`}
-          <dt>Raw model source hash</dt><dd><code data-forecast-adjustment-source-fingerprint>${escapeHtml(selected.sourceConfigFingerprint)}</code></dd>
-        </dl>
-      </details>
-      ${includesExtendedRaw
-        ? '<p class="forecast-adjustment-limit">Hours 169–240 use the raw regional forecast with no local adjustment.</p>'
-        : ""}
-    </aside>
-  `;
-}
-
 // render the site-local forecast day
 function renderForecast(state: DashboardState): string {
   const days = state.forecastDays ?? 1;
@@ -3031,7 +2833,6 @@ function renderForecast(state: DashboardState): string {
   return `
     <section class="panel forecast-panel" aria-label="Weather forecast">
       <div class="forecast-controls">${renderForecastRangeSelector(days, state.loading)}</div>
-      ${renderForecastAdjustmentStatus(state, hours, selectedIndex, useForecastAdjustments)}
       <div class="forecast-chart-shell">
         <div class="forecast-current-time-line" aria-hidden="true"></div>
         <div class="forecast-shared-crosshair" aria-hidden="true"></div>
@@ -4064,22 +3865,24 @@ function renderTrends(state: DashboardState): string {
   `;
 }
 
-// reserve the complete trend chart grid
+// reserve the loaded chart's responsive frame during loading
 function renderTrendsSkeleton(): string {
   return `
     <section class="panel trends-panel skeleton-region" aria-label="Trends" aria-busy="true">
       <div class="trend-grid">
         <article class="trend-chart skeleton-trend-chart" aria-hidden="true">
-          <div class="trend-chart-viewport">
-            <div class="trend-chart-landscape">
-              ${renderTrendMetricControl("temperatureC", true)}
-              <span class="trend-chart-range">00–00 unit</span>
-              <svg viewBox="0 0 ${TREND_CHART_WIDTH} ${TREND_CHART_HEIGHT}" preserveAspectRatio="none" focusable="false">
-                ${renderTrendMonthGrid()}
-                <rect class="skeleton-chart-fill" x="${TREND_CHART_PADDING_LEFT}" y="${TREND_CHART_PADDING_TOP}" width="${TREND_CHART_WIDTH - TREND_CHART_PADDING_LEFT - TREND_CHART_PADDING_RIGHT}" height="${TREND_CHART_HEIGHT - TREND_CHART_PADDING_TOP - TREND_CHART_PADDING_BOTTOM}" rx="3"/>
-              </svg>
-              ${renderTrendMonthAxis()}
-              <div class="trend-chart-legend skeleton-trend-legend"><span>25th–75th</span><span>Historical median</span></div>
+          <div class="trend-chart-frame">
+            <div class="trend-chart-viewport">
+              <div class="trend-chart-landscape">
+                ${renderTrendMetricControl("temperatureC", true)}
+                <span class="trend-chart-range">00–00 unit</span>
+                <svg viewBox="0 0 ${TREND_CHART_WIDTH} ${TREND_CHART_HEIGHT}" preserveAspectRatio="none" focusable="false">
+                  ${renderTrendMonthGrid()}
+                  <rect class="skeleton-chart-fill" x="${TREND_CHART_PADDING_LEFT}" y="${TREND_CHART_PADDING_TOP}" width="${TREND_CHART_WIDTH - TREND_CHART_PADDING_LEFT - TREND_CHART_PADDING_RIGHT}" height="${TREND_CHART_HEIGHT - TREND_CHART_PADDING_TOP - TREND_CHART_PADDING_BOTTOM}" rx="3"/>
+                </svg>
+                ${renderTrendMonthAxis()}
+                <div class="trend-chart-legend skeleton-trend-legend"><span>25th–75th</span><span>Historical median</span></div>
+              </div>
             </div>
           </div>
         </article>
@@ -5478,6 +5281,103 @@ interface MapViewport {
   readonly zoom: number;
 }
 
+// render the protected soil-only farm overview
+function renderAdminSoilMoistureMap(state: DashboardState): string {
+  const site = state.selectedSite;
+
+  // wait for the fixed site before projecting sensor coordinates
+  if (site === null) {
+    return "";
+  }
+
+  const sensors = propertySensorSnapshots(state).filter(
+    // retain only probes with a usable soil moisture reading
+    (sensor) => Number.isFinite(sensor.readings.soilMoisturePercent),
+  );
+  const layoutByKey = new Map(
+    (state.propertySensorLayout ?? []).map(
+      // index each persisted sensor location
+      (entry) => [entry.sensorKey, entry],
+    ),
+  );
+  const placed = sensors.flatMap(
+    // pair only probes with persisted map coordinates
+    (sensor) => {
+      const layout = layoutByKey.get(sensor.key);
+      return layout === undefined ? [] : [{ layout, sensor }];
+    },
+  );
+  const viewport = createFixedMapViewport(
+    site.latitude,
+    site.longitude,
+    PROPERTY_MAP_ZOOM,
+    PROPERTY_MAP_WIDTH,
+    PROPERTY_MAP_HEIGHT,
+  );
+  const markerOffsets = propertySensorMarkerOffsets(placed, viewport);
+  const markers = placed.map(
+    // render one visible percentage at every placed soil probe
+    ({ layout, sensor }) => renderSoilMoistureMarker(
+      layout,
+      sensor,
+      viewport,
+      markerOffsets.get(sensor.key) ?? { x: 0, y: 0 },
+    ),
+  ).join("");
+
+  return `
+    <section class="admin-soil-map-panel" data-admin-soil-map aria-labelledby="admin-soil-map-heading">
+      <div class="section-heading">
+        <div><p class="eyebrow">Ballydídean property</p><h2 id="admin-soil-map-heading">Soil moisture</h2></div>
+        <span class="property-map-count">${String(placed.length)} reporting</span>
+      </div>
+      <div class="property-map admin-soil-map">
+        <div class="property-map-canvas">
+          <svg class="property-map-svg" data-property-interactive-map data-property-map-width="${String(PROPERTY_MAP_WIDTH)}" data-property-map-height="${String(PROPERTY_MAP_HEIGHT)}" viewBox="0 0 ${PROPERTY_MAP_WIDTH} ${PROPERTY_MAP_HEIGHT}" role="group" aria-label="Current soil moisture across the Ballydídean property">
+            <g data-property-map-world>
+              <g class="map-tile-layer" aria-hidden="true">${renderPropertyMapTiles(state.propertyMapLayer, viewport)}</g>
+            </g>
+            <g class="property-map-overlay">
+              ${markers}
+            </g>
+          </svg>
+          ${renderPropertyMapLayerControls(state.propertyMapLayer, viewport)}
+          ${renderPropertyMapZoomControls()}
+        </div>
+        ${renderPropertyMapAttribution(state.propertyMapLayer)}
+      </div>
+      ${placed.length === 0
+        ? `<p class="empty-panel">${state.loading ? "Loading soil moisture…" : "No soil moisture sensors have been placed yet."}</p>`
+        : ""}
+      ${sensors.length > placed.length
+        ? `<p class="property-map-note">${String(sensors.length - placed.length)} soil moisture sensor${sensors.length - placed.length === 1 ? " still needs" : "s still need"} a position in Admin.</p>`
+        : ""}
+    </section>
+  `;
+}
+
+// render one soil probe as a fixed-size percentage marker
+function renderSoilMoistureMarker(
+  layout: PropertySensorLayout,
+  sensor: PropertySensorSnapshot,
+  viewport: MapViewport,
+  offset: Readonly<{ x: number; y: number }>,
+): string {
+  const point = projectMapPoint(layout.latitude, layout.longitude, viewport);
+  const moisture = formatNumber(sensor.readings.soilMoisturePercent ?? 0, 0);
+  return `
+    <g class="soil-moisture-marker" data-soil-moisture-sensor="${escapeHtml(sensor.key)}" data-property-map-anchor data-property-map-x="${point.x.toFixed(2)}" data-property-map-y="${point.y.toFixed(2)}" transform="translate(${point.x.toFixed(2)} ${point.y.toFixed(2)})" role="img" aria-label="${escapeHtml(layout.displayName)}: ${escapeHtml(moisture)}% soil moisture">
+      <line class="soil-moisture-marker-leader" x1="0" y1="0" x2="${offset.x.toFixed(2)}" y2="${offset.y.toFixed(2)}"/>
+      <circle class="soil-moisture-marker-anchor" r="3"/>
+      <g class="soil-moisture-marker-head" transform="translate(${offset.x.toFixed(2)} ${offset.y.toFixed(2)})">
+        <circle r="19"/>
+        <text x="0" y="4">${escapeHtml(moisture)}%</text>
+      </g>
+      <title>${escapeHtml(layout.displayName)} · ${escapeHtml(moisture)}% soil moisture</title>
+    </g>
+  `;
+}
+
 // render the farm-scale EcoWitt sensor geography first
 function renderPropertySensorMap(state: DashboardState): string {
   const site = state.selectedSite;
@@ -5633,7 +5533,7 @@ function renderPropertySensorAdmin(state: DashboardState): string {
   if (sensors.length === 0) {
     return `
       <section class="panel property-admin" aria-labelledby="property-admin-heading">
-        <div class="section-heading"><div><p class="eyebrow">Administration</p><h2 id="property-admin-heading">Property sensors</h2></div></div>
+        ${renderPropertyAdminHeading()}
         <p class="empty-panel">${state.loading ? "Loading EcoWitt sensor channels…" : "No EcoWitt sensor channels are reporting yet."}</p>
       </section>
     `;
@@ -5687,7 +5587,7 @@ function renderPropertySensorAdmin(state: DashboardState): string {
 
   return `
     <section class="panel property-admin" aria-labelledby="property-admin-heading">
-      <div class="section-heading"><div><p class="eyebrow">Administration</p><h2 id="property-admin-heading">Property sensors</h2></div></div>
+      ${renderPropertyAdminHeading()}
       <p class="property-admin-intro">Select a reporting EcoWitt sensor, give it a useful name, then tap its physical location on the map.</p>
       <div class="property-admin-layout">
         <ol class="property-admin-sensors">${sensorRows}</ol>
@@ -5719,6 +5619,16 @@ function renderPropertySensorAdmin(state: DashboardState): string {
         </div>
       </div>
     </section>
+  `;
+}
+
+// render the authenticated admin heading and logout action
+function renderPropertyAdminHeading(): string {
+  return `
+    <div class="section-heading">
+      <div><p class="eyebrow">Administration</p><h2 id="property-admin-heading">Property sensors</h2></div>
+      <form class="admin-logout-form" action="/admin/logout" method="post"><button type="submit">${renderMaterialIcon("logout")}<span>Log out</span></button></form>
+    </div>
   `;
 }
 
@@ -5878,6 +5788,13 @@ function primaryPropertySensorReading(
   sensor: PropertySensorSnapshot,
   units: UnitPreferences,
 ): string {
+  const soilMoisture = sensor.readings.soilMoisturePercent;
+
+  // prioritize soil moisture for dedicated soil probes
+  if (soilMoisture !== undefined) {
+    return `Moisture ${formatNumber(soilMoisture)} %`;
+  }
+
   return propertySensorReadingLabels(sensor, units)[0] ?? "Reporting";
 }
 
@@ -7681,110 +7598,6 @@ function bindPropertySensorAdmin(
   });
 }
 
-// render selected-hour adjustment values without HTML injection
-function replaceForecastAdjustmentValues(
-  target: HTMLElement,
-  values: readonly ForecastAdjustmentValuePresentation[],
-): void {
-  target.replaceChildren();
-
-  // render one concise raw-only message
-  if (values.length === 0) {
-    const message = document.createElement("p");
-    message.className = "forecast-adjustment-raw-note";
-    message.textContent = "This hour uses the raw regional forecast.";
-    target.append(message);
-    return;
-  }
-
-  const list = document.createElement("div");
-  list.className = "forecast-adjustment-values";
-  list.setAttribute("aria-label", "Raw and adjusted forecast values");
-
-  // append every selected metric pair
-  for (const value of values) {
-    const row = document.createElement("div");
-    const label = document.createElement("span");
-    const raw = document.createElement("small");
-    const adjusted = document.createElement("strong");
-    label.textContent = value.label;
-    raw.textContent = `Raw ${value.raw}`;
-    adjusted.textContent = `Adjusted ${value.adjusted}`;
-    row.append(label, raw, adjusted);
-    list.append(row);
-  }
-
-  target.append(list);
-}
-
-// create one safe selected-hour status updater
-function forecastAdjustmentStatusUpdater(
-  root: HTMLElement,
-): ((selectedIndex: number) => void) | null {
-  const status = root.querySelector<HTMLElement>("[data-forecast-adjustment-selections]");
-
-  // skip inactive and degraded runtime summaries
-  if (status === null) {
-    return null;
-  }
-
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(status.dataset.forecastAdjustmentSelections ?? "[]");
-  } catch {
-    // ignore a damaged rendered contract
-    return null;
-  }
-
-  // require a rendered selection list
-  if (!Array.isArray(parsed)) {
-    return null;
-  }
-
-  const selections = parsed as ForecastAdjustmentSelectionPresentation[];
-  const title = status.querySelector<HTMLElement>("[data-forecast-adjustment-title]");
-  const summary = status.querySelector<HTMLElement>("[data-forecast-adjustment-summary]");
-  const source = status.querySelector<HTMLElement>("[data-forecast-adjustment-source]");
-  const reference = status.querySelector<HTMLTimeElement>("[data-forecast-adjustment-reference]");
-  const leadBand = status.querySelector<HTMLElement>("[data-forecast-adjustment-lead-band]");
-  const fingerprint = status.querySelector<HTMLElement>("[data-forecast-adjustment-source-fingerprint]");
-  const values = status.querySelector<HTMLElement>("[data-forecast-adjustment-values]");
-
-  // update every selected-hour field together
-  return (selectedIndex: number): void => {
-    const selection = selections[Math.max(0, Math.min(selections.length - 1, selectedIndex))];
-
-    // retain the last usable presentation after malformed DOM changes
-    if (
-      selection === undefined ||
-      (selection.state !== "active" && selection.state !== "raw") ||
-      !Array.isArray(selection.values)
-    ) {
-      return;
-    }
-
-    status.dataset.forecastAdjustmentState = selection.state;
-    status.classList.toggle("forecast-adjustment-status-raw", selection.state === "raw");
-    title?.replaceChildren(selection.title);
-    summary?.replaceChildren(selection.summary);
-    source?.replaceChildren(selection.rawSource);
-    leadBand?.replaceChildren(selection.leadBand);
-    fingerprint?.replaceChildren(selection.sourceConfigFingerprint);
-
-    // update the raw reference instant
-    if (reference !== null) {
-      reference.dateTime = selection.referenceAt;
-      reference.textContent = selection.referenceAt;
-    }
-
-    // update the raw and adjusted pairs
-    if (values !== null) {
-      replaceForecastAdjustmentValues(values, selection.values);
-    }
-  };
-}
-
 // connect the synchronized forecast crosshair
 function bindForecastCharts(
   root: HTMLElement,
@@ -7827,7 +7640,6 @@ function bindForecastCharts(
   );
   const shell = grid.closest<HTMLElement>(".forecast-chart-shell") ?? grid;
   const time = shell.querySelector<HTMLTimeElement>("[data-forecast-crosshair-time]");
-  const updateAdjustmentStatus = forecastAdjustmentStatusUpdater(root);
   const timezone = controller.state.selectedSite?.timezone;
   let position = Math.max(0, Math.min(times.length - 1, Number(grid.dataset.forecastInitialIndex ?? 0)));
   let gesture: null | {
@@ -7904,7 +7716,6 @@ function bindForecastCharts(
       controller.state.forecastDays,
     );
     grid.setAttribute("aria-valuetext", `${clock}. ${summaries.join(". ")}`);
-    updateAdjustmentStatus?.(selectedIndex);
     mapBinding?.updateTime(selectedTime, immediateMap);
   };
 

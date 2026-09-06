@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { WeatherAdminStore } from "../scripts/weather-admin-store.mjs";
+import {
+  ADMIN_SESSION_TTL_SECONDS,
+  WeatherAdminStore,
+} from "../scripts/weather-admin-store.mjs";
 
 // create one isolated persistent admin store
 async function fixture(t) {
@@ -25,10 +28,11 @@ async function fixture(t) {
   };
 }
 
-// hash the requested password without retaining plaintext
-test("admin bootstrap creates one non-reversible credential record", async (t) => {
+// hash the requested password and issue revocable browser sessions
+test("admin bootstrap creates one non-reversible credential and bounded sessions", async (t) => {
   const options = await fixture(t);
-  const store = new WeatherAdminStore(options);
+  let now = Date.parse("2026-09-05T12:00:00.000Z");
+  const store = new WeatherAdminStore({ ...options, now: () => now });
 
   assert.deepEqual(await store.bootstrap("wrong-token-that-is-long-enough-to-test", "P@ssword-test"), {
     status: "unauthorized",
@@ -36,14 +40,19 @@ test("admin bootstrap creates one non-reversible credential record", async (t) =
   assert.deepEqual(await store.bootstrap("test-bootstrap-token-with-32-bytes-minimum", "P@ssword-test"), {
     status: "configured",
   });
-  assert.equal(
-    await store.authenticate(`Basic ${Buffer.from("admin:P@ssword-test").toString("base64")}`),
-    true,
-  );
-  assert.equal(
-    await store.authenticate(`Basic ${Buffer.from("admin:wrong-password").toString("base64")}`),
-    false,
-  );
+  const session = await store.startSession("admin", "P@ssword-test");
+  assert.equal(await store.startSession("admin", "wrong-password"), null);
+  assert.equal(await store.startSession("operator", "P@ssword-test"), null);
+  assert.equal(typeof session?.token, "string");
+  assert.equal(session?.maximumAgeSeconds, ADMIN_SESSION_TTL_SECONDS);
+  assert.equal(store.authenticateSession(session?.token), true);
+  assert.equal(store.authenticateSession("not-a-session"), false);
+  now += ADMIN_SESSION_TTL_SECONDS * 1_000 + 1;
+  assert.equal(store.authenticateSession(session?.token), false);
+  const revocable = await store.startSession("admin", "P@ssword-test");
+  assert.equal(store.authenticateSession(revocable?.token), true);
+  store.revokeSession(revocable?.token);
+  assert.equal(store.authenticateSession(revocable?.token), false);
   assert.deepEqual(await store.bootstrap("test-bootstrap-token-with-32-bytes-minimum", "replacement-password"), {
     status: "already_configured",
   });

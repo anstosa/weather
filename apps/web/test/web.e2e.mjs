@@ -15,6 +15,7 @@ const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const publicRoot = join(repositoryRoot, "apps/web/public");
 const distRoot = join(repositoryRoot, "apps/web/dist");
 const fixtureAssetVersion = "browser-test";
+const fixtureAdminSession = "fixture-admin-session";
 const transparentPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
@@ -119,6 +120,24 @@ const physicalCurrent = {
           readings: {
             soilMoisturePercent: 42,
             temperatureC: 17.7,
+          },
+        },
+        {
+          channel: null,
+          key: "gateway",
+          model: "GW3000",
+          readings: {
+            relativeHumidityPercent: 61,
+            temperatureC: 21.5,
+          },
+        },
+        {
+          channel: 1,
+          key: "temperature-1",
+          model: "WN31",
+          readings: {
+            relativeHumidityPercent: 68,
+            temperatureC: 20,
           },
         },
         {
@@ -650,12 +669,71 @@ async function startFixtureServer() {
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://weather.test");
     state.requests.push(`${request.method ?? "GET"} ${url.pathname}${url.search}`);
+    const isAdmin = request.headers.cookie
+      ?.split(";")
+      .some(
+        // match only the fixture administrator cookie
+        (cookie) => cookie.trim() === `weather_admin_session=${fixtureAdminSession}`,
+      ) ?? false;
+
+    // exchange the fixture login form for a browser cookie
+    if (request.method === "POST" && url.pathname === "/admin/login") {
+      const chunks = [];
+
+      // collect the native URL-encoded form
+      for await (const chunk of request) {
+        chunks.push(Buffer.from(chunk));
+      }
+
+      const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      const authenticated = form.get("username") === "admin" &&
+        form.get("password") === "test-admin-password";
+      response.statusCode = 303;
+      response.setHeader("location", authenticated ? "/admin" : "/admin?error=invalid");
+
+      // issue a cookie only after valid credentials
+      if (authenticated) {
+        // match the browser's embedded cookie context
+        const cookieContext = request.headers.host?.startsWith("localhost:") === true
+          ? "SameSite=None; Secure; Partitioned"
+          : "SameSite=Lax";
+        response.setHeader(
+          "set-cookie",
+          `weather_admin_session=${fixtureAdminSession}; Path=/; HttpOnly; Max-Age=43200; ${cookieContext}`,
+        );
+      }
+
+      response.end();
+      return;
+    }
+
+    // clear the fixture browser session
+    if (request.method === "POST" && url.pathname === "/admin/logout") {
+      // expire the cookie in its original context
+      const cookieContext = request.headers.host?.startsWith("localhost:") === true
+        ? "SameSite=None; Secure; Partitioned"
+        : "SameSite=Lax";
+      response.statusCode = 303;
+      response.setHeader("location", "/admin");
+      response.setHeader(
+        "set-cookie",
+        `weather_admin_session=; Path=/; HttpOnly; Max-Age=0; ${cookieContext}`,
+      );
+      response.end();
+      return;
+    }
 
     // persist one authenticated-editor fixture update
     if (
       request.method === "PUT" &&
       url.pathname === "/api/v1/admin/sites/ballydidean/property-sensor-layout/soil-1"
     ) {
+      // enforce the browser session boundary
+      if (!isAdmin) {
+        sendJson(response, { error: { code: "unauthorized" } }, 401);
+        return;
+      }
+
       const chunks = [];
 
       // collect the bounded browser fixture body
@@ -785,6 +863,15 @@ async function startFixtureServer() {
       return;
     }
 
+    // serve one cross-site administrator host
+    if (url.pathname === "/admin-embed") {
+      const embeddedOrigin = `http://localhost:${String(request.socket.localPort)}`;
+      response.statusCode = 200;
+      response.setHeader("content-type", "text/html; charset=utf-8");
+      response.end(`<!doctype html><html><body><iframe title="Embedded admin" src="${embeddedOrigin}/admin" style="width: 900px; height: 800px"></iframe></body></html>`);
+      return;
+    }
+
     const assets = new Map([
       ["/", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
       ["/logs", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
@@ -814,12 +901,23 @@ async function startFixtureServer() {
       [`/assets/${fixtureAssetVersion}/index.js`, [join(distRoot, "index.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/units.js`, [join(distRoot, "units.js"), "text/javascript; charset=utf-8"]],
     ]);
-    const asset = assets.get(url.pathname);
+    const requestedAsset = assets.get(url.pathname);
+    const adminRoute = url.pathname === "/admin" || url.pathname === "/admin/";
+    const asset = adminRoute && !isAdmin
+      ? [join(publicRoot, "admin-login.html"), "text/html; charset=utf-8"]
+      : requestedAsset;
 
     // serve allowlisted browser assets
     if (asset !== undefined) {
       response.statusCode = 200;
       response.setHeader("content-type", asset[1]);
+
+      // model the production administrator cache boundary
+      if (isAdmin && asset[1] === "text/html; charset=utf-8") {
+        response.setHeader("cache-control", "private, no-store");
+        response.setHeader("vary", "Cookie");
+      }
+
       const source = readFileSync(asset[0]);
       response.end(
         url.pathname === "/" ||
@@ -837,6 +935,16 @@ async function startFixtureServer() {
           url.pathname === "/settings/" ||
           url.pathname === "/service-worker.js"
           ? source.toString("utf8").replaceAll("__WEATHER_ASSET_VERSION__", fixtureAssetVersion)
+            .replaceAll(
+              "__WEATHER_ADMIN__",
+              String(isAdmin),
+            )
+            .replaceAll(
+              "__WEATHER_ADMIN_LOGIN_ERROR__",
+              url.searchParams.get("error") === "invalid"
+                ? '<p class="admin-login-error" role="alert">The username or password is incorrect.</p>'
+                : "",
+            )
             .replaceAll("__WEATHER_ROUTE_PRELOAD__", "")
           : source,
       );
@@ -973,7 +1081,8 @@ test("manifest and service worker provide an installable application shell", { t
   }
 });
 
-test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
+// retain switching and fail-raw behavior without an adjustment infobox
+test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -994,29 +1103,26 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
       fixture.state.adjustmentMode = "inactive";
       await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
       assert.equal(await page.locator(".forecast-chart").count(), 8);
-      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 1);
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
       assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
-      const inactiveToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
+      const inactiveToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
       assert.equal(await inactiveToggle.getAttribute("data-forecast-adjustment-fallback"), "true");
       assert.equal(await inactiveToggle.isEnabled(), true);
-      assert.match(await inactiveToggle.textContent() ?? "", /Adjusted/u);
-      assert.match(
-        await page.locator('[data-forecast-adjustment-reason="registry_inactive"]').textContent() ?? "",
-        /Regional fallback[\s\S]*Adjusted mode will apply automatically/u,
-      );
+      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
+      const inactiveTemperature = await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent();
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "false");
-      assert.match(await inactiveToggle.textContent() ?? "", /Regional/u);
+      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
 
-      // prove a verified bundle labels prominent adjusted values
+      // prove a verified bundle still changes chart values
       fixture.state.adjustmentMode = "active";
       await page.reload({ waitUntil: "networkidle" });
-      const status = page.locator("[data-forecast-adjustment-status]");
-      const adjustmentToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
-      await status.waitFor();
+      const adjustmentToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
       assert.equal(await adjustmentToggle.isEnabled(), true);
       assert.equal(
@@ -1026,23 +1132,11 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
         ),
         true,
       );
-      assert.equal(await status.getAttribute("data-forecast-adjustment-state"), "active");
-      assert.match(await status.textContent() ?? "", /Locally adjusted[\s\S]*Temperature, Wind speed adjusted/u);
       assert.equal(
         (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim(),
         "58 °F",
       );
-      await status.locator("summary").click();
-      assert.match(await status.textContent() ?? "", /Raw 54\.5 °F[\s\S]*Adjusted 58\.1 °F/u);
-      assert.match(await status.textContent() ?? "", /open-meteo-forecast-v1 · forecast · best_match/u);
-      assert.match(await status.textContent() ?? "", /robust-hierarchical-median\/v1/u);
-
-      // require every bounded runtime and model hash
-      for (const hash of Object.values(adjustmentHashes)) {
-        assert.match(await status.textContent() ?? "", new RegExp(hash, "u"));
-      }
-
-      const activeScreen = await status.screenshot();
+      const activeScreen = await page.locator("[data-forecast-charts]").screenshot();
       assert.ok(activeScreen.byteLength > 1_000);
 
       const forecastScrubber = page.getByRole("slider", { name: "Forecast time scrubber" });
@@ -1059,10 +1153,13 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
       assert.equal(Number.isInteger(Number(selectedForecastPosition)), false);
       const adjustedTemperature = (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim();
       await adjustmentToggle.click();
-      const regionalToggle = page.getByRole("switch", { name: "Use locally adjusted forecasts" });
+      const regionalToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await regionalToggle.getAttribute("aria-checked"), "false");
-      assert.match(await regionalToggle.textContent() ?? "", /Regional/u);
-      assert.equal(await regionalToggle.evaluate((toggle) => document.activeElement === toggle), true);
+      assert.equal((await regionalToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal(await regionalToggle.evaluate(
+        // retain keyboard focus through rerenders
+        (toggle) => document.activeElement === toggle,
+      ), true);
       assert.equal(
         await forecastScrubber.getAttribute("data-forecast-selected-position"),
         selectedForecastPosition,
@@ -1071,17 +1168,19 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
         (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim(),
         adjustedTemperature,
       );
-      assert.equal(await status.getAttribute("data-forecast-adjustment-state"), "raw");
-      assert.match(await status.textContent() ?? "", /Regional forecast[\s\S]*Local adjustment turned off/u);
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
 
       // preserve the preference across reloads and both forecast-bearing routes
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
       const rawHomeTemperature = await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent();
       await adjustmentToggle.click();
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
       assert.notEqual(
         await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent(),
         rawHomeTemperature,
@@ -1090,36 +1189,41 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
       await page.locator("[data-forecast-charts]").waitFor();
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
 
-      // prove extended hours switch back to explicit raw values
+      // prove extended hours remain raw regardless of the switch
       await page.getByRole("button", { name: "10 days" }).click();
       await page.locator('[data-forecast-charts][data-forecast-days="10"]').waitFor();
-      assert.match(
-        await page.locator(".forecast-adjustment-limit").textContent() ?? "",
-        /Hours 169–240 use the raw regional forecast with no local adjustment/u,
-      );
       await page.locator("[data-forecast-charts]").press("End");
-      assert.equal(await status.getAttribute("data-forecast-adjustment-state"), "raw");
-      assert.match(await status.textContent() ?? "", /Raw forecast[\s\S]*No local adjustment beyond 168 hours/u);
-      await status.locator("summary").click();
-      assert.equal(await status.locator(".forecast-adjustment-values").count(), 0);
-      assert.match(await status.locator(".forecast-adjustment-raw-note").textContent() ?? "", /raw regional forecast/u);
+      const extendedTemperature = await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent();
+      await adjustmentToggle.click();
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
+      assert.equal(
+        await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent(),
+        extendedTemperature,
+      );
+      await adjustmentToggle.click();
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
 
       // prove a bundle cross-link fault cannot interrupt raw charts
       fixture.state.adjustmentMode = "fault";
       await page.reload({ waitUntil: "networkidle" });
-      const fallback = page.locator('[data-forecast-adjustment-reason="bundle_invalid"]');
-      await fallback.waitFor();
-      assert.match(await fallback.textContent() ?? "", /Raw forecast[\s\S]*Local adjustment unavailable/u);
+      assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
+      assert.equal(await adjustmentToggle.getAttribute("data-forecast-adjustment-available"), "false");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
+      assert.equal(
+        await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent(),
+        inactiveTemperature,
+      );
       assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
       assert.equal(await page.locator(".forecast-chart").count(), 8);
       assert.equal(
         await page.locator("body").evaluate(
-          // reject adjustment status horizontal overflow
+          // reject forecast horizontal overflow
           (body) => body.scrollWidth > document.documentElement.clientWidth,
         ),
         false,
       );
-      const fallbackScreen = await fallback.screenshot();
+      const fallbackScreen = await page.locator("[data-forecast-charts]").screenshot();
       assert.ok(fallbackScreen.byteLength > 500);
       await page.close();
     }
@@ -1130,7 +1234,8 @@ test("forecast adjustment stays explicit and fail-raw on desktop and mobile", { 
   }
 });
 
-test("wind canary starts regional and persists an explicit wind-only opt-in", { timeout: 60_000 }, async () => {
+// preserve explicit canary opt-in with a stable label
+test("wind canary keeps an Adjusted label and persists explicit wind-only opt-in", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1144,21 +1249,17 @@ test("wind canary starts regional and persists an explicit wind-only opt-in", { 
     });
     await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
 
-    const toggle = page.getByRole("switch", { name: "Use wind-adjusted canary forecasts" });
-    const status = page.locator("[data-forecast-adjustment-status]");
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
     const rawTemperature = await page.locator('[data-forecast-chart="temperature"]').textContent();
     const rawWind = await page.locator('[data-forecast-chart="wind"]').textContent();
 
     assert.equal(await toggle.isEnabled(), true);
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.match(await toggle.textContent() ?? "", /Regional/u);
-    assert.match(
-      await status.textContent() ?? "",
-      /Regional[\s\S]*Wind canary turned off[\s\S]*Temperature and humidity remain regional/u,
-    );
+    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
       await page.locator("body").evaluate(
-        // keep the longer canary label inside mobile width
+        // keep the preference switch inside mobile width
         (body) => body.scrollWidth > document.documentElement.clientWidth,
       ),
       false,
@@ -1174,12 +1275,8 @@ test("wind canary starts regional and persists an explicit wind-only opt-in", { 
 
     await toggle.click();
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.match(await toggle.textContent() ?? "", /Wind adjusted \(canary\)/u);
-    assert.match(
-      await status.textContent() ?? "",
-      /Wind adjusted \(canary\)[\s\S]*Temperature and humidity remain regional/u,
-    );
-    assert.doesNotMatch(await status.textContent() ?? "", /Wind direction adjusted/u);
+    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
       await page.locator('[data-forecast-chart="temperature"]').textContent(),
       rawTemperature,
@@ -1199,7 +1296,16 @@ test("wind canary starts regional and persists an explicit wind-only opt-in", { 
 
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.match(await toggle.textContent() ?? "", /Wind adjusted \(canary\)/u);
+    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    await page.getByRole("link", { name: "Home", exact: true }).click();
+    assert.equal(await toggle.getAttribute("aria-checked"), "true");
+    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    await toggle.click();
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await page.close();
   } finally {
     await browser?.close();
@@ -1522,9 +1628,13 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     // wait for route data to replace the map skeleton
     await propertySensorList.getByText("Orchard soil", { exact: true }).waitFor();
     assert.equal(await propertySensorList.getByText("Orchard soil", { exact: true }).isVisible(), true);
-    assert.match(await propertySensorList.textContent() ?? "", /Temp 63\.9 °F/u);
     const propertySensorListButton = propertySensorList.locator('[data-property-sensor-view="soil-1"]');
     const propertySensorMarker = propertyMap.locator('[data-property-sensor-view="soil-1"]');
+    assert.equal(
+      await propertySensorListButton.locator(".property-sensor-label span").textContent(),
+      "Moisture 42 %",
+    );
+    assert.equal(await propertySensorMarker.locator("title").textContent(), "Orchard soil · Moisture 42 %");
     assert.equal(
       await propertyMap.locator(".property-sensor-marker-head").evaluateAll(
         // separate markers that share an exact coordinate
@@ -2424,7 +2534,55 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
   }
 });
 
-test("admin editor names and places a reporting EcoWitt sensor", { timeout: 60_000 }, async () => {
+// verify the complete administrator session inside a cross-site iframe
+test("admin login and logout work inside an iframe", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 1000 },
+    });
+    await page.goto(`${fixture.origin}/admin-embed`, { waitUntil: "networkidle" });
+    const frame = page.frameLocator('iframe[title="Embedded admin"]');
+    await frame.getByRole("heading", { name: "Admin sign in" }).waitFor();
+    await frame.getByLabel("Password").fill("test-admin-password");
+    await frame.getByRole("button", { name: "Sign in" }).click();
+    await frame.getByRole("heading", { name: "Property sensors" }).waitFor();
+    assert.match(
+      await frame.locator("html").evaluate(
+        // prove the browser crossed into the distinct embedded site
+        () => window.location.origin,
+      ),
+      /^http:\/\/localhost:/u,
+    );
+    assert.equal(
+      await frame.locator("html").evaluate(
+        // keep the authenticated navigation inside the embedded document
+        () => window.location.pathname,
+      ),
+      "/admin",
+    );
+    assert.equal(page.url(), `${fixture.origin}/admin-embed`);
+    assert.equal(
+      (await page.context().cookies()).find(
+        // locate the opaque embedded administrator session
+        (cookie) => cookie.name === "weather_admin_session",
+      )?.partitionKey,
+      "http://127.0.0.1",
+    );
+    await frame.getByRole("button", { name: "Log out" }).click();
+    await frame.getByRole("heading", { name: "Admin sign in" }).waitFor();
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+test("admin editor signs in, names, and places a reporting EcoWitt sensor", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -2435,6 +2593,54 @@ test("admin editor names and places a reporting EcoWitt sensor", { timeout: 60_0
       viewport: { height: 900, width: 900 },
     });
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    assert.equal(await page.getByRole("heading", { name: "Admin sign in" }).isVisible(), true);
+    assert.equal(await page.locator(".admin-login-icon").textContent(), "settings");
+    assert.equal(await page.getByLabel("Username").inputValue(), "admin");
+    await page.getByLabel("Password").fill("wrong-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    assert.equal(await page.getByRole("alert").textContent(), "The username or password is incorrect.");
+    await page.getByLabel("Password").fill("test-admin-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByRole("heading", { name: "Property sensors" }).waitFor();
+    await page.evaluate(
+      // wait for the administrator page to own its worker
+      async () => {
+        await navigator.serviceWorker.ready;
+      },
+    );
+    await page.waitForFunction(
+      // require navigation interception before testing the cache
+      () => navigator.serviceWorker.controller !== null,
+    );
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const freshHomepageSoilMap = page.locator("[data-admin-soil-map]");
+    await page.getByRole("heading", { name: "Soil moisture" }).waitFor();
+    assert.equal(await freshHomepageSoilMap.locator('[data-soil-moisture-sensor="soil-1"]').count(), 1);
+    assert.equal(await freshHomepageSoilMap.getByText("1 reporting", { exact: true }).isVisible(), true);
+    assert.equal(await freshHomepageSoilMap.getByText(/needs a position in Admin/u).count(), 0);
+    assert.deepEqual(
+      await page.evaluate(
+        // inspect the shared shell after authenticated navigation
+        async () => {
+          const cache = await caches.open("ballydidean-weather-shell-browser-test");
+          const requests = await cache.keys();
+          const homepageRequests = requests.filter(
+            // select every cached homepage variant
+            (request) => new URL(request.url).pathname === "/",
+          );
+          return await Promise.all(homepageRequests.map(
+            // inspect every stored homepage response
+            async (request) => await cache.match(request, { ignoreVary: true }).then(
+              // expose only the administrator marker
+              async (response) => /data-weather-admin="true"/u.test(await response?.text() ?? ""),
+            ),
+          ));
+        },
+      ),
+      [false],
+    );
+    await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "Property sensors" }).waitFor();
     assert.equal(await page.getByRole("heading", { name: "Property sensors" }).isVisible(), true);
     assert.equal(await page.locator('[data-property-sensor-select="soil-1"]').getAttribute("aria-pressed"), "true");
     assert.equal(
@@ -2517,12 +2723,103 @@ test("admin editor names and places a reporting EcoWitt sensor", { timeout: 60_0
     assert.equal(fixture.state.adminUpdates, 1);
     assert.equal(fixture.state.propertySensorLayout[0].displayName, "North orchard soil");
     assert.equal(fixture.state.propertySensorLayout[0].icon, "air-quality");
+    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("heading", { name: "Indoor temperatures" }).waitFor();
+    assert.deepEqual(
+      await page.locator(".indoor-house-level").allTextContents(),
+      ["Second floor71°F", "First floor68°F", "Basement62°F"],
+    );
+    const soilMap = page.locator("[data-admin-soil-map]");
+    await page.getByRole("heading", { name: "Soil moisture" }).waitFor();
+    assert.equal(await soilMap.locator("[data-soil-moisture-sensor]").count(), 1);
+    assert.equal(await soilMap.locator('[data-soil-moisture-sensor="soil-1"] text').textContent(), "42%");
+    assert.equal(await soilMap.locator("[data-property-sensor-view]").count(), 0);
+    assert.equal(await soilMap.locator(".farm-marker").count(), 0);
+    assert.equal(await soilMap.getByText("Barn temperature", { exact: true }).count(), 0);
+    assert.equal(
+      await soilMap.locator('[data-soil-moisture-sensor="soil-1"]').getAttribute("aria-label"),
+      "North orchard soil: 42% soil moisture",
+    );
+    assert.equal(
+      await soilMap.evaluate(
+        // keep the soil overview below the indoor house
+        (map) => {
+          const house = document.querySelector("[data-indoor-house]");
+          return house instanceof HTMLElement && map.getBoundingClientRect().top >= house.getBoundingClientRect().bottom;
+        },
+      ),
+      true,
+    );
+    assert.equal(
+      await page.locator(".indoor-house-illustration").evaluate(
+        // join the roof base cleanly to the second floor
+        (illustration) => {
+          const roof = illustration.querySelector(".indoor-house-roof");
+          const levels = illustration.querySelector(".indoor-house-levels");
+
+          // require both house sections
+          if (!(roof instanceof HTMLElement) || !(levels instanceof HTMLElement)) {
+            return false;
+          }
+
+          return Math.abs(roof.getBoundingClientRect().bottom - levels.getBoundingClientRect().top) < 1;
+        },
+      ),
+      true,
+    );
+    await page.waitForFunction(
+      // wait for fonts and grid tracks before comparing geometry
+      () => {
+        const house = document.querySelector("[data-indoor-house]");
+        const cards = [...document.querySelectorAll(".condition-card")];
+
+        // require the complete rendered dashboard
+        if (!(house instanceof HTMLElement) || cards.length === 0) {
+          return false;
+        }
+
+        const cardsBottom = Math.max(...cards.map(
+          // measure every current-condition card
+          (card) => card.getBoundingClientRect().bottom,
+        ));
+        return house.getBoundingClientRect().top >= cardsBottom;
+      },
+    );
+    await page.setViewportSize({ height: 844, width: 390 });
+    assert.equal(
+      await page.locator(".indoor-house-illustration").evaluate(
+        // preserve the roof join at the phone breakpoint
+        (illustration) => {
+          const roof = illustration.querySelector(".indoor-house-roof");
+          const levels = illustration.querySelector(".indoor-house-levels");
+
+          // require both house sections
+          if (!(roof instanceof HTMLElement) || !(levels instanceof HTMLElement)) {
+            return false;
+          }
+
+          return Math.abs(roof.getBoundingClientRect().bottom - levels.getBoundingClientRect().top) < 1;
+        },
+      ),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        // keep the admin-only house inside a phone viewport
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+      true,
+    );
+    assert.equal(await soilMap.isVisible(), true);
     await page.goto(`${fixture.origin}/map`, { waitUntil: "networkidle" });
     assert.equal(await page.getByText("North orchard soil", { exact: true }).first().isVisible(), true);
     assert.equal(
       await page.locator('.property-sensor-marker .property-sensor-marker-icon').first().textContent(),
       "masks",
     );
+    await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await page.getByRole("button", { name: "Log out" }).click();
+    await page.getByRole("heading", { name: "Admin sign in" }).waitFor();
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -3277,41 +3574,74 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
   }
 });
 
-test("trend skeleton shimmers without a show-all control", { timeout: 60_000 }, async () => {
+// reserve visible trend geometry across responsive entry paths
+test("trend skeleton shimmers and preserves desktop and mobile chart geometry", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
   try {
     browser = await launchBrowser();
-    const page = await createFixturePage(browser, { viewport: { height: 844, width: 960 } });
-    let releaseTrendRead;
-    const trendReadReleased = new Promise(
-      // expose one deterministic trend gate
-      (resolveRelease) => {
-        releaseTrendRead = resolveRelease;
-      },
-    );
-    await page.route(
-      /\/api\/v1\/sites\/ballydidean\/trends/u,
-      // hold the initial trend behind its reserved chart
-      async (route) => {
-        await trendReadReleased;
-        await route.continue();
-      },
-    );
-    await page.goto(`${fixture.origin}/trends`, { waitUntil: "domcontentloaded" });
-    await page.locator(".skeleton-trend-chart").waitFor();
-    assert.equal(await page.locator(".skeleton-trend-chart [data-trend-mode-toggle]").count(), 0);
-    assert.equal(await page.getByRole("button", { name: "Show all" }).count(), 0);
-    assert.equal(
-      await page.locator(".skeleton-trend-chart").evaluate(
-        // animate the complete reserved trend surface
-        (chart) => getComputedStyle(chart, "::after").animationName,
-      ),
-      "skeleton-shimmer",
-    );
-    releaseTrendRead();
-    await page.locator(".trends-panel:not(.skeleton-region)").waitFor();
+
+    // cover first loads and client-side navigation at both breakpoints
+    for (const { width, navigate } of [
+      { width: 960, navigate: false },
+      { width: 390, navigate: false },
+      { width: 960, navigate: true },
+      { width: 390, navigate: true },
+    ]) {
+      const page = await createFixturePage(browser, { viewport: { height: 844, width } });
+      let releaseTrendRead;
+      const trendReadReleased = new Promise(
+        // expose one deterministic trend gate
+        (resolveRelease) => {
+          releaseTrendRead = resolveRelease;
+        },
+      );
+      await page.route(
+        /\/api\/v1\/sites\/ballydidean\/trends/u,
+        // hold each trend read behind its reserved chart
+        async (route) => {
+          await trendReadReleased;
+          await route.continue();
+        },
+      );
+
+      try {
+        // enter trends from either a loaded homepage or a fresh document
+        if (navigate) {
+          await page.goto(fixture.origin, { waitUntil: "networkidle" });
+          await page.getByRole("link", { name: "Trends", exact: true }).click();
+        } else {
+          await page.goto(`${fixture.origin}/trends`, { waitUntil: "domcontentloaded" });
+        }
+
+        await page.locator(".skeleton-trend-chart").waitFor({ state: "attached" });
+        await page.evaluate(
+          // stabilize font-dependent geometry before comparison
+          () => document.fonts.ready,
+        );
+        const selectors = [".trends-panel", ".trend-chart", ".trend-chart-viewport", ".trend-chart-landscape"];
+        const loadingGeometry = await captureSectionGeometry(page, selectors);
+        assert.ok(loadingGeometry[".trend-chart"].height >= 300, `trend skeleton collapsed at ${width}px`);
+        assert.ok(loadingGeometry[".trend-chart-viewport"].height >= 300);
+        assert.equal(await page.getByRole("region", { name: "Trends" }).getAttribute("aria-busy"), "true");
+        assert.equal(await page.locator(".skeleton-trend-chart [data-trend-mode-toggle]").count(), 0);
+        assert.equal(await page.getByRole("button", { name: "Show all" }).count(), 0);
+        assert.equal(
+          await page.locator(".skeleton-trend-chart").evaluate(
+            // animate the complete reserved trend surface
+            (chart) => getComputedStyle(chart, "::after").animationName,
+          ),
+          "skeleton-shimmer",
+        );
+        releaseTrendRead();
+        await page.locator(".trends-panel:not(.skeleton-region)").waitFor();
+        assert.deepEqual(await captureSectionGeometry(page, selectors), loadingGeometry);
+      } finally {
+        releaseTrendRead();
+        await page.close();
+      }
+    }
   } finally {
     await browser?.close();
     fixture.server.close();

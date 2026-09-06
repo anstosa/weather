@@ -601,7 +601,11 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
   await mkdir(join(fixtureRoot, "config/sites"), { recursive: true });
   await writeFile(
     join(fixtureRoot, "apps/web/public/index.html"),
-    '<!doctype html><title>Weather</title><link rel="manifest" href="/manifest.webmanifest">__WEATHER_ROUTE_PRELOAD__<link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css"><script type="module" src="/assets/__WEATHER_ASSET_VERSION__/client.js"></script>\n',
+    '<!doctype html><html data-weather-admin="__WEATHER_ADMIN__"><title>Weather</title><link rel="manifest" href="/manifest.webmanifest">__WEATHER_ROUTE_PRELOAD__<link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css"><script type="module" src="/assets/__WEATHER_ASSET_VERSION__/client.js"></script></html>\n',
+  );
+  await writeFile(
+    join(fixtureRoot, "apps/web/public/admin-login.html"),
+    '<!doctype html><title>Admin sign in</title>__WEATHER_ADMIN_LOGIN_ERROR__<form action="/admin/login" method="post"><input name="username"><input name="password" type="password"><button>Sign in</button></form><link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">\n',
   );
   await writeFile(
     join(fixtureRoot, "apps/web/public/manifest.webmanifest"),
@@ -772,9 +776,48 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       },
       method: "POST",
     });
-    const basicAuthorization = `Basic ${Buffer.from("admin:test-admin-password").toString("base64")}`;
+    const legacyBasicAuthorization = `Basic ${Buffer.from("admin:test-admin-password").toString("base64")}`;
+    const basicAdmin = await fetch(`http://127.0.0.1:${webPort}/admin`, {
+      headers: { authorization: legacyBasicAuthorization },
+    });
+    const basicMutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/admin/sites/ballydidean/property-sensor-layout/soil-1`, {
+      body: JSON.stringify({
+        displayName: "Basic auth must fail",
+        icon: "temperature",
+        latitude: 47.9505,
+        longitude: -122.4281,
+      }),
+      headers: {
+        authorization: legacyBasicAuthorization,
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    });
+    const invalidLogin = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
+      body: new URLSearchParams({ password: "wrong-password", username: "admin" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      redirect: "manual",
+    });
+    const invalidLoginPage = await fetch(
+      `http://127.0.0.1:${webPort}${invalidLogin.headers.get("location")}`,
+    );
+    const login = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
+      body: new URLSearchParams({ password: "test-admin-password", username: "admin" }),
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-forwarded-proto": "https",
+      },
+      method: "POST",
+      redirect: "manual",
+    });
+    const sessionCookieHeader = login.headers.get("set-cookie") ?? "";
+    const sessionCookie = sessionCookieHeader.split(";", 1)[0];
     const admin = await fetch(`http://127.0.0.1:${webPort}/admin`, {
-      headers: { authorization: basicAuthorization },
+      headers: { cookie: sessionCookie },
+    });
+    const authenticatedHome = await fetch(`http://127.0.0.1:${webPort}/`, {
+      headers: { cookie: sessionCookie },
     });
     const savedLayout = await fetch(`http://127.0.0.1:${webPort}/api/v1/admin/sites/ballydidean/property-sensor-layout/soil-1`, {
       body: JSON.stringify({
@@ -784,7 +827,31 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
         longitude: -122.4281,
       }),
       headers: {
-        authorization: basicAuthorization,
+        cookie: sessionCookie,
+        "content-type": "application/json",
+      },
+      method: "PUT",
+    });
+    const logout = await fetch(`http://127.0.0.1:${webPort}/admin/logout`, {
+      headers: {
+        cookie: sessionCookie,
+        "x-forwarded-proto": "https",
+      },
+      method: "POST",
+      redirect: "manual",
+    });
+    const adminAfterLogout = await fetch(`http://127.0.0.1:${webPort}/admin`, {
+      headers: { cookie: sessionCookie },
+    });
+    const rejectedSavedLayout = await fetch(`http://127.0.0.1:${webPort}/api/v1/admin/sites/ballydidean/property-sensor-layout/soil-1`, {
+      body: JSON.stringify({
+        displayName: "Rejected update",
+        icon: "temperature",
+        latitude: 47.9505,
+        longitude: -122.4281,
+      }),
+      headers: {
+        cookie: sessionCookie,
         "content-type": "application/json",
       },
       method: "PUT",
@@ -855,14 +922,39 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(remoteAgentsPreview.headers.get("location"), "/trends?preview=1");
     assert.equal(remoteAgentsPreview.headers.get("cache-control"), "no-store");
     assert.equal(invalidRemoteAgentsPreview.status, 400);
-    assert.equal(adminBeforeBootstrap.status, 401);
-    assert.match(adminBeforeBootstrap.headers.get("www-authenticate"), /Basic realm=/u);
+    assert.equal(adminBeforeBootstrap.status, 200);
+    assert.equal(adminBeforeBootstrap.headers.get("www-authenticate"), null);
+    assert.match(adminBeforeBootstrap.headers.get("content-security-policy"), /frame-ancestors \*/u);
+    assert.match(adminBeforeBootstrap.headers.get("content-security-policy"), /form-action 'self'/u);
+    assert.equal(adminBeforeBootstrap.headers.get("cross-origin-resource-policy"), "cross-origin");
+    assert.equal(adminBeforeBootstrap.headers.get("x-frame-options"), null);
     assert.deepEqual(await publicLayoutBefore.json(), { data: [] });
     assert.equal(rejectedBootstrap.status, 401);
     assert.equal(acceptedBootstrap.status, 201);
+    assert.equal(basicAdmin.status, 200);
+    assert.equal(basicMutation.status, 401);
+    assert.equal(invalidLogin.status, 303);
+    assert.equal(invalidLogin.headers.get("location"), "/admin?error=invalid");
+    assert.equal(login.status, 303);
+    assert.equal(login.headers.get("location"), "/admin");
+    assert.match(sessionCookieHeader, /^weather_admin_session=[A-Za-z0-9_-]{43};/u);
+    assert.match(sessionCookieHeader, /HttpOnly/u);
+    assert.match(sessionCookieHeader, /Max-Age=43200/u);
+    assert.match(sessionCookieHeader, /SameSite=None/u);
+    assert.match(sessionCookieHeader, /Secure/u);
+    assert.match(sessionCookieHeader, /Partitioned/u);
     assert.equal(admin.status, 200);
-    assert.equal(admin.headers.get("cache-control"), "no-store");
+    assert.equal(admin.headers.get("cache-control"), "private, no-store");
+    assert.equal(admin.headers.get("cross-origin-resource-policy"), "cross-origin");
+    assert.equal(admin.headers.get("vary"), "Cookie");
+    assert.equal(authenticatedHome.headers.get("cache-control"), "private, no-store");
     assert.equal(savedLayout.status, 200);
+    assert.equal(logout.status, 303);
+    assert.equal(logout.headers.get("location"), "/admin");
+    assert.match(logout.headers.get("set-cookie"), /Max-Age=0/u);
+    assert.equal(adminAfterLogout.status, 200);
+    assert.equal(rejectedSavedLayout.status, 401);
+    assert.equal(rejectedSavedLayout.headers.get("www-authenticate"), null);
     assert.deepEqual(await publicLayoutAfter.json(), {
       data: [
         {
@@ -877,12 +969,28 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     });
     assert.equal(repeatedBootstrap.status, 409);
     const homeBody = await home.text();
+    const authenticatedHomeBody = await authenticatedHome.text();
+    const adminBody = await admin.text();
+    const adminLoginBody = await adminBeforeBootstrap.text();
+    const basicAdminBody = await basicAdmin.text();
+    const invalidLoginBody = await invalidLoginPage.text();
+    const loggedOutAdminBody = await adminAfterLogout.text();
     const forecastBody = await forecast.text();
     const logsBody = await logs.text();
     const mapBody = await map.text();
     const trendsBody = await trends.text();
     const settingsBody = await settings.text();
     assert.match(homeBody, /<title>Weather<\/title>/u);
+    assert.match(homeBody, /data-weather-admin="false"/u);
+    assert.match(authenticatedHomeBody, /data-weather-admin="true"/u);
+    assert.match(adminBody, /data-weather-admin="true"/u);
+    assert.match(adminLoginBody, /<title>Admin sign in<\/title>/u);
+    assert.match(adminLoginBody, /action="\/admin\/login" method="post"/u);
+    assert.doesNotMatch(adminLoginBody, /incorrect/u);
+    assert.match(basicAdminBody, /<title>Admin sign in<\/title>/u);
+    assert.doesNotMatch(basicAdminBody, /data-weather-admin="true"/u);
+    assert.match(invalidLoginBody, /username or password is incorrect/u);
+    assert.match(loggedOutAdminBody, /<title>Admin sign in<\/title>/u);
     assert.match(homeBody, /rel="manifest" href="\/manifest\.webmanifest"/u);
     assert.match(homeBody, /\/assets\/2026\.08\.25-7\/styles\.css/u);
     assert.match(homeBody, /\/assets\/2026\.08\.25-7\/client\.js/u);

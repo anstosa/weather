@@ -153,10 +153,12 @@ function bindBrowserNavigation(
 }
 
 const view = resolveView(window.location.pathname);
+// retain the authenticated shell boundary across SPA navigation
+const isAdmin = document.documentElement.dataset.weatherAdmin === "true" || view === "admin";
 
 // mount only when the application shell is present
 if (root !== null) {
-  const controller = mountWeatherDashboard(root, { view });
+  const controller = mountWeatherDashboard(root, { isAdmin, view });
   bindBrowserNavigation(root, controller);
 }
 

@@ -133,6 +133,11 @@ and [online VACUUM options](https://www.postgresql.org/docs/17/sql-vacuum.html).
 
 ## Direct deployment
 
+After completing Weather changes, deploy the validated result to `blueberry`
+through the release process below. Completion requires checking the live release
+and affected browser behavior at `https://weather.ballydidean.farm`; a successful
+local preview alone is not the completion gate.
+
 Use the key-based client wrapper:
 
 ```bash

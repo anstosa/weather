@@ -1,4 +1,5 @@
 import {
+  createHash,
   randomBytes,
   scrypt as scryptCallback,
   timingSafeEqual,
@@ -10,6 +11,9 @@ import { promisify } from "node:util";
 const scrypt = promisify(scryptCallback);
 const AUTH_VERSION = 1;
 const LAYOUT_VERSION = 1;
+export const ADMIN_SESSION_TTL_SECONDS = 12 * 60 * 60;
+const MAXIMUM_ADMIN_SESSIONS = 64;
+const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const SENSOR_KEY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const SENSOR_ICONS = new Set(["air-quality", "rain", "temperature", "wind"]);
 
@@ -18,6 +22,8 @@ export class WeatherAdminStore {
   #bootstrapTokenPath;
   #center;
   #layoutPath;
+  #now;
+  #sessions = new Map();
 
   // retain only explicit persistence paths
   constructor(options) {
@@ -28,6 +34,12 @@ export class WeatherAdminStore {
     );
     this.#layoutPath = requirePath(options.layoutPath, "layoutPath");
     this.#center = validateCoordinate(options.center, "center");
+    this.#now = options.now ?? Date.now;
+
+    // require one deterministic clock boundary
+    if (typeof this.#now !== "function") {
+      throw new RangeError("now must be a function");
+    }
   }
 
   // bootstrap exactly one password hash
@@ -61,12 +73,75 @@ export class WeatherAdminStore {
     return { status: "configured" };
   }
 
-  // verify one HTTP Basic credential pair
-  async authenticate(authorization) {
-    const credentials = parseBasicAuthorization(authorization);
+  // exchange one valid password for a bounded opaque session
+  async startSession(username, password) {
+    // reject every invalid credential pair
+    if (!(await this.#authenticateCredentials(username, password))) {
+      return null;
+    }
 
-    // reject missing or malformed credentials uniformly
-    if (credentials === null || credentials.username !== "admin") {
+    const now = this.#now();
+    const token = randomBytes(32).toString("base64url");
+    this.#pruneSessions(now);
+
+    // cap retained sessions even for authenticated callers
+    if (this.#sessions.size >= MAXIMUM_ADMIN_SESSIONS) {
+      const oldest = this.#sessions.keys().next().value;
+
+      // remove only one concrete oldest session
+      if (typeof oldest === "string") {
+        this.#sessions.delete(oldest);
+      }
+    }
+
+    this.#sessions.set(sessionTokenDigest(token), now + ADMIN_SESSION_TTL_SECONDS * 1_000);
+    return { maximumAgeSeconds: ADMIN_SESSION_TTL_SECONDS, token };
+  }
+
+  // verify one active opaque browser session
+  authenticateSession(token) {
+    // reject missing or malformed cookies uniformly
+    if (typeof token !== "string" || !SESSION_TOKEN_PATTERN.test(token)) {
+      return false;
+    }
+
+    const digest = sessionTokenDigest(token);
+    const expiresAt = this.#sessions.get(digest);
+
+    // reject unknown sessions without retaining attacker input
+    if (expiresAt === undefined) {
+      return false;
+    }
+
+    // expire one session at its absolute deadline
+    if (expiresAt <= this.#now()) {
+      this.#sessions.delete(digest);
+      return false;
+    }
+
+    return true;
+  }
+
+  // revoke one presented browser session
+  revokeSession(token) {
+    // ignore malformed logout cookies
+    if (typeof token !== "string" || !SESSION_TOKEN_PATTERN.test(token)) {
+      return;
+    }
+
+    this.#sessions.delete(sessionTokenDigest(token));
+  }
+
+  // verify one submitted login form against the stored hash
+  async #authenticateCredentials(username, password) {
+    // reject malformed form fields before touching persistent state
+    if (
+      username !== "admin" ||
+      typeof password !== "string" ||
+      password.length < 1 ||
+      password.length > 256 ||
+      /[\u0000-\u001f\u007f]/u.test(password)
+    ) {
       return false;
     }
 
@@ -78,8 +153,19 @@ export class WeatherAdminStore {
     }
 
     const parsed = parseAuthState(state);
-    const actual = await derivePasswordHash(credentials.password, parsed.salt);
+    const actual = await derivePasswordHash(password, parsed.salt);
     return actual.byteLength === parsed.hash.byteLength && timingSafeEqual(actual, parsed.hash);
+  }
+
+  // remove every expired in-memory session
+  #pruneSessions(now) {
+    // inspect the bounded session registry
+    for (const [digest, expiresAt] of this.#sessions) {
+      // retain only future expirations
+      if (expiresAt <= now) {
+        this.#sessions.delete(digest);
+      }
+    }
   }
 
   // read the server-wide property layout
@@ -220,32 +306,9 @@ async function derivePasswordHash(password, salt) {
   });
 }
 
-// parse bounded HTTP Basic credentials
-function parseBasicAuthorization(value) {
-  // require the Basic scheme
-  if (typeof value !== "string" || !value.startsWith("Basic ")) {
-    return null;
-  }
-
-  let decoded;
-
-  try {
-    decoded = Buffer.from(value.slice(6), "base64").toString("utf8");
-  } catch {
-    return null;
-  }
-
-  const separator = decoded.indexOf(":");
-
-  // require username and password boundaries
-  if (separator < 1 || decoded.length > 320) {
-    return null;
-  }
-
-  return {
-    password: decoded.slice(separator + 1),
-    username: decoded.slice(0, separator),
-  };
+// hash one opaque token before retaining it in memory
+function sessionTokenDigest(token) {
+  return createHash("sha256").update(token).digest("base64url");
 }
 
 // compare secret text without length-dependent early returns
