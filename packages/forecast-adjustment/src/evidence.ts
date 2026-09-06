@@ -15,12 +15,17 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
 import {
+  FORECAST_LEAD_BANDS,
   FORECAST_ADJUSTMENT_METRICS,
   FORECAST_OBSERVATION_STATIONS,
   forecastLeadBandFor,
+  type ForecastAdjustmentCoefficient,
+  type ForecastAdjustmentForecastIdentity,
   type ForecastAdjustmentMetric,
   type ForecastAdjustmentMetricBand,
+  type ForecastAdjustmentTrainingEnvelope,
   type ForecastAdjustmentWindCanaryMetric,
+  type ForecastAdjustmentWindCanaryTrainingIdentity,
   type ForecastSeasonDaypartKey,
   type ForecastAdjustmentCandidateV2,
   type ForecastAdjustmentEvaluationReportV2,
@@ -71,6 +76,7 @@ import {
   withGuardedHoldoutAccess,
 } from "./holdout-ledger.js";
 import {
+  FORECAST_ADJUSTMENT_ALGORITHM_VERSION,
   applyCappedCorrection,
   corePairedSkill,
   createTrainingEnvelope,
@@ -107,6 +113,11 @@ import {
   createForecastAdjustmentQualificationReceipt,
   evaluateDevelopmentLosoFold,
 } from "./evaluate.js";
+
+import {
+  analyzeTemperatureLeadResearch,
+  type TemperatureLeadResearchEvent,
+} from "./temperature-lead-research.js";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const EVIDENCE_KINDS = [
@@ -242,6 +253,103 @@ export interface RetainedForecastAdjustmentWindCanaryResultV1 {
   readonly contractVersion: "forecast-adjustment-retained-wind-canary-result/v1";
   readonly snapshotManifestSha256: string;
   readonly transferReport: ForecastAdjustmentWindCanaryTransferReportV1;
+}
+
+// bind one independently verified export package
+export interface ForecastAdjustmentFullHistoryResearchSnapshotV1 {
+  readonly fromLocalDate: string;
+  readonly manifestSha256: string;
+  readonly toLocalDate: string;
+  readonly totalRowCount: number;
+}
+
+// summarize one fitted metric-band's full-history support
+export interface ForecastAdjustmentFullHistoryResearchPairV1 {
+  readonly eventCount: number;
+  readonly firstLocalDate: string;
+  readonly lastLocalDate: string;
+  readonly metricBand: ForecastAdjustmentMetricBand;
+  readonly missingLocalDateCount: number;
+  readonly missingLocalDates: readonly string[];
+}
+
+// report one descriptive score without qualification semantics
+export interface ForecastAdjustmentFullHistoryResearchScoreV1 {
+  readonly adjustedLoss: number | null;
+  readonly eventCount: number;
+  readonly matchedNetworkEventCount: number;
+  readonly metricBand: ForecastAdjustmentMetricBand;
+  readonly modelFitted: boolean;
+  readonly rawLoss: number | null;
+  readonly skill: number | null;
+}
+
+// describe one deliberately consumed out-of-time diagnostic
+export interface ForecastAdjustmentFullHistoryResearchDiagnosticV1 {
+  readonly cohort: "fixed_lead_anchor" | "legacy_v4_retrieval_snapshot";
+  readonly diagnosticModelSha256: string;
+  readonly embargoEndLocalDate: string;
+  readonly embargoStartLocalDate: string;
+  readonly interpretation: "descriptive_only_consumed_dates_not_qualification";
+  readonly relationshipToFinalFit: "different_pre_refit_model";
+  readonly scoreEndInclusive: string;
+  readonly scoreEndLocalDate: string;
+  readonly scoreMissingLocalDateCount: number;
+  readonly scoreMissingLocalDates: readonly string[];
+  readonly scoreStartInclusive: string;
+  readonly scoreStartLocalDate: string;
+  readonly scores: readonly ForecastAdjustmentFullHistoryResearchScoreV1[];
+  readonly trainingEndLocalDate: string;
+  readonly trainingEventMaximumValidAt: string;
+}
+
+// hold one inactive all-history research fit
+export interface ForecastAdjustmentFullHistoryResearchResultV1 {
+  readonly algorithmIdentity: {
+    readonly algorithmContractVersion: typeof FORECAST_ADJUSTMENT_ALGORITHM_VERSION;
+    readonly algorithmModuleSha256: string;
+    readonly calendarModuleSha256: string;
+    readonly domainModuleSha256: string;
+    readonly fitterModuleSha256: string;
+    readonly implementationSha256: string;
+    readonly implementationVersion: "forecast-adjustment-full-history-research/v1";
+  };
+  readonly archiveDiagnostic: ForecastAdjustmentFullHistoryResearchDiagnosticV1;
+  readonly coefficients: readonly ForecastAdjustmentCoefficient[];
+  readonly coefficientPayloadSha256: string;
+  readonly contractVersion: "forecast-adjustment-full-history-research-result/v1";
+  readonly expectedRange: {
+    readonly fromLocalDate: string;
+    readonly toLocalDate: string;
+  };
+  readonly finalFit: {
+    readonly fixedAnchorMissingLocalDateCount: number;
+    readonly fixedAnchorMissingLocalDates: readonly string[];
+    readonly fixedAnchorObservedLocalDateCount: number;
+    readonly exactModelIndependentlyValidated: false;
+    readonly finalTrainingCutoff: string;
+    readonly metricBands: readonly ForecastAdjustmentFullHistoryResearchPairV1[];
+    readonly usesAllEligibleFixedAnchorHistory: true;
+  };
+  readonly liveV4Diagnostic: ForecastAdjustmentFullHistoryResearchDiagnosticV1;
+  readonly productionActivationAllowed: false;
+  readonly promotable: false;
+  readonly qualificationStatus: "not_qualified";
+  readonly reasonCodes: readonly [
+    "research_artifact_only",
+    "diagnostics_use_different_pre_refit_models",
+    "exact_final_refit_not_independently_validated",
+  ];
+  readonly researchArtifactSha256: string;
+  readonly runtimeBundleCreated: false;
+  readonly servedForecastIdentity: ForecastAdjustmentForecastIdentity;
+  readonly siteKey: "ballydidean";
+  readonly snapshotIdentitySha256: string;
+  readonly snapshotSetSemantics: "independent_read_only_exports_not_atomic_merged_snapshot";
+  readonly snapshots: readonly ForecastAdjustmentFullHistoryResearchSnapshotV1[];
+  readonly timezone: "America/Los_Angeles";
+  readonly trainingEnvelopes: readonly ForecastAdjustmentTrainingEnvelope[];
+  readonly trainingForecastIdentity: ForecastAdjustmentWindCanaryTrainingIdentity;
 }
 
 interface RetainedTrainingEventV1 {
@@ -1058,11 +1166,896 @@ export async function evaluateRetainedForecastAdjustmentWindCanarySnapshot(
   });
 }
 
+interface RetainedFullHistoryResearchSnapshotControlV1 {
+  readonly manifest: SnapshotManifestV1;
+  readonly manifestSha256: string;
+  readonly snapshotRoot: string;
+}
+
+// enumerate the frozen thirty-five research pairs
+const FULL_HISTORY_RESEARCH_METRIC_BANDS = FORECAST_LEAD_BANDS.flatMap(
+  // expand every lead band's supported metrics
+  (leadBand) => FORECAST_ADJUSTMENT_METRICS.map(
+    // bind one metric to the current band
+    (metric) => ({
+      leadBand: leadBand.key,
+      metric,
+    }),
+  ),
+) satisfies readonly ForecastAdjustmentMetricBand[];
+
+// describe the existing immutable multi-export input boundary
+interface RetainedResearchInputV1 {
+  readonly evidenceRoot: string;
+  readonly expectedRange: {
+    readonly fromLocalDate: string;
+    readonly toLocalDate: string;
+  };
+  readonly snapshotPaths: readonly string[];
+}
+
+// fit one inactive model from independently verified bounded exports
+export async function fitRetainedForecastAdjustmentFullHistoryResearch(
+  input: RetainedResearchInputV1,
+): Promise<ForecastAdjustmentFullHistoryResearchResultV1> {
+  const {
+    expectedRange,
+    snapshots,
+    snapshotIdentitySha256,
+    fixedEvents,
+    liveEvents,
+    liveFirstRow,
+    liveLastRow,
+  } = await readRetainedResearchEvents(input);
+
+  const liveStartLocalDate = localCalendarFeaturesFor(
+    liveFirstRow.validAt,
+  ).localDate;
+  const archiveScoreEndLocalDate = addLocalCalendarDays(
+    liveStartLocalDate,
+    -1,
+  );
+  const archiveScoreStartLocalDate = addLocalCalendarDays(
+    archiveScoreEndLocalDate,
+    -29,
+  );
+  const archiveScoreDates = inclusiveLocalDates(
+    archiveScoreStartLocalDate,
+    archiveScoreEndLocalDate,
+  );
+  // isolate the consumed archive score window
+  const archiveScoreEvents = fixedEvents.filter(
+    (event) => archiveScoreDates.includes(event.localDate),
+  );
+  // stop fitting before the seven-date archive embargo
+  const archiveTrainingEvents = fixedEvents.filter(
+    (event) =>
+      event.localDate < addLocalCalendarDays(archiveScoreStartLocalDate, -7),
+  );
+  const archiveDiagnostic = createFullHistoryResearchDiagnostic({
+    cohort: "fixed_lead_anchor",
+    scoreEndInclusive: maximumEventInstant(
+      archiveScoreEvents,
+      "archive diagnostic score",
+    ),
+    scoreEvents: archiveScoreEvents,
+    scoreLocalDates: archiveScoreDates,
+    scoreStartInclusive: minimumEventInstant(
+      archiveScoreEvents,
+      "archive diagnostic score",
+    ),
+    trainingEvents: archiveTrainingEvents,
+  });
+  const liveScoreDates = inclusiveLocalDates(
+    liveStartLocalDate,
+    localCalendarFeaturesFor(liveLastRow.validAt).localDate,
+  );
+  const liveV4Diagnostic = createFullHistoryResearchDiagnostic({
+    cohort: "legacy_v4_retrieval_snapshot",
+    scoreEndInclusive: liveLastRow.validAt,
+    scoreEvents: liveEvents,
+    scoreLocalDates: liveScoreDates,
+    scoreStartInclusive: liveFirstRow.validAt,
+    // stop fitting before the seven-date live embargo
+    trainingEvents: fixedEvents.filter(
+      (event) =>
+        event.localDate < addLocalCalendarDays(liveStartLocalDate, -7),
+    ),
+  });
+  const fitted = fitFullHistoryResearchPairs(fixedEvents, true);
+  // flatten deterministic pair-order coefficients
+  const coefficients = fitted.flatMap((item) => item.coefficients);
+  // omit direction's inapplicable scalar envelope
+  const trainingEnvelopes = fitted.flatMap((item) =>
+    item.trainingEnvelope === null ? [] : [item.trainingEnvelope],
+  );
+  const coefficientPayloadSha256 = canonicalSha256(
+    coefficients as unknown as JsonValue,
+  );
+  const [fitterModuleBytes, algorithmModuleBytes, calendarModuleBytes, domainModuleBytes] = await Promise.all([
+    readFile(new URL("./evidence.js", import.meta.url)),
+    readFile(new URL("./algorithm-v1.js", import.meta.url)),
+    readFile(new URL("./calendar.js", import.meta.url)),
+    readFile(new URL("./forecast-adjustment.js", import.meta.resolve("@weather/domain"))),
+  ]);
+  const fitterModuleSha256 = sha256(fitterModuleBytes);
+  const algorithmModuleSha256 = sha256(algorithmModuleBytes);
+  const calendarModuleSha256 = sha256(calendarModuleBytes);
+  const domainModuleSha256 = sha256(domainModuleBytes);
+  const algorithmIdentity = {
+    algorithmContractVersion: FORECAST_ADJUSTMENT_ALGORITHM_VERSION,
+    algorithmModuleSha256,
+    calendarModuleSha256,
+    domainModuleSha256,
+    fitterModuleSha256,
+    implementationSha256: canonicalSha256({
+      algorithmContractVersion: FORECAST_ADJUSTMENT_ALGORITHM_VERSION,
+      algorithmModuleSha256,
+      calendarModuleSha256,
+      domainModuleSha256,
+      fitterModuleSha256,
+      implementationVersion: "forecast-adjustment-full-history-research/v1",
+    }),
+    implementationVersion:
+      "forecast-adjustment-full-history-research/v1" as const,
+  };
+  // bind every independent child manifest
+  const snapshotBindings = snapshots.map((snapshot) => ({
+    fromLocalDate: snapshot.manifest.fromLocalDate,
+    manifestSha256: snapshot.manifestSha256,
+    toLocalDate: snapshot.manifest.toLocalDate,
+    totalRowCount: snapshot.manifest.totalRowCount,
+  }));
+  const servedForecastIdentity = servedForecastIdentityForResearch(liveFirstRow);
+  const expectedLocalDates = inclusiveLocalDates(
+    expectedRange.fromLocalDate,
+    expectedRange.toLocalDate,
+  );
+  // retain each date with matched fixed-anchor support
+  const fixedAnchorLocalDates = new Set(
+    fixedEvents.map((event) => event.localDate),
+  );
+  // expose rather than impute complete-history gaps
+  const fixedAnchorMissingLocalDates = expectedLocalDates.filter(
+    (localDate) => !fixedAnchorLocalDates.has(localDate),
+  );
+  const unsigned = {
+    algorithmIdentity,
+    archiveDiagnostic,
+    coefficientPayloadSha256,
+    coefficients,
+    contractVersion: "forecast-adjustment-full-history-research-result/v1" as const,
+    expectedRange,
+    finalFit: {
+      exactModelIndependentlyValidated: false as const,
+      finalTrainingCutoff: maximumEventInstant(fixedEvents, "final research fit"),
+      fixedAnchorMissingLocalDateCount: fixedAnchorMissingLocalDates.length,
+      fixedAnchorMissingLocalDates,
+      fixedAnchorObservedLocalDateCount: fixedAnchorLocalDates.size,
+      // preserve metric-specific calendar gaps beside matched counts
+      metricBands: fitted.map((item) => {
+        // retain each pair's matched date set
+        const pairLocalDates = new Set(
+          item.events.map((event) => event.localDate),
+        );
+        // expose pair-specific missing dates
+        const missingLocalDates = expectedLocalDates.filter(
+          (localDate) => !pairLocalDates.has(localDate),
+        );
+        return {
+          eventCount: item.events.length,
+          firstLocalDate: minimumEventLocalDate(item.events),
+          lastLocalDate: maximumEventLocalDate(item.events),
+          metricBand: item.pair,
+          missingLocalDateCount: missingLocalDates.length,
+          missingLocalDates,
+        };
+      }),
+      usesAllEligibleFixedAnchorHistory: true as const,
+    },
+    liveV4Diagnostic,
+    productionActivationAllowed: false as const,
+    promotable: false as const,
+    qualificationStatus: "not_qualified" as const,
+    reasonCodes: [
+      "research_artifact_only",
+      "diagnostics_use_different_pre_refit_models",
+      "exact_final_refit_not_independently_validated",
+    ] as const,
+    runtimeBundleCreated: false as const,
+    servedForecastIdentity,
+    siteKey: "ballydidean" as const,
+    snapshotIdentitySha256,
+    snapshotSetSemantics:
+      "independent_read_only_exports_not_atomic_merged_snapshot" as const,
+    snapshots: snapshotBindings,
+    timezone: "America/Los_Angeles" as const,
+    trainingEnvelopes,
+    trainingForecastIdentity:
+      FORECAST_ADJUSTMENT_WIND_CANARY_TRAINING_IDENTITY_V1,
+  };
+
+  return deepFreeze({
+    ...unsigned,
+    researchArtifactSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+}
+
+// compare temperature lead corrections without creating a runtime artifact
+export async function evaluateRetainedForecastAdjustmentTemperatureLeads(
+  input: RetainedResearchInputV1,
+) {
+  const {
+    expectedRange,
+    snapshots,
+    snapshotIdentitySha256,
+    fixedEvents,
+    liveEvents,
+    liveFirstRow,
+  } = await readRetainedResearchEvents(input);
+  const liveStartLocalDate = localCalendarFeaturesFor(liveFirstRow.validAt).localDate;
+  const embargoStartLocalDate = addLocalCalendarDays(liveStartLocalDate, -7);
+  // freeze the baseline before the original live diagnostic embargo
+  const trainingEvents = fixedEvents.filter(
+    (event) => event.metric === "temperatureC" && event.localDate < embargoStartLocalDate,
+  );
+  // keep every matched temperature example including correction fallbacks
+  const temperatureEvents = liveEvents.filter((event) => event.metric === "temperatureC");
+
+  // require both genuine archive training and live score material
+  if (trainingEvents.length === 0 || temperatureEvents.length === 0) {
+    throw new RangeError("temperature lead research lacks matched temperature history");
+  }
+
+  // preserve truthful live retrieval timestamps
+  const references = temperatureEvents.map((event) => {
+    // reject a missing retrieval timestamp
+    if (event.referenceAt === null) {
+      throw new RangeError("temperature lead research lacks a forecast reference");
+    }
+    return event.referenceAt;
+  }).sort(compareText);
+  const earliestForecastReferenceAt = references[0] as string;
+  const finalTrainingCutoff = maximumEventInstant(trainingEvents, "temperature archive baseline");
+
+  // prevent even the frozen baseline from seeing information after forecast issuance
+  if (Date.parse(finalTrainingCutoff) + 3_600_000 > Date.parse(earliestForecastReferenceAt)) {
+    throw new RangeError("temperature baseline crosses the earliest forecast reference");
+  }
+
+  // retain the existing capped archive estimator separately for each broad band
+  const fitted = FORECAST_LEAD_BANDS.map((band) => {
+    const pair = { metric: "temperatureC" as const, leadBand: band.key };
+    // isolate only this exact archive endpoint
+    const events = trainingEvents.filter((event) => event.leadBand === band.key);
+    // fit an envelope only when this endpoint has training support
+    return {
+      pair,
+      coefficients: fitEventHierarchy(events, pair),
+      trainingEventCount: events.length,
+      trainingEnvelope: events.length === 0 ? null : createTrainingEnvelope(
+        "temperatureC", band.key, events.map((event) => event.rawForecast),
+      ),
+    };
+  });
+  // index fitted broad-band baselines
+  const byBand = new Map(fitted.map((fit) => [fit.pair.leadBand, fit]));
+  const coverage = { adjusted: 0, missingCoefficient: 0, outsideTrainingEnvelope: 0 };
+  // use the same temperature examples for every comparison strategy
+  const examples: TemperatureLeadResearchEvent[] = temperatureEvents.map((event) => {
+    const fit = byBand.get(event.leadBand);
+
+    // require the complete configured lead inventory
+    if (fit === undefined || event.referenceAt === null) {
+      throw new RangeError("temperature lead research event identity is incomplete");
+    }
+
+    const coefficient = selectHierarchyCoefficient(
+      fit.coefficients, "temperatureC", event.leadBand, localCalendarFeaturesFor(event.validAt),
+    );
+    const outsideEnvelope = fit.trainingEnvelope !== null && (
+      event.rawForecast < fit.trainingEnvelope.minimum || event.rawForecast > fit.trainingEnvelope.maximum
+    );
+    let baselineAdjusted = event.rawForecast;
+
+    // count unavailable corrections rather than dropping their score rows
+    if (coefficient === null || fit.trainingEnvelope === null) {
+      coverage.missingCoefficient += 1;
+    } else if (outsideEnvelope) {
+      // preserve the raw out-of-envelope fallback
+      coverage.outsideTrainingEnvelope += 1;
+    } else {
+      // apply only the existing bounded correction
+      coverage.adjusted += 1;
+      baselineAdjusted = applyCappedCorrection("temperatureC", event.rawForecast, coefficient);
+    }
+
+    return {
+      actual: event.actual,
+      baselineAdjusted,
+      rawForecast: event.rawForecast,
+      referenceAt: event.referenceAt,
+      targetLeadHours: event.targetLeadHours,
+      validAt: event.validAt,
+    };
+  });
+  const analysis = analyzeTemperatureLeadResearch(examples);
+  const moduleNames = ["evidence.js", "algorithm-v1.js", "calendar.js", "temperature-lead-research.js"] as const;
+  // bind the exact frozen built modules used for this run
+  const implementationModules: { name: string; sha256: string }[] = await Promise.all(moduleNames.map(async (name) => ({
+    name,
+    sha256: sha256(await readFile(new URL(`./${name}`, import.meta.url))),
+  })));
+  // bind domain lead boundaries and correction caps as well as the scorer
+  implementationModules.push({
+    name: "@weather/domain/forecast-adjustment.js",
+    sha256: sha256(await readFile(new URL(
+      "./forecast-adjustment.js", import.meta.resolve("@weather/domain"),
+    ))),
+  });
+  const unsigned = {
+    analysis,
+    baseline: {
+      coverage,
+      earliestForecastReferenceAt,
+      embargoStartLocalDate,
+      finalTrainingCutoff,
+      fitted,
+      modelSha256: canonicalSha256(fitted as unknown as JsonValue),
+      trainingCohort: "fixed_lead_anchor" as const,
+    },
+    contractVersion: "forecast-adjustment-retained-temperature-lead-research/v1" as const,
+    expectedRange,
+    implementationModules,
+    interpretation: "exploratory_consumed_dates_pseudo_real_time_not_qualification" as const,
+    productionActivationAllowed: false as const,
+    promotable: false as const,
+    runtimeBundleCreated: false as const,
+    servedForecastIdentity: servedForecastIdentityForResearch(liveFirstRow),
+    snapshotIdentitySha256,
+    // preserve independent export bindings rather than fabricating an atomic snapshot
+    snapshots: snapshots.map((snapshot) => ({
+      fromLocalDate: snapshot.manifest.fromLocalDate,
+      manifestSha256: snapshot.manifestSha256,
+      toLocalDate: snapshot.manifest.toLocalDate,
+      totalRowCount: snapshot.manifest.totalRowCount,
+    })),
+  };
+  return deepFreeze({
+    ...unsigned,
+    researchArtifactSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+}
+
+// share the unchanged verified reader without broadening its export boundary
+async function readRetainedResearchEvents(input: RetainedResearchInputV1) {
+  const expectedRange = {
+    fromLocalDate: input.expectedRange.fromLocalDate,
+    toLocalDate: input.expectedRange.toLocalDate,
+  };
+  const snapshotPaths = [...input.snapshotPaths];
+  const evidenceRoot = await requireCanonicalDirectory(
+    input.evidenceRoot,
+    "research evidence root",
+  );
+
+  // require a genuinely segmented multi-export history
+  if (
+    snapshotPaths.length < 2 ||
+    new Set(snapshotPaths).size !== snapshotPaths.length
+  ) {
+    throw new RangeError("full-history research requires multiple unique snapshots");
+  }
+
+  const snapshots: RetainedFullHistoryResearchSnapshotControlV1[] = [];
+
+  // verify each independent package control plane
+  for (const snapshotPath of snapshotPaths) {
+    snapshots.push(
+      await readRetainedFullHistoryResearchSnapshotControl(
+        evidenceRoot,
+        snapshotPath,
+      ),
+    );
+  }
+
+  validateLocalDateRange(
+    expectedRange.fromLocalDate,
+    expectedRange.toLocalDate,
+  );
+  validateFullHistoryResearchSnapshotSet(snapshots, expectedRange);
+  const snapshotIdentitySha256 = fullHistoryResearchSnapshotIdentitySha256(
+    snapshots[0]?.manifest as SnapshotManifestV1,
+  );
+  const fixedEvents: RetainedTrainingEventV1[] = [];
+  const liveEvents: RetainedTrainingEventV1[] = [];
+  let liveFirstRow: SanitizedForecastRow | undefined;
+  let liveLastRow: SanitizedForecastRow | undefined;
+
+  // parse complete local dates so station and forecast collision handling stays atomic
+  for (const snapshot of snapshots) {
+    const observedSourceIdentities = new Map<string, {
+      readonly adapterContract: string;
+      readonly sourceConfigFingerprint: string;
+      readonly sourceKey: string;
+    }>();
+    // enumerate declared member dates once
+    const localDates = [...new Set(
+      snapshot.manifest.members.map((member) => member.localDate),
+    )].sort(compareText);
+
+    // build events without retaining the full raw export corpus in memory
+    for (const localDate of localDates) {
+      // retain all same-date shards for collision handling
+      const dateMembers = snapshot.manifest.members.filter(
+        (member) => member.localDate === localDate,
+      );
+      const rows = await readSnapshotPhaseRows(
+        snapshot.snapshotRoot,
+        dateMembers,
+        "research",
+        [],
+      );
+
+      // reconstruct the package's observed identity inventory from verified rows
+      for (const row of rows) {
+        // pair each source with its aligned provenance fields
+        for (let index = 0; index < row.sourceKeys.length; index += 1) {
+          const sourceKey = row.sourceKeys[index] as string;
+          const sourceConfigFingerprint = row.sourceConfigFingerprints[index] as string;
+          observedSourceIdentities.set(
+            `${sourceKey}:${sourceConfigFingerprint}`,
+            {
+              adapterContract: row.adapterContracts[index] as string,
+              sourceConfigFingerprint,
+              sourceKey,
+            },
+          );
+        }
+      }
+      fixedEvents.push(...buildRetainedTrainingEvents(
+        rows,
+        "fixed_lead_anchor",
+        FORECAST_ADJUSTMENT_METRICS,
+      ).map(compactFullHistoryResearchEvent));
+      // isolate live rows for boundary identity
+      const liveRows = rows.filter(
+        (row): row is SanitizedForecastRow =>
+          row.recordKind === "legacy_v4_retrieval_snapshot",
+      ).sort((left, right) => left.validAt.localeCompare(right.validAt));
+      liveEvents.push(...buildRetainedTrainingEvents(
+        rows,
+        "legacy_v4_retrieval_snapshot",
+        FORECAST_ADJUSTMENT_METRICS,
+      ).map(compactFullHistoryResearchEvent));
+
+      // retain the exact live cohort boundary and served identity
+      if (liveRows.length > 0) {
+        liveFirstRow ??= liveRows[0];
+        liveLastRow = liveRows.at(-1);
+      }
+    }
+
+    // stabilize the reconstructed source inventory
+    const observed = [...observedSourceIdentities.values()].sort((left, right) =>
+      left.sourceKey.localeCompare(right.sourceKey),
+    );
+
+    // require row-derived sources to match each independent manifest exactly
+    if (
+      canonicalizeJson(observed as unknown as JsonValue) !==
+      canonicalizeJson(
+        snapshot.manifest.observedSourceIdentities as unknown as JsonValue,
+      )
+    ) {
+      throw new RangeError(
+        "full-history research observed source inventory mismatch",
+      );
+    }
+  }
+
+  // require both the complete fixed training cohort and a live transfer cohort
+  if (
+    fixedEvents.length === 0 ||
+    liveEvents.length === 0 ||
+    liveFirstRow === undefined ||
+    liveLastRow === undefined
+  ) {
+    throw new RangeError(
+      "full-history research requires fixed-anchor and live-v4 matched events",
+    );
+  }
+
+  return {
+    expectedRange,
+    snapshots,
+    snapshotIdentitySha256,
+    fixedEvents,
+    liveEvents,
+    liveFirstRow,
+    liveLastRow,
+  };
+}
+
+// read and verify one bounded research snapshot control plane
+async function readRetainedFullHistoryResearchSnapshotControl(
+  evidenceRoot: string,
+  snapshotPath: string,
+): Promise<RetainedFullHistoryResearchSnapshotControlV1> {
+  const snapshotRoot = await requireCanonicalDirectory(
+    snapshotPath,
+    "research snapshot",
+  );
+
+  // require every decrypted snapshot below the caller's external root
+  if (!snapshotRoot.startsWith(`${evidenceRoot}${sep}`)) {
+    throw new RangeError("research snapshot is outside the evidence root");
+  }
+
+  const manifestBytes = await readVerifiedRegularFile(
+    join(snapshotRoot, "manifest.json"),
+    snapshotRoot,
+    "research snapshot manifest",
+  );
+  const checksumBytes = await readVerifiedRegularFile(
+    join(snapshotRoot, "manifest.sha256"),
+    snapshotRoot,
+    "research snapshot checksum",
+  );
+  const manifestText = manifestBytes.toString("utf8");
+  const manifestSha256 = sha256(manifestBytes);
+
+  // bind canonical bytes, checksum file, and directory identity
+  if (
+    checksumBytes.toString("utf8") !== `${manifestSha256}  manifest.json\n` ||
+    basename(snapshotRoot) !== manifestSha256
+  ) {
+    throw new RangeError("research snapshot manifest identity mismatch");
+  }
+
+  const manifest = JSON.parse(manifestText) as SnapshotManifestV1;
+
+  // reject noncanonical manifests before member access
+  if (manifestText !== canonicalJsonBytes(manifest as unknown as JsonValue)) {
+    throw new RangeError("research snapshot manifest is not canonical JSON");
+  }
+
+  validateSnapshotManifestBoundary(manifest);
+  // verify each declared member before reading row material
+  for (const member of manifest.members) {
+    validateSnapshotMember(member, snapshotRoot);
+
+    // bind every member to the declared package date range
+    if (
+      member.localDate < manifest.fromLocalDate ||
+      member.localDate > manifest.toLocalDate
+    ) {
+      throw new RangeError("research snapshot member is outside its date range");
+    }
+  }
+
+  return { manifest, manifestSha256, snapshotRoot };
+}
+
+// require one chronological lineage-consistent snapshot sequence
+function validateFullHistoryResearchSnapshotSet(
+  snapshots: readonly RetainedFullHistoryResearchSnapshotControlV1[],
+  expectedRange: {
+    readonly fromLocalDate: string;
+    readonly toLocalDate: string;
+  },
+): void {
+  const first = snapshots[0];
+
+  // retain the compiler-proven first package
+  if (first === undefined) {
+    throw new RangeError("full-history research snapshot set is empty");
+  }
+
+  const identitySha256 = fullHistoryResearchSnapshotIdentitySha256(first.manifest);
+  const last = snapshots.at(-1) as RetainedFullHistoryResearchSnapshotControlV1;
+
+  // bind the exact operator-requested production history interval
+  if (
+    first.manifest.fromLocalDate !== expectedRange.fromLocalDate ||
+    last.manifest.toLocalDate !== expectedRange.toLocalDate
+  ) {
+    throw new RangeError(
+      "full-history research snapshots do not cover the expected range",
+    );
+  }
+
+  // compare each caller-ordered bounded package
+  for (let index = 0; index < snapshots.length; index += 1) {
+    const snapshot = snapshots[index] as RetainedFullHistoryResearchSnapshotControlV1;
+    const previous = snapshots[index - 1];
+
+    // reject query, schema, provenance, site, or declared-source drift
+    if (
+      fullHistoryResearchSnapshotIdentitySha256(snapshot.manifest) !==
+      identitySha256
+    ) {
+      throw new RangeError("full-history research snapshot identity drift");
+    }
+
+    validateObservedResearchSourceIdentities(snapshot.manifest);
+
+    // require exact chronological adjacency without overlap or gaps
+    if (
+      previous !== undefined &&
+      addLocalCalendarDays(previous.manifest.toLocalDate, 1) !==
+        snapshot.manifest.fromLocalDate
+    ) {
+      throw new RangeError(
+        "full-history research snapshots must be chronological and contiguous",
+      );
+    }
+  }
+}
+
+// hash the identities that must remain stable across independent exports
+function fullHistoryResearchSnapshotIdentitySha256(
+  manifest: SnapshotManifestV1,
+): string {
+  return canonicalSha256({
+    aggregationContractSha256: manifest.aggregationContractSha256,
+    coordinateManifestSha256: manifest.coordinateManifestSha256,
+    databaseManifest: manifest.databaseManifest,
+    metricEligibilitySha256: manifest.metricEligibilitySha256,
+    migrationHistorySha256: manifest.migrationHistorySha256,
+    queryContractSha256: manifest.queryContractSha256,
+    queryContractVersion: manifest.queryContractVersion,
+    rowSchemaSha256: manifest.rowSchemaSha256,
+    siteKey: manifest.siteKey,
+    siteTimezone: manifest.siteTimezone,
+    sourceIdentities: manifest.sourceIdentities,
+    sourceLineageSha256: manifest.sourceLineageSha256,
+    spatialWeightsSha256: manifest.spatialWeightsSha256,
+    stationManifestSha256: manifest.stationManifestSha256,
+  } as unknown as JsonValue);
+}
+
+// bind observed source identities to the snapshot's frozen source catalog
+function validateObservedResearchSourceIdentities(
+  manifest: SnapshotManifestV1,
+): void {
+  // canonicalize the frozen declared catalog
+  const declared = new Set(
+    manifest.sourceIdentities.map((identity) =>
+      canonicalizeJson(identity as JsonValue),
+    ),
+  );
+
+  // reject any observed source identity outside the declared lineage
+  if (
+    manifest.observedSourceIdentities.some(
+      (identity) => !declared.has(canonicalizeJson(identity as JsonValue)),
+    )
+  ) {
+    throw new RangeError("full-history research observed source identity drift");
+  }
+}
+
+// fit every supported metric and lead band from exact event material
+function fitFullHistoryResearchPairs(
+  events: readonly RetainedTrainingEventV1[],
+  requireEveryPair: boolean,
+) {
+  // fit every pair in one frozen order
+  const fitted = FULL_HISTORY_RESEARCH_METRIC_BANDS.map((pair) => {
+    // isolate exact metric-band events
+    const pairEvents = events.filter(
+      (event) =>
+        event.metric === pair.metric && event.leadBand === pair.leadBand,
+    );
+    const coefficients = fitEventHierarchy(pairEvents, pair);
+    // derive only applicable nonempty scalar envelopes
+    const trainingEnvelope =
+      pair.metric === "windDirectionDegrees" || pairEvents.length === 0
+      ? null
+      : createTrainingEnvelope(
+          pair.metric,
+          pair.leadBand,
+          pairEvents.map((event) => event.rawForecast),
+        );
+    return { coefficients, events: pairEvents, pair, trainingEnvelope };
+  });
+
+  // require literal root support for all thirty-five final-fit pairs
+  if (
+    requireEveryPair &&
+    fitted.some(
+      (item) => !item.coefficients.some((coefficient) => coefficient.level === 1),
+    )
+  ) {
+    throw new RangeError(
+      "full-history research lacks root support for every metric and lead band",
+    );
+  }
+
+  return fitted;
+}
+
+// fit and score one consumed descriptive out-of-time window
+function createFullHistoryResearchDiagnostic(input: {
+  readonly cohort: "fixed_lead_anchor" | "legacy_v4_retrieval_snapshot";
+  readonly scoreEndInclusive: string;
+  readonly scoreEvents: readonly RetainedTrainingEventV1[];
+  readonly scoreLocalDates: readonly string[];
+  readonly scoreStartInclusive: string;
+  readonly trainingEvents: readonly RetainedTrainingEventV1[];
+}): ForecastAdjustmentFullHistoryResearchDiagnosticV1 {
+  const fitted = fitFullHistoryResearchPairs(input.trainingEvents, false);
+  const trainingEventMaximumValidAt = maximumEventInstant(
+    input.trainingEvents,
+    `${input.cohort} diagnostic training`,
+  );
+  const scoreStartLocalDate = input.scoreLocalDates[0];
+  const scoreEndLocalDate = input.scoreLocalDates.at(-1);
+
+  // retain the compiler-proven score window
+  if (scoreStartLocalDate === undefined || scoreEndLocalDate === undefined) {
+    throw new RangeError("full-history research diagnostic score window is empty");
+  }
+
+  const embargoStartLocalDate = addLocalCalendarDays(scoreStartLocalDate, -7);
+
+  // reject any diagnostic fit that crosses the seven-date embargo
+  if (
+    localCalendarFeaturesFor(trainingEventMaximumValidAt).localDate >=
+    embargoStartLocalDate
+  ) {
+    throw new RangeError("full-history research diagnostic has temporal leakage");
+  }
+
+  // score every diagnostic pair without promotion gates
+  const scores = fitted.map((item) => {
+    // retain all network matches before envelope scoring
+    const matchedEvents = input.scoreEvents.filter(
+      (event) =>
+        event.metric === item.pair.metric &&
+        event.leadBand === item.pair.leadBand,
+    );
+    // require the literal hierarchy root
+    const modelFitted = item.coefficients.some(
+      (coefficient) => coefficient.level === 1,
+    );
+    const scoredEvents = modelFitted
+      ? scoreFittedCanaryBridgeEvents(
+          item.coefficients,
+          matchedEvents,
+          item.pair,
+          item.trainingEnvelope,
+        )
+      : [];
+    const losses = scoredEvents.length === 0
+      ? null
+      : pairedLoss(
+          scoredEvents,
+          item.pair.metric === "windDirectionDegrees",
+        );
+    return {
+      adjustedLoss: losses?.adjustedLoss ?? null,
+      eventCount: scoredEvents.length,
+      matchedNetworkEventCount: matchedEvents.length,
+      metricBand: item.pair,
+      modelFitted,
+      rawLoss: losses?.rawLoss ?? null,
+      skill: losses?.skill ?? null,
+    };
+  });
+  // collect every date with any matched diagnostic event
+  const scoreEventDates = new Set(
+    input.scoreEvents.map((event) => event.localDate),
+  );
+  // expose missing diagnostic dates
+  const scoreMissingLocalDates = input.scoreLocalDates.filter(
+    (localDate) => !scoreEventDates.has(localDate),
+  );
+  // bind every different pre-refit diagnostic model
+  const diagnosticModelSha256 = canonicalSha256({
+    cohort: input.cohort,
+    fitted: fitted.map((item) => ({
+      coefficients: item.coefficients,
+      metricBand: item.pair,
+      trainingEnvelope: item.trainingEnvelope,
+    })),
+    trainingEventMaximumValidAt,
+  } as unknown as JsonValue);
+
+  return deepFreeze({
+    cohort: input.cohort,
+    diagnosticModelSha256,
+    embargoEndLocalDate: addLocalCalendarDays(scoreStartLocalDate, -1),
+    embargoStartLocalDate,
+    interpretation: "descriptive_only_consumed_dates_not_qualification" as const,
+    relationshipToFinalFit: "different_pre_refit_model" as const,
+    scoreEndInclusive: input.scoreEndInclusive,
+    scoreEndLocalDate,
+    scoreMissingLocalDateCount: scoreMissingLocalDates.length,
+    scoreMissingLocalDates,
+    scoreStartInclusive: input.scoreStartInclusive,
+    scoreStartLocalDate,
+    scores,
+    trainingEndLocalDate: addLocalCalendarDays(embargoStartLocalDate, -1),
+    trainingEventMaximumValidAt,
+  });
+}
+
+const EMPTY_RESEARCH_STATION_ROWS: readonly SanitizedStationHourRow[] = [];
+
+// release raw station rows after their network actual is derived
+function compactFullHistoryResearchEvent(
+  event: RetainedTrainingEventV1,
+): RetainedTrainingEventV1 {
+  return { ...event, stationRows: EMPTY_RESEARCH_STATION_ROWS };
+}
+
+// project one exact served live-v4 identity
+function servedForecastIdentityForResearch(
+  row: SanitizedForecastRow,
+): ForecastAdjustmentForecastIdentity {
+  return {
+    adapterVersion: row.adapterVersion,
+    cohort: "legacy_v4_retrieval_snapshot",
+    contractEpoch: row.contractEpoch,
+    dataset: row.dataset,
+    referenceKind: "retrieval_snapshot",
+    sourceConfigFingerprint: row.sourceConfigFingerprints[0] as string,
+    sourceKey: row.sourceKeys[0] as string,
+    upstreamModel: row.upstreamModel,
+  };
+}
+
+// select the earliest event instant
+function minimumEventInstant(
+  events: readonly RetainedTrainingEventV1[],
+  description: string,
+): string {
+  // order exact event instants
+  const value = events.map((event) => event.validAt).sort(compareText)[0];
+
+  // reject empty event windows
+  if (value === undefined) {
+    throw new RangeError(`${description} lacks matched network events`);
+  }
+
+  return value;
+}
+
+// select the latest event instant
+function maximumEventInstant(
+  events: readonly RetainedTrainingEventV1[],
+  description: string,
+): string {
+  // order exact event instants
+  const value = events.map((event) => event.validAt).sort(compareText).at(-1);
+
+  // reject empty event windows
+  if (value === undefined) {
+    throw new RangeError(`${description} lacks matched network events`);
+  }
+
+  return value;
+}
+
+// select the earliest event local date
+function minimumEventLocalDate(events: readonly RetainedTrainingEventV1[]): string {
+  // order exact local dates
+  return events.map((event) => event.localDate).sort(compareText)[0] as string;
+}
+
+// select the latest event local date
+function maximumEventLocalDate(events: readonly RetainedTrainingEventV1[]): string {
+  // order exact local dates
+  return events.map((event) => event.localDate).sort(compareText).at(-1) as string;
+}
+
 // parse one authorized phase of compressed date shards through the core boundary
 async function readSnapshotPhaseRows(
   snapshotRoot: string,
   members: readonly SnapshotMemberV1[],
-  phase: "canary" | "holdout" | "preholdout",
+  phase: "canary" | "holdout" | "preholdout" | "research",
   accessTrace: string[],
 ): Promise<readonly SanitizedTrainingExportRow[]> {
   const rows: SanitizedTrainingExportRow[] = [];
@@ -1151,7 +2144,7 @@ async function readVerifiedSnapshotMember(
   snapshotRoot: string,
   memberPath: string,
   accessTrace?: string[],
-  phase?: "canary" | "holdout" | "preholdout",
+  phase?: "canary" | "holdout" | "preholdout" | "research",
 ): Promise<Buffer> {
   return readVerifiedRegularFile(
     resolve(snapshotRoot, memberPath),
@@ -1169,7 +2162,7 @@ async function readVerifiedRegularFile(
   root: string,
   description: string,
   accessTrace?: string[],
-  phase?: "canary" | "control" | "holdout" | "preholdout",
+  phase?: "canary" | "control" | "holdout" | "preholdout" | "research",
   tracePath?: string,
 ): Promise<Buffer> {
   const absoluteRoot = resolve(root);

@@ -533,15 +533,15 @@ test("server image bakes only reviewed forecast adjustment config", () => {
   const windCanaryRegistry = JSON.parse(
     read("config/forecast-adjustments/ballydidean-wind-canary.json"),
   );
-  assert.equal(
-    windCanaryRegistry.contractVersion,
-    "forecast-adjustment-wind-canary-registry/v1",
-  );
-  assert.notEqual(windCanaryRegistry.activeBundle, null);
+  assert.deepEqual(windCanaryRegistry, {
+    activeBundle: null,
+    contractVersion: "forecast-adjustment-wind-canary-registry/v1",
+  });
+  // preserve the retired artifact independently of registry selection
   const windCanaryBundle = JSON.parse(
     read(join(
-      "config/forecast-adjustments/ballydidean",
-      windCanaryRegistry.activeBundle.path,
+      "config/forecast-adjustments/ballydidean/wind-canary-bundles",
+      "sha256-8ada04b924326665b7c49be37876727e9fdc853e9b0eb3decc7fe68c62acc96b.json",
     )),
   );
   assert.equal(
@@ -550,7 +550,7 @@ test("server image bakes only reviewed forecast adjustment config", () => {
   );
   assert.deepEqual(
     [...new Set(windCanaryBundle.candidate.enabledMetricBands.map(
-      // retain the exact deployed metric allowlist
+      // retain the retired artifact's metric allowlist
       (pair) => pair.metric,
     ))].sort(),
     ["windGustMps", "windSpeedMps"],

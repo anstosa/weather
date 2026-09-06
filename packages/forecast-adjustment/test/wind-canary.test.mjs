@@ -360,7 +360,8 @@ test("wind canary kill switch only disables and fails raw", async () => {
   );
 });
 
-test("committed wind canary loads only speed and gust", async () => {
+// keep the retired selection inactive without deleting audit artifacts
+test("committed wind canary remains retired", async () => {
   const root = resolve(
     import.meta.dirname,
     "../../../config/forecast-adjustments",
@@ -368,22 +369,14 @@ test("committed wind canary loads only speed and gust", async () => {
   const registry = JSON.parse(
     await readFile(join(root, "ballydidean-wind-canary.json"), "utf8"),
   );
-  const bundle = JSON.parse(
-    await readFile(
-      join(root, "ballydidean", registry.activeBundle.path),
-      "utf8",
-    ),
-  );
+  assert.deepEqual(registry, {
+    activeBundle: null,
+    contractVersion: "forecast-adjustment-wind-canary-registry/v1",
+  });
   const runtime = await createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(
     root,
-    { now: () => bundle.authorization.activatedAt },
   ).load();
-  assert.equal(runtime.state, "active");
-  assert.deepEqual(
-    [...new Set(runtime.bundle.candidate.enabledMetricBands.map(
-      // retain the deployed metric allowlist
-      (pair) => pair.metric,
-    ))].sort(),
-    ["windGustMps", "windSpeedMps"],
-  );
+  assert.equal(runtime.state, "disabled");
+  assert.equal(runtime.reasonCode, "registry_inactive");
+  assert.equal(runtime.bundle, null);
 });

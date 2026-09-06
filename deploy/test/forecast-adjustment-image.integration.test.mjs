@@ -119,6 +119,7 @@ async function inspectImage(image, mode) {
   return JSON.parse(stdout);
 }
 
+// verify immutable audit material stays server-only and unselected
 test("built server and web images enforce the adjustment filesystem boundary", {
   timeout: 300_000,
 }, async (context) => {
@@ -183,8 +184,13 @@ test("built server and web images enforce the adjustment filesystem boundary", {
     );
     assert.equal(server.windCanaryRegistry, expectedWindCanaryRegistry);
     const windCanaryRegistry = JSON.parse(server.windCanaryRegistry);
+    assert.deepEqual(windCanaryRegistry, {
+      activeBundle: null,
+      contractVersion: "forecast-adjustment-wind-canary-registry/v1",
+    });
+    // retain the exact retired bundle without requiring an active selection
     assert.deepEqual(server.windCanaryBundleNodes, [{
-      path: `config/forecast-adjustments/ballydidean/${windCanaryRegistry.activeBundle.path}`,
+      path: "config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-8ada04b924326665b7c49be37876727e9fdc853e9b0eb3decc7fe68c62acc96b.json",
       type: "file",
     }]);
   } finally {

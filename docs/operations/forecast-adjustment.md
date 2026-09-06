@@ -125,16 +125,23 @@ transfer of anchor coefficients into v4.
 
 ## Bounded wind transfer canary
 
+The previous canary is retired. The committed canary registry now has
+`activeBundle: null`, and the old content-addressed bundle remains unchanged
+for audit only. The normal qualified registry is also inactive, so these
+committed selections serve raw forecasts for every metric. Registry changes
+take effect through a reviewed image deployment, not by editing a running
+service's files.
+
 The wind canary is a separately versioned exception path, not a qualified v2
 model. It fits fixed-lead Previous Runs against the same frozen all-station
 network target, then scores those coefficients against the separate retained
-live-v4 retrieval cohort. The committed canary enables exactly:
+live-v4 retrieval cohort. The retired canary enabled exactly:
 
 - `windSpeedMps`
 - `windGustMps`
 
-Temperature, relative humidity, and wind direction remain the unmodified
-regional forecast. An enabled metric-band requires at least 30 scoreable
+Temperature, relative humidity, and wind direction were never enabled in that
+canary. An enabled metric-band requires at least 30 scoreable
 live-v4 bridge events and strictly positive point skill. This small transfer
 cohort does not satisfy the normal seven-local-date moving-block bootstrap or
 the full qualified-v2 evidence graph, so its artifacts must never be placed in
@@ -165,9 +172,9 @@ WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1
 
 Only `1` activates the kill switch; `0` permits normal operation. Rollback may also
 set the canary registry's `activeBundle` to `null` in a reviewed image. Do not
-edit an existing content-addressed bundle. The UI starts new canary sessions with
-the **Adjusted** switch off; enabling it explicitly opts in. The switch keeps the
-same label in both states, and Forecast has no adjustment infobox. High wind
+edit an existing content-addressed bundle. When a canary is active, the UI starts
+new sessions with the **Adjusted** switch off; enabling it explicitly opts in.
+The switch keeps the same label in both states, and Forecast has no adjustment infobox. High wind
 alerts always use the greater of raw and adjusted gust so a negative
 correction cannot suppress a regional warning.
 
@@ -359,6 +366,88 @@ durable external retention. Move the snapshot into the approved evidence store
 or delete it; never continue candidate or holdout work from `.weather-data/`.
 No raw production observation, snapshot member, event loss, or credential may
 enter Git.
+
+## Inactive full-history research fit
+
+The full-history research fitter is separate from qualified v2 and the wind
+canary. It accepts two or more independently verified export packages under one
+external retained-evidence or ephemeral decrypted root. Each child remains an
+independent `REPEATABLE READ READ ONLY` export with the 450-date and 4,000,000-row
+limits. The fitter does not merge their manifests or claim that the children
+came from one atomic database snapshot.
+
+Supply the child paths in chronological order and bind the required first and
+last local date explicitly. Their declared local-date ranges must be
+nonoverlapping and exactly contiguous. Site, query, row schema,
+migration, training provenance, and the complete declared source identity
+catalog must match. Every observed source inventory is reconstructed from the
+verified rows and compared with its child manifest. A boundary gap, overlap,
+source drift, recomputed manifest, member checksum change, row collision, or
+partition mismatch aborts the fit.
+
+Build the package, then write the returned canonical research object only to
+approved non-Git evidence storage:
+
+```bash
+npm run build --workspace @weather/forecast-adjustment
+EVIDENCE_ROOT="${EVIDENCE_ROOT:?set the retained or decrypted evidence root}"
+OUTPUT="${OUTPUT:?set a non-Git research result path}"
+FROM_DATE="${FROM_DATE:?set the required complete-history first date}"
+TO_DATE="${TO_DATE:?set the required complete-history last date}"
+SNAPSHOT_A="${SNAPSHOT_A:?set the first manifest-hash directory}"
+SNAPSHOT_B="${SNAPSHOT_B:?set the second manifest-hash directory}"
+SNAPSHOT_C="${SNAPSHOT_C:?set the third manifest-hash directory}"
+node --input-type=module - \
+  "$EVIDENCE_ROOT" "$OUTPUT" "$FROM_DATE" "$TO_DATE" \
+  "$SNAPSHOT_A" "$SNAPSHOT_B" "$SNAPSHOT_C" <<'NODE'
+import { writeFile } from "node:fs/promises";
+import {
+  canonicalJsonBytes,
+  fitRetainedForecastAdjustmentFullHistoryResearch,
+} from "@weather/forecast-adjustment";
+
+const [evidenceRoot, output, fromLocalDate, toLocalDate, ...snapshotPaths] =
+  process.argv.slice(2);
+const result = await fitRetainedForecastAdjustmentFullHistoryResearch({
+  evidenceRoot,
+  expectedRange: { fromLocalDate, toLocalDate },
+  snapshotPaths,
+});
+await writeFile(output, canonicalJsonBytes(result), { mode: 0o600, flag: "wx" });
+process.stdout.write(`${result.researchArtifactSha256}\n`);
+NODE
+```
+
+The fitter reads and verifies one complete local-date partition at a time so
+station matching and forecast collision handling remain date-atomic without
+retaining the entire raw export corpus. It derives all five supported metrics
+and all seven fixed-anchor lead bands with the frozen
+`robust-hierarchical-median/v1` algorithm, then refits coefficients and scalar
+training envelopes on every eligible fixed-anchor network event. The result
+binds every child manifest SHA-256, the separate fixed-anchor training and
+live-v4 served identities, per-pair matched counts and date ranges, whole-range
+and per-pair missing local dates, and SHA-256 identities of the built fitter,
+algorithm, calendar, and domain adjustment-policy modules. Missing dates remain
+missing; they are not imputed or presented as provider coverage.
+
+Both reported scores are descriptive diagnostics, not qualification evidence:
+
+- the archive diagnostic scores the 30 calendar dates immediately before the
+  first live-v4 local date, using a different model fitted only before a full
+  seven-date embargo; missing archive dates are reported explicitly; and
+- the live-v4 diagnostic scores from the earliest retained live-v4 row onward,
+  using another different fixed-anchor model fitted only before its full
+  seven-date embargo.
+
+Those dates have already been inspected and are not an untouched holdout. The
+final all-history refit includes later fixed anchors and is therefore not either
+diagnostic model. Its exact bytes have no independent live-v4 validation. The
+result is always `promotable=false`, `productionActivationAllowed=false`,
+`runtimeBundleCreated=false`, and `qualificationStatus="not_qualified"`.
+It creates no candidate v2, qualification receipt, runtime bundle, registry
+entry, authorization, or activation path. Do not rename it as qualified, place
+it in either runtime registry, or relax the existing qualification or canary
+gates.
 
 ## Qualification calendar and model gates
 
@@ -578,3 +667,39 @@ conditions occurs:
 `insufficient_data` is a successful inactive evaluation outcome, not permission
 to alter thresholds. Leave `activeBundle` null and continue ordinary raw v4
 service until a future, fully retained, untouched qualification epoch passes.
+
+## Inactive temperature lead experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureLeads` accepts the same verified
+multi-export input as the full-history research fitter. It reuses that reader
+without widening the production export contract. The returned
+`forecast-adjustment-retained-temperature-lead-research/v1` artifact is never
+promotable and creates no runtime bundle or registry selection.
+
+The baseline remains a fixed-anchor temperature hierarchy trained before the
+first live-v4 date's seven-local-date embargo. Its last training instant plus
+one hour must also precede the earliest scored forecast retrieval. The
+experiment diagnoses live-v4 errors by exact lead hour, six-hour bucket,
+24-hour band, and daypart; it does not invent sub-daily archive anchors.
+Every matched temperature forecast remains in the comparison. Missing
+coefficients or out-of-envelope inputs use raw fallback with explicit coverage
+counts rather than disappearing from scoring.
+
+The frozen comparisons are raw, full baseline correction, a static
+`leadHours / bandMaximumHours` taper, and prior-only six-hour-bucket shrinkage.
+The taper intentionally resets at each broad-band boundary and is only an
+experimental baseline. The shrinkage grid is `0, 0.25, 0.5, 0.75, 1`; calibration
+weights each valid hour equally, requires thirty distinct valid hours across
+three local dates in the same six-hour lead bucket, and breaks ties toward the
+smaller correction. Daypart is descriptive, not an additional tuning dimension.
+Insufficient support means raw fallback.
+
+This is a **pseudo-real-time retrospective experiment**, not online validation.
+An observation is assumed available one hour after its valid instant and can
+influence only forecasts retrieved at or after that assumed availability time.
+The sanitized historical exports do not establish actual measurement arrival
+or revision times. The live dates were already inspected, so chronological
+replay does not turn them into untouched qualification data. Both ordinary
+forecast-example and equal-valid-hour errors must be distinguished from counts
+of independent weather events. No result from this experiment authorizes
+production activation; later independent live evidence remains necessary.
