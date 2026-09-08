@@ -384,6 +384,11 @@ test("forecast repository keeps historical-only sources out of the live route", 
     [],
   );
   assert.equal(captured.length, 1);
+  // expose the identity index's source-kind prefix before heap reads
+  assert.match(
+    captured[0].text,
+    /candidate\.source_id = s\.id[\s\S]*?AND candidate\.source_kind = 'forecast'/u,
+  );
   assert.match(captured[0].text, /s\.capabilities @> '\["forecast"\]'::jsonb/u);
   assert.match(
     captured[0].text,

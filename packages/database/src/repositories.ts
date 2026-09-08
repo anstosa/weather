@@ -1877,6 +1877,8 @@ export async function getWeatherForecast(
         SELECT candidate.*
         FROM weather_records candidate
         WHERE candidate.source_id = s.id
+          -- expose the existing identity-index prefix before filtering old runs
+          AND candidate.source_kind = 'forecast'
           AND candidate.product_run_at = (
             SELECT MAX(product.product_run_at)
             FROM weather_records product
