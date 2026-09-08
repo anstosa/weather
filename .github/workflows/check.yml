@@ -34,8 +34,7 @@ jobs:
       - name: Run browser end-to-end gates
         run: npm run test:e2e
       - name: Run deployment gates
-        env:
-          WEATHER_RUN_DEPLOY_INTEGRATION: "1"
+        # let the package script isolate serial integration checks
         run: npm run test:deploy
       - name: Verify static deployment contracts
         run: deploy/scripts/verify-static.sh

@@ -1564,6 +1564,22 @@ test("deployment artifacts contain no neighboring identity or production secret"
   assert.doesNotMatch(combined, /cloudflared\s+tunnel\s+(?:create|delete|route)/iu);
 });
 
+// keep integration enablement inside the package script's serial phase
+test("deployment workflows run integration gates once after static checks", () => {
+  const manifest = JSON.parse(read("package.json"));
+  assert.equal(
+    manifest.scripts["test:deploy"],
+    "bash deploy/scripts/verify-static.sh && WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy/test/*.integration.test.mjs",
+  );
+
+  // prevent workflow-wide integration enablement from reaching static checks
+  for (const path of [".github/workflows/check.yml", ".github/workflows/publish-images.yml"]) {
+    const workflow = read(path);
+    assert.match(workflow, /run: npm run test:deploy/u);
+    assert.doesNotMatch(workflow, /WEATHER_RUN_DEPLOY_INTEGRATION/u);
+  }
+});
+
 // verify release workflow immutability
 test("release workflow publishes only immutable ARM64 server and web images", () => {
   const workflow = read(".github/workflows/publish-images.yml");
