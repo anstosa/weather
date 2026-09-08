@@ -1,6 +1,57 @@
 # Forecast model live-integration readiness
 
-## September 8, 2026 deployment receipt
+## September 8, 2026 reviewed release 13 receipt
+
+Release `2026.09.08-13`, source commit
+`e4e4f4f529be3ed34a59e53f4e3389707dff0f51`, superseded release 11 through the
+documented release process. The production API boot was
+`2026-09-08T14:18:28.693Z`. The
+[reviewed release workflow](https://github.com/anstosa/weather/actions/runs/34234910429)
+and [main checks](https://github.com/anstosa/weather/actions/runs/34234910941)
+passed repository, PostgreSQL, browser and deployment gates.
+
+Live public HTTPS checks verified 24, 120 and 240 rows for the one-, five- and
+ten-day windows, all HTTP 200 within 2.5 seconds. The five-day response included
+ten eligible adaptive temperature rows and 112 adjusted wind rows. Raw Best Match
+values, explicit ECMWF identity, initialization-relative lead limits and the
+three-degree correction cap were preserved. The existing temperature and wind
+bundle identities and September 22 UTC expiry were unchanged. This is serving
+verification, not a new accuracy measurement or renewed model authorization.
+
+The review repaired silent optional temperature failures with bounded, redacted
+diagnostics and removed unused UI declarations and duplicated startup fallback
+values. An isolated instance of the exact published server image verified a
+simulated status-read failure emits one sanitized diagnostic while retaining
+HTTP 200 HEAD semantics; no fault was injected into the live API. All five live
+services were healthy, schema 0013 was unchanged, and an actual password login
+reconfirmed the export role's read-only access to exactly its two existing views.
+
+A fresh live-browser attempt was blocked before navigation because the shared
+Playwright Chrome profile was already in use. No release 13 DOM or screenshot
+verification was obtained. Release 13 browser end-to-end gates passed, and the
+release 11 live browser matrix below remains the previous rendered evidence;
+the review's UI cleanup did not change visible controls or plot behavior.
+
+### Current release 13 recovery boundary
+
+At `2026-09-08T14:23:34.208Z`, same-code release `2026.09.08-14` was armed as
+the raw-only forward recovery for release 13. Its
+[publication workflow](https://github.com/anstosa/weather/actions/runs/34234910883)
+passed all gates. Isolated instances of both published server images passed all
+four independent temperature/wind kill-switch combinations. Both future
+release-input switches are `1`; the immutable active release 13 environment
+retains both switches at `0`. The active environment and all five container
+identities and start times were verified unchanged after arming recovery.
+
+While release 13 remains current, the prepared model backout command is
+`npm run remote:deploy -- 2026.09.08-14`. Revalidate current release identity and
+prepared input before use. This is same-code model disablement, not prior-image
+or database rollback, and cannot recover a shared code defect. The previous
+staged-clone capacity limitation and lack of prior-image rollback authorization
+remain unchanged. The release 11-to-12 receipt below is historical, not the
+current backout pair.
+
+## September 8, 2026 initial release 11 receipt
 
 Release `2026.09.08-11`, source commit
 `5c4c11d1663e8806cef6f7141c5d56d4eff5fd85`, was deployed through the documented
