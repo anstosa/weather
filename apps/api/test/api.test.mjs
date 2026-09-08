@@ -955,6 +955,363 @@ test("temperature canary exposes explicit ECMWF provenance without mutating raw"
   });
 });
 
+// prove optional read faults remain observable without changing serving
+test("temperature canary read failures stay raw and emit bounded diagnostics", async () => {
+  const diagnostics = [];
+  const runtime = createTemperatureCanaryRuntime();
+  const sidecarFailure = Object.assign(
+    new Error("SELECT raw_temperature_c FROM private_sidecar password=secret"),
+    { code: "57P01" },
+  );
+  const statusFailure = Object.assign(
+    new TypeError("postgres://weather:secret@database/weather"),
+    { code: "ECONNRESET" },
+  );
+  const { handler } = createFixture(
+    {
+      // fail only the optional sidecar read
+      async getTemperatureCanarySidecar() {
+        throw sidecarFailure;
+      },
+      // fail only the optional status read
+      async getTemperatureCanaryStatus() {
+        throw statusFailure;
+      },
+    },
+    {
+      // capture redacted fallback diagnostics
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+      temperatureAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data[0].metrics.temperatureC, forecastRecord.temperatureC);
+  assert.equal(body.data[0].metrics.windSpeedMps, forecastRecord.windSpeedMps);
+  assert.deepEqual(body.data[0].adjustment, {
+    adjustedMetrics: {},
+    appliedMetrics: [],
+    contractVersion: "forecast-adjustment-decision/v1",
+    reasonCode: "registry_inactive",
+    state: "disabled",
+  });
+  assert.equal(body.data[0].temperatureAdjustment.state, "raw_fallback");
+  // order concurrently collected read diagnostics
+  const orderedDiagnostics = diagnostics.toSorted((left, right) =>
+    left.operation.localeCompare(right.operation)
+  );
+  assert.deepEqual(
+    orderedDiagnostics,
+    [
+      {
+        errorCode: "57P01",
+        errorName: "Error",
+        event: "temperature_canary_fallback",
+        method: "GET",
+        operation: "sidecar_read",
+        status: 200,
+      },
+      {
+        errorCode: "ECONNRESET",
+        errorName: "TypeError",
+        event: "temperature_canary_fallback",
+        method: "GET",
+        operation: "status_read",
+        status: 200,
+      },
+    ],
+  );
+  assert.doesNotMatch(
+    JSON.stringify({ body, diagnostics }),
+    /SELECT|private_sidecar|password|secret|postgres:\/\/|raw_temperature_c/u,
+  );
+});
+
+// prove health monitoring fallback preserves head semantics
+test("temperature canary health status failures stay healthy for HEAD", async () => {
+  const diagnostics = [];
+  const runtime = createTemperatureCanaryRuntime();
+  const { handler } = createFixture(
+    {
+      // fail only optional collector monitoring
+      async getTemperatureCanaryStatus() {
+        throw Object.assign(new Error("connection string secret"), {
+          code: "08006",
+        });
+      },
+    },
+    {
+      // capture one request diagnostic
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+      temperatureAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/health", { method: "HEAD" }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "");
+  assert.deepEqual(diagnostics, [
+    {
+      errorCode: "08006",
+      errorName: "Error",
+      event: "temperature_canary_fallback",
+      method: "HEAD",
+      operation: "status_read",
+      status: 200,
+    },
+  ]);
+});
+
+// prove fallback diagnostics use the independent readiness status
+test("temperature canary health fallback records an actual 503 status", async () => {
+  const diagnostics = [];
+  const runtime = createTemperatureCanaryRuntime();
+  const { handler } = createFixture(
+    {
+      // fail independent database readiness
+      async getHealth() {
+        return {
+          database: "unavailable",
+          migration: { status: "unavailable", version: null },
+          workerLastLoopAt: null,
+        };
+      },
+      // fail optional collector monitoring
+      async getTemperatureCanaryStatus() {
+        throw Object.assign(new Error("database host secret"), {
+          code: "08006",
+        });
+      },
+    },
+    {
+      // capture the final response status
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+      temperatureAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 503);
+  assert.equal(body.data.ready, false);
+  assert.deepEqual(diagnostics, [
+    {
+      errorCode: "08006",
+      errorName: "Error",
+      event: "temperature_canary_fallback",
+      method: "GET",
+      operation: "status_read",
+      status: 503,
+    },
+  ]);
+});
+
+// prove row failures collapse to one request diagnostic
+test("temperature canary inference failures emit once across many rows", async () => {
+  const diagnostics = [];
+  const runtime = createTemperatureCanaryRuntime();
+  // build enough rows to prove request-level deduplication
+  const rows = Array.from({ length: 32 }, (_value, index) => ({
+    ...forecastRecord,
+    id: String(10_000 + index),
+    validAt: new Date(
+      Date.parse(forecastRecord.validAt) + index * 3_600_000,
+    ).toISOString(),
+  }));
+  const { handler } = createFixture(
+    {
+      // return a multi-row raw forecast
+      async getForecast() {
+        return rows;
+      },
+      // return no optional source rows
+      async getTemperatureCanarySidecar() {
+        return null;
+      },
+      // return no optional monitoring row
+      async getTemperatureCanaryStatus() {
+        return null;
+      },
+    },
+    {
+      // capture only bounded diagnostics
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+      temperatureAdjustment: {
+        // fail every row projection
+        apply() {
+          throw Object.assign(new Error("raw=99 coefficient=secret"), {
+            code: "MODEL_FAILURE",
+          });
+        },
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+  // issue a second request to prove deduplication resets
+  const secondResponse = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  await secondResponse.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data.length, rows.length);
+  // compare every public raw temperature
+  const returnedTemperatures = body.data.map((record) => record.metrics.temperatureC);
+  // retain the source raw temperature order
+  const expectedTemperatures = rows.map((row) => row.temperatureC);
+  assert.deepEqual(
+    returnedTemperatures,
+    expectedTemperatures,
+  );
+  assert.equal(secondResponse.status, 200);
+  const expectedDiagnostic = {
+    errorCode: "MODEL_FAILURE",
+    errorName: "Error",
+    event: "temperature_canary_fallback",
+    method: "GET",
+    operation: "inference",
+    status: 200,
+  };
+  assert.deepEqual(diagnostics, [expectedDiagnostic, expectedDiagnostic]);
+  assert.doesNotMatch(
+    JSON.stringify({ body, diagnostics }),
+    /raw=99|coefficient=secret/u,
+  );
+});
+
+// prove healthy absence is not diagnosed as failure
+test("temperature canary empty reads emit no fallback diagnostics", async () => {
+  const diagnostics = [];
+  const runtime = createTemperatureCanaryRuntime();
+  const { handler } = createFixture(
+    {
+      // return a healthy empty sidecar
+      async getTemperatureCanarySidecar() {
+        return null;
+      },
+      // return healthy empty monitoring
+      async getTemperatureCanaryStatus() {
+        return null;
+      },
+    },
+    {
+      // capture unexpected fallback diagnostics
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+      },
+      temperatureAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const forecastResponse = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const healthResponse = await handler(
+    new Request("http://weather.test/api/v1/health"),
+  );
+
+  assert.equal(forecastResponse.status, 200);
+  assert.equal(healthResponse.status, 200);
+  assert.deepEqual(diagnostics, []);
+});
+
+// prove hostile error and sink behavior cannot escape fail-raw serving
+test("temperature canary hostile errors and diagnostic sinks stay fail-raw", async () => {
+  const diagnostics = [];
+  const runtime = createTemperatureCanaryRuntime();
+  const hostileFailure = new Error("private model values");
+  Object.defineProperties(hostileFailure, {
+    code: {
+      // reject diagnostic property access
+      get() {
+        throw new Error("private code getter");
+      },
+    },
+    name: {
+      // reject diagnostic property access
+      get() {
+        throw new Error("private name getter");
+      },
+    },
+  });
+  const { handler } = createFixture(
+    {
+      // throw one hostile optional-read failure
+      async getTemperatureCanarySidecar() {
+        throw hostileFailure;
+      },
+      // keep monitoring healthy and empty
+      async getTemperatureCanaryStatus() {
+        return null;
+      },
+    },
+    {
+      // throw after observing the bounded event
+      logDiagnostic(diagnostic) {
+        diagnostics.push(diagnostic);
+        throw new Error("diagnostic sink unavailable");
+      },
+      temperatureAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data[0].metrics.temperatureC, forecastRecord.temperatureC);
+  assert.deepEqual(diagnostics, [
+    {
+      errorCode: null,
+      errorName: "UnknownError",
+      event: "temperature_canary_fallback",
+      method: "GET",
+      operation: "sidecar_read",
+      status: 200,
+    },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify({ body, diagnostics }),
+    /private model|private code|private name|sink unavailable/u,
+  );
+});
+
 test("wind canary runtime status exposes only bounded activation metadata", async () => {
   const runtime = createWindCanaryRuntime();
   const { handler } = createFixture({}, {

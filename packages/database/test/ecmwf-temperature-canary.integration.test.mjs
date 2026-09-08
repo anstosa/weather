@@ -206,7 +206,10 @@ test("ECMWF temperature sidecar is immutable private and single-run", async () =
         `,
         [persisted.id],
       ),
-      /adapter_check/u,
+      {
+        code: "23514",
+        constraint: "ecmwf_temperature_canary_runs_adapter_check",
+      },
     );
     await assert.rejects(
       ownerPool.query(
@@ -245,7 +248,10 @@ test("ECMWF temperature sidecar is immutable private and single-run", async () =
         `,
         [persisted.id],
       ),
-      /cycle_check/u,
+      {
+        code: "23514",
+        constraint: "ecmwf_temperature_canary_runs_cycle_check",
+      },
     );
     await assert.rejects(
       persistEcmwfTemperatureCanaryRun(ingestPool, {
@@ -264,14 +270,14 @@ test("ECMWF temperature sidecar is immutable private and single-run", async () =
         "INSERT INTO ecmwf_temperature_canary_hours (run_id, valid_at, model_lead_hours, raw_temperature_c, content_hash) VALUES ($1, now(), 1, 10, repeat('a', 64))",
         [persisted.id],
       ),
-      /permission denied/u,
+      { code: "42501" },
     );
     await assert.rejects(
       ingestPool.query(
         "UPDATE ecmwf_temperature_canary_hours SET raw_temperature_c = raw_temperature_c WHERE run_id = $1",
         [persisted.id],
       ),
-      /permission denied/u,
+      { code: "42501" },
     );
   } finally {
     await apiPool?.end().catch(() => undefined);

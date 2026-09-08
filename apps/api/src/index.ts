@@ -311,10 +311,20 @@ export type ForecastDays = 1 | 5 | 10;
 export interface ApiDiagnostic {
   readonly errorCode: string | null;
   readonly errorName: string;
-  readonly event: "api_request_failed";
+  readonly event: "api_request_failed" | "temperature_canary_fallback";
   readonly method: string;
+  readonly operation?: TemperatureCanaryOperation;
   readonly status: number;
 }
+
+// identify bounded optional failure boundaries
+type TemperatureCanaryOperation = "sidecar_read" | "status_read" | "inference";
+
+// collect failures without changing public serving
+type TemperatureCanaryFailureReporter = (
+  operation: TemperatureCanaryOperation,
+  error: unknown,
+) => void;
 
 export interface ApiServerOptions {
   readonly logDiagnostic?: (diagnostic: ApiDiagnostic) => void;
@@ -525,6 +535,14 @@ export function createWeatherApi(
 
   // route one request
   return async function handleWeatherRequest(request: Request): Promise<Response> {
+    const temperatureFailures = new Map<TemperatureCanaryOperation, unknown>();
+    // retain only the first failure at each request boundary
+    const reportTemperatureFailure: TemperatureCanaryFailureReporter = (operation, error) => {
+      // avoid unbounded per-row diagnostics or unused error retention
+      if (logDiagnostic !== undefined && !temperatureFailures.has(operation)) {
+        temperatureFailures.set(operation, error);
+      }
+    };
     let response: Response;
 
     try {
@@ -563,6 +581,7 @@ export function createWeatherApi(
           temperatureAdjustment.runtime,
           temperatureAdjustmentRuntime,
           applyTemperatureAdjustment,
+          reportTemperatureFailure,
         );
       }
     } catch (error) {
@@ -574,6 +593,26 @@ export function createWeatherApi(
           logDiagnostic,
           createApiDiagnostic(error, request.method, response.status),
         );
+      }
+    }
+
+    // report optional degradation with the actual public response status
+    if (logDiagnostic !== undefined) {
+      // emit at most one event per optional operation
+      for (const [operation, error] of temperatureFailures) {
+        let diagnostic: ApiDiagnostic;
+        // sanitize without trusting error property access
+        try {
+          diagnostic = createApiDiagnostic(error, request.method, response.status);
+        } catch {
+          // contain hostile error property getters
+          diagnostic = createApiDiagnostic(null, request.method, response.status);
+        }
+        emitApiDiagnostic(logDiagnostic, {
+          ...diagnostic,
+          event: "temperature_canary_fallback",
+          operation,
+        });
       }
     }
 
@@ -991,6 +1030,7 @@ async function handleReadRoute(
     runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
     input: ApplyTemperatureCanaryInputV1,
   ) => ForecastTemperatureCanaryDecisionV1,
+  reportTemperatureFailure: TemperatureCanaryFailureReporter,
 ): Promise<Response> {
   // serve liveness and readiness
   if (route.kind === "health") {
@@ -1000,6 +1040,7 @@ async function handleReadRoute(
           store,
           "ballydidean",
           generatedAt,
+          reportTemperatureFailure,
         )
       : null;
     return await healthResponse(
@@ -1084,11 +1125,13 @@ async function handleReadRoute(
               generatedAt,
               window.asOf,
               to,
+              reportTemperatureFailure,
             ),
             readTemperatureCanaryStatusSafely(
               store,
               route.siteSlug,
               generatedAt,
+              reportTemperatureFailure,
             ),
           ])
         : [null, null];
@@ -1101,6 +1144,7 @@ async function handleReadRoute(
       temperatureAdjustmentRuntime,
       temperatureSidecar,
       applyTemperatureAdjustment,
+      reportTemperatureFailure,
     );
     return jsonResponse({
       adjustmentRuntime,
@@ -1546,6 +1590,7 @@ function mapForecastWeatherRecords(
     runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
     input: ApplyTemperatureCanaryInputV1,
   ) => ForecastTemperatureCanaryDecisionV1,
+  reportTemperatureFailure: TemperatureCanaryFailureReporter,
 ): readonly ApiForecastWeatherRecord[] {
   const rawRecords = mapWeatherRecords(rows, sources, generatedAt);
   const temperatureHours = new Map(
@@ -1568,6 +1613,7 @@ function mapForecastWeatherRecords(
       temperatureSidecar,
       temperatureHours.get(record.validAt) ?? null,
       applyTemperatureAdjustment,
+      reportTemperatureFailure,
     ),
   }));
 }
@@ -1583,6 +1629,7 @@ function applyForecastTemperatureAdjustmentSafely(
     runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
     input: ApplyTemperatureCanaryInputV1,
   ) => ForecastTemperatureCanaryDecisionV1,
+  reportTemperatureFailure: TemperatureCanaryFailureReporter,
 ): ForecastTemperatureCanaryDecisionV1 {
   const validAt = toIsoInstant(row.validAt);
   const sourceForecast =
@@ -1613,7 +1660,8 @@ function applyForecastTemperatureAdjustmentSafely(
       sourceForecast,
       validAt,
     });
-  } catch {
+  } catch (error) {
+    reportTemperatureFailure("inference", error);
     return applyForecastAdjustmentTemperatureCanary(
       {
         bundle: null,
@@ -1638,6 +1686,7 @@ async function readTemperatureCanarySidecarSafely(
   asOf: string,
   from: string,
   to: string,
+  reportTemperatureFailure: TemperatureCanaryFailureReporter,
 ): Promise<EcmwfTemperatureCanarySidecar | null> {
   // preserve compatibility with stores that predate the sidecar
   if (store.getTemperatureCanarySidecar === undefined) {
@@ -1646,7 +1695,8 @@ async function readTemperatureCanarySidecarSafely(
 
   try {
     return await store.getTemperatureCanarySidecar(siteSlug, asOf, from, to);
-  } catch {
+  } catch (error) {
+    reportTemperatureFailure("sidecar_read", error);
     return null;
   }
 }
@@ -1656,6 +1706,7 @@ async function readTemperatureCanaryStatusSafely(
   store: WeatherReadStore,
   siteSlug: string,
   asOf: string,
+  reportTemperatureFailure: TemperatureCanaryFailureReporter,
 ): Promise<EcmwfTemperatureCanaryStatus | null> {
   // preserve compatibility with stores that predate monitoring
   if (store.getTemperatureCanaryStatus === undefined) {
@@ -1664,7 +1715,8 @@ async function readTemperatureCanaryStatusSafely(
 
   try {
     return await store.getTemperatureCanaryStatus(siteSlug, asOf);
-  } catch {
+  } catch (error) {
+    reportTemperatureFailure("status_read", error);
     return null;
   }
 }

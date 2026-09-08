@@ -51,6 +51,13 @@ export interface WeatherApiStartupDependencies {
   ) => Promise<Readonly<{ port: number; server: Server }>>;
 }
 
+// share an immutable fail-raw loader result
+const disabledLoaderRuntime = Object.freeze({
+  bundle: null,
+  reasonCode: "bundle_invalid",
+  state: "disabled",
+} as const);
+
 // load one immutable runtime before constructing or listening on the server
 export async function startWeatherApi(
   dependencies: WeatherApiStartupDependencies = {},
@@ -76,7 +83,7 @@ export async function startWeatherApi(
   try {
     windCanaryRuntime = await loadWindCanaryRuntime();
   } catch {
-    windCanaryRuntime = disabledForecastAdjustmentWindCanaryRuntime();
+    windCanaryRuntime = disabledLoaderRuntime;
   }
 
   // prefer only an explicitly active canary
@@ -87,7 +94,7 @@ export async function startWeatherApi(
     try {
       runtime = await loadRuntime();
     } catch {
-      runtime = disabledForecastAdjustmentRuntime();
+      runtime = disabledLoaderRuntime;
     }
   } else {
     runtime = windCanaryRuntime;
@@ -97,7 +104,7 @@ export async function startWeatherApi(
   try {
     temperatureRuntime = await loadTemperatureCanaryRuntime();
   } catch {
-    temperatureRuntime = disabledForecastAdjustmentTemperatureCanaryRuntime();
+    temperatureRuntime = disabledLoaderRuntime;
   }
 
   const loadedAt = now().toISOString();
@@ -175,33 +182,6 @@ async function prepareProductionServer(
 // read the startup wall clock once
 function currentDate(): Date {
   return new Date();
-}
-
-// keep loader faults fail-raw without affecting startup health
-function disabledForecastAdjustmentRuntime(): LoadedForecastAdjustmentRuntimeV1 {
-  return {
-    bundle: null,
-    reasonCode: "bundle_invalid",
-    state: "disabled",
-  };
-}
-
-// provide a fail-raw canary loader fallback
-function disabledForecastAdjustmentWindCanaryRuntime(): LoadedForecastAdjustmentWindCanaryRuntimeV1 {
-  return {
-    bundle: null,
-    reasonCode: "bundle_invalid",
-    state: "disabled",
-  };
-}
-
-// provide an isolated fail-raw temperature loader fallback
-function disabledForecastAdjustmentTemperatureCanaryRuntime(): LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 {
-  return {
-    bundle: null,
-    reasonCode: "bundle_invalid",
-    state: "disabled",
-  };
 }
 
 // parse a safe listener port

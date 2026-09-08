@@ -1,5 +1,54 @@
 # Forecast model live-integration readiness
 
+## September 8, 2026 deployment receipt
+
+Release `2026.09.08-11`, source commit
+`5c4c11d1663e8806cef6f7141c5d56d4eff5fd85`, was deployed through the documented
+release process and verified on
+[Blueberry Forecast](https://weather.ballydidean.farm/forecast). The production
+API boot was `2026-09-08T04:48:37.858Z`. Both canaries were active with the
+immutable bundle identities and expiry recorded below. This is operational
+verification, not a prospective accuracy result or ordinary model qualification.
+
+The [canary publication workflow](https://github.com/anstosa/weather/actions/runs/34186742773)
+passed repository, database, browser and deployment gates. Live browser checks
+then verified Today, five-day and ten-day forecasts, bundle-specific consent,
+adjusted temperature and wind plots, exact raw restoration, source attribution
+and mobile layout. Two bounded repository query repairs removed historical
+forecast/provenance scans without changing the five-day response in read-only
+same-snapshot comparisons. The separate paused Xweather radar path still returned
+502 responses and was not part of this model release's fixes.
+
+The dedicated forecast-export credential was installed without changing the
+eleven existing credential files. Password-authenticated checks verified
+`weather_training_export` has read-only access to exactly the two existing export
+views, no role memberships and no writable relations. Schema migration 0013 was
+applied with checksum
+`e05f0397529108641ad9b9eb5381ac968f35449514fe4d8ed0ac502c9d5bf3ee`.
+No rain, humidity or pressure model was activated.
+
+### Verified recovery boundary
+
+Recovery was armed at `2026-09-08T04:52:45.520Z`. Release `2026.09.08-12` had been
+published from the same source commit as the raw-only forward recovery for
+release 11. Its
+[publication workflow](https://github.com/anstosa/weather/actions/runs/34186742705)
+passed all gates, and isolated image checks verified all four independent
+temperature/wind switch combinations. Both future release-input switches were
+set to `1`; the immutable active release 11 environment and running containers
+retained `0` for both switches and were unchanged.
+
+While release 11 remains current, the prepared model backout command is
+`npm run remote:deploy -- 2026.09.08-12`. Revalidate the current release and
+prepared input before use. This disables the models through a new reviewed
+release; it is not prior-image or database rollback, and cannot recover a defect
+shared by both releases. Full staged-clone capacity was insufficient, so this
+deployment did not establish prior-image rollback authorization. Do not bypass
+that gate, remove production data to make room, or rewrite frozen release files.
+
+The dated pre-authorization assessment below is retained as historical context;
+its inactive-state statements do not describe the deployment receipt above.
+
 ## September 7, 2026 pre-authorization assessment
 
 The requested delivery is temperature plus wind on Blueberry, followed by rain,
@@ -215,11 +264,22 @@ and states support later prospective scoring. Do not describe operational
 coverage as measured accuracy or compare ECMWF research gains with Best Match
 without scoring that comparator independently.
 
+Unexpected sidecar reads, monitoring reads and inference exceptions emit
+`temperature_canary_fallback` diagnostics with operations `sidecar_read`,
+`status_read` and `inference`. Each operation emits at most once per request,
+with the actual response status and only bounded error-name/code metadata. Error
+messages, queries, model values and stack traces are excluded. Legitimately empty
+reads emit no failure event; diagnostic sink failures cannot interrupt raw
+service. These events supplement, rather than replace, the public raw-fallback
+and source-coverage fields.
+
 `WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1` disables only
 temperature; `WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1` disables only
 wind. Temperature requires an explicit literal `0` to enable it. The release
 writer preserves both switches, defaults an absent temperature switch to `1`,
 and rejects duplicate or malformed declarations. Update switches through a new
 reviewed release input and the documented deployment process; do not rewrite an
-immutable active release environment. Rollback selects the previous images and
-retained release environment without running a down migration.
+immutable active release environment. Prior-image rollback additionally requires
+the documented compatibility and migration authorization; when authorized, it
+selects retained images and environment without a down migration. For the
+September 8 deployment, use the narrower verified recovery boundary above.

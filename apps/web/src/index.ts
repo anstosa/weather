@@ -244,7 +244,7 @@ export interface ForecastAdjustmentRuntimeStatus {
 }
 
 // name bounded temperature-canary failures
-export type ForecastTemperatureCanaryReasonCode =
+type ForecastTemperatureCanaryReasonCode =
   | "adjustment_error"
   | "bundle_invalid"
   | "bundle_missing"
@@ -276,7 +276,7 @@ export type ForecastTemperatureCanaryReasonCode =
   | "unsupported_cohort";
 
 // describe one explicit live ECMWF temperature source
-export interface ForecastTemperatureCanarySource {
+interface ForecastTemperatureCanarySource {
   readonly adapterVersion: string;
   readonly dataset: "single_run";
   readonly firstReceivedAt: string;
@@ -294,7 +294,7 @@ export interface ForecastTemperatureCanarySource {
 }
 
 // describe one independent temperature decision
-export interface ForecastTemperatureCanaryDecision {
+interface ForecastTemperatureCanaryDecision {
   readonly branch: "adaptive" | "direct" | null;
   readonly bundleSha256: string | null;
   readonly contractVersion: "forecast-temperature-canary-decision/v1";
@@ -307,7 +307,7 @@ export interface ForecastTemperatureCanaryDecision {
 }
 
 // describe bounded temperature runtime monitoring
-export interface ForecastTemperatureAdjustmentRuntimeStatus {
+interface ForecastTemperatureAdjustmentRuntimeStatus {
   readonly activeBundle: string | null;
   readonly authorizationSha256: string | null;
   readonly expiresAt: string | null;
@@ -2508,7 +2508,6 @@ function renderForecastAdjustmentToggle(
         : "Switch between adjusted and raw forecast values."}"
       data-forecast-adjustment-toggle
       data-forecast-adjustment-activation-mode="${escapeHtml(state.forecastAdjustmentRuntime?.activationMode ?? "disabled")}"
-      data-forecast-temperature-canary="${String(temperatureCanary)}"
       data-forecast-adjustment-available="${String(available)}"
       data-forecast-adjustment-fallback="${String(!available && adjusted)}"
     >

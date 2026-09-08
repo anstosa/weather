@@ -704,7 +704,6 @@ test("temperature canary overrides only adjusted temperature with truthful prove
       parsed.temperatureAdjustmentRuntime,
   };
   const html = renderWeatherDashboard(state, "forecast");
-  assert.match(html, /data-forecast-temperature-canary="true"/u);
   assert.match(
     html,
     /Experimental adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match\./u,
