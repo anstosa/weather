@@ -1911,16 +1911,23 @@ export async function getWeatherForecast(
   try {
     const provenanceResult = await pool.query<ForecastRuntimeProvenanceRow>(
       `
-        SELECT
-          weather_record_id AS "weatherRecordId",
-          source_id AS "sourceId",
-          source_key AS "sourceKey",
-          source_config_fingerprint AS "sourceConfigFingerprint",
-          adapter_version AS "adapterVersion",
-          contract_epoch AS "contractEpoch"
-        FROM forecast_runtime_provenance_v1
-        WHERE weather_record_id = ANY($1::bigint[])
-        ORDER BY weather_record_id ASC
+        SELECT provenance.*
+        FROM unnest($1::bigint[]) AS requested(weather_record_id)
+        -- probe exact identities instead of scanning historical provenance
+        CROSS JOIN LATERAL (
+          SELECT
+            weather_record_id AS "weatherRecordId",
+            source_id AS "sourceId",
+            source_key AS "sourceKey",
+            source_config_fingerprint AS "sourceConfigFingerprint",
+            adapter_version AS "adapterVersion",
+            contract_epoch AS "contractEpoch"
+          FROM forecast_runtime_provenance_v1
+          WHERE weather_record_id = requested.weather_record_id
+          -- retain duplicate-linkage detection without flattening the probe
+          LIMIT 2
+        ) provenance
+        ORDER BY provenance."weatherRecordId" ASC
         LIMIT ${String(MAX_FORECAST_HOURS)}
       `,
       [

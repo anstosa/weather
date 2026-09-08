@@ -436,9 +436,44 @@ test("forecast repository fails raw when provenance access is denied", async () 
   assert.equal(queries.length, 2);
   assert.doesNotMatch(queries[0].text, /forecast_runtime_provenance_v1/u);
   assert.match(queries[1].text, /FROM forecast_runtime_provenance_v1/u);
-  assert.match(queries[1].text, /weather_record_id = ANY\(\$1::bigint\[\]\)/u);
+  assert.match(queries[1].text, /FROM unnest\(\$1::bigint\[\]\) AS requested\(weather_record_id\)/u);
+  assert.match(queries[1].text, /CROSS JOIN LATERAL/u);
+  assert.match(queries[1].text, /WHERE weather_record_id = requested\.weather_record_id/u);
+  assert.match(queries[1].text, /LIMIT 2\s*\) provenance/u);
+  assert.match(queries[1].text, /ORDER BY provenance\."weatherRecordId" ASC\s+LIMIT 264/u);
   assert.deepEqual(queries[1].values, [[rawRecord.id]]);
   assert.equal(JSON.stringify(records), JSON.stringify([rawRecord]));
+});
+
+// retain duplicate-linkage rejection after bounded per-record probes
+test("forecast repository fails raw when provenance contains duplicate linkage", async () => {
+  const rawRecord = weatherRecordRowFixture();
+  const provenance = {
+    adapterVersion: "open-meteo-forecast-daily/v4",
+    contractEpoch: "legacy-v4/test",
+    sourceConfigFingerprint: "test-fingerprint",
+    sourceId: rawRecord.sourceId,
+    sourceKey: rawRecord.sourceKey,
+    weatherRecordId: rawRecord.id,
+  };
+  const pool = {
+    // return both conflicting linkage rows to the validation boundary
+    async query(text) {
+      return {
+        rows: text.includes("forecast_runtime_provenance_v1")
+          ? [provenance, { ...provenance, contractEpoch: "legacy-v4/conflict" }]
+          : [rawRecord],
+      };
+    },
+  };
+  const records = await getWeatherForecast(pool, {
+    asOf: "2026-09-01T00:00:00.000Z",
+    hours: 24,
+    siteSlug: "ballydidean",
+  });
+
+  assert.deepEqual(records, [rawRecord]);
+  assert.equal(records[0], rawRecord);
 });
 
 // verify authoritative raw failures still reject
