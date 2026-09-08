@@ -403,7 +403,7 @@ verify_previous_image_compatibility() (
   local invalid_history_sha256 unproven_status
   local non_compatibility_source_ids compatibility_source_count
   local anchor_migration_count export_migration_count runtime_provenance_migration_count
-  local live_visibility_migration_count baseline_acl_verified
+  local live_visibility_migration_count temperature_canary_migration_count baseline_acl_verified
   local baseline_schema_state
   local migrations_changed=false
   local candidate_created=false
@@ -470,11 +470,11 @@ verify_previous_image_compatibility() (
   # restore the exact migration boundary shipped by the previous Git image
   WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
-      --command "CREATE OR REPLACE FUNCTION weather_source_is_current(candidate_id bigint) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS \$function\$ SELECT NOT EXISTS (SELECT 1 FROM public.sources candidate JOIN public.sources successor ON successor.station_id = candidate.station_id AND successor.active AND successor.material_provider_config->>'supersedesSourceKey' = candidate.source_key WHERE candidate.id = candidate_id); \$function\$; DROP VIEW IF EXISTS forecast_runtime_provenance_v1; DROP VIEW IF EXISTS forecast_training_export_manifest_v1; DROP VIEW IF EXISTS forecast_training_export_rows_v1; DROP TABLE IF EXISTS forecast_anchor_records; DROP FUNCTION IF EXISTS weather_require_historical_forecast_anchor_source(); DROP FUNCTION IF EXISTS weather_guard_forecast_anchor_record_update(); GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC; ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO PUBLIC; REVOKE SELECT (capabilities) ON sources FROM weather_api; DELETE FROM schema_migrations WHERE name IN ('0009_forecast_anchor_records.sql', '0010_forecast_training_export.sql', '0011_forecast_runtime_provenance.sql', '0012_hide_archive_only_forecasts_from_live_reads.sql')"
+      --command "CREATE OR REPLACE FUNCTION weather_source_is_current(candidate_id bigint) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS \$function\$ SELECT NOT EXISTS (SELECT 1 FROM public.sources candidate JOIN public.sources successor ON successor.station_id = candidate.station_id AND successor.active AND successor.material_provider_config->>'supersedesSourceKey' = candidate.source_key WHERE candidate.id = candidate_id); \$function\$; DROP VIEW IF EXISTS forecast_runtime_provenance_v1; DROP VIEW IF EXISTS forecast_training_export_manifest_v1; DROP VIEW IF EXISTS forecast_training_export_rows_v1; DROP TABLE IF EXISTS ecmwf_temperature_canary_hours; DROP TABLE IF EXISTS ecmwf_temperature_canary_runs; DROP FUNCTION IF EXISTS weather_guard_ecmwf_temperature_canary_run_update(); DROP FUNCTION IF EXISTS weather_require_ecmwf_temperature_canary_hour_identity(); DROP FUNCTION IF EXISTS weather_reject_ecmwf_temperature_canary_hour_mutation(); DROP TABLE IF EXISTS forecast_anchor_records; DROP FUNCTION IF EXISTS weather_require_historical_forecast_anchor_source(); DROP FUNCTION IF EXISTS weather_guard_forecast_anchor_record_update(); GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC; ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO PUBLIC; REVOKE SELECT (capabilities) ON sources FROM weather_api; DELETE FROM schema_migrations WHERE name IN ('0009_forecast_anchor_records.sql', '0010_forecast_training_export.sql', '0011_forecast_runtime_provenance.sql', '0012_hide_archive_only_forecasts_from_live_reads.sql', '0013_ecmwf_temperature_canary.sql')"
   baseline_schema_state=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
-      --command "SELECT count(*)::text || ':' || COALESCE(to_regclass('forecast_anchor_records')::text, '') || ':' || COALESCE(to_regclass('forecast_training_export_rows_v1')::text, '') FROM schema_migrations")
-  [[ "$baseline_schema_state" == "8::" ]] ||
+      --command "SELECT count(*)::text || ':' || COALESCE(to_regclass('forecast_anchor_records')::text, '') || ':' || COALESCE(to_regclass('forecast_training_export_rows_v1')::text, '') || ':' || COALESCE(to_regclass('ecmwf_temperature_canary_runs')::text, '') || ':' || COALESCE(to_regclass('ecmwf_temperature_canary_hours')::text, '') FROM schema_migrations")
+  [[ "$baseline_schema_state" == "8::::" ]] ||
     die "previous compatibility database does not match the eight-migration Git baseline"
 
   previous_history_sha256=$(migration_history_sha256 "$previous_env" "$candidate")
@@ -505,6 +505,12 @@ verify_previous_image_compatibility() (
         --command "SELECT count(*) FROM schema_migrations WHERE name = '0012_hide_archive_only_forecasts_from_live_reads.sql'")
     [[ "$live_visibility_migration_count" == 1 ]] ||
       die "forecast live visibility migration is missing from the compatibility database"
+    # require the isolated sidecar migration after rebuilding the baseline
+    temperature_canary_migration_count=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
+      psql --username postgres --dbname "$candidate" --tuples-only --no-align \
+        --command "SELECT count(*) FROM schema_migrations WHERE name = '0013_ecmwf_temperature_canary.sql'")
+    [[ "$temperature_canary_migration_count" == 1 ]] ||
+      die "ECMWF temperature canary migration is missing from the compatibility database"
   fi
 
   non_compatibility_source_ids=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
