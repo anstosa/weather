@@ -60,6 +60,7 @@ const EXPECTED_MIGRATIONS = {
     "2590423b7787b0e5e5668bfa4af21db775b8926540b1d2e339d6656aa3f27dc8",
     "ebf5789636095982e6010a868cdfdd4d7449ca79fb1057adf3b8dd8f49a337dc",
     "663ed323104bb70f4d0e735c3b546fb111038be4d0fee83e0c76c018cf0da15c",
+    "e05f0397529108641ad9b9eb5381ac968f35449514fe4d8ed0ac502c9d5bf3ee",
   ],
   names: [
     "0001_initial_weather.sql",
@@ -74,6 +75,7 @@ const EXPECTED_MIGRATIONS = {
     "0010_forecast_training_export.sql",
     "0011_forecast_runtime_provenance.sql",
     "0012_hide_archive_only_forecasts_from_live_reads.sql",
+    "0013_ecmwf_temperature_canary.sql",
   ],
 };
 const ROW_KEYS = [

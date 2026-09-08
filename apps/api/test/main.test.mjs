@@ -18,12 +18,14 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
   const events = [];
   let canaryLoads = 0;
   let loads = 0;
+  let temperatureLoads = 0;
   const runtime = {
     bundle: null,
     reasonCode: "registry_inactive",
     state: "disabled",
   };
   let preparedAdjustment;
+  let preparedTemperatureAdjustment;
   const started = await startWeatherApi({
     // return an inactive canary selection
     async loadForecastAdjustmentWindCanaryRuntime() {
@@ -41,14 +43,25 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
       events.push("load");
       return runtime;
     },
+    // return one independently inactive temperature selection
+    async loadForecastAdjustmentTemperatureCanaryRuntime() {
+      temperatureLoads += 1;
+      events.push("temperature");
+      return {
+        bundle: null,
+        reasonCode: "registry_inactive",
+        state: "disabled",
+      };
+    },
     // freeze the loader timestamp
     now() {
       events.push("time");
       return new Date("2026-09-02T01:02:03.000Z");
     },
     // prepare only after the runtime is loaded
-    async prepareServer(adjustment) {
+    async prepareServer(adjustment, temperatureAdjustment) {
       preparedAdjustment = adjustment;
+      preparedTemperatureAdjustment = temperatureAdjustment;
       events.push("prepare");
       return { port: 8080, server: recordingServer(events) };
     },
@@ -56,10 +69,64 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
 
   assert.equal(canaryLoads, 1);
   assert.equal(loads, 1);
-  assert.deepEqual(events, ["canary", "load", "time", "prepare", "listen:0.0.0.0:8080"]);
+  assert.equal(temperatureLoads, 1);
+  assert.deepEqual(events, [
+    "canary",
+    "load",
+    "temperature",
+    "time",
+    "prepare",
+    "listen:0.0.0.0:8080",
+  ]);
   assert.equal(started.adjustment, preparedAdjustment);
   assert.equal(started.adjustment.runtime, runtime);
   assert.equal(started.adjustment.loadedAt, "2026-09-02T01:02:03.000Z");
+  assert.equal(started.temperatureAdjustment, preparedTemperatureAdjustment);
+  assert.equal(
+    started.temperatureAdjustment.loadedAt,
+    "2026-09-02T01:02:03.000Z",
+  );
+});
+
+test("temperature loader failures stay isolated from an active wind canary", async () => {
+  const events = [];
+  const windRuntime = {
+    bundle: { artifactKind: "wind_transfer_canary_runtime_bundle" },
+    reasonCode: null,
+    state: "active",
+  };
+  const started = await startWeatherApi({
+    // select active wind independently
+    async loadForecastAdjustmentWindCanaryRuntime() {
+      events.push("wind");
+      return windRuntime;
+    },
+    // fail only the temperature loader
+    async loadForecastAdjustmentTemperatureCanaryRuntime() {
+      events.push("temperature");
+      throw new Error("temperature loader failure");
+    },
+    // retain both snapshots without external resources
+    async prepareServer(adjustment, temperatureAdjustment) {
+      events.push(
+        `prepare:${adjustment.runtime.state}:${temperatureAdjustment.runtime.state}`,
+      );
+      return { port: 8080, server: recordingServer(events) };
+    },
+  });
+
+  assert.equal(started.adjustment.runtime, windRuntime);
+  assert.deepEqual(started.temperatureAdjustment.runtime, {
+    bundle: null,
+    reasonCode: "bundle_invalid",
+    state: "disabled",
+  });
+  assert.deepEqual(events, [
+    "wind",
+    "temperature",
+    "prepare:active:disabled",
+    "listen:0.0.0.0:8080",
+  ]);
 });
 
 test("loader exceptions keep startup healthy with a disabled cached runtime", async () => {

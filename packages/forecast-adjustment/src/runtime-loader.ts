@@ -17,6 +17,17 @@ import { canonicalJsonBytes, deepFreeze } from "./candidate.js";
 import { runtimeCalendarFingerprintMatches } from "./calendar.js";
 import { verifyForecastAdjustmentRuntimeBundle } from "./runtime-bundle.js";
 import {
+  forecastAdjustmentTemperatureCanaryIsActiveAt,
+  forecastAdjustmentTemperatureCanaryIsKilled,
+  temperatureCanaryRuntimeFingerprintMatches,
+  validateForecastAdjustmentTemperatureCanaryRegistry,
+  validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks,
+  verifyForecastAdjustmentTemperatureCanaryRuntimeBundle,
+  type ForecastAdjustmentTemperatureCanaryRegistryV1,
+  type ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+} from "./temperature-canary.js";
+import {
   forecastAdjustmentWindCanaryIsActiveAt,
   forecastAdjustmentWindCanaryIsKilled,
   validateForecastAdjustmentWindCanaryRegistry,
@@ -29,6 +40,8 @@ export const FORECAST_ADJUSTMENT_RUNTIME_ROOT =
 export const FORECAST_ADJUSTMENT_REGISTRY_FILENAME = "ballydidean.json";
 export const FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME =
   "ballydidean-wind-canary.json";
+export const FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME =
+  "ballydidean-temperature-canary.json";
 
 // cache one startup adjustment provider state
 export type LoadedForecastAdjustmentRuntimeV1 =
@@ -83,6 +96,17 @@ export interface ForecastAdjustmentWindCanaryRuntimeOptionsV1 {
   readonly now?: () => string;
 }
 
+// define one startup-only temperature canary loader
+export interface ForecastAdjustmentTemperatureCanaryRuntimeLoaderV1 {
+  readonly load: () => Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1>;
+}
+
+// inject the independent fail-closed control and clock
+export interface ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1 {
+  readonly environmentKillSwitch?: string;
+  readonly now?: () => string;
+}
+
 // create the production fixed-root startup loader
 export function createForecastAdjustmentRuntimeLoader(): ForecastAdjustmentRuntimeLoaderV1 {
   return createForecastAdjustmentRuntimeLoaderForRoot(
@@ -126,6 +150,32 @@ export function createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(
     // cache both success and fail-raw results for process lifetime
     load(): Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> {
       cached ??= loadWindCanaryRuntimeFromRoot(root, options);
+      return cached;
+    },
+  });
+}
+
+// create the isolated production-root temperature loader
+export function createForecastAdjustmentTemperatureCanaryRuntimeLoader(
+  options: ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1 = {},
+): ForecastAdjustmentTemperatureCanaryRuntimeLoaderV1 {
+  return createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot(
+    FORECAST_ADJUSTMENT_RUNTIME_ROOT,
+    options,
+  );
+}
+
+// create a test-injected temperature loader
+export function createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot(
+  root: string,
+  options: ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1 = {},
+): ForecastAdjustmentTemperatureCanaryRuntimeLoaderV1 {
+  let cached: Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> | null = null;
+
+  return deepFreeze({
+    // cache both success and fail-raw results for process lifetime
+    load(): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> {
+      cached ??= loadTemperatureCanaryRuntimeFromRoot(root, options);
       return cached;
     },
   });
@@ -315,6 +365,105 @@ async function loadWindCanaryRuntimeFromRoot(
   }
 }
 
+// load one independently selected temperature canary bundle
+async function loadTemperatureCanaryRuntimeFromRoot(
+  root: string,
+  options: ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1,
+): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> {
+  // default closed until the operator explicitly enables serving
+  if (forecastAdjustmentTemperatureCanaryIsKilled(options.environmentKillSwitch)) {
+    return disabledTemperatureCanary("canary_killed");
+  }
+
+  const absoluteRoot = resolve(root);
+  let registry: ForecastAdjustmentTemperatureCanaryRegistryV1;
+
+  // reject relative or normalized roots
+  if (!isAbsolute(root) || root !== absoluteRoot) {
+    return disabledTemperatureCanary("registry_invalid");
+  }
+
+  try {
+    const rootReal = await realpath(absoluteRoot);
+    const rootMetadata = await lstat(absoluteRoot);
+
+    // reject root aliases and special nodes
+    if (
+      rootReal !== absoluteRoot ||
+      !rootMetadata.isDirectory() ||
+      rootMetadata.isSymbolicLink()
+    ) {
+      throw new RangeError("temperature canary runtime root is not canonical");
+    }
+
+    registry = await readRegularJson<ForecastAdjustmentTemperatureCanaryRegistryV1>(
+      join(absoluteRoot, FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME),
+      absoluteRoot,
+    );
+    validateForecastAdjustmentTemperatureCanaryRegistry(registry);
+  } catch {
+    return disabledTemperatureCanary("registry_invalid");
+  }
+
+  // preserve the reviewed inactive default
+  if (registry.activeBundle === null) {
+    return disabledTemperatureCanary("registry_inactive");
+  }
+
+  try {
+    const active = registry.activeBundle;
+
+    // require one closed content-addressed filename
+    if (
+      isAbsolute(active.path) ||
+      active.path.includes("..") ||
+      active.path !==
+        `temperature-canary-bundles/sha256-${active.bundleSha256}.json`
+    ) {
+      throw new RangeError("temperature canary bundle selection path is invalid");
+    }
+
+    const bundleRoot = join(absoluteRoot, "ballydidean");
+    const bundlePath = resolve(bundleRoot, active.path);
+
+    // keep canary bytes under the one site root
+    if (!bundlePath.startsWith(`${bundleRoot}${sep}`)) {
+      throw new RangeError("temperature canary bundle path escapes the site root");
+    }
+
+    const bundle =
+      await readRegularJson<ForecastAdjustmentTemperatureCanaryRuntimeBundleV1>(
+        bundlePath,
+        absoluteRoot,
+      );
+    verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle);
+    validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks(registry, bundle);
+
+    // require the fitted local-calendar runtime
+    if (!temperatureCanaryRuntimeFingerprintMatches(bundle)) {
+      throw new RangeError("temperature canary runtime fingerprint mismatch");
+    }
+
+    const now = options.now?.() ?? new Date().toISOString();
+
+    // fail raw outside the explicit short-lived window
+    if (!forecastAdjustmentTemperatureCanaryIsActiveAt(bundle, now)) {
+      return disabledTemperatureCanary("canary_expired");
+    }
+
+    return deepFreeze({ bundle: deepFreeze(bundle), reasonCode: null, state: "active" });
+  } catch (error: unknown) {
+    const code =
+      error !== null &&
+      typeof error === "object" &&
+      "code" in error &&
+      error.code === "ENOENT"
+        ? "bundle_missing"
+        : "bundle_invalid";
+    return disabledTemperatureCanary(code);
+  }
+}
+
 // read one regular in-root JSON file
 async function readRegularJson<T>(
   path: string,
@@ -457,5 +606,15 @@ function disabledWindCanary(
     | "registry_invalid"
   >,
 ): LoadedForecastAdjustmentWindCanaryRuntimeV1 {
+  return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
+}
+
+// create one deeply frozen disabled temperature canary
+function disabledTemperatureCanary(
+  reasonCode: Exclude<
+    LoadedForecastAdjustmentTemperatureCanaryRuntimeV1["reasonCode"],
+    null
+  >,
+): LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 {
   return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
 }

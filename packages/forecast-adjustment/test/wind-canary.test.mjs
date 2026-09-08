@@ -360,23 +360,21 @@ test("wind canary kill switch only disables and fails raw", async () => {
   );
 });
 
-// keep the retired selection inactive without deleting audit artifacts
-test("committed wind canary remains retired", async () => {
-  const root = resolve(
-    import.meta.dirname,
-    "../../../config/forecast-adjustments",
-  );
-  const registry = JSON.parse(
-    await readFile(join(root, "ballydidean-wind-canary.json"), "utf8"),
-  );
-  assert.deepEqual(registry, {
-    activeBundle: null,
-    contractVersion: "forecast-adjustment-wind-canary-registry/v1",
-  });
-  const runtime = await createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(
-    root,
-  ).load();
-  assert.equal(runtime.state, "disabled");
-  assert.equal(runtime.reasonCode, "registry_inactive");
-  assert.equal(runtime.bundle, null);
+// require the renewed selection without mutating retained coefficients
+test("committed wind canary has a bounded renewed authorization", async () => {
+  const root = resolve(import.meta.dirname, "../../../config/forecast-adjustments");
+  const registry = JSON.parse(await readFile(join(root, "ballydidean-wind-canary.json"), "utf8"));
+  assert.equal(registry.contractVersion, "forecast-adjustment-wind-canary-registry/v1");
+  assert.equal(registry.activeBundle.bundleSha256, "5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1");
+  const runtime = await createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(root, {
+    environmentKillSwitch: "0",
+    // evaluate the immutable authorization within its fixed window
+    now: () => "2026-09-08T01:00:00.000Z",
+  }).load();
+  assert.equal(runtime.state, "active");
+  assert.equal(runtime.reasonCode, null);
+  const previous = JSON.parse(await readFile(join(root, "ballydidean/wind-canary-bundles/sha256-8ada04b924326665b7c49be37876727e9fdc853e9b0eb3decc7fe68c62acc96b.json"), "utf8"));
+  assert.deepEqual(runtime.bundle.candidate, previous.candidate);
+  assert.deepEqual(runtime.bundle.transferReport, previous.transferReport);
+  assert.equal(runtime.bundle.authorization.expiresAt, "2026-09-22T00:22:24.734Z");
 });

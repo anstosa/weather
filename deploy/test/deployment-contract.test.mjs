@@ -487,6 +487,13 @@ test("container commands match the API, worker, and web runtime contracts", () =
     compose.services.api.environment.WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH,
     "0",
   );
+  // keep the new experimental temperature path independently fail-closed
+  for (const service of ["api", "worker"]) {
+    assert.equal(
+      compose.services[service].environment.WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH,
+      "1",
+    );
+  }
   assert.equal(compose.services.worker.environment.WEATHER_DATABASE_USER, "weather_ingest");
   assert.equal(compose.services.web.environment.WEATHER_RELEASE, "2026.08.22-1");
   assert.match(JSON.stringify(compose.services.api.healthcheck.test), /127\.0\.0\.1:3001\/api\/v1\/health/u);
@@ -533,10 +540,17 @@ test("server image bakes only reviewed forecast adjustment config", () => {
   const windCanaryRegistry = JSON.parse(
     read("config/forecast-adjustments/ballydidean-wind-canary.json"),
   );
-  assert.deepEqual(windCanaryRegistry, {
-    activeBundle: null,
-    contractVersion: "forecast-adjustment-wind-canary-registry/v1",
-  });
+  assert.equal(windCanaryRegistry.contractVersion, "forecast-adjustment-wind-canary-registry/v1");
+  assert.equal(windCanaryRegistry.activeBundle.bundleSha256, "5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1");
+  const temperatureRegistry = JSON.parse(
+    read("config/forecast-adjustments/ballydidean-temperature-canary.json"),
+  );
+  assert.equal(temperatureRegistry.contractVersion, "forecast-adjustment-temperature-canary-registry/v1");
+  assert.equal(temperatureRegistry.activeBundle.bundleSha256, "3e82073a266ca88c15f492f86bbefbca8b8cda029520af6cc78e0a0062ee50dd");
+  const temperatureBundle = JSON.parse(read(join("config/forecast-adjustments/ballydidean", temperatureRegistry.activeBundle.path)));
+  assert.equal(temperatureBundle.model.scope, "assumed_delay6_next12");
+  assert.equal(temperatureBundle.servedForecastIdentity.upstreamModel, "ecmwf_ifs");
+  assert.doesNotMatch(JSON.stringify(temperatureBundle), /trainingKeys|sourceKeys|\/dev\/shm|\/home\//u);
   // preserve the retired artifact independently of registry selection
   const windCanaryBundle = JSON.parse(
     read(join(
@@ -1403,7 +1417,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
-    /allowlists only the exact installed version 5[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
+    /allowlists only the verified installed version 6[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
   );
 });
 

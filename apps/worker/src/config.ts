@@ -34,6 +34,7 @@ export interface WorkerConfiguration {
   readonly siteConfigurationPath: string;
   readonly tempest: TempestConfiguration | null;
   readonly tempestApiKey: string | null;
+  readonly temperatureCanaryKillSwitch: "0" | undefined;
   readonly tides: TideConfiguration | null;
   readonly version: string;
 }
@@ -107,6 +108,10 @@ export async function loadWorkerConfiguration(
       tempestApiKeyPath === null
         ? null
         : await readOneLineSecret(tempestApiKeyPath, "Tempest API key"),
+    temperatureCanaryKillSwitch:
+      environment.WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH === "0"
+        ? "0"
+        : undefined,
     tides:
       tideConfigurationPath === null
         ? null

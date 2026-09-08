@@ -113,6 +113,7 @@ export interface WeatherRecord {
   };
   readonly receivedAt: string;
   readonly revisionCount: number;
+  readonly temperatureAdjustment?: ForecastTemperatureCanaryDecision;
   readonly validAt: string;
 }
 
@@ -242,6 +243,87 @@ export interface ForecastAdjustmentRuntimeStatus {
   readonly transferReportSha256: string | null;
 }
 
+// name bounded temperature-canary failures
+export type ForecastTemperatureCanaryReasonCode =
+  | "adjustment_error"
+  | "bundle_invalid"
+  | "bundle_missing"
+  | "canary_expired"
+  | "canary_killed"
+  | "inference_error"
+  | "invalid_forecast"
+  | "invalid_model"
+  | "invalid_recent_error_state"
+  | "missing_source_forecast"
+  | "model_identity_mismatch"
+  | "model_not_supported"
+  | "model_not_yet_available"
+  | "outside_assumed_delay6_next12"
+  | "outside_initialization_first12"
+  | "outside_operational_window"
+  | "recent_error_state_as_of_mismatch"
+  | "recent_error_state_contains_future_data"
+  | "recent_error_state_outside_window"
+  | "recent_error_state_run_mismatch"
+  | "recent_error_state_source_run_mismatch"
+  | "registry_inactive"
+  | "registry_invalid"
+  | "source_identity_mismatch"
+  | "source_not_available"
+  | "source_stale"
+  | "source_time_mismatch"
+  | "strength_band_not_supported"
+  | "unsupported_cohort";
+
+// describe one explicit live ECMWF temperature source
+export interface ForecastTemperatureCanarySource {
+  readonly adapterVersion: string;
+  readonly dataset: "single_run";
+  readonly firstReceivedAt: string;
+  readonly modelCycle: "49r1" | "50r1";
+  readonly modelLeadHours: number;
+  readonly operationalHorizonHours: number;
+  readonly providerKey: "open-meteo";
+  readonly providerResponseSha256: string;
+  readonly rawRelativeHumidityPercent: number | null;
+  readonly rawTemperatureC: number;
+  readonly rawWindSpeedMps: number | null;
+  readonly runInitializedAt: string;
+  readonly upstreamModel: "ecmwf_ifs";
+  readonly validAt: string;
+}
+
+// describe one independent temperature decision
+export interface ForecastTemperatureCanaryDecision {
+  readonly branch: "adaptive" | "direct" | null;
+  readonly bundleSha256: string | null;
+  readonly contractVersion: "forecast-temperature-canary-decision/v1";
+  readonly correctedTemperatureC: number | null;
+  readonly rawBestMatchTemperatureC: number | null;
+  readonly reasonCode: ForecastTemperatureCanaryReasonCode | null;
+  readonly recentErrorStateSha256: string | null;
+  readonly sourceForecast: ForecastTemperatureCanarySource | null;
+  readonly state: "active" | "disabled" | "raw_fallback";
+}
+
+// describe bounded temperature runtime monitoring
+export interface ForecastTemperatureAdjustmentRuntimeStatus {
+  readonly activeBundle: string | null;
+  readonly authorizationSha256: string | null;
+  readonly expiresAt: string | null;
+  readonly loadedAt: string | null;
+  readonly reasonCode: ForecastTemperatureCanaryReasonCode | null;
+  readonly source: null | {
+    readonly adaptiveReady: boolean;
+    readonly firstReceivedAt: string;
+    readonly hourCount: number;
+    readonly latestRunInitializedAt: string;
+    readonly stateReason: string | null;
+    readonly stateStatus: "cold" | "insufficient" | "invalid" | "supported";
+  };
+  readonly state: "active" | "disabled";
+}
+
 export interface PropertySensorSnapshot {
   readonly channel: number | null;
   readonly key: string;
@@ -289,6 +371,7 @@ export interface DashboardState {
   readonly filters: HistoryFilters;
   readonly forecastAdjustmentMode: ForecastAdjustmentMode;
   readonly forecastAdjustmentRuntime: ForecastAdjustmentRuntimeStatus | null;
+  readonly forecastTemperatureAdjustmentRuntime: ForecastTemperatureAdjustmentRuntimeStatus | null;
   readonly forecast: readonly WeatherRecord[];
   readonly forecastDays: ForecastDays;
   readonly history: readonly WeatherRecord[];
@@ -399,6 +482,7 @@ interface RecordsResponse {
 // describe the adjusted forecast boundary
 interface ForecastRecordsResponse extends RecordsResponse {
   readonly adjustmentRuntime: ForecastAdjustmentRuntimeStatus;
+  readonly temperatureAdjustmentRuntime: ForecastTemperatureAdjustmentRuntimeStatus;
 }
 
 interface TrendsResponse {
@@ -432,6 +516,7 @@ const EMPTY_STATE: DashboardState = {
   filters: {},
   forecastAdjustmentMode: "adjusted",
   forecastAdjustmentRuntime: null,
+  forecastTemperatureAdjustmentRuntime: null,
   forecast: [],
   forecastDays: 1,
   history: [],
@@ -459,6 +544,8 @@ const EMPTY_STATE: DashboardState = {
 };
 
 export const FORECAST_ADJUSTMENT_MODE_STORAGE_KEY = "weather.forecast-adjustment-mode.v1";
+export const FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY =
+  "weather.forecast-temperature-canary-consent.v1";
 
 // load one validated forecast display preference
 function loadForecastAdjustmentMode(
@@ -499,14 +586,59 @@ function hasForecastAdjustmentModePreference(
 function forecastAdjustmentModeForRuntime(
   mode: ForecastAdjustmentMode,
   runtime: ForecastAdjustmentRuntimeStatus,
+  temperatureRuntime: ForecastTemperatureAdjustmentRuntimeStatus,
   hasExplicitPreference: boolean,
+  temperatureCanaryConsent: string | null,
 ): ForecastAdjustmentMode {
-  // require opt-in for a new wind canary session
-  if (!hasExplicitPreference && runtime.activationMode === "wind_canary") {
+  // require opt-in for either unqualified canary
+  if (
+    (!hasExplicitPreference && runtime.activationMode === "wind_canary") ||
+    (temperatureRuntime.state === "active" &&
+      temperatureCanaryConsent !== temperatureRuntime.activeBundle)
+  ) {
     return "raw";
   }
 
   return mode;
+}
+
+// load one bundle-specific temperature consent
+function loadForecastTemperatureCanaryConsent(
+  storage: UnitPreferenceStorage | null,
+): string | null {
+  // reject unavailable browser storage
+  if (storage === null) {
+    return null;
+  }
+
+  try {
+    const value = storage.getItem(
+      FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
+    );
+    return value !== null && SHA256_HEX_PATTERN.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+// persist consent for one exact temperature bundle
+function persistForecastTemperatureCanaryConsent(
+  storage: UnitPreferenceStorage | null,
+  bundleSha256: string,
+): void {
+  // skip unavailable browser storage
+  if (storage === null) {
+    return;
+  }
+
+  try {
+    storage.setItem(
+      FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
+      bundleSha256,
+    );
+  } catch {
+    // retain the in-memory consent
+  }
 }
 
 // persist one forecast display preference
@@ -644,6 +776,82 @@ const FORECAST_ADJUSTMENT_METRIC_BOUNDS: Readonly<
   windGustMps: { maximum: 150, minimum: 0 },
   windSpeedMps: { maximum: 150, minimum: 0 },
 };
+const FORECAST_TEMPERATURE_REASON_CODE_KEYS =
+  new Set<ForecastTemperatureCanaryReasonCode>([
+    "adjustment_error",
+    "bundle_invalid",
+    "bundle_missing",
+    "canary_expired",
+    "canary_killed",
+    "inference_error",
+    "invalid_forecast",
+    "invalid_model",
+    "invalid_recent_error_state",
+    "missing_source_forecast",
+    "model_identity_mismatch",
+    "model_not_supported",
+    "model_not_yet_available",
+    "outside_assumed_delay6_next12",
+    "outside_initialization_first12",
+    "outside_operational_window",
+    "recent_error_state_as_of_mismatch",
+    "recent_error_state_contains_future_data",
+    "recent_error_state_outside_window",
+    "recent_error_state_run_mismatch",
+    "recent_error_state_source_run_mismatch",
+    "registry_inactive",
+    "registry_invalid",
+    "source_identity_mismatch",
+    "source_not_available",
+    "source_stale",
+    "source_time_mismatch",
+    "strength_band_not_supported",
+    "unsupported_cohort",
+  ]);
+const FORECAST_TEMPERATURE_RUNTIME_KEYS = new Set([
+  "activeBundle",
+  "authorizationSha256",
+  "expiresAt",
+  "loadedAt",
+  "reasonCode",
+  "source",
+  "state",
+]);
+const FORECAST_TEMPERATURE_RUNTIME_SOURCE_KEYS = new Set([
+  "adaptiveReady",
+  "firstReceivedAt",
+  "hourCount",
+  "latestRunInitializedAt",
+  "stateReason",
+  "stateStatus",
+]);
+const FORECAST_TEMPERATURE_DECISION_KEYS = new Set([
+  "branch",
+  "bundleSha256",
+  "contractVersion",
+  "correctedTemperatureC",
+  "rawBestMatchTemperatureC",
+  "reasonCode",
+  "recentErrorStateSha256",
+  "sourceForecast",
+  "state",
+]);
+const FORECAST_TEMPERATURE_SOURCE_KEYS = new Set([
+  "adapterVersion",
+  "dataset",
+  "firstReceivedAt",
+  "modelCycle",
+  "modelLeadHours",
+  "operationalHorizonHours",
+  "providerKey",
+  "providerResponseSha256",
+  "rawRelativeHumidityPercent",
+  "rawTemperatureC",
+  "rawWindSpeedMps",
+  "runInitializedAt",
+  "upstreamModel",
+  "validAt",
+]);
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 
 // freeze the raw weather record allowlists
@@ -695,6 +903,19 @@ function invalidForecastAdjustmentRuntime(): ForecastAdjustmentRuntimeStatus {
     reasonCode: "adjustment_error",
     state: "disabled",
     transferReportSha256: null,
+  };
+}
+
+// create one isolated invalid temperature fallback
+function invalidForecastTemperatureAdjustmentRuntime(): ForecastTemperatureAdjustmentRuntimeStatus {
+  return {
+    activeBundle: null,
+    authorizationSha256: null,
+    expiresAt: null,
+    loadedAt: null,
+    reasonCode: "adjustment_error",
+    source: null,
+    state: "disabled",
   };
 }
 
@@ -1079,6 +1300,234 @@ function parseForecastAdjustmentRuntime(
   return null;
 }
 
+// parse one bounded temperature reason
+function parseForecastTemperatureReasonCode(
+  value: unknown,
+): ForecastTemperatureCanaryReasonCode | null {
+  return typeof value === "string" &&
+    FORECAST_TEMPERATURE_REASON_CODE_KEYS.has(
+      value as ForecastTemperatureCanaryReasonCode,
+    )
+    ? value as ForecastTemperatureCanaryReasonCode
+    : null;
+}
+
+// parse one bounded collector status
+function parseForecastTemperatureRuntimeSource(
+  value: unknown,
+): ForecastTemperatureAdjustmentRuntimeStatus["source"] | undefined {
+  // preserve a valid empty collector state
+  if (value === null) {
+    return null;
+  }
+
+  const source = forecastAdjustmentObject(value);
+
+  // require the exact public monitoring shape
+  if (
+    source === null ||
+    !hasExactForecastAdjustmentKeys(
+      source,
+      FORECAST_TEMPERATURE_RUNTIME_SOURCE_KEYS,
+    ) ||
+    typeof source.adaptiveReady !== "boolean" ||
+    !isForecastAdjustmentInstant(source.firstReceivedAt) ||
+    !Number.isSafeInteger(source.hourCount) ||
+    (source.hourCount as number) < 0 ||
+    (source.hourCount as number) > 19 ||
+    !isForecastAdjustmentInstant(source.latestRunInitializedAt) ||
+    (source.stateReason !== null &&
+      !isBoundedForecastAdjustmentText(source.stateReason)) ||
+    (source.stateStatus !== "cold" &&
+      source.stateStatus !== "insufficient" &&
+      source.stateStatus !== "invalid" &&
+      source.stateStatus !== "supported") ||
+    source.adaptiveReady !== (source.stateStatus === "supported")
+  ) {
+    return undefined;
+  }
+
+  return source as unknown as ForecastTemperatureAdjustmentRuntimeStatus["source"];
+}
+
+// parse the independent response-level temperature runtime
+function parseForecastTemperatureAdjustmentRuntime(
+  value: unknown,
+): ForecastTemperatureAdjustmentRuntimeStatus | null {
+  const runtime = forecastAdjustmentObject(value);
+
+  // require one exact runtime envelope
+  if (
+    runtime === null ||
+    !hasExactForecastAdjustmentKeys(runtime, FORECAST_TEMPERATURE_RUNTIME_KEYS) ||
+    !isForecastAdjustmentInstant(runtime.loadedAt)
+  ) {
+    return null;
+  }
+
+  const source = parseForecastTemperatureRuntimeSource(runtime.source);
+
+  // reject malformed monitoring independently
+  if (source === undefined) {
+    return null;
+  }
+
+  // accept one complete active selection
+  if (
+    runtime.state === "active" &&
+    runtime.reasonCode === null &&
+    isForecastAdjustmentSha256(runtime.activeBundle) &&
+    isForecastAdjustmentSha256(runtime.authorizationSha256) &&
+    isForecastAdjustmentInstant(runtime.expiresAt)
+  ) {
+    return { ...runtime, source } as ForecastTemperatureAdjustmentRuntimeStatus;
+  }
+
+  const reasonCode = parseForecastTemperatureReasonCode(runtime.reasonCode);
+
+  // accept one fully redacted disabled selection
+  if (
+    runtime.state === "disabled" &&
+    reasonCode !== null &&
+    runtime.activeBundle === null &&
+    runtime.authorizationSha256 === null &&
+    runtime.expiresAt === null &&
+    source === null
+  ) {
+    return { ...runtime, reasonCode, source } as ForecastTemperatureAdjustmentRuntimeStatus;
+  }
+
+  return null;
+}
+
+// parse one exact live ECMWF source receipt
+function parseForecastTemperatureSource(
+  value: unknown,
+  record: WeatherRecord,
+): ForecastTemperatureCanarySource | null {
+  const source = forecastAdjustmentObject(value);
+
+  // require one closed source schema
+  if (
+    source === null ||
+    !hasExactForecastAdjustmentKeys(source, FORECAST_TEMPERATURE_SOURCE_KEYS) ||
+    source.adapterVersion !== "open-meteo-ecmwf-single-run/v1" ||
+    source.dataset !== "single_run" ||
+    !isForecastAdjustmentInstant(source.firstReceivedAt) ||
+    (source.modelCycle !== "49r1" && source.modelCycle !== "50r1") ||
+    !Number.isSafeInteger(source.modelLeadHours) ||
+    (source.modelLeadHours as number) < 7 ||
+    (source.modelLeadHours as number) > 18 ||
+    !Number.isSafeInteger(source.operationalHorizonHours) ||
+    source.operationalHorizonHours !== (source.modelLeadHours as number) - 6 ||
+    source.providerKey !== "open-meteo" ||
+    !isForecastAdjustmentSha256(source.providerResponseSha256) ||
+    typeof source.rawTemperatureC !== "number" ||
+    !Number.isFinite(source.rawTemperatureC) ||
+    source.rawTemperatureC < -100 ||
+    source.rawTemperatureC > 70 ||
+    (source.rawRelativeHumidityPercent !== null &&
+      (typeof source.rawRelativeHumidityPercent !== "number" ||
+        !Number.isFinite(source.rawRelativeHumidityPercent) ||
+        source.rawRelativeHumidityPercent < 0 ||
+        source.rawRelativeHumidityPercent > 100)) ||
+    (source.rawWindSpeedMps !== null &&
+      (typeof source.rawWindSpeedMps !== "number" ||
+        !Number.isFinite(source.rawWindSpeedMps) ||
+        source.rawWindSpeedMps < 0 ||
+        source.rawWindSpeedMps > 150)) ||
+    !isForecastAdjustmentInstant(source.runInitializedAt) ||
+    source.upstreamModel !== "ecmwf_ifs" ||
+    !isForecastAdjustmentInstant(source.validAt) ||
+    source.validAt !== record.validAt
+  ) {
+    return null;
+  }
+
+  const initializedAt = Date.parse(source.runInitializedAt as string);
+  const receivedAt = Date.parse(source.firstReceivedAt as string);
+  const validAt = Date.parse(source.validAt as string);
+
+  // bind receipt, lead, and valid-hour identities
+  if (
+    receivedAt < initializedAt ||
+    validAt - initializedAt !==
+      (source.modelLeadHours as number) * 3_600_000
+  ) {
+    return null;
+  }
+
+  return source as unknown as ForecastTemperatureCanarySource;
+}
+
+// parse one independent per-hour temperature decision
+function parseForecastTemperatureDecision(
+  value: unknown,
+  record: WeatherRecord,
+  runtime: ForecastTemperatureAdjustmentRuntimeStatus,
+): ForecastTemperatureCanaryDecision | null {
+  const decision = forecastAdjustmentObject(value);
+
+  // require one exact decision envelope and raw Best Match binding
+  if (
+    decision === null ||
+    !hasExactForecastAdjustmentKeys(decision, FORECAST_TEMPERATURE_DECISION_KEYS) ||
+    decision.contractVersion !== "forecast-temperature-canary-decision/v1" ||
+    decision.rawBestMatchTemperatureC !== record.metrics.temperatureC
+  ) {
+    return null;
+  }
+
+  // accept only fully linked active decisions
+  if (decision.state === "active") {
+    const source = parseForecastTemperatureSource(decision.sourceForecast, record);
+
+    // bind active output to the runtime and physical range
+    if (
+      runtime.state !== "active" ||
+      source === null ||
+      decision.bundleSha256 !== runtime.activeBundle ||
+      (decision.branch !== "adaptive" && decision.branch !== "direct") ||
+      typeof decision.correctedTemperatureC !== "number" ||
+      !Number.isFinite(decision.correctedTemperatureC) ||
+      decision.correctedTemperatureC < -100 ||
+      decision.correctedTemperatureC > 70 ||
+      decision.reasonCode !== null ||
+      !isForecastAdjustmentSha256(decision.recentErrorStateSha256)
+    ) {
+      return null;
+    }
+
+    return { ...decision, sourceForecast: source } as ForecastTemperatureCanaryDecision;
+  }
+
+  const reasonCode = parseForecastTemperatureReasonCode(decision.reasonCode);
+
+  // accept schema-complete raw fallbacks only
+  if (
+    reasonCode === null ||
+    decision.branch !== null ||
+    decision.correctedTemperatureC !== null ||
+    (decision.state !== "disabled" && decision.state !== "raw_fallback") ||
+    (decision.state === "disabled" &&
+      (runtime.state !== "disabled" ||
+        decision.bundleSha256 !== null ||
+        decision.recentErrorStateSha256 !== null ||
+        decision.sourceForecast !== null)) ||
+    (decision.state === "raw_fallback" &&
+      (runtime.state !== "active" ||
+        decision.bundleSha256 !== runtime.activeBundle ||
+        (decision.recentErrorStateSha256 !== null &&
+          !isForecastAdjustmentSha256(decision.recentErrorStateSha256)) ||
+        (decision.sourceForecast !== null &&
+          parseForecastTemperatureSource(decision.sourceForecast, record) === null)))
+  ) {
+    return null;
+  }
+
+  return { ...decision, reasonCode } as ForecastTemperatureCanaryDecision;
+}
+
 // parse one unchanged-raw row decision
 function parseForecastAdjustmentFailRawDecision(
   value: Record<string, unknown>,
@@ -1249,7 +1698,11 @@ function rawForecastRecord(value: unknown): WeatherRecord | null {
     return null;
   }
 
-  const { adjustment: _adjustment, ...raw } = record;
+  const {
+    adjustment: _adjustment,
+    temperatureAdjustment: _temperatureAdjustment,
+    ...raw
+  } = record;
   return raw as unknown as WeatherRecord;
 }
 
@@ -1276,18 +1729,8 @@ export function parseForecastRecordsResponse(value: unknown): ForecastRecordsRes
 
   const records = rawRecords as WeatherRecord[];
   const runtime = parseForecastAdjustmentRuntime(response.adjustmentRuntime);
-
-  // fail all adjustment metadata to raw together
-  if (runtime === null) {
-    return {
-      ...(response as unknown as RecordsResponse),
-      adjustmentRuntime: invalidForecastAdjustmentRuntime(),
-      data: records,
-    };
-  }
-
   let invalidDecision = false;
-  const parsedRecords = records.map((record, index) => {
+  const parsedRecords = runtime === null ? records : records.map((record, index) => {
     const source = forecastAdjustmentObject(responseData[index]);
     const decision = parseForecastAdjustmentDecision(source?.adjustment, record, runtime);
 
@@ -1299,20 +1742,44 @@ export function parseForecastRecordsResponse(value: unknown): ForecastRecordsRes
 
     return { ...record, adjustment: decision };
   });
+  const effectiveRuntime = runtime === null || invalidDecision
+    ? invalidForecastAdjustmentRuntime()
+    : runtime;
+  const effectiveRecords = runtime === null || invalidDecision
+    ? records
+    : parsedRecords;
+  const temperatureRuntime = parseForecastTemperatureAdjustmentRuntime(
+    response.temperatureAdjustmentRuntime,
+  );
+  let invalidTemperatureDecision = false;
+  const temperatureRecords = temperatureRuntime === null
+    ? effectiveRecords
+    : effectiveRecords.map((record, index) => {
+        const source = forecastAdjustmentObject(responseData[index]);
+        const decision = parseForecastTemperatureDecision(
+          source?.temperatureAdjustment,
+          record,
+          temperatureRuntime,
+        );
 
-  // prevent partial activation after any row-contract failure
-  if (invalidDecision) {
-    return {
-      ...(response as unknown as RecordsResponse),
-      adjustmentRuntime: invalidForecastAdjustmentRuntime(),
-      data: records,
-    };
-  }
+        // reject partial or runtime-inconsistent temperature activation
+        if (decision === null) {
+          invalidTemperatureDecision = true;
+          return record;
+        }
+
+        return { ...record, temperatureAdjustment: decision };
+      });
+  const effectiveTemperatureRuntime =
+    temperatureRuntime === null || invalidTemperatureDecision
+      ? invalidForecastTemperatureAdjustmentRuntime()
+      : temperatureRuntime;
 
   return {
     ...(response as unknown as RecordsResponse),
-    adjustmentRuntime: runtime,
-    data: parsedRecords,
+    adjustmentRuntime: effectiveRuntime,
+    data: invalidTemperatureDecision ? effectiveRecords : temperatureRecords,
+    temperatureAdjustmentRuntime: effectiveTemperatureRuntime,
   };
 }
 
@@ -1325,6 +1792,7 @@ export class WeatherDashboardController {
   readonly #listeners = new Set<DashboardListener>();
   readonly #storage: UnitPreferenceStorage | null;
   #forecastAdjustmentModeExplicit: boolean;
+  #forecastTemperatureCanaryConsent: string | null;
   #view: WeatherView;
   #state: DashboardState;
 
@@ -1337,6 +1805,8 @@ export class WeatherDashboardController {
       ? browserUnitPreferenceStorage()
       : options.storage;
     this.#forecastAdjustmentModeExplicit = hasForecastAdjustmentModePreference(this.#storage);
+    this.#forecastTemperatureCanaryConsent =
+      loadForecastTemperatureCanaryConsent(this.#storage);
     this.#view = options.view ?? "home";
     this.#state = {
       ...EMPTY_STATE,
@@ -1408,6 +1878,16 @@ export class WeatherDashboardController {
       ? "adjusted"
       : "raw";
     this.#forecastAdjustmentModeExplicit = true;
+    const temperatureBundle =
+      this.#state.forecastTemperatureAdjustmentRuntime?.activeBundle;
+
+    // bind explicit adjusted consent to the current temperature bundle
+    if (forecastAdjustmentMode === "adjusted" && temperatureBundle !== null &&
+      temperatureBundle !== undefined) {
+      this.#forecastTemperatureCanaryConsent = temperatureBundle;
+      persistForecastTemperatureCanaryConsent(this.#storage, temperatureBundle);
+    }
+
     persistForecastAdjustmentMode(this.#storage, forecastAdjustmentMode);
     this.patch({ forecastAdjustmentMode });
   }
@@ -1447,9 +1927,13 @@ export class WeatherDashboardController {
         forecastAdjustmentMode: forecastAdjustmentModeForRuntime(
           this.#state.forecastAdjustmentMode,
           response.adjustmentRuntime,
+          response.temperatureAdjustmentRuntime,
           this.#forecastAdjustmentModeExplicit,
+          this.#forecastTemperatureCanaryConsent,
         ),
         forecastAdjustmentRuntime: response.adjustmentRuntime,
+        forecastTemperatureAdjustmentRuntime:
+          response.temperatureAdjustmentRuntime,
         loading: false,
         selectedSite: responseSite,
         sites: [responseSite],
@@ -1738,9 +2222,14 @@ export class WeatherDashboardController {
           : forecastAdjustmentModeForRuntime(
             this.#state.forecastAdjustmentMode,
             forecast.adjustmentRuntime,
+            forecast.temperatureAdjustmentRuntime,
             this.#forecastAdjustmentModeExplicit,
+            this.#forecastTemperatureCanaryConsent,
           ),
         forecastAdjustmentRuntime: forecast?.adjustmentRuntime ?? this.#state.forecastAdjustmentRuntime,
+        forecastTemperatureAdjustmentRuntime:
+          forecast?.temperatureAdjustmentRuntime ??
+          this.#state.forecastTemperatureAdjustmentRuntime,
         loading: false,
         propertySensorLayout: propertySensorLayout?.data ?? this.#state.propertySensorLayout,
         selectedSite: responseSite,
@@ -2003,6 +2492,8 @@ function renderForecastAdjustmentToggle(
   }
 
   const available = forecastAdjustmentsAvailable(state);
+  const temperatureCanary =
+    state.forecastTemperatureAdjustmentRuntime?.state === "active";
   // reflect the persisted preference even during regional fallback
   const adjusted = state.forecastAdjustmentMode !== "raw";
   return `
@@ -2012,8 +2503,12 @@ function renderForecastAdjustmentToggle(
       role="switch"
       aria-checked="${String(adjusted)}"
       aria-label="Adjusted"
+      title="${temperatureCanary
+        ? "Adjusted temperature uses an experimental ECMWF IFS single-run correction. Raw uses Open-Meteo Best Match."
+        : "Switch between adjusted and raw forecast values."}"
       data-forecast-adjustment-toggle
       data-forecast-adjustment-activation-mode="${escapeHtml(state.forecastAdjustmentRuntime?.activationMode ?? "disabled")}"
+      data-forecast-temperature-canary="${String(temperatureCanary)}"
       data-forecast-adjustment-available="${String(available)}"
       data-forecast-adjustment-fallback="${String(!available && adjusted)}"
     >
@@ -2025,9 +2520,13 @@ function renderForecastAdjustmentToggle(
 
 // detect one usable adjusted forecast value
 function forecastAdjustmentsAvailable(state: DashboardState): boolean {
-  return state.forecastAdjustmentRuntime?.state === "active" && state.forecast.some(
-    // require one validated active row
-    (record) => record.adjustment?.state === "active",
+  return state.forecast.some(
+    // require one validated active decision from either isolated runtime
+    (record) =>
+      (state.forecastAdjustmentRuntime?.state === "active" &&
+        record.adjustment?.state === "active") ||
+      (state.forecastTemperatureAdjustmentRuntime?.state === "active" &&
+        record.temperatureAdjustment?.state === "active"),
   );
 }
 
@@ -2178,6 +2677,10 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
   const forecastMapCredits = view === "forecast"
     ? `<span>Map © <a href="https://www.openstreetmap.org/copyright" rel="noreferrer">OpenStreetMap contributors</a></span><span aria-hidden="true">·</span><a href="https://www.xweather.com/" rel="noreferrer">Weather maps by Xweather</a><span aria-hidden="true">·</span>`
     : "";
+  const temperatureCanaryCredit =
+    state.forecastTemperatureAdjustmentRuntime?.state === "active"
+      ? `<span>Experimental adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match.</span><span aria-hidden="true">·</span>`
+      : "";
 
   return `
     <footer class="credits" aria-label="Weather data credits">
@@ -2187,6 +2690,7 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
           ${providerCredits}
           ${licenseCredit}
           ${forecastMapCredits}
+          ${temperatureCanaryCredit}
           <span>A <a href="https://www.ballydidean.farm/" rel="noreferrer">Ballydídean Farm Sanctuary</a> project</span>
         </div>
       </details>
@@ -9519,6 +10023,16 @@ export function forecastMetricValue(
   useAdjustments = true,
 ): number | null {
   const decision = record.adjustment;
+  const temperatureDecision = record.temperatureAdjustment;
+
+  // use only explicit ECMWF temperature output when opted in
+  if (
+    useAdjustments &&
+    metric === "temperatureC" &&
+    temperatureDecision?.state === "active"
+  ) {
+    return temperatureDecision.correctedTemperatureC;
+  }
 
   // use only an explicitly applied active value
   if (

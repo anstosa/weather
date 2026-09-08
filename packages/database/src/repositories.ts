@@ -47,6 +47,10 @@ const MAX_FORECAST_HOURS = 264;
 const MAX_FORECAST_TRAINING_DAYS = 450;
 // freeze one UTC hour
 const HOUR_MILLISECONDS = 3_600_000;
+// bind the researched ECMWF model-era cutover
+const ECMWF_50R1_CUTOVER_MILLISECONDS = Date.parse(
+  "2026-05-12T06:00:00.000Z",
+);
 // freeze station sampling windows
 const FIVE_MINUTES_MILLISECONDS = 5 * 60_000;
 const TEN_MINUTES_MILLISECONDS = 10 * 60_000;
@@ -189,6 +193,88 @@ export interface ForecastTrainingCohorts {
   readonly legacyV4RetrievalSnapshots: readonly LegacyV4RetrievalSnapshotTrainingRow[];
 }
 
+// persist the exact rolling-error receipt consumed by inference
+export interface EcmwfTemperatureCanaryRecentErrorState {
+  readonly b24C: number | null;
+  readonly b72C: number | null;
+  readonly cohort: "ecmwf_single_run_hindcast";
+  readonly localDates: number;
+  readonly mad72C: number | null;
+  readonly maximumSourceRunInitializedAt: string | null;
+  readonly maximumSourceValidAt: string | null;
+  readonly n24: number;
+  readonly n72: number;
+  readonly sourceKeys: readonly string[];
+  readonly supported: boolean;
+  readonly targetRunInitializedAt: string;
+  readonly windowEndValidAt: string;
+}
+
+// retain one private ECMWF input hour
+export interface EcmwfTemperatureCanaryHour {
+  readonly modelLeadHours: number;
+  readonly rawRelativeHumidityPercent: number | null;
+  readonly rawTemperatureC: number;
+  readonly rawWindSpeedMps: number | null;
+  readonly validAt: string;
+}
+
+// retain one selected private ECMWF run
+export interface EcmwfTemperatureCanaryRun {
+  readonly adapterVersion: "open-meteo-ecmwf-single-run/v1";
+  readonly firstReceivedAt: string;
+  readonly id: string;
+  readonly modelCycle: "49r1" | "50r1";
+  readonly providerResponseSha256: string;
+  readonly recentErrorState: EcmwfTemperatureCanaryRecentErrorState;
+  readonly runInitializedAt: string;
+  readonly stateReason: string;
+  readonly stateStatus: "supported" | "cold" | "insufficient" | "invalid";
+  readonly upstreamModel: "ecmwf_ifs";
+}
+
+// return one run without mixing forecast vintages
+export interface EcmwfTemperatureCanarySidecar {
+  readonly hours: readonly EcmwfTemperatureCanaryHour[];
+  readonly run: EcmwfTemperatureCanaryRun;
+}
+
+// expose bounded collector monitoring
+export interface EcmwfTemperatureCanaryStatus {
+  readonly firstReceivedAt: string;
+  readonly hourCount: number;
+  readonly latestRunInitializedAt: string;
+  readonly stateReason: string;
+  readonly stateStatus: EcmwfTemperatureCanaryRun["stateStatus"];
+}
+
+// retain one prospective audit input without exposing observations
+export interface EcmwfTemperatureCanaryAuditRow {
+  readonly hour: EcmwfTemperatureCanaryHour;
+  readonly run: EcmwfTemperatureCanaryRun;
+}
+
+// persist one normalized run atomically
+export interface PersistEcmwfTemperatureCanaryRunInput {
+  readonly adapterVersion: EcmwfTemperatureCanaryRun["adapterVersion"];
+  readonly hours: readonly EcmwfTemperatureCanaryHour[];
+  readonly modelCycle: EcmwfTemperatureCanaryRun["modelCycle"];
+  readonly providerResponseSha256: string;
+  readonly receivedAt: string;
+  readonly recentErrorState: EcmwfTemperatureCanaryRecentErrorState;
+  readonly runInitializedAt: string;
+  readonly siteSlug: string;
+  readonly stateReason: string;
+  readonly stateStatus: EcmwfTemperatureCanaryRun["stateStatus"];
+  readonly upstreamModel: EcmwfTemperatureCanaryRun["upstreamModel"];
+}
+
+// expose one prior forecast selected for a causal target hour
+export interface EcmwfTemperatureCanaryPriorHour extends EcmwfTemperatureCanaryHour {
+  readonly key: string;
+  readonly runInitializedAt: string;
+}
+
 export type ForecastObservationHourlyMetrics = Readonly<
   Record<ForecastAdjustmentMetric, number | null>
 >;
@@ -267,6 +353,32 @@ interface ForecastObservationStorageRow extends QueryResultRow {
   readonly windDirectionDegrees: number | null;
   readonly windGustMps: number | null;
   readonly windSpeedMps: number | null;
+}
+
+interface EcmwfTemperatureCanaryRunStorageRow extends QueryResultRow {
+  readonly adapterVersion: string;
+  readonly contentHash: string;
+  readonly firstReceivedAt: Date | string;
+  readonly hourCount?: number | string;
+  readonly id: string;
+  readonly modelCycle: string;
+  readonly providerResponseSha256: string;
+  readonly recentErrorState: EcmwfTemperatureCanaryRecentErrorState;
+  readonly recentErrorStateSha256: string;
+  readonly runInitializedAt: Date | string;
+  readonly stateReason: string;
+  readonly stateStatus: string;
+  readonly upstreamModel: string;
+}
+
+interface EcmwfTemperatureCanaryHourStorageRow extends QueryResultRow {
+  readonly contentHash?: string;
+  readonly modelLeadHours: number;
+  readonly rawRelativeHumidityPercent: number | null;
+  readonly rawTemperatureC: number;
+  readonly rawWindSpeedMps: number | null;
+  readonly runInitializedAt?: Date | string;
+  readonly validAt: Date | string;
 }
 
 interface ValidatedForecastObservationStorageRow {
@@ -2008,6 +2120,451 @@ export async function listForecastObservationHourlyStations(
   return projectForecastObservationHours(records, from, to);
 }
 
+// read causal station hours available by one initialization
+export async function listCausalForecastObservationHourlyStations(
+  pool: Pool,
+  query: ForecastTrainingQuery & Readonly<{ asOf: string }>,
+): Promise<readonly ForecastObservationHourlyStationRow[]> {
+  const { from, to } = validateForecastTrainingWindow(query.from, query.to);
+  const asOf = validateUtcInstant(query.asOf, "asOf");
+
+  // require exact hourly projection boundaries
+  if (Date.parse(from) % HOUR_MILLISECONDS !== 0 || Date.parse(to) % HOUR_MILLISECONDS !== 0) {
+    throw new RangeError("causal observation projection bounds must align to UTC hours");
+  }
+
+  const sourceKeys = FORECAST_OBSERVATION_SOURCE_LINEAGES.map(
+    (lineage) => lineage.sourceKey,
+  );
+  const result = await pool.query<ForecastObservationStorageRow>(
+    `
+      SELECT
+        wr.id,
+        wr.valid_at AS "validAt",
+        wr.quality_metadata AS "qualityMetadata",
+        wr.temperature_c AS "temperatureC",
+        wr.relative_humidity_percent AS "relativeHumidityPercent",
+        wr.wind_speed_mps AS "windSpeedMps",
+        wr.wind_gust_mps AS "windGustMps",
+        wr.wind_direction_degrees AS "windDirectionDegrees",
+        s.source_key AS "sourceKey",
+        s.source_config_fingerprint AS "sourceConfigFingerprint",
+        s.material_provider_config ->> 'contractVersion' AS "adapterContract",
+        st.slug AS "stationSlug"
+      FROM weather_records wr
+      JOIN sources s ON s.id = wr.source_id
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      WHERE si.slug = $1
+        AND wr.valid_at >= $2::timestamptz - interval '5 minutes'
+        AND wr.valid_at < $3::timestamptz + interval '5 minutes'
+        AND wr.first_received_at <= $4
+        AND wr.last_received_at <= $4
+        AND s.source_kind = 'physical_sensor'
+        AND s.source_key = ANY($5::text[])
+      ORDER BY wr.valid_at ASC, wr.id ASC
+    `,
+    [query.siteSlug, from, to, asOf, sourceKeys],
+  );
+  const records = validateForecastObservationRows(result.rows);
+
+  return projectForecastObservationHours(records, from, to);
+}
+
+// persist one immutable private run and its exact hours
+export async function persistEcmwfTemperatureCanaryRun(
+  pool: Pool,
+  input: PersistEcmwfTemperatureCanaryRunInput,
+): Promise<EcmwfTemperatureCanaryRun> {
+  const validated = validateEcmwfTemperatureCanaryRunInput(input);
+  const client = await pool.connect();
+
+  try {
+    return await withTransaction(client, async () => {
+      const site = await client.query<{ id: string }>(
+        "SELECT id FROM sites WHERE slug = $1 AND active",
+        [validated.siteSlug],
+      );
+      const siteId = requireRow(site.rows[0], "ECMWF temperature canary site").id;
+      const inserted = await client.query<EcmwfTemperatureCanaryRunStorageRow>(
+        `
+          INSERT INTO ecmwf_temperature_canary_runs (
+            site_id,
+            run_initialized_at,
+            first_received_at,
+            last_received_at,
+            upstream_model,
+            adapter_version,
+            provider_response_sha256,
+            model_cycle,
+            recent_error_state,
+            recent_error_state_sha256,
+            state_status,
+            state_reason,
+            content_hash
+          )
+          VALUES (
+            $1, $2, $3, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12
+          )
+          ON CONFLICT (site_id, run_initialized_at) DO NOTHING
+          RETURNING ${ecmwfTemperatureCanaryRunSelection()}
+        `,
+        [
+          siteId,
+          validated.runInitializedAt,
+          validated.receivedAt,
+          validated.upstreamModel,
+          validated.adapterVersion,
+          validated.providerResponseSha256,
+          validated.modelCycle,
+          JSON.stringify(validated.recentErrorState),
+          validated.recentErrorStateSha256,
+          validated.stateStatus,
+          validated.stateReason,
+          validated.contentHash,
+        ],
+      );
+      let stored = inserted.rows[0];
+
+      // insert hours only for a newly claimed initialization
+      if (stored !== undefined) {
+        // retain every exact lead atomically
+        for (const hour of validated.hours) {
+          await client.query(
+            `
+              INSERT INTO ecmwf_temperature_canary_hours (
+                run_id,
+                valid_at,
+                model_lead_hours,
+                raw_temperature_c,
+                raw_relative_humidity_percent,
+                raw_wind_speed_mps,
+                content_hash
+              )
+              VALUES ($1, $2, $3, $4, $5, $6, $7)
+            `,
+            [
+              stored.id,
+              hour.validAt,
+              hour.modelLeadHours,
+              hour.rawTemperatureC,
+              hour.rawRelativeHumidityPercent,
+              hour.rawWindSpeedMps,
+              hour.contentHash,
+            ],
+          );
+        }
+      } else {
+        const existing = await client.query<EcmwfTemperatureCanaryRunStorageRow>(
+          `
+            SELECT ${ecmwfTemperatureCanaryRunSelection()}
+            FROM ecmwf_temperature_canary_runs
+            WHERE site_id = $1 AND run_initialized_at = $2
+            FOR UPDATE
+          `,
+          [siteId, validated.runInitializedAt],
+        );
+        stored = requireRow(existing.rows[0], "existing ECMWF temperature canary run");
+
+        // reject provider revisions and causal-state drift
+        if (stored.contentHash !== validated.contentHash) {
+          throw new Error("ECMWF temperature canary run revision rejected");
+        }
+
+        const existingHours = await client.query<EcmwfTemperatureCanaryHourStorageRow>(
+          `
+            SELECT
+              valid_at AS "validAt",
+              model_lead_hours AS "modelLeadHours",
+              raw_temperature_c AS "rawTemperatureC",
+              raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
+              raw_wind_speed_mps AS "rawWindSpeedMps",
+              content_hash AS "contentHash"
+            FROM ecmwf_temperature_canary_hours
+            WHERE run_id = $1
+            ORDER BY model_lead_hours ASC
+          `,
+          [stored.id],
+        );
+
+        // reject incomplete or altered persisted hours
+        if (
+          existingHours.rows.length !== validated.hours.length ||
+          existingHours.rows.some(
+            (row, index) => row.contentHash !== validated.hours[index]?.contentHash,
+          )
+        ) {
+          throw new Error("ECMWF temperature canary stored hours do not match retry");
+        }
+
+        await client.query(
+          `
+            UPDATE ecmwf_temperature_canary_runs
+            SET last_received_at = GREATEST(last_received_at, $2)
+            WHERE id = $1
+          `,
+          [stored.id, validated.receivedAt],
+        );
+      }
+
+      return projectEcmwfTemperatureCanaryRun(stored);
+    });
+  } finally {
+    client.release();
+  }
+}
+
+// select one latest available run without hour mixing
+export async function getEcmwfTemperatureCanarySidecar(
+  pool: Pool,
+  query: Readonly<{
+    asOf: string;
+    from: string;
+    siteSlug: string;
+    to: string;
+  }>,
+): Promise<EcmwfTemperatureCanarySidecar | null> {
+  const asOf = validateUtcInstant(query.asOf, "asOf");
+  const from = validateUtcInstant(query.from, "from");
+  const to = validateUtcInstant(query.to, "to");
+
+  // require one ordered bounded horizon
+  if (from >= to || Date.parse(to) - Date.parse(from) > MAX_FORECAST_HOURS * HOUR_MILLISECONDS) {
+    throw new RangeError("ECMWF temperature canary horizon is invalid");
+  }
+
+  const runs = await pool.query<EcmwfTemperatureCanaryRunStorageRow>(
+    `
+      SELECT ${ecmwfTemperatureCanaryRunSelection("run")}
+      FROM ecmwf_temperature_canary_runs run
+      JOIN sites site ON site.id = run.site_id
+      WHERE site.slug = $1
+        AND site.active
+        AND run.first_received_at <= $2
+        AND run.run_initialized_at + interval '6 hours' <= $2
+      ORDER BY run.run_initialized_at DESC, run.first_received_at DESC, run.id DESC
+      LIMIT 1
+    `,
+    [query.siteSlug, asOf],
+  );
+  const stored = runs.rows[0];
+
+  // preserve raw when no eligible model run exists
+  if (stored === undefined) {
+    return null;
+  }
+
+  const hours = await pool.query<EcmwfTemperatureCanaryHourStorageRow>(
+    `
+      SELECT
+        valid_at AS "validAt",
+        model_lead_hours AS "modelLeadHours",
+        raw_temperature_c AS "rawTemperatureC",
+        raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
+        raw_wind_speed_mps AS "rawWindSpeedMps"
+      FROM ecmwf_temperature_canary_hours
+      WHERE run_id = $1
+        AND model_lead_hours BETWEEN 7 AND 18
+        AND valid_at >= $2
+        AND valid_at < $3
+      ORDER BY valid_at ASC
+    `,
+    [stored.id, from, to],
+  );
+
+  return {
+    hours: hours.rows.map(projectEcmwfTemperatureCanaryHour),
+    run: projectEcmwfTemperatureCanaryRun(stored),
+  };
+}
+
+// expose one bounded collection status row
+export async function getEcmwfTemperatureCanaryStatus(
+  pool: Pool,
+  query: Readonly<{ asOf: string; siteSlug: string }>,
+): Promise<EcmwfTemperatureCanaryStatus | null> {
+  const asOf = validateUtcInstant(query.asOf, "asOf");
+  const result = await pool.query<EcmwfTemperatureCanaryRunStorageRow>(
+    `
+      SELECT
+        ${ecmwfTemperatureCanaryRunSelection("run")},
+        count(hour.run_id)::integer AS "hourCount"
+      FROM ecmwf_temperature_canary_runs run
+      JOIN sites site ON site.id = run.site_id
+      JOIN ecmwf_temperature_canary_hours hour ON hour.run_id = run.id
+      WHERE site.slug = $1
+        AND site.active
+        AND run.first_received_at <= $2
+      GROUP BY run.id
+      ORDER BY run.run_initialized_at DESC, run.first_received_at DESC, run.id DESC
+      LIMIT 1
+    `,
+    [query.siteSlug, asOf],
+  );
+  const row = result.rows[0];
+
+  // preserve an empty collector state
+  if (row === undefined) {
+    return null;
+  }
+
+  return {
+    firstReceivedAt: storageInstant(row.firstReceivedAt, "firstReceivedAt"),
+    hourCount: Number(row.hourCount),
+    latestRunInitializedAt: storageInstant(
+      row.runInitializedAt,
+      "runInitializedAt",
+    ),
+    stateReason: row.stateReason,
+    stateStatus: requireEcmwfTemperatureCanaryStateStatus(row.stateStatus),
+  };
+}
+
+// list bounded collected initialization identities for warmup planning
+export async function listEcmwfTemperatureCanaryRunInitializations(
+  pool: Pool,
+  query: Readonly<{ from: string; siteSlug: string; to: string }>,
+): Promise<readonly string[]> {
+  const from = validateUtcInstant(query.from, "from");
+  const to = validateUtcInstant(query.to, "to");
+
+  // constrain collection planning to the warmup envelope
+  if (
+    from > to ||
+    Date.parse(to) - Date.parse(from) > 7 * 86_400_000
+  ) {
+    throw new RangeError("ECMWF temperature canary run inventory interval is invalid");
+  }
+
+  const result = await pool.query<{ runInitializedAt: Date | string }>(
+    `
+      SELECT run.run_initialized_at AS "runInitializedAt"
+      FROM ecmwf_temperature_canary_runs run
+      JOIN sites site ON site.id = run.site_id
+      WHERE site.slug = $1
+        AND site.active
+        AND run.run_initialized_at >= $2
+        AND run.run_initialized_at <= $3
+      ORDER BY run.run_initialized_at DESC
+    `,
+    [query.siteSlug, from, to],
+  );
+
+  return result.rows.map((row) =>
+    storageInstant(row.runInitializedAt, "runInitializedAt")
+  );
+}
+
+// list bounded immutable inputs for prospective outcome scoring
+export async function listEcmwfTemperatureCanaryAuditRows(
+  pool: Pool,
+  query: Readonly<{ from: string; siteSlug: string; to: string }>,
+): Promise<readonly EcmwfTemperatureCanaryAuditRow[]> {
+  const from = validateUtcInstant(query.from, "from");
+  const to = validateUtcInstant(query.to, "to");
+
+  // bound one canary-window audit
+  if (
+    from >= to ||
+    Date.parse(to) - Date.parse(from) > 15 * 86_400_000
+  ) {
+    throw new RangeError("ECMWF temperature canary audit interval is invalid");
+  }
+
+  const result = await pool.query<
+    EcmwfTemperatureCanaryRunStorageRow & EcmwfTemperatureCanaryHourStorageRow
+  >(
+    `
+      SELECT
+        ${ecmwfTemperatureCanaryRunSelection("run")},
+        hour.valid_at AS "validAt",
+        hour.model_lead_hours AS "modelLeadHours",
+        hour.raw_temperature_c AS "rawTemperatureC",
+        hour.raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
+        hour.raw_wind_speed_mps AS "rawWindSpeedMps"
+      FROM ecmwf_temperature_canary_hours hour
+      JOIN ecmwf_temperature_canary_runs run ON run.id = hour.run_id
+      JOIN sites site ON site.id = run.site_id
+      WHERE site.slug = $1
+        AND site.active
+        AND hour.valid_at >= $2
+        AND hour.valid_at < $3
+      ORDER BY run.run_initialized_at ASC, hour.model_lead_hours ASC
+    `,
+    [query.siteSlug, from, to],
+  );
+
+  return result.rows.map((row) => ({
+    hour: projectEcmwfTemperatureCanaryHour(row),
+    run: projectEcmwfTemperatureCanaryRun(row),
+  }));
+}
+
+// select prior ECMWF hours with authentic availability receipts
+export async function listCausalEcmwfTemperatureCanaryPriorHours(
+  pool: Pool,
+  query: Readonly<{
+    from: string;
+    siteSlug: string;
+    targetRunInitializedAt: string;
+    toInclusive: string;
+  }>,
+): Promise<readonly EcmwfTemperatureCanaryPriorHour[]> {
+  const from = validateUtcInstant(query.from, "from");
+  const toInclusive = validateUtcInstant(query.toInclusive, "toInclusive");
+  const targetRunInitializedAt = validateUtcInstant(
+    query.targetRunInitializedAt,
+    "targetRunInitializedAt",
+  );
+
+  // bind one ordered 72-hour state interval
+  if (
+    from > toInclusive ||
+    Date.parse(toInclusive) - Date.parse(from) > 71 * HOUR_MILLISECONDS
+  ) {
+    throw new RangeError("ECMWF causal prior-hour interval is invalid");
+  }
+
+  const result = await pool.query<EcmwfTemperatureCanaryHourStorageRow>(
+    `
+      SELECT DISTINCT ON (hour.valid_at)
+        run.run_initialized_at AS "runInitializedAt",
+        hour.valid_at AS "validAt",
+        hour.model_lead_hours AS "modelLeadHours",
+        hour.raw_temperature_c AS "rawTemperatureC",
+        hour.raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
+        hour.raw_wind_speed_mps AS "rawWindSpeedMps"
+      FROM ecmwf_temperature_canary_hours hour
+      JOIN ecmwf_temperature_canary_runs run ON run.id = hour.run_id
+      JOIN sites site ON site.id = run.site_id
+      WHERE site.slug = $1
+        AND site.active
+        AND hour.valid_at >= $2
+        AND hour.valid_at <= $3
+        AND hour.model_lead_hours BETWEEN 7 AND 18
+        AND run.adapter_version = 'open-meteo-ecmwf-single-run/v1'
+        AND run.run_initialized_at < $4
+        AND run.first_received_at <= $4
+      ORDER BY hour.valid_at ASC, run.run_initialized_at DESC, run.id DESC
+    `,
+    [query.siteSlug, from, toInclusive, targetRunInitializedAt],
+  );
+
+  return result.rows.map((row) => {
+    const hour = projectEcmwfTemperatureCanaryHour(row);
+    const runInitializedAt = storageInstant(
+      requireRow(row.runInitializedAt, "prior run initialization"),
+      "runInitializedAt",
+    );
+
+    return {
+      ...hour,
+      key: `${runInitializedAt}/${hour.validAt}`,
+      runInitializedAt,
+    };
+  });
+}
+
 // sum today's nearest physical rain gauge
 export async function getDailyPrecipitation(
   pool: Pool,
@@ -2899,6 +3456,346 @@ function requireRow<R>(row: R | undefined, operation: string): R {
   }
 
   return row;
+}
+
+// validate and hash one complete private ECMWF run
+function validateEcmwfTemperatureCanaryRunInput(
+  input: PersistEcmwfTemperatureCanaryRunInput,
+): PersistEcmwfTemperatureCanaryRunInput & Readonly<{
+  contentHash: string;
+  hours: readonly (EcmwfTemperatureCanaryHour & Readonly<{ contentHash: string }>)[];
+  recentErrorStateSha256: string;
+}> {
+  const runInitializedAt = validateUtcInstant(
+    input.runInitializedAt,
+    "runInitializedAt",
+  );
+  const receivedAt = validateUtcInstant(input.receivedAt, "receivedAt");
+  const runDate = new Date(runInitializedAt);
+
+  // require one exact ECMWF initialization
+  if (
+    ![0, 6, 12, 18].includes(runDate.getUTCHours()) ||
+    runDate.getUTCMinutes() !== 0 ||
+    runDate.getUTCSeconds() !== 0 ||
+    runDate.getUTCMilliseconds() !== 0 ||
+    receivedAt < runInitializedAt
+  ) {
+    throw new RangeError("ECMWF temperature canary run timing is invalid");
+  }
+
+  // require frozen provider identity and bounded provenance
+  if (
+    input.upstreamModel !== "ecmwf_ifs" ||
+    !["49r1", "50r1"].includes(input.modelCycle) ||
+    input.adapterVersion !== "open-meteo-ecmwf-single-run/v1" ||
+    !/^[a-f0-9]{64}$/u.test(input.providerResponseSha256)
+  ) {
+    throw new RangeError("ECMWF temperature canary provenance is invalid");
+  }
+
+  const expectedCycle = Date.parse(runInitializedAt) < ECMWF_50R1_CUTOVER_MILLISECONDS
+    ? "49r1"
+    : "50r1";
+
+  // reject model-era drift
+  if (input.modelCycle !== expectedCycle) {
+    throw new RangeError("ECMWF temperature canary model cycle is invalid");
+  }
+
+  const stateStatus = requireEcmwfTemperatureCanaryStateStatus(input.stateStatus);
+
+  // require one bounded state explanation
+  if (input.stateReason.trim().length === 0 || input.stateReason.length > 128) {
+    throw new RangeError("ECMWF temperature canary state reason is invalid");
+  }
+
+  const recentErrorState = validateEcmwfTemperatureCanaryRecentErrorState(
+    input.recentErrorState,
+    runInitializedAt,
+  );
+
+  // bind the status to its frozen state
+  if (
+    (stateStatus === "supported") !== recentErrorState.supported ||
+    (stateStatus === "cold" && recentErrorState.n72 !== 0) ||
+    (stateStatus === "insufficient" && recentErrorState.n72 === 0)
+  ) {
+    throw new RangeError("ECMWF temperature canary state status does not match state");
+  }
+
+  // require every exact lead once
+  if (
+    input.hours.length !== 18 ||
+    input.hours.some((hour, index) => hour.modelLeadHours !== index + 1)
+  ) {
+    throw new RangeError("ECMWF temperature canary run must contain exact leads 1 through 18");
+  }
+
+  const hours = input.hours.map((hour) => {
+    const validAt = validateUtcInstant(hour.validAt, "validAt");
+    const expectedValidAt = new Date(
+      Date.parse(runInitializedAt) + hour.modelLeadHours * HOUR_MILLISECONDS,
+    ).toISOString();
+
+    // bind every metric row to its forecast identity
+    if (
+      validAt !== expectedValidAt ||
+      !Number.isFinite(hour.rawTemperatureC) ||
+      hour.rawTemperatureC < -100 ||
+      hour.rawTemperatureC > 70 ||
+      !nullableMetricInRange(hour.rawRelativeHumidityPercent, 0, 100) ||
+      !nullableMetricInRange(hour.rawWindSpeedMps, 0, 150)
+    ) {
+      throw new RangeError("ECMWF temperature canary hour is invalid");
+    }
+
+    const normalized = {
+      modelLeadHours: hour.modelLeadHours,
+      rawRelativeHumidityPercent: hour.rawRelativeHumidityPercent,
+      rawTemperatureC: hour.rawTemperatureC,
+      rawWindSpeedMps: hour.rawWindSpeedMps,
+      validAt,
+    };
+
+    return {
+      ...normalized,
+      contentHash: sha256Json(normalized),
+    };
+  });
+  const recentErrorStateSha256 = sha256Json(recentErrorState);
+  const contentHash = sha256Json({
+    adapterVersion: input.adapterVersion,
+    hourContentHashes: hours.map((hour) => hour.contentHash),
+    modelCycle: input.modelCycle,
+    providerResponseSha256: input.providerResponseSha256,
+    recentErrorStateSha256,
+    runInitializedAt,
+    stateReason: input.stateReason,
+    stateStatus,
+    upstreamModel: input.upstreamModel,
+  });
+
+  return {
+    ...input,
+    contentHash,
+    hours,
+    receivedAt,
+    recentErrorState,
+    recentErrorStateSha256,
+    runInitializedAt,
+    stateStatus,
+  };
+}
+
+// validate one rolling-error receipt structurally
+function validateEcmwfTemperatureCanaryRecentErrorState(
+  state: EcmwfTemperatureCanaryRecentErrorState,
+  runInitializedAt: string,
+): EcmwfTemperatureCanaryRecentErrorState {
+  const windowEndValidAt = new Date(
+    Date.parse(runInitializedAt) - 7 * HOUR_MILLISECONDS,
+  ).toISOString();
+
+  // require the exact serialized state identity and bounds
+  if (
+    state === null ||
+    typeof state !== "object" ||
+    state.cohort !== "ecmwf_single_run_hindcast" ||
+    state.targetRunInitializedAt !== runInitializedAt ||
+    state.windowEndValidAt !== windowEndValidAt ||
+    !Number.isInteger(state.n24) ||
+    !Number.isInteger(state.n72) ||
+    !Number.isInteger(state.localDates) ||
+    state.n24 < 0 ||
+    state.n24 > 24 ||
+    state.n72 < state.n24 ||
+    state.n72 > 72 ||
+    state.localDates < 0 ||
+    state.localDates > state.n72 ||
+    !Array.isArray(state.sourceKeys) ||
+    state.sourceKeys.length !== state.n72 ||
+    state.sourceKeys.some((key) => typeof key !== "string" || key.length === 0) ||
+    new Set(state.sourceKeys).size !== state.sourceKeys.length
+  ) {
+    throw new RangeError("ECMWF temperature canary recent-error state is invalid");
+  }
+
+  const shortSupported = state.n24 >= 6;
+  const longSupported = state.n72 >= 24;
+  const supported = shortSupported && longSupported && state.localDates >= 2;
+
+  // recompute support and statistic presence
+  if (
+    state.supported !== supported ||
+    !boundedNullableStateStatistic(state.b24C, shortSupported, -6, 6) ||
+    !boundedNullableStateStatistic(state.b72C, longSupported, -6, 6) ||
+    !boundedNullableStateStatistic(state.mad72C, longSupported, 0, 6)
+  ) {
+    throw new RangeError("ECMWF temperature canary recent-error statistics are invalid");
+  }
+
+  // require populated maxima exactly with selected rows
+  if (
+    (state.n72 === 0 &&
+      (state.maximumSourceValidAt !== null || state.maximumSourceRunInitializedAt !== null)) ||
+    (state.n72 > 0 &&
+      (state.maximumSourceValidAt === null || state.maximumSourceRunInitializedAt === null))
+  ) {
+    throw new RangeError("ECMWF temperature canary recent-error maxima are invalid");
+  }
+
+  // validate populated causal maxima
+  if (state.maximumSourceValidAt !== null && state.maximumSourceRunInitializedAt !== null) {
+    const maximumValidAt = validateUtcInstant(
+      state.maximumSourceValidAt,
+      "maximumSourceValidAt",
+    );
+    const maximumRunInitializedAt = validateUtcInstant(
+      state.maximumSourceRunInitializedAt,
+      "maximumSourceRunInitializedAt",
+    );
+    const maximumRunDate = new Date(maximumRunInitializedAt);
+    const maximumValidMilliseconds = Date.parse(maximumValidAt);
+    const windowEndMilliseconds = Date.parse(windowEndValidAt);
+
+    // exclude future or incompatible model sources
+    if (
+      maximumValidAt > windowEndValidAt ||
+      maximumValidMilliseconds < windowEndMilliseconds - 71 * HOUR_MILLISECONDS ||
+      (state.n24 > 0 &&
+        maximumValidMilliseconds < windowEndMilliseconds - 23 * HOUR_MILLISECONDS) ||
+      (windowEndMilliseconds - maximumValidMilliseconds) % HOUR_MILLISECONDS !== 0 ||
+      maximumRunInitializedAt >= runInitializedAt ||
+      ![0, 6, 12, 18].includes(maximumRunDate.getUTCHours()) ||
+      maximumRunDate.getUTCMinutes() !== 0 ||
+      maximumRunDate.getUTCSeconds() !== 0 ||
+      maximumRunDate.getUTCMilliseconds() !== 0 ||
+      Date.parse(maximumRunInitializedAt) < Date.parse(maximumValidAt) - 18 * HOUR_MILLISECONDS ||
+      Date.parse(maximumRunInitializedAt) > Date.parse(maximumValidAt) - 7 * HOUR_MILLISECONDS
+    ) {
+      throw new RangeError("ECMWF temperature canary recent-error maxima are noncausal");
+    }
+  }
+
+  return state;
+}
+
+// project one trusted run row
+function projectEcmwfTemperatureCanaryRun(
+  row: EcmwfTemperatureCanaryRunStorageRow,
+): EcmwfTemperatureCanaryRun {
+  const upstreamModel = row.upstreamModel;
+  const modelCycle = row.modelCycle;
+  const adapterVersion = row.adapterVersion;
+  const runInitializedAt = storageInstant(
+    row.runInitializedAt,
+    "runInitializedAt",
+  );
+  const expectedCycle = Date.parse(runInitializedAt) < ECMWF_50R1_CUTOVER_MILLISECONDS
+    ? "49r1"
+    : "50r1";
+
+  // reject impossible persisted model identity
+  if (
+    adapterVersion !== "open-meteo-ecmwf-single-run/v1" ||
+    upstreamModel !== "ecmwf_ifs" ||
+    modelCycle !== expectedCycle
+  ) {
+    throw new Error("stored ECMWF temperature canary provenance is invalid");
+  }
+
+  return {
+    adapterVersion,
+    firstReceivedAt: storageInstant(row.firstReceivedAt, "firstReceivedAt"),
+    id: String(row.id),
+    modelCycle,
+    providerResponseSha256: row.providerResponseSha256,
+    recentErrorState: row.recentErrorState,
+    runInitializedAt,
+    stateReason: row.stateReason,
+    stateStatus: requireEcmwfTemperatureCanaryStateStatus(row.stateStatus),
+    upstreamModel,
+  };
+}
+
+// project one trusted hour row
+function projectEcmwfTemperatureCanaryHour(
+  row: EcmwfTemperatureCanaryHourStorageRow,
+): EcmwfTemperatureCanaryHour {
+  return {
+    modelLeadHours: Number(row.modelLeadHours),
+    rawRelativeHumidityPercent: row.rawRelativeHumidityPercent,
+    rawTemperatureC: row.rawTemperatureC,
+    rawWindSpeedMps: row.rawWindSpeedMps,
+    validAt: storageInstant(row.validAt, "validAt"),
+  };
+}
+
+// centralize the private run projection
+function ecmwfTemperatureCanaryRunSelection(alias?: string): string {
+  const prefix = alias === undefined ? "" : `${alias}.`;
+
+  return `
+    ${prefix}id,
+    ${prefix}run_initialized_at AS "runInitializedAt",
+    ${prefix}first_received_at AS "firstReceivedAt",
+    ${prefix}upstream_model AS "upstreamModel",
+    ${prefix}adapter_version AS "adapterVersion",
+    ${prefix}provider_response_sha256 AS "providerResponseSha256",
+    ${prefix}model_cycle AS "modelCycle",
+    ${prefix}recent_error_state AS "recentErrorState",
+    ${prefix}recent_error_state_sha256 AS "recentErrorStateSha256",
+    ${prefix}state_status AS "stateStatus",
+    ${prefix}state_reason AS "stateReason",
+    ${prefix}content_hash AS "contentHash"
+  `;
+}
+
+// require one allowlisted state status
+function requireEcmwfTemperatureCanaryStateStatus(
+  value: string,
+): EcmwfTemperatureCanaryRun["stateStatus"] {
+  // reject unknown stored states
+  if (
+    value !== "supported" &&
+    value !== "cold" &&
+    value !== "insufficient" &&
+    value !== "invalid"
+  ) {
+    throw new Error("ECMWF temperature canary state status is invalid");
+  }
+
+  return value;
+}
+
+// check one nullable physical metric
+function nullableMetricInRange(
+  value: number | null,
+  minimum: number,
+  maximum: number,
+): boolean {
+  return value === null || (Number.isFinite(value) && value >= minimum && value <= maximum);
+}
+
+// check one state statistic and its support-dependent nullability
+function boundedNullableStateStatistic(
+  value: number | null,
+  required: boolean,
+  minimum: number,
+  maximum: number,
+): boolean {
+  // reject a missing required statistic
+  if (required) {
+    return value !== null && Number.isFinite(value) && value >= minimum && value <= maximum;
+  }
+
+  return value === null;
+}
+
+// hash one stable fixed-order JSON value
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 // validate one bounded training/export interval

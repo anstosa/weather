@@ -436,6 +436,7 @@ test("release environment validator requires exact current control metadata", as
     "WEATHER_DATABASE_NAME=weather",
     "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
     "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1",
+    "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
     `WEATHER_CONTROL_PLANE_SHA256=${"b".repeat(64)}`,
     "WEATHER_CONTROL_PLANE_VERSION=2",
   ].join("\n");
@@ -449,11 +450,11 @@ test("release environment validator requires exact current control metadata", as
       .filter(
         // retain legacy fields
         (line) =>
-          !line.startsWith("WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=") &&
+          !line.startsWith("WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=") &&
           !line.startsWith("WEATHER_CONTROL_PLANE_"),
       )
       .concat(
-        "WEATHER_CONTROL_PLANE_SHA256=4df971f7af5da3710a9df69d4c05abda4c5f5efd329886b1e87cd753df32e238",
+        "WEATHER_CONTROL_PLANE_SHA256=c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5",
         "WEATHER_CONTROL_PLANE_VERSION=6",
       )
       .join("\n");
@@ -463,7 +464,7 @@ test("release environment validator requires exact current control metadata", as
       [valid],
     );
     assert.equal(acceptedLegacy.status, 0, acceptedLegacy.stderr);
-    await writeFile(valid, `${allowlistedLegacy.replace(/4df971/u, "0df971")}\n`, {
+    await writeFile(valid, `${allowlistedLegacy.replace(/c4d745/u, "04d745")}\n`, {
       mode: 0o600,
     });
     const rejectedUnlistedLegacy = runBash(
@@ -515,7 +516,7 @@ test("release environment writer persists or safely defaults the wind canary kil
   try {
     await writeFile(
       source,
-      `${sourceContent}\nWEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1\n`,
+      `${sourceContent}\nWEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1\nWEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=0\n`,
     );
     const persisted = runBash(
       'source "$1"; write_release_env "$2" "$3" "2026.08.22-1" "$4" "$5" "$6" "$7"',
@@ -532,6 +533,10 @@ test("release environment writer persists or safely defaults the wind canary kil
     assert.match(
       await readFile(target, "utf8"),
       /^WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1$/mu,
+    );
+    assert.match(
+      await readFile(target, "utf8"),
+      /^WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=0$/mu,
     );
 
     await writeFile(source, `${sourceContent}\n`);
@@ -550,6 +555,10 @@ test("release environment writer persists or safely defaults the wind canary kil
     assert.match(
       await readFile(target, "utf8"),
       /^WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0$/mu,
+    );
+    assert.match(
+      await readFile(target, "utf8"),
+      /^WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1$/mu,
     );
 
     await writeFile(
@@ -738,14 +747,14 @@ test("release operations reject incompatible deployment control-plane metadata",
     const digest = runBash('source "$1"; control_plane_digest').stdout.trim();
     await writeFile(
       release,
-      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=7\n`,
+      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=8\n`,
     );
     const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
     assert.equal(accepted.status, 0, accepted.stderr);
     await writeFile(
       release,
       [
-        "WEATHER_CONTROL_PLANE_SHA256=4df971f7af5da3710a9df69d4c05abda4c5f5efd329886b1e87cd753df32e238",
+        "WEATHER_CONTROL_PLANE_SHA256=c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5",
         "WEATHER_CONTROL_PLANE_VERSION=6",
         "",
       ].join("\n"),
@@ -770,7 +779,7 @@ test("release operations reject incompatible deployment control-plane metadata",
     assert.notEqual(obsoleteLegacyRejected.status, 0);
     await writeFile(
       release,
-      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=8\n`,
+      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=9\n`,
     );
     const versionRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
@@ -788,7 +797,7 @@ test("release operations reject incompatible deployment control-plane metadata",
     );
     assert.notEqual(digestRejected.status, 0);
     assert.match(digestRejected.stderr, /unsupported without an exact versioned allowlisted handoff/u);
-    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=7\n");
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=8\n");
     const metadataRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
       [release],
@@ -962,5 +971,84 @@ main recover`,
     assert.match(await readFile(recoverTranscript, "utf8"), /^gate:.*2026\.08\.22-2\.env\n$/u);
   } finally {
     await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify independent switches and fail-closed temperature defaults
+test("release switches preserve independent values and reject ambiguous temperature declarations", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-temperature-switch-"));
+  const source = join(directory, "source.env");
+  try {
+    // cover both independent settings and malformed input
+    for (const [content, expected, pass] of [
+      ["", "1", true],
+      ["WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0\n", "1", true],
+      ["WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=0\nWEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1\n", "0", true],
+      ["WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1\n", "1", true],
+      ["WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=true\n", "", false],
+      ["WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=0\nWEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1\n", "", false],
+      ["WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH =0\n", "", false],
+    ]) {
+      await writeFile(source, content);
+      const result = runBash('source "$1"; source_canary_kill_switch "$2" TEMPERATURE 1', [source]);
+      assert.equal(result.status === 0, pass, result.stderr);
+      assert.equal(result.stdout.trim(), expected);
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+// reject incompatible direct-deploy inputs before any mutable operation
+test("direct deployment gates both retained target and active control identities", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-yolo-control-"));
+  const releases = join(directory, "releases");
+  const state = join(directory, "state");
+  const transcript = join(directory, "transcript");
+  const digest = `sha256:${"a".repeat(64)}`;
+  // construct only structurally valid but incompatible release metadata
+  function releaseContent(release) {
+    return [
+      `WEATHER_RELEASE=${release}`,
+      `WEATHER_SERVER_IMAGE=registry.example/weather-server@${digest}`,
+      `WEATHER_WEB_IMAGE=registry.example/weather-web@${digest}`,
+      `POSTGRES_IMAGE=postgres@${digest}`,
+      `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${digest}`,
+      "WEATHER_DATABASE_NAME=weather",
+      "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
+      "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
+      "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=0",
+      `WEATHER_CONTROL_PLANE_SHA256=${"b".repeat(64)}`,
+      "WEATHER_CONTROL_PLANE_VERSION=7",
+      "",
+    ].join("\n");
+  }
+  try {
+    await mkdir(releases);
+    await mkdir(state);
+    await writeFile(join(releases, "2026.09.08-1.env"), releaseContent("2026.09.08-1"));
+    // exercise both an incompatible reused target and an incompatible current release
+    for (const active of [false, true]) {
+      await writeFile(transcript, "");
+      // bind the current state to its own incompatible environment
+      if (active) {
+        await writeFile(join(state, "current-release"), "2026.09.07-1\n", { mode: 0o600 });
+        await writeFile(join(releases, "2026.09.07-1.env"), releaseContent("2026.09.07-1"));
+      }
+      const result = runBash(`source "$1"
+releases_dir=$2
+state_dir=$3
+transcript=$4
+# mark any attempted side effect instead of touching infrastructure
+require_deployment_secrets() { printf 'secrets\\n' >>"$transcript"; }
+# reject any accidental service startup
+start_postgres() { printf 'postgres\\n' >>"$transcript"; return 97; }
+yolo_release 2026.09.08-1 /unused-source.env`, [releases, state, transcript]);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /control-plane identity is unsupported/u);
+      assert.equal(await readFile(transcript, "utf8"), "");
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 });

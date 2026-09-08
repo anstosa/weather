@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 
+import { FORECAST_OBSERVATION_STATIONS } from "@weather/domain";
 import {
   abandonExpiredRuns,
   acquireSourceSession,
@@ -8,9 +9,14 @@ import {
   discoverDueSources,
   failIngestionRun,
   getScheduledCheckpoint,
+  listCausalEcmwfTemperatureCanaryPriorHours,
+  listCausalForecastObservationHourlyStations,
+  listEcmwfTemperatureCanaryRunInitializations,
+  persistEcmwfTemperatureCanaryRun,
   startIngestionRun,
   updateWorkerHeartbeat,
   type DueSource,
+  type EcmwfTemperatureCanaryRecentErrorState,
   type EcowittConfiguration,
   type PublicStationConfiguration,
   type PublicStationConfigurationStation,
@@ -32,9 +38,11 @@ import {
   TEMPEST_OBSERVATION_ADAPTER_VERSION,
   asProviderFailure,
   createOpenMeteoCurrentOperation,
+  createOpenMeteoEcmwfSingleRunOperation,
   createOpenMeteoForecastOperation,
   createTempestObservationOperation,
   fetchEcowittLive,
+  fetchOpenMeteoEcmwfSingleRun,
   fetchOpenMeteoCurrent,
   fetchOpenMeteoForecast,
   fetchNoaaTideRange,
@@ -42,6 +50,7 @@ import {
   publicStationAdapterVersion,
   type EcowittLiveOperation,
   type OpenMeteoCurrentOperation,
+  type OpenMeteoEcmwfSingleRunOperation,
   type OpenMeteoForecastOperation,
   type NoaaTideRangeOperation,
   type NoaaTideRangeRequest,
@@ -50,6 +59,13 @@ import {
   type PublicStationRangeRequest,
   type TempestObservationOperation,
 } from "@weather/providers";
+import {
+  createForecastAdjustmentTemperatureCanaryRuntimeLoader,
+  forecastAdjustmentTemperatureCanaryIsActiveAt,
+  localCalendarFeaturesFor,
+  scalarNetworkActual,
+  type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+} from "@weather/forecast-adjustment";
 
 import { loadWorkerConfiguration } from "./config.js";
 import {
@@ -90,6 +106,10 @@ export interface WorkerRepository {
   readonly discoverDueSources: typeof discoverDueSources;
   readonly failIngestionRun: typeof failIngestionRun;
   readonly getScheduledCheckpoint: typeof getScheduledCheckpoint;
+  readonly listCausalEcmwfTemperatureCanaryPriorHours: typeof listCausalEcmwfTemperatureCanaryPriorHours;
+  readonly listCausalForecastObservationHourlyStations: typeof listCausalForecastObservationHourlyStations;
+  readonly listEcmwfTemperatureCanaryRunInitializations: typeof listEcmwfTemperatureCanaryRunInitializations;
+  readonly persistEcmwfTemperatureCanaryRun: typeof persistEcmwfTemperatureCanaryRun;
   readonly startIngestionRun: typeof startIngestionRun;
   readonly updateWorkerHeartbeat: typeof updateWorkerHeartbeat;
 }
@@ -97,6 +117,7 @@ export interface WorkerRepository {
 export interface WorkerIterationOptions {
   readonly diagnosticWriter?: (diagnostic: WorkerDiagnostic) => void;
   readonly fetchCurrent?: OpenMeteoCurrentOperation;
+  readonly fetchEcmwfSingleRun?: OpenMeteoEcmwfSingleRunOperation;
   readonly fetchEcowitt?: EcowittLiveOperation;
   readonly fetchForecast?: OpenMeteoForecastOperation;
   readonly fetchTempest?: TempestObservationOperation;
@@ -111,6 +132,7 @@ export interface WorkerIterationOptions {
   readonly ecowitt?: EcowittConfiguration | null;
   readonly publicStations?: PublicStationConfiguration | null;
   readonly tempest?: TempestConfiguration | null;
+  readonly temperatureCanaryRuntime?: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
   readonly tides?: TideConfiguration | null;
   readonly version: string;
 }
@@ -142,6 +164,10 @@ const databaseRepository: WorkerRepository = {
   discoverDueSources,
   failIngestionRun,
   getScheduledCheckpoint,
+  listCausalEcmwfTemperatureCanaryPriorHours,
+  listCausalForecastObservationHourlyStations,
+  listEcmwfTemperatureCanaryRunInitializations,
+  persistEcmwfTemperatureCanaryRun,
   startIngestionRun,
   updateWorkerHeartbeat,
 };
@@ -258,6 +284,52 @@ async function runWorkerIterationWithState(
     }
   }
 
+  // collect only while the independently authorized canary is active
+  if (temperatureCanaryCollectionIsActive(options.temperatureCanaryRuntime, loopAt)) {
+    const collectionStartedAt = now().getTime();
+
+    try {
+      const collection = await collectEcmwfTemperatureCanaryRuns(pool, {
+        ...(options.fetchOptions === undefined
+          ? {}
+          : { fetchOptions: options.fetchOptions }),
+        ...(options.fetchEcmwfSingleRun === undefined
+          ? {}
+          : { fetchEcmwfSingleRun: options.fetchEcmwfSingleRun }),
+        now,
+        repository,
+        site: options.site,
+      });
+      diagnosticWriter(
+        createWorkerDiagnostic({
+          count: collection.persistedRuns,
+          durationMs: elapsedMilliseconds(collectionStartedAt, now()),
+          errorCode:
+            collection.failedRuns === 0
+              ? null
+              : "temperature_canary_collection_failed",
+          event: "source_run",
+          release: options.version,
+          runId: null,
+          sourceId: "ecmwf-temperature-canary",
+        }),
+      );
+    } catch {
+      // isolate the optional sidecar from normal ingestion and heartbeat
+      diagnosticWriter(
+        createWorkerDiagnostic({
+          count: 0,
+          durationMs: elapsedMilliseconds(collectionStartedAt, now()),
+          errorCode: "temperature_canary_collection_failed",
+          event: "source_run",
+          release: options.version,
+          runId: null,
+          sourceId: "ecmwf-temperature-canary",
+        }),
+      );
+    }
+  }
+
   const completedAt = now().toISOString();
   await repository.updateWorkerHeartbeat(pool, {
     activity: results.some((result) => result.status === "failed")
@@ -287,6 +359,349 @@ async function runWorkerIterationWithState(
     lastSuccessAt: successState.lastSuccessAt,
     sources: results,
   };
+}
+
+export interface EcmwfTemperatureCanaryCollectionResult {
+  readonly failedRuns: number;
+  readonly persistedRuns: number;
+  readonly requestedRuns: readonly string[];
+}
+
+// collect at most two missing runs with latest-first warmup
+export async function collectEcmwfTemperatureCanaryRuns(
+  pool: DatabasePool,
+  options: Readonly<{
+    fetchEcmwfSingleRun?: OpenMeteoEcmwfSingleRunOperation;
+    fetchOptions?: ProviderFetchOptions;
+    now: () => Date;
+    repository: WorkerRepository;
+    site: SiteConfiguration;
+  }>,
+): Promise<EcmwfTemperatureCanaryCollectionResult> {
+  const now = options.now();
+  const latestInitialization = latestAvailableEcmwfInitialization(now);
+  const oldestInitialization = new Date(
+    Date.parse(latestInitialization) - 72 * 3_600_000,
+  ).toISOString();
+  const collected = new Set(
+    await options.repository.listEcmwfTemperatureCanaryRunInitializations(
+      pool,
+      {
+        from: oldestInitialization,
+        siteSlug: options.site.site.key,
+        to: latestInitialization,
+      },
+    ),
+  );
+  const missing: string[] = [];
+
+  // prioritize the current run before older warmup runs
+  for (let offsetHours = 0; offsetHours <= 72; offsetHours += 6) {
+    const runInitializedAt = new Date(
+      Date.parse(latestInitialization) - offsetHours * 3_600_000,
+    ).toISOString();
+
+    // skip exact initializations already persisted
+    if (!collected.has(runInitializedAt)) {
+      missing.push(runInitializedAt);
+    }
+  }
+
+  const requestedRuns = missing.slice(0, 2);
+  let failedRuns = 0;
+  let persistedRuns = 0;
+
+  // isolate each bounded provider request
+  for (const runInitializedAt of requestedRuns) {
+    try {
+      const fetchOptions = boundedTemperatureCanaryFetchOptions(
+        options.fetchOptions,
+        options.now,
+      );
+      const batch = await (
+        options.fetchEcmwfSingleRun ?? fetchOpenMeteoEcmwfSingleRun
+      )(
+        {
+          latitude: options.site.site.latitude,
+          longitude: options.site.site.longitude,
+          runInitializedAt,
+        },
+        fetchOptions,
+      );
+      const state = runInitializedAt === latestInitialization
+        ? await buildCausalTemperatureRecentErrorState(pool, {
+            repository: options.repository,
+            siteSlug: options.site.site.key,
+            targetRunInitializedAt: runInitializedAt,
+          })
+        : emptyTemperatureRecentErrorState(runInitializedAt);
+      const stateStatus = state.supported
+        ? "supported"
+        : state.n72 === 0
+          ? "cold"
+          : "insufficient";
+      await options.repository.persistEcmwfTemperatureCanaryRun(pool, {
+        adapterVersion: batch.adapterVersion,
+        hours: batch.hours,
+        modelCycle: batch.modelCycle,
+        providerResponseSha256: batch.providerResponseSha256,
+        receivedAt: batch.receivedAt,
+        recentErrorState: state,
+        runInitializedAt: batch.runInitializedAt,
+        siteSlug: options.site.site.key,
+        stateReason:
+          stateStatus === "supported"
+            ? "causal_recent_error_state_supported"
+            : stateStatus === "cold"
+              ? "no_causal_forecast_observation_pairs"
+              : "causal_recent_error_state_insufficient",
+        stateStatus,
+        upstreamModel: batch.upstreamModel,
+      });
+      persistedRuns += 1;
+    } catch {
+      // continue warming after one unavailable or rejected run
+      failedRuns += 1;
+    }
+  }
+
+  return { failedRuns, persistedRuns, requestedRuns };
+}
+
+// freeze one causal recent-error state at model initialization
+export async function buildCausalTemperatureRecentErrorState(
+  pool: DatabasePool,
+  input: Readonly<{
+    repository: Pick<
+      WorkerRepository,
+      | "listCausalEcmwfTemperatureCanaryPriorHours"
+      | "listCausalForecastObservationHourlyStations"
+    >;
+    siteSlug: string;
+    targetRunInitializedAt: string;
+  }>,
+): Promise<EcmwfTemperatureCanaryRecentErrorState> {
+  const targetRunInitializedAt = input.targetRunInitializedAt;
+  const targetMilliseconds = Date.parse(targetRunInitializedAt);
+
+  // require one canonical target initialization
+  if (
+    !Number.isFinite(targetMilliseconds) ||
+    new Date(targetMilliseconds).toISOString() !== targetRunInitializedAt
+  ) {
+    throw new RangeError("temperature state target initialization is invalid");
+  }
+
+  const windowEndValidAt = new Date(
+    targetMilliseconds - 7 * 3_600_000,
+  ).toISOString();
+  const windowStart = new Date(
+    Date.parse(windowEndValidAt) - 71 * 3_600_000,
+  ).toISOString();
+  const observationEndExclusive = new Date(
+    Date.parse(windowEndValidAt) + 3_600_000,
+  ).toISOString();
+  const [priorHours, stationHours] = await Promise.all([
+    input.repository.listCausalEcmwfTemperatureCanaryPriorHours(pool, {
+      from: windowStart,
+      siteSlug: input.siteSlug,
+      targetRunInitializedAt,
+      toInclusive: windowEndValidAt,
+    }),
+    input.repository.listCausalForecastObservationHourlyStations(pool, {
+      asOf: targetRunInitializedAt,
+      from: windowStart,
+      siteSlug: input.siteSlug,
+      to: observationEndExclusive,
+    }),
+  ]);
+  const forecastsByValidAt = new Map(
+    priorHours.map((hour) => [hour.validAt, hour] as const),
+  );
+  const stationHoursByValidAt = new Map<string, typeof stationHours>();
+
+  // group the bounded station matrix by target hour
+  for (const stationHour of stationHours) {
+    const existing = stationHoursByValidAt.get(stationHour.validAt) ?? [];
+    stationHoursByValidAt.set(stationHour.validAt, [...existing, stationHour]);
+  }
+
+  const selected: Array<Readonly<{
+    errorC: number;
+    key: string;
+    runInitializedAt: string;
+    validAt: string;
+  }>> = [];
+
+  // walk the exact inclusive 72-hour causal slots
+  for (let age = 0; age < 72; age += 1) {
+    const validAt = new Date(
+      Date.parse(windowEndValidAt) - age * 3_600_000,
+    ).toISOString();
+    const forecast = forecastsByValidAt.get(validAt);
+    const rows = stationHoursByValidAt.get(validAt) ?? [];
+    const spatial = rows.flatMap((row) => {
+      const temperatureC = row.metrics.temperatureC;
+      const station = FORECAST_OBSERVATION_STATIONS.find(
+        (candidate) => candidate.key === row.physicalStationKey,
+      );
+
+      // omit missing or impossible station identities
+      if (temperatureC === null || station === undefined) {
+        return [];
+      }
+
+      return [{
+        nearestRank: station.nearestRank,
+        physicalStationKey: station.key,
+        unnormalizedSpatialWeight: station.unnormalizedSpatialWeight,
+        value: temperatureC,
+      }];
+    });
+    const actual = scalarNetworkActual(spatial);
+
+    // retain only hours with both causal forecast and network target
+    if (forecast === undefined || actual === null) {
+      continue;
+    }
+
+    selected.push({
+      errorC: actual.value - forecast.rawTemperatureC,
+      key: forecast.key,
+      runInitializedAt: forecast.runInitializedAt,
+      validAt,
+    });
+  }
+
+  selected.sort((left, right) =>
+    left.validAt.localeCompare(right.validAt) ||
+    left.runInitializedAt.localeCompare(right.runInitializedAt) ||
+    left.key.localeCompare(right.key)
+  );
+  const shortStart = Date.parse(windowEndValidAt) - 23 * 3_600_000;
+  const short = selected.filter(
+    (item) => Date.parse(item.validAt) >= shortStart,
+  );
+  const localDates = new Set(
+    selected.map((item) => localCalendarFeaturesFor(item.validAt).localDate),
+  );
+  const shortSupported = short.length >= 6;
+  const longSupported = selected.length >= 24;
+  const rawB72 = longSupported
+    ? median(selected.map((item) => item.errorC))
+    : null;
+  const maximumValid = selected.at(-1);
+
+  return {
+    b24C: shortSupported
+      ? clipStateStatistic(median(short.map((item) => item.errorC)))
+      : null,
+    b72C: rawB72 === null ? null : clipStateStatistic(rawB72),
+    cohort: "ecmwf_single_run_hindcast",
+    localDates: localDates.size,
+    mad72C:
+      rawB72 === null
+        ? null
+        : Math.min(
+            6,
+            median(selected.map((item) => Math.abs(item.errorC - rawB72))),
+          ),
+    maximumSourceRunInitializedAt:
+      selected.length === 0
+        ? null
+        : selected.reduce((maximum, item) =>
+            item.runInitializedAt > maximum ? item.runInitializedAt : maximum,
+          selected[0]!.runInitializedAt),
+    maximumSourceValidAt: maximumValid?.validAt ?? null,
+    n24: short.length,
+    n72: selected.length,
+    sourceKeys: selected.map((item) => item.key),
+    supported: shortSupported && longSupported && localDates.size >= 2,
+    targetRunInitializedAt,
+    windowEndValidAt,
+  };
+}
+
+// choose the newest run beyond the conservative six-hour delay
+export function latestAvailableEcmwfInitialization(now: Date): string {
+  const eligibleMilliseconds = now.getTime() - 6 * 3_600_000;
+  const cycleMilliseconds = 6 * 3_600_000;
+  return new Date(
+    Math.floor(eligibleMilliseconds / cycleMilliseconds) * cycleMilliseconds,
+  ).toISOString();
+}
+
+// cap optional HTTP controls for the sidecar
+function boundedTemperatureCanaryFetchOptions(
+  options: ProviderFetchOptions | undefined,
+  now: () => Date,
+): ProviderFetchOptions {
+  return {
+    ...options,
+    maxAttempts: 1,
+    maxBodyBytes: Math.min(options?.maxBodyBytes ?? 512_000, 512_000),
+    now,
+    timeoutMs: Math.min(options?.timeoutMs ?? 5_000, 5_000),
+  };
+}
+
+// calculate one deterministic numeric median
+function median(values: readonly number[]): number {
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+
+  // average the two middle values for even samples
+  if (sorted.length % 2 === 0) {
+    return (sorted[middle - 1]! + sorted[middle]!) / 2;
+  }
+
+  return sorted[middle]!;
+}
+
+// cap one signed state statistic
+function clipStateStatistic(value: number): number {
+  return Math.max(-6, Math.min(6, value));
+}
+
+// retain truthful cold state for non-serving warmup runs
+function emptyTemperatureRecentErrorState(
+  targetRunInitializedAt: string,
+): EcmwfTemperatureCanaryRecentErrorState {
+  return {
+    b24C: null,
+    b72C: null,
+    cohort: "ecmwf_single_run_hindcast",
+    localDates: 0,
+    mad72C: null,
+    maximumSourceRunInitializedAt: null,
+    maximumSourceValidAt: null,
+    n24: 0,
+    n72: 0,
+    sourceKeys: [],
+    supported: false,
+    targetRunInitializedAt,
+    windowEndValidAt: new Date(
+      Date.parse(targetRunInitializedAt) - 7 * 3_600_000,
+    ).toISOString(),
+  };
+}
+
+// fail closed before optional collector work
+function temperatureCanaryCollectionIsActive(
+  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 | undefined,
+  now: string,
+): boolean {
+  // preserve disabled loader results
+  if (runtime?.state !== "active") {
+    return false;
+  }
+
+  try {
+    return forecastAdjustmentTemperatureCanaryIsActiveAt(runtime.bundle, now);
+  } catch {
+    // keep invalid in-memory state away from heartbeat work
+    return false;
+  }
 }
 
 // execute one committed scheduled run
@@ -949,6 +1364,18 @@ export async function startWorkerProcess(
   const fetchForecast = createOpenMeteoForecastOperation(
     configuration.openMeteoCompatibilityOrigin,
   );
+  const fetchEcmwfSingleRun = createOpenMeteoEcmwfSingleRunOperation(
+    configuration.openMeteoCompatibilityOrigin,
+  );
+  const temperatureCanaryRuntime =
+    await createForecastAdjustmentTemperatureCanaryRuntimeLoader({
+      ...(configuration.temperatureCanaryKillSwitch === undefined
+        ? {}
+        : {
+            environmentKillSwitch: configuration.temperatureCanaryKillSwitch,
+          }),
+      now: () => new Date().toISOString(),
+    }).load();
   const fetchTempest =
     configuration.tempestApiKey === null
       ? undefined
@@ -962,6 +1389,7 @@ export async function startWorkerProcess(
   const durableHealth = await readWorkerHealth(pool, configuration.instance);
   const runIteration = createWorkerIterationRunner(pool, {
     fetchCurrent,
+    fetchEcmwfSingleRun,
     fetchForecast,
     ...(fetchTempest === undefined ? {} : { fetchTempest }),
     instance: configuration.instance,
@@ -970,6 +1398,7 @@ export async function startWorkerProcess(
     publicStations: configuration.publicStations,
     ecowitt: configuration.ecowitt,
     tempest: configuration.tempest,
+    temperatureCanaryRuntime,
     tides: configuration.tides,
     version: configuration.version,
   });

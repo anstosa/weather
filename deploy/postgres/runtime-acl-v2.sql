@@ -36,11 +36,14 @@ GRANT SELECT (
   updated_at
 ) ON sources TO weather_api;
 GRANT SELECT ON forecast_runtime_provenance_v1 TO weather_api;
+GRANT SELECT ON ecmwf_temperature_canary_runs, ecmwf_temperature_canary_hours TO weather_api;
 
 GRANT SELECT ON sites, stations, providers, sources TO weather_ingest;
 GRANT SELECT ON schema_migrations TO weather_ingest;
 GRANT SELECT, INSERT, UPDATE ON ingestion_runs, ingestion_checkpoints, backfill_chunk_outcomes, worker_heartbeats TO weather_ingest;
 GRANT SELECT, INSERT ON weather_records TO weather_ingest;
+GRANT SELECT, INSERT ON ecmwf_temperature_canary_runs, ecmwf_temperature_canary_hours TO weather_ingest;
+GRANT UPDATE (last_received_at) ON ecmwf_temperature_canary_runs TO weather_ingest;
 GRANT UPDATE (
   last_ingestion_run_id,
   last_received_at,

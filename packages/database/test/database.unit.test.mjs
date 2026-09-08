@@ -13,6 +13,8 @@ import {
   loadSiteConfiguration,
   loadTempestConfiguration,
   getWeatherForecast,
+  getEcmwfTemperatureCanarySidecar,
+  listCausalForecastObservationHourlyStations,
   listForecastObservationHourlyStations,
   listForecastTrainingCohorts,
   listWeatherHistory,
@@ -539,6 +541,73 @@ test("forecast training repository rejects references after valid time", async (
 });
 
 // verify exact station windows cutovers and missingness
+test("causal station projection requires both receipts before initialization", async () => {
+  let queryText = "";
+  let queryValues = [];
+  const pool = {
+    // capture the exact causal query
+    async query(text, values) {
+      queryText = text;
+      queryValues = values;
+      return { rows: [] };
+    },
+  };
+  const rows = await listCausalForecastObservationHourlyStations(pool, {
+    asOf: "2026-09-08T00:00:00.000Z",
+    from: "2026-09-07T16:00:00.000Z",
+    siteSlug: "ballydidean",
+    to: "2026-09-07T17:00:00.000Z",
+  });
+
+  assert.match(queryText, /wr\.first_received_at <= \$4/u);
+  assert.match(queryText, /wr\.last_received_at <= \$4/u);
+  assert.equal(queryValues[3], "2026-09-08T00:00:00.000Z");
+  assert.equal(rows.length, 11);
+});
+
+// verify stored cycle identity remains date-bound
+test("ECMWF sidecar rejects a stored model-era mismatch", async () => {
+  let queryIndex = 0;
+  const pool = {
+    // return one impossible pre-cutover 50r1 run
+    async query() {
+      queryIndex += 1;
+
+      // return the malformed run before its empty hour set
+      if (queryIndex === 1) {
+        return {
+          rows: [{
+            adapterVersion: "open-meteo-ecmwf-single-run/v1",
+            contentHash: "b".repeat(64),
+            firstReceivedAt: "2026-05-12T06:00:00.000Z",
+            id: "1",
+            modelCycle: "50r1",
+            providerResponseSha256: "a".repeat(64),
+            recentErrorState: {},
+            recentErrorStateSha256: "c".repeat(64),
+            runInitializedAt: "2026-05-12T00:00:00.000Z",
+            stateReason: "cold",
+            stateStatus: "cold",
+            upstreamModel: "ecmwf_ifs",
+          }],
+        };
+      }
+
+      return { rows: [] };
+    },
+  };
+
+  await assert.rejects(
+    () => getEcmwfTemperatureCanarySidecar(pool, {
+      asOf: "2026-05-12T06:00:00.000Z",
+      from: "2026-05-12T06:00:00.000Z",
+      siteSlug: "ballydidean",
+      to: "2026-05-12T19:00:00.000Z",
+    }),
+    /stored ECMWF temperature canary provenance is invalid/u,
+  );
+});
+
 test("hourly station projection applies literal sampling and lineage rules", async () => {
   let selectedSourceKeys;
   const ecowitt = {

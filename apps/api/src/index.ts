@@ -3,6 +3,8 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import {
   getDailyPrecipitation,
   getCurrentWeather,
+  getEcmwfTemperatureCanarySidecar,
+  getEcmwfTemperatureCanaryStatus,
   getWeatherForecast,
   getLatestWorkerHeartbeat,
   listActiveSites,
@@ -13,6 +15,8 @@ import {
   type ActiveSiteRow,
   type CurrentQuery,
   type DailyPrecipitationRow,
+  type EcmwfTemperatureCanarySidecar,
+  type EcmwfTemperatureCanaryStatus,
   type HistoryQuery,
   type MigrationReadinessAuthorization,
   type TrendPointRow,
@@ -21,8 +25,12 @@ import {
 } from "@weather/database";
 import {
   applyForecastAdjustment,
+  applyForecastAdjustmentTemperatureCanary,
   type ApplyForecastAdjustmentInputV1,
+  type ApplyTemperatureCanaryInputV1,
+  type ForecastTemperatureCanaryDecisionV1,
   type LoadedForecastAdjustmentRuntimeV1,
+  type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
   type LoadedForecastAdjustmentWindCanaryRuntimeV1,
 } from "@weather/forecast-adjustment";
 import {
@@ -68,6 +76,16 @@ export interface WeatherReadStore {
     asOf: string,
     hours: number,
   ): Promise<readonly WeatherRecordRow[]>;
+  getTemperatureCanarySidecar?(
+    siteSlug: string,
+    asOf: string,
+    from: string,
+    to: string,
+  ): Promise<EcmwfTemperatureCanarySidecar | null>;
+  getTemperatureCanaryStatus?(
+    siteSlug: string,
+    asOf: string,
+  ): Promise<EcmwfTemperatureCanaryStatus | null>;
   getHealth(): Promise<HealthSnapshot>;
   listHistory(query: HistoryQuery): Promise<readonly WeatherRecordRow[]>;
   listSites(): Promise<readonly ActiveSiteRow[]>;
@@ -184,6 +202,7 @@ export interface ApiWeatherRecord {
 // extend only forecast rows with fail-raw adjustment decisions
 export interface ApiForecastWeatherRecord extends ApiWeatherRecord {
   readonly adjustment: ForecastAdjustmentDecision;
+  readonly temperatureAdjustment: ForecastTemperatureCanaryDecisionV1;
 }
 
 // expose only bounded startup selection metadata
@@ -200,6 +219,24 @@ export interface ApiForecastAdjustmentRuntime {
   readonly reasonCode: LoadedApiForecastAdjustmentRuntime["reasonCode"];
   readonly state: LoadedApiForecastAdjustmentRuntime["state"];
   readonly transferReportSha256: string | null;
+}
+
+// expose bounded independent temperature-canary state
+export interface ApiForecastTemperatureAdjustmentRuntime {
+  readonly activeBundle: string | null;
+  readonly authorizationSha256: string | null;
+  readonly expiresAt: string | null;
+  readonly loadedAt: string;
+  readonly reasonCode: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1["reasonCode"];
+  readonly source: null | {
+    readonly adaptiveReady: boolean;
+    readonly firstReceivedAt: string;
+    readonly hourCount: number;
+    readonly latestRunInitializedAt: string;
+    readonly stateReason: string | null;
+    readonly stateStatus: EcmwfTemperatureCanaryStatus["stateStatus"];
+  };
+  readonly state: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1["state"];
 }
 
 export interface ApiPropertySensorSnapshot {
@@ -255,6 +292,14 @@ export interface ApiOptions {
     ) => ForecastAdjustmentDecision;
     readonly loadedAt: string;
     readonly runtime: LoadedApiForecastAdjustmentRuntime;
+  };
+  readonly temperatureAdjustment?: {
+    readonly apply?: (
+      runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+      input: ApplyTemperatureCanaryInputV1,
+    ) => ForecastTemperatureCanaryDecisionV1;
+    readonly loadedAt: string;
+    readonly runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
   };
   readonly logDiagnostic?: (diagnostic: ApiDiagnostic) => void;
   readonly now?: () => Date;
@@ -385,6 +430,19 @@ export function createDatabaseWeatherReadStore(
     async getForecast(siteSlug, asOf, hours) {
       return await getWeatherForecast(pool, { asOf, hours, siteSlug });
     },
+    // read one isolated current ECMWF canary run
+    async getTemperatureCanarySidecar(siteSlug, asOf, from, to) {
+      return await getEcmwfTemperatureCanarySidecar(pool, {
+        asOf,
+        from,
+        siteSlug,
+        to,
+      });
+    },
+    // read bounded canary collector status
+    async getTemperatureCanaryStatus(siteSlug, asOf) {
+      return await getEcmwfTemperatureCanaryStatus(pool, { asOf, siteSlug });
+    },
     // classify readiness without raw errors
     async getHealth() {
       try {
@@ -458,6 +516,12 @@ export function createWeatherApi(
   };
   const applyAdjustment =
     forecastAdjustment.apply ?? applyForecastAdjustment;
+  const temperatureAdjustment = options.temperatureAdjustment ?? {
+    loadedAt: now().toISOString(),
+    runtime: disabledForecastTemperatureAdjustmentRuntime(),
+  };
+  const applyTemperatureAdjustment =
+    temperatureAdjustment.apply ?? applyForecastAdjustmentTemperatureCanary;
 
   // route one request
   return async function handleWeatherRequest(request: Request): Promise<Response> {
@@ -471,6 +535,12 @@ export function createWeatherApi(
         forecastAdjustment.runtime,
         forecastAdjustment.loadedAt,
         generatedAt,
+      );
+      const temperatureAdjustmentRuntime = projectForecastTemperatureAdjustmentRuntime(
+        temperatureAdjustment.runtime,
+        temperatureAdjustment.loadedAt,
+        generatedAt,
+        null,
       );
 
       // keep every exact endpoint read-only
@@ -490,6 +560,9 @@ export function createWeatherApi(
           forecastAdjustment.runtime,
           adjustmentRuntime,
           applyAdjustment,
+          temperatureAdjustment.runtime,
+          temperatureAdjustmentRuntime,
+          applyTemperatureAdjustment,
         );
       }
     } catch (error) {
@@ -515,6 +588,15 @@ function currentDate(): Date {
 
 // provide a fail-raw default when no startup runtime is supplied
 function disabledForecastAdjustmentRuntime(): LoadedForecastAdjustmentRuntimeV1 {
+  return {
+    bundle: null,
+    reasonCode: "registry_inactive",
+    state: "disabled",
+  };
+}
+
+// provide an independently inactive temperature default
+function disabledForecastTemperatureAdjustmentRuntime(): LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 {
   return {
     bundle: null,
     reasonCode: "registry_inactive",
@@ -603,6 +685,89 @@ function projectForecastAdjustmentRuntime(
     transferReportSha256: canary
       ? runtime.bundle.transferReport.transferReportSha256
       : null,
+  };
+}
+
+// project independent canary and bounded collector status
+function projectForecastTemperatureAdjustmentRuntime(
+  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+  loadedAtInput: string,
+  evaluatedAtInput: string,
+  source: EcmwfTemperatureCanaryStatus | null,
+): ApiForecastTemperatureAdjustmentRuntime {
+  const loadedAt = validateUtcInstant(
+    loadedAtInput,
+    "temperatureAdjustment.loadedAt",
+  );
+  const evaluatedAt = Date.parse(
+    validateUtcInstant(
+      evaluatedAtInput,
+      "temperatureAdjustment.evaluatedAt",
+    ),
+  );
+
+  // redact artifact content while loader state is disabled
+  if (runtime.state === "disabled") {
+    return {
+      activeBundle: null,
+      authorizationSha256: null,
+      expiresAt: null,
+      loadedAt,
+      reasonCode: runtime.reasonCode,
+      source: projectTemperatureCanarySourceStatus(source),
+      state: "disabled",
+    };
+  }
+
+  // recheck cached authorization at request time
+  if (
+    evaluatedAt < Date.parse(runtime.bundle.authorization.activatedAt) ||
+    evaluatedAt >= Date.parse(runtime.bundle.authorization.expiresAt)
+  ) {
+    return {
+      activeBundle: null,
+      authorizationSha256: null,
+      expiresAt: null,
+      loadedAt,
+      reasonCode: "canary_expired",
+      source: projectTemperatureCanarySourceStatus(source),
+      state: "disabled",
+    };
+  }
+
+  return {
+    activeBundle: runtime.bundle.bundleSha256,
+    authorizationSha256: runtime.bundle.authorization.authorizationSha256,
+    expiresAt: runtime.bundle.authorization.expiresAt,
+    loadedAt,
+    reasonCode: null,
+    source: projectTemperatureCanarySourceStatus(source),
+    state: "active",
+  };
+}
+
+// retain only bounded collector monitoring fields
+function projectTemperatureCanarySourceStatus(
+  source: EcmwfTemperatureCanaryStatus | null,
+): ApiForecastTemperatureAdjustmentRuntime["source"] {
+  // preserve an empty collector
+  if (source === null) {
+    return null;
+  }
+
+  return {
+    adaptiveReady: source.stateStatus === "supported",
+    firstReceivedAt: validateUtcInstant(
+      source.firstReceivedAt,
+      "temperatureAdjustment.source.firstReceivedAt",
+    ),
+    hourCount: source.hourCount,
+    latestRunInitializedAt: validateUtcInstant(
+      source.latestRunInitializedAt,
+      "temperatureAdjustment.source.latestRunInitializedAt",
+    ),
+    stateReason: source.stateReason,
+    stateStatus: source.stateStatus,
   };
 }
 
@@ -820,15 +985,34 @@ async function handleReadRoute(
     runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
   ) => ForecastAdjustmentDecision,
+  temperatureAdjustmentRuntime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+  projectedTemperatureAdjustmentRuntime: ApiForecastTemperatureAdjustmentRuntime,
+  applyTemperatureAdjustment: (
+    runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+    input: ApplyTemperatureCanaryInputV1,
+  ) => ForecastTemperatureCanaryDecisionV1,
 ): Promise<Response> {
   // serve liveness and readiness
   if (route.kind === "health") {
     rejectUnexpectedParameters(url.searchParams, new Set());
+    const status = projectedTemperatureAdjustmentRuntime.state === "active"
+      ? await readTemperatureCanaryStatusSafely(
+          store,
+          "ballydidean",
+          generatedAt,
+        )
+      : null;
     return await healthResponse(
       store,
       generatedAt,
       version,
       adjustmentRuntime,
+      projectForecastTemperatureAdjustmentRuntime(
+        temperatureAdjustmentRuntime,
+        projectedTemperatureAdjustmentRuntime.loadedAt,
+        generatedAt,
+        status,
+      ),
     );
   }
 
@@ -888,12 +1072,35 @@ async function handleReadRoute(
       window.asOf,
       window.hours,
     );
+    const to = new Date(
+      Date.parse(window.asOf) + window.hours * 3_600_000,
+    ).toISOString();
+    const [temperatureSidecar, temperatureStatus] =
+      projectedTemperatureAdjustmentRuntime.state === "active"
+        ? await Promise.all([
+            readTemperatureCanarySidecarSafely(
+              store,
+              route.siteSlug,
+              generatedAt,
+              window.asOf,
+              to,
+            ),
+            readTemperatureCanaryStatusSafely(
+              store,
+              route.siteSlug,
+              generatedAt,
+            ),
+          ])
+        : [null, null];
     const records = mapForecastWeatherRecords(
       rows,
       indexSources(site),
       generatedAt,
       forecastAdjustmentRuntime,
       applyAdjustment,
+      temperatureAdjustmentRuntime,
+      temperatureSidecar,
+      applyTemperatureAdjustment,
     );
     return jsonResponse({
       adjustmentRuntime,
@@ -901,6 +1108,12 @@ async function handleReadRoute(
       days,
       generatedAt,
       site,
+      temperatureAdjustmentRuntime: projectForecastTemperatureAdjustmentRuntime(
+        temperatureAdjustmentRuntime,
+        projectedTemperatureAdjustmentRuntime.loadedAt,
+        generatedAt,
+        temperatureStatus,
+      ),
     });
   }
 
@@ -966,6 +1179,7 @@ async function healthResponse(
   generatedAt: string,
   version: string,
   adjustmentRuntime: ApiForecastAdjustmentRuntime,
+  temperatureAdjustmentRuntime: ApiForecastTemperatureAdjustmentRuntime,
 ): Promise<Response> {
   let health: HealthSnapshot;
 
@@ -980,6 +1194,7 @@ async function healthResponse(
   const body = {
     data: {
       adjustmentRuntime,
+      temperatureAdjustmentRuntime,
       database: health.database,
       live: true,
       migration: health.migration,
@@ -1325,8 +1540,17 @@ function mapForecastWeatherRecords(
     runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
   ) => ForecastAdjustmentDecision,
+  temperatureRuntime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+  temperatureSidecar: EcmwfTemperatureCanarySidecar | null,
+  applyTemperatureAdjustment: (
+    runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+    input: ApplyTemperatureCanaryInputV1,
+  ) => ForecastTemperatureCanaryDecisionV1,
 ): readonly ApiForecastWeatherRecord[] {
   const rawRecords = mapWeatherRecords(rows, sources, generatedAt);
+  const temperatureHours = new Map(
+    (temperatureSidecar?.hours ?? []).map((hour) => [hour.validAt, hour]),
+  );
 
   // retain storage order and raw record bytes
   return rawRecords.map((record, index) => ({
@@ -1337,7 +1561,112 @@ function mapForecastWeatherRecords(
       generatedAt,
       applyAdjustment,
     ),
+    temperatureAdjustment: applyForecastTemperatureAdjustmentSafely(
+      temperatureRuntime,
+      rows[index]!,
+      generatedAt,
+      temperatureSidecar,
+      temperatureHours.get(record.validAt) ?? null,
+      applyTemperatureAdjustment,
+    ),
   }));
+}
+
+// contain every temperature model or projection failure
+function applyForecastTemperatureAdjustmentSafely(
+  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+  row: WeatherRecordRow,
+  evaluatedAt: string,
+  sidecar: EcmwfTemperatureCanarySidecar | null,
+  hour: EcmwfTemperatureCanarySidecar["hours"][number] | null,
+  applyTemperatureAdjustment: (
+    runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+    input: ApplyTemperatureCanaryInputV1,
+  ) => ForecastTemperatureCanaryDecisionV1,
+): ForecastTemperatureCanaryDecisionV1 {
+  const validAt = toIsoInstant(row.validAt);
+  const sourceForecast =
+    sidecar === null || hour === null || row.upstreamModel !== "best_match"
+      ? null
+      : {
+          adapterVersion: sidecar.run.adapterVersion,
+          dataset: "single_run" as const,
+          firstReceivedAt: sidecar.run.firstReceivedAt,
+          modelCycle: sidecar.run.modelCycle,
+          modelLeadHours: hour.modelLeadHours,
+          providerKey: "open-meteo" as const,
+          providerResponseSha256: sidecar.run.providerResponseSha256,
+          rawRelativeHumidityPercent: hour.rawRelativeHumidityPercent,
+          rawTemperatureC: hour.rawTemperatureC,
+          rawWindSpeedMps: hour.rawWindSpeedMps,
+          runInitializedAt: sidecar.run.runInitializedAt,
+          upstreamModel: sidecar.run.upstreamModel,
+          validAt: hour.validAt,
+        };
+
+  // keep temperature failure independent from wind serving
+  try {
+    return applyTemperatureAdjustment(runtime, {
+      evaluatedAt,
+      rawBestMatchTemperatureC: row.temperatureC,
+      recentErrorState: sidecar?.run.recentErrorState ?? null,
+      sourceForecast,
+      validAt,
+    });
+  } catch {
+    return applyForecastAdjustmentTemperatureCanary(
+      {
+        bundle: null,
+        reasonCode: "bundle_invalid",
+        state: "disabled",
+      },
+      {
+        evaluatedAt,
+        rawBestMatchTemperatureC: row.temperatureC,
+        recentErrorState: null,
+        sourceForecast: null,
+        validAt,
+      },
+    );
+  }
+}
+
+// read one sidecar without affecting raw forecast availability
+async function readTemperatureCanarySidecarSafely(
+  store: WeatherReadStore,
+  siteSlug: string,
+  asOf: string,
+  from: string,
+  to: string,
+): Promise<EcmwfTemperatureCanarySidecar | null> {
+  // preserve compatibility with stores that predate the sidecar
+  if (store.getTemperatureCanarySidecar === undefined) {
+    return null;
+  }
+
+  try {
+    return await store.getTemperatureCanarySidecar(siteSlug, asOf, from, to);
+  } catch {
+    return null;
+  }
+}
+
+// read bounded status without affecting health readiness
+async function readTemperatureCanaryStatusSafely(
+  store: WeatherReadStore,
+  siteSlug: string,
+  asOf: string,
+): Promise<EcmwfTemperatureCanaryStatus | null> {
+  // preserve compatibility with stores that predate monitoring
+  if (store.getTemperatureCanaryStatus === undefined) {
+    return null;
+  }
+
+  try {
+    return await store.getTemperatureCanaryStatus(siteSlug, asOf);
+  } catch {
+    return null;
+  }
 }
 
 // contain every model or projection exception at the row boundary

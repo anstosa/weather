@@ -7,9 +7,12 @@ import test from "node:test";
 
 import {
   canonicalJsonBytes,
+  createForecastAdjustmentTemperatureCanaryAuthorization,
+  createForecastAdjustmentTemperatureCanaryRuntimeBundle,
   createForecastAdjustmentRuntimeBundle,
   createForecastAdjustmentRuntimeLoaderForRoot,
   FORECAST_ADJUSTMENT_CANONICAL_FORECAST_IDENTITY_V1,
+  runtimeCalendarFingerprint,
 } from "@weather/forecast-adjustment";
 
 import {
@@ -36,6 +39,16 @@ const inactiveAdjustmentRuntime = {
   reasonCode: "registry_inactive",
   state: "disabled",
   transferReportSha256: null,
+};
+
+const inactiveTemperatureAdjustmentRuntime = {
+  activeBundle: null,
+  authorizationSha256: null,
+  expiresAt: null,
+  loadedAt: "2026-08-22T05:00:00.000Z",
+  reasonCode: "registry_inactive",
+  source: null,
+  state: "disabled",
 };
 
 const siteRows = [
@@ -330,6 +343,95 @@ function createWindCanaryRuntime() {
     },
     reasonCode: null,
     state: "active",
+  };
+}
+
+// build one active delayed temperature runtime
+function createTemperatureCanaryRuntime() {
+  const cutoff = "2026-07-25T07:00:00.000Z";
+  const directCoefficients = Array(35).fill(0);
+  directCoefficients[0] = 1;
+  const authorization =
+    createForecastAdjustmentTemperatureCanaryAuthorization({
+      activatedAt: "2026-08-20T00:00:00.000Z",
+      authorizationReason: "operator-approved opt-in temperature test canary",
+      authorizedAt: "2026-08-20T00:00:00.000Z",
+      authorizedBy: "Ansel",
+      expiresAt: "2026-08-30T00:00:00.000Z",
+    });
+  const bundle = createForecastAdjustmentTemperatureCanaryRuntimeBundle({
+    authorization,
+    evidence: {
+      modelSourceSha256: "1".repeat(64),
+      researchSummarySha256: "2".repeat(64),
+      retentionManifestSha256: "3".repeat(64),
+      strengthSourceSha256: "4".repeat(64),
+    },
+    model: {
+      adaptiveCoefficients: Array(49).fill(0),
+      cohort: "ecmwf_single_run_hindcast",
+      contractVersion: "temperature-shortlead-models-research/v1",
+      directCoefficients,
+      learnedStrengthContractVersion:
+        "temperature-winner-extensions-research/v1",
+      month: "2026-08",
+      scope: "assumed_delay6_next12",
+      strengthBands: {
+        "1-6": { alpha: 1, supported: true, trainingCutoffUtc: cutoff },
+        "7-12": { alpha: 1, supported: true, trainingCutoffUtc: cutoff },
+      },
+      supported: true,
+      trainingCutoffUtc: cutoff,
+    },
+    runtimeFingerprint: runtimeCalendarFingerprint(),
+    servedForecastIdentity: {
+      adapterVersion: "open-meteo-ecmwf-single-run/v1",
+      dataset: "single_run",
+      maximumReceiptAgeHours: 12,
+      providerKey: "open-meteo",
+      sourceDelayHours: 6,
+      upstreamModel: "ecmwf_ifs",
+    },
+  });
+  return { bundle, reasonCode: null, state: "active" };
+}
+
+// build one single-run sidecar with a direct cold-start state
+function createTemperatureSidecar() {
+  return {
+    hours: [{
+      modelLeadHours: 12,
+      rawRelativeHumidityPercent: 80,
+      rawTemperatureC: 11,
+      rawWindSpeedMps: 2,
+      validAt: "2026-08-22T06:00:00.000Z",
+    }],
+    run: {
+      adapterVersion: "open-meteo-ecmwf-single-run/v1",
+      firstReceivedAt: "2026-08-22T00:05:00.000Z",
+      id: "temperature-run",
+      modelCycle: "50r1",
+      providerResponseSha256: "5".repeat(64),
+      recentErrorState: {
+        b24C: null,
+        b72C: null,
+        cohort: "ecmwf_single_run_hindcast",
+        localDates: 0,
+        mad72C: null,
+        maximumSourceRunInitializedAt: null,
+        maximumSourceValidAt: null,
+        n24: 0,
+        n72: 0,
+        sourceKeys: [],
+        supported: false,
+        targetRunInitializedAt: "2026-08-21T18:00:00.000Z",
+        windowEndValidAt: "2026-08-21T11:00:00.000Z",
+      },
+      runInitializedAt: "2026-08-21T18:00:00.000Z",
+      stateReason: "cold_start",
+      stateStatus: "cold",
+      upstreamModel: "ecmwf_ifs",
+    },
   };
 }
 
@@ -686,9 +788,24 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
       reasonCode: "registry_inactive",
       state: "disabled",
     },
+    temperatureAdjustment: {
+      branch: null,
+      bundleSha256: null,
+      contractVersion: "forecast-temperature-canary-decision/v1",
+      correctedTemperatureC: null,
+      rawBestMatchTemperatureC: 12.1,
+      reasonCode: "registry_inactive",
+      recentErrorStateSha256: null,
+      sourceForecast: null,
+      state: "disabled",
+    },
   };
   assert.equal(JSON.stringify(body.data[0]), JSON.stringify(rawForecast));
   assert.deepEqual(body.adjustmentRuntime, inactiveAdjustmentRuntime);
+  assert.deepEqual(
+    body.temperatureAdjustmentRuntime,
+    inactiveTemperatureAdjustmentRuntime,
+  );
   assert.equal(body.days, 1);
 
   const extendedResponse = await handler(
@@ -760,6 +877,82 @@ test("I-API-02 active runtime adjusts only its enabled metric-band pairs", async
   );
   const health = await healthResponse.json();
   assert.deepEqual(health.data.adjustmentRuntime, body.adjustmentRuntime);
+});
+
+// prove the opt-in temperature path remains separate from Best Match and wind
+test("temperature canary exposes explicit ECMWF provenance without mutating raw", async () => {
+  const runtime = createTemperatureCanaryRuntime();
+  const sidecar = createTemperatureSidecar();
+  const sidecarQueries = [];
+  const { handler } = createFixture(
+    {
+      // return one current ECMWF run
+      async getTemperatureCanarySidecar(siteSlug, asOf, from, to) {
+        sidecarQueries.push({ asOf, from, siteSlug, to });
+        return sidecar;
+      },
+      // return bounded collector state
+      async getTemperatureCanaryStatus() {
+        return {
+          firstReceivedAt: sidecar.run.firstReceivedAt,
+          hourCount: 12,
+          latestRunInitializedAt: sidecar.run.runInitializedAt,
+          stateReason: sidecar.run.stateReason,
+          stateStatus: sidecar.run.stateStatus,
+        };
+      },
+    },
+    {
+      temperatureAdjustment: {
+        loadedAt: "2026-08-22T04:59:00.000Z",
+        runtime,
+      },
+    },
+  );
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+  const record = body.data[0];
+
+  assert.equal(response.status, 200);
+  assert.equal(record.metrics.temperatureC, 12.1);
+  assert.equal(record.adjustment.state, "disabled");
+  assert.equal(record.temperatureAdjustment.state, "active");
+  assert.equal(record.temperatureAdjustment.branch, "direct");
+  assert.equal(record.temperatureAdjustment.rawBestMatchTemperatureC, 12.1);
+  assert.equal(record.temperatureAdjustment.sourceForecast.rawTemperatureC, 11);
+  assert.equal(
+    record.temperatureAdjustment.sourceForecast.operationalHorizonHours,
+    6,
+  );
+  assert.equal(record.temperatureAdjustment.correctedTemperatureC, 12);
+  assert.equal(
+    record.temperatureAdjustment.sourceForecast.upstreamModel,
+    "ecmwf_ifs",
+  );
+  assert.deepEqual(sidecarQueries, [{
+    asOf: "2026-08-22T05:00:00.000Z",
+    from: "2026-08-21T07:00:00.000Z",
+    siteSlug: "ballydidean",
+    to: "2026-08-22T07:00:00.000Z",
+  }]);
+  assert.deepEqual(body.temperatureAdjustmentRuntime, {
+    activeBundle: runtime.bundle.bundleSha256,
+    authorizationSha256: runtime.bundle.authorization.authorizationSha256,
+    expiresAt: runtime.bundle.authorization.expiresAt,
+    loadedAt: "2026-08-22T04:59:00.000Z",
+    reasonCode: null,
+    source: {
+      adaptiveReady: false,
+      firstReceivedAt: sidecar.run.firstReceivedAt,
+      hourCount: 12,
+      latestRunInitializedAt: sidecar.run.runInitializedAt,
+      stateReason: "cold_start",
+      stateStatus: "cold",
+    },
+    state: "active",
+  });
 });
 
 test("wind canary runtime status exposes only bounded activation metadata", async () => {
@@ -1322,6 +1515,7 @@ test("health is allowlisted and reports migration readiness and coarse freshness
       live: true,
       migration: { status: "current", version: "0001_initial_weather.sql" },
       ready: true,
+      temperatureAdjustmentRuntime: inactiveTemperatureAdjustmentRuntime,
       version: "2026.08.22-1",
       worker: { freshness: "fresh" },
     },
@@ -1332,6 +1526,7 @@ test("health is allowlisted and reports migration readiness and coarse freshness
     "live",
     "migration",
     "ready",
+    "temperatureAdjustmentRuntime",
     "version",
     "worker",
   ]);
@@ -1420,6 +1615,7 @@ test("health failures stay live, fail readiness, and redact raw database errors"
     live: true,
     migration: { status: "unavailable", version: null },
     ready: false,
+    temperatureAdjustmentRuntime: inactiveTemperatureAdjustmentRuntime,
     version: "2026.08.22-1",
     worker: { freshness: "unknown" },
   });

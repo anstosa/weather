@@ -100,6 +100,8 @@ if (mode === "web") {
   process.stdout.write(JSON.stringify({
     bundleNodes: nodes.filter(({ path }) => /config\\\/forecast-adjustments\\\/ballydidean\\\/bundles\\\/sha256-[a-f0-9]{64}\\.json$/u.test(path)),
     windCanaryBundleNodes: nodes.filter(({ path }) => /config\\\/forecast-adjustments\\\/ballydidean\\\/wind-canary-bundles\\\/sha256-[a-f0-9]{64}\\.json$/u.test(path)),
+    temperatureCanaryBundleNodes: nodes.filter(({ path }) => path.startsWith("config/forecast-adjustments/ballydidean/temperature-canary-bundles/sha256-") && path.endsWith(".json")),
+    temperatureCanaryRegistry: readFileSync(join(root, "config/forecast-adjustments/ballydidean-temperature-canary.json"), "utf8"),
     windCanaryRegistry: readFileSync(join(root, "config/forecast-adjustments/ballydidean-wind-canary.json"), "utf8"),
     linkRealpath: realpathSync(packageLink),
     linkType: lstatSync(packageLink).isSymbolicLink() ? "link" : "other",
@@ -119,7 +121,7 @@ async function inspectImage(image, mode) {
   return JSON.parse(stdout);
 }
 
-// verify immutable audit material stays server-only and unselected
+// verify immutable canary material stays server-only and separately selected
 test("built server and web images enforce the adjustment filesystem boundary", {
   timeout: 300_000,
 }, async (context) => {
@@ -184,12 +186,18 @@ test("built server and web images enforce the adjustment filesystem boundary", {
     );
     assert.equal(server.windCanaryRegistry, expectedWindCanaryRegistry);
     const windCanaryRegistry = JSON.parse(server.windCanaryRegistry);
-    assert.deepEqual(windCanaryRegistry, {
-      activeBundle: null,
-      contractVersion: "forecast-adjustment-wind-canary-registry/v1",
-    });
-    // retain the exact retired bundle without requiring an active selection
+    assert.equal(windCanaryRegistry.contractVersion, "forecast-adjustment-wind-canary-registry/v1");
+    assert.equal(windCanaryRegistry.activeBundle.bundleSha256, "5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1");
+    assert.equal(server.temperatureCanaryRegistry, await readFile(join(repoRoot, "config/forecast-adjustments/ballydidean-temperature-canary.json"), "utf8"));
+    assert.deepEqual(server.temperatureCanaryBundleNodes, [{
+      path: "config/forecast-adjustments/ballydidean/temperature-canary-bundles/sha256-3e82073a266ca88c15f492f86bbefbca8b8cda029520af6cc78e0a0062ee50dd.json",
+      type: "file",
+    }]);
+    // retain both immutable authorizations without modifying fitted material
     assert.deepEqual(server.windCanaryBundleNodes, [{
+      path: "config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1.json",
+      type: "file",
+    }, {
       path: "config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-8ada04b924326665b7c49be37876727e9fdc853e9b0eb3decc7fe68c62acc96b.json",
       type: "file",
     }]);

@@ -38,9 +38,12 @@ do not run a host policy that widens those limits after container creation.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
-   Control-plane version 6 allowlists only the exact installed version 5
-   production digest as its predecessor. All other cross-version or
-   cross-digest handoffs are unsupported. Do not rewrite release metadata or
+   Control-plane version 8 allowlists only the verified installed version 6
+   production digest `c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5`
+   as its predecessor. That ten-field release format includes the wind kill
+   switch; new releases have eleven fields and persist the independent
+   temperature switch as well. All other cross-version or cross-digest handoffs
+   are unsupported. Do not rewrite release metadata or
    use wildcard handoffs: every mutating lifecycle action rejects any other
    mismatch before changing images, containers, the database, or release state.
 4. Generate separate long random administrator, owner, API, and ingestion

@@ -293,7 +293,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0012_hide_archive_only_forecasts_from_live_reads.sql",
+        version: "0013_ecmwf_temperature_canary.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
@@ -339,7 +339,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0012_hide_archive_only_forecasts_from_live_reads.sql",
+        version: "0013_ecmwf_temperature_canary.sql",
       });
 
       const ledger = await admin.query(

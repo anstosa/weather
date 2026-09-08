@@ -541,7 +541,7 @@ test(
         "sh",
         previousServerImage,
         "-c",
-        "test ! -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test ! -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test ! -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test ! -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test ! -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
+        "test ! -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test ! -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test ! -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test ! -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test ! -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test ! -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       await executeFile("docker", [
         "run",
@@ -550,7 +550,7 @@ test(
         "sh",
         targetServerImage,
         "-c",
-        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
+        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);

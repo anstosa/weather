@@ -5,8 +5,10 @@ import {
 } from "@weather/database";
 import {
   createForecastAdjustmentRuntimeLoader,
+  createForecastAdjustmentTemperatureCanaryRuntimeLoader,
   createForecastAdjustmentWindCanaryRuntimeLoader,
   type LoadedForecastAdjustmentRuntimeV1,
+  type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
   type LoadedForecastAdjustmentWindCanaryRuntimeV1,
 } from "@weather/forecast-adjustment";
 import type { Server } from "node:http";
@@ -31,28 +33,44 @@ export interface ForecastAdjustmentStartupSnapshot {
   readonly runtime: LoadedApiForecastAdjustmentRuntime;
 }
 
+// define the independent startup-only temperature snapshot
+export interface ForecastTemperatureAdjustmentStartupSnapshot {
+  readonly loadedAt: string;
+  readonly runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
+}
+
 // expose narrow startup seams for deterministic boundary tests
 export interface WeatherApiStartupDependencies {
   readonly loadForecastAdjustmentRuntime?: () => Promise<LoadedForecastAdjustmentRuntimeV1>;
+  readonly loadForecastAdjustmentTemperatureCanaryRuntime?: () => Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1>;
   readonly loadForecastAdjustmentWindCanaryRuntime?: () => Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1>;
   readonly now?: () => Date;
   readonly prepareServer?: (
     adjustment: ForecastAdjustmentStartupSnapshot,
+    temperatureAdjustment: ForecastTemperatureAdjustmentStartupSnapshot,
   ) => Promise<Readonly<{ port: number; server: Server }>>;
 }
 
 // load one immutable runtime before constructing or listening on the server
 export async function startWeatherApi(
   dependencies: WeatherApiStartupDependencies = {},
-): Promise<Readonly<{ adjustment: ForecastAdjustmentStartupSnapshot; server: Server }>> {
+): Promise<Readonly<{
+  adjustment: ForecastAdjustmentStartupSnapshot;
+  server: Server;
+  temperatureAdjustment: ForecastTemperatureAdjustmentStartupSnapshot;
+}>> {
   const loadRuntime = dependencies.loadForecastAdjustmentRuntime ??
     loadFixedForecastAdjustmentRuntime;
   const loadWindCanaryRuntime = dependencies.loadForecastAdjustmentWindCanaryRuntime ??
     loadFixedForecastAdjustmentWindCanaryRuntime;
+  const loadTemperatureCanaryRuntime =
+    dependencies.loadForecastAdjustmentTemperatureCanaryRuntime ??
+    loadFixedForecastAdjustmentTemperatureCanaryRuntime;
   const now = dependencies.now ?? currentDate;
   const prepareServer = dependencies.prepareServer ?? prepareProductionServer;
   let windCanaryRuntime: LoadedForecastAdjustmentWindCanaryRuntimeV1;
   let runtime: LoadedApiForecastAdjustmentRuntime;
+  let temperatureRuntime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
 
   // contain every canary loader failure
   try {
@@ -75,13 +93,25 @@ export async function startWeatherApi(
     runtime = windCanaryRuntime;
   }
 
+  // contain temperature loader failure without affecting wind selection
+  try {
+    temperatureRuntime = await loadTemperatureCanaryRuntime();
+  } catch {
+    temperatureRuntime = disabledForecastAdjustmentTemperatureCanaryRuntime();
+  }
+
+  const loadedAt = now().toISOString();
   const adjustment = {
-    loadedAt: now().toISOString(),
+    loadedAt,
     runtime,
   };
-  const prepared = await prepareServer(adjustment);
+  const temperatureAdjustment = {
+    loadedAt,
+    runtime: temperatureRuntime,
+  };
+  const prepared = await prepareServer(adjustment, temperatureAdjustment);
   prepared.server.listen(prepared.port, "0.0.0.0");
-  return { adjustment, server: prepared.server };
+  return { adjustment, server: prepared.server, temperatureAdjustment };
 }
 
 // use only the fixed production root and registry filename
@@ -100,9 +130,20 @@ async function loadFixedForecastAdjustmentWindCanaryRuntime(): Promise<LoadedFor
   return await loader.load();
 }
 
+// use only the isolated temperature registry and fail-closed switch
+async function loadFixedForecastAdjustmentTemperatureCanaryRuntime(): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> {
+  const environmentKillSwitch =
+    process.env.WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH;
+  const loader = createForecastAdjustmentTemperatureCanaryRuntimeLoader({
+    ...(environmentKillSwitch === undefined ? {} : { environmentKillSwitch }),
+  });
+  return await loader.load();
+}
+
 // construct production resources after adjustment selection is frozen
 async function prepareProductionServer(
   adjustment: ForecastAdjustmentStartupSnapshot,
+  temperatureAdjustment: ForecastTemperatureAdjustmentStartupSnapshot,
 ): Promise<Readonly<{ port: number; server: Server }>> {
   const configuration = await loadDatabaseConfiguration({
     ...process.env,
@@ -121,6 +162,7 @@ async function prepareProductionServer(
   const handler = createWeatherApi(store, {
     forecastAdjustment: adjustment,
     logDiagnostic: writeApiDiagnostic,
+    temperatureAdjustment,
     version: release,
   });
   const server = createWeatherApiServer(handler, {
@@ -146,6 +188,15 @@ function disabledForecastAdjustmentRuntime(): LoadedForecastAdjustmentRuntimeV1 
 
 // provide a fail-raw canary loader fallback
 function disabledForecastAdjustmentWindCanaryRuntime(): LoadedForecastAdjustmentWindCanaryRuntimeV1 {
+  return {
+    bundle: null,
+    reasonCode: "bundle_invalid",
+    state: "disabled",
+  };
+}
+
+// provide an isolated fail-raw temperature loader fallback
+function disabledForecastAdjustmentTemperatureCanaryRuntime(): LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 {
   return {
     bundle: null,
     reasonCode: "bundle_invalid",

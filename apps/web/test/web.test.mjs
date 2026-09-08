@@ -11,6 +11,7 @@ import {
   buildTrendsUrl,
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+  FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
   forecastMetricValue,
   forecastForSiteDay,
   forecastForSiteDays,
@@ -441,6 +442,70 @@ function windCanaryRuntime() {
   };
 }
 
+// create one bounded active temperature-canary runtime
+function temperatureCanaryRuntime(state = "active", reasonCode = null) {
+  // create one disabled temperature runtime
+  if (state === "disabled") {
+    return {
+      activeBundle: null,
+      authorizationSha256: null,
+      expiresAt: null,
+      loadedAt: "2026-08-22T05:00:00.000Z",
+      reasonCode,
+      source: null,
+      state,
+    };
+  }
+
+  return {
+    activeBundle: "f".repeat(64),
+    authorizationSha256: "9".repeat(64),
+    expiresAt: "2026-08-30T00:00:00.000Z",
+    loadedAt: "2026-08-22T05:00:00.000Z",
+    reasonCode: null,
+    source: {
+      adaptiveReady: false,
+      firstReceivedAt: "2026-08-22T00:05:00.000Z",
+      hourCount: 19,
+      latestRunInitializedAt: "2026-08-21T18:00:00.000Z",
+      stateReason: "cold_start",
+      stateStatus: "cold",
+    },
+    state: "active",
+  };
+}
+
+// create one explicit ECMWF temperature decision
+function temperatureCanaryDecision(recordValue) {
+  const runtime = temperatureCanaryRuntime();
+  return {
+    branch: "direct",
+    bundleSha256: runtime.activeBundle,
+    contractVersion: "forecast-temperature-canary-decision/v1",
+    correctedTemperatureC: 15,
+    rawBestMatchTemperatureC: recordValue.metrics.temperatureC,
+    reasonCode: null,
+    recentErrorStateSha256: "8".repeat(64),
+    sourceForecast: {
+      adapterVersion: "open-meteo-ecmwf-single-run/v1",
+      dataset: "single_run",
+      firstReceivedAt: "2026-08-22T00:05:00.000Z",
+      modelCycle: "50r1",
+      modelLeadHours: 12,
+      operationalHorizonHours: 6,
+      providerKey: "open-meteo",
+      providerResponseSha256: "7".repeat(64),
+      rawRelativeHumidityPercent: 80,
+      rawTemperatureC: 14,
+      rawWindSpeedMps: 2,
+      runInitializedAt: "2026-08-21T18:00:00.000Z",
+      upstreamModel: "ecmwf_ifs",
+      validAt: recordValue.validAt,
+    },
+    state: "active",
+  };
+}
+
 // create one exact active row decision
 function activeAdjustment(recordValue, targetLeadHours = 1) {
   const referenceAt = new Date(
@@ -520,6 +585,7 @@ function forecastState(records, runtime, forecastDays = 1) {
     forecastAdjustmentMode: "adjusted",
     forecast: records,
     forecastAdjustmentRuntime: runtime,
+    forecastTemperatureAdjustmentRuntime: null,
     forecastDays,
     history: [],
     loading: false,
@@ -592,6 +658,81 @@ test("forecast adjustment boundary preserves raw and validates active metadata",
   assert.match(rawHtml, /aria-label="Adjusted"/u);
   assert.match(rawHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
   assert.doesNotMatch(rawHtml, /data-forecast-adjustment-status|Local adjustment turned off/u);
+});
+
+// keep ECMWF temperature explicit, opt-in, and independent from wind metadata
+test("temperature canary overrides only adjusted temperature with truthful provenance", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+  const parsed = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime(),
+    data: [{
+      ...raw,
+      adjustment: activeAdjustment(raw),
+      temperatureAdjustment: temperatureCanaryDecision(raw),
+    }],
+    site,
+    temperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+  });
+  const parsedRecord = parsed.data[0];
+
+  assert.equal(parsed.temperatureAdjustmentRuntime.state, "active");
+  assert.equal(parsedRecord.metrics.temperatureC, 16.2);
+  assert.equal(forecastMetricValue(parsedRecord, "temperatureC"), 15);
+  assert.equal(forecastMetricValue(parsedRecord, "temperatureC", false), 16.2);
+  assert.equal(
+    forecastMetricValue(parsedRecord, "relativeHumidityPercent"),
+    73,
+  );
+  assert.equal(
+    parsedRecord.temperatureAdjustment.sourceForecast.upstreamModel,
+    "ecmwf_ifs",
+  );
+  assert.equal(
+    parsedRecord.temperatureAdjustment.sourceForecast.operationalHorizonHours,
+    6,
+  );
+
+  const state = {
+    ...forecastState(parsed.data, parsed.adjustmentRuntime),
+    forecastTemperatureAdjustmentRuntime:
+      parsed.temperatureAdjustmentRuntime,
+  };
+  const html = renderWeatherDashboard(state, "forecast");
+  assert.match(html, /data-forecast-temperature-canary="true"/u);
+  assert.match(
+    html,
+    /Experimental adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match\./u,
+  );
+
+  const malformed = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime(),
+    data: [{
+      ...raw,
+      adjustment: activeAdjustment(raw),
+      temperatureAdjustment: {
+        ...temperatureCanaryDecision(raw),
+        sourceForecast: {
+          ...temperatureCanaryDecision(raw).sourceForecast,
+          upstreamModel: "best_match",
+        },
+      },
+    }],
+    site,
+    temperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+  });
+  assert.equal(malformed.temperatureAdjustmentRuntime.state, "disabled");
+  assert.equal(malformed.data[0].temperatureAdjustment, undefined);
+  assert.equal(
+    forecastMetricValue(malformed.data[0], "temperatureC"),
+    18.2,
+  );
+  assert.equal(malformed.data[0].adjustment.state, "active");
 });
 
 // retain canary safeguards behind the concise adjustment label
@@ -1607,6 +1748,97 @@ test("new wind-canary sessions default regional while explicit opt-in persists",
   const restored = new WeatherDashboardController({ fetcher, storage, view: "forecast" });
   await restored.initialize();
   assert.equal(restored.state.forecastAdjustmentMode, "adjusted");
+});
+
+test("new temperature-canary sessions require explicit opt-in", async () => {
+  const values = new Map();
+  values.set(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY, "adjusted");
+  let temperatureBundle = temperatureCanaryRuntime().activeBundle;
+  const storage = {
+    // read one stored choice
+    getItem(key) {
+      return values.get(key) ?? null;
+    },
+    // write one stored choice
+    setItem(key, value) {
+      values.set(key, value);
+    },
+  };
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+
+  // serve one temperature canary forecast
+  async function fetcher(input) {
+    const url = String(input);
+
+    // serve the modeled hour
+    if (url.includes("/forecast")) {
+      const runtime = {
+        ...temperatureCanaryRuntime(),
+        activeBundle: temperatureBundle,
+      };
+      const decision = {
+        ...temperatureCanaryDecision(raw),
+        bundleSha256: temperatureBundle,
+      };
+      return Response.json({
+        adjustmentRuntime: adjustmentRuntime("disabled", "registry_inactive"),
+        data: [{
+          ...raw,
+          adjustment: failRawAdjustment("disabled", "registry_inactive"),
+          temperatureAdjustment: decision,
+        }],
+        site,
+        temperatureAdjustmentRuntime: runtime,
+      });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({
+    fetcher,
+    storage,
+    view: "forecast",
+  });
+  await controller.initialize();
+  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(controller.state.forecastTemperatureAdjustmentRuntime.state, "active");
+  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "adjusted");
+  assert.equal(
+    values.has(FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY),
+    false,
+  );
+
+  controller.toggleForecastAdjustmentMode();
+  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
+  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "adjusted");
+  assert.equal(
+    values.get(FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY),
+    temperatureBundle,
+  );
+
+  const restored = new WeatherDashboardController({
+    fetcher,
+    storage,
+    view: "forecast",
+  });
+  await restored.initialize();
+  assert.equal(restored.state.forecastAdjustmentMode, "adjusted");
+
+  temperatureBundle = "6".repeat(64);
+  const changed = new WeatherDashboardController({
+    fetcher,
+    storage,
+    view: "forecast",
+  });
+  await changed.initialize();
+  assert.equal(changed.state.forecastAdjustmentMode, "raw");
 });
 
 test("weather URLs use the versioned API and frozen query contracts", () => {
