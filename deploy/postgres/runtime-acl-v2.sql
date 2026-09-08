@@ -36,14 +36,27 @@ GRANT SELECT (
   updated_at
 ) ON sources TO weather_api;
 GRANT SELECT ON forecast_runtime_provenance_v1 TO weather_api;
-GRANT SELECT ON ecmwf_temperature_canary_runs, ecmwf_temperature_canary_hours TO weather_api;
 
 GRANT SELECT ON sites, stations, providers, sources TO weather_ingest;
 GRANT SELECT ON schema_migrations TO weather_ingest;
 GRANT SELECT, INSERT, UPDATE ON ingestion_runs, ingestion_checkpoints, backfill_chunk_outcomes, worker_heartbeats TO weather_ingest;
 GRANT SELECT, INSERT ON weather_records TO weather_ingest;
-GRANT SELECT, INSERT ON ecmwf_temperature_canary_runs, ecmwf_temperature_canary_hours TO weather_ingest;
-GRANT UPDATE (last_received_at) ON ecmwf_temperature_canary_runs TO weather_ingest;
+-- reconcile retained pre-canary clusters before forward migration
+DO $canary_acl$
+BEGIN
+  -- grant sidecar authority only after both tables exist
+  IF to_regclass('public.ecmwf_temperature_canary_runs') IS NOT NULL
+    AND to_regclass('public.ecmwf_temperature_canary_hours') IS NOT NULL THEN
+    GRANT SELECT ON ecmwf_temperature_canary_runs, ecmwf_temperature_canary_hours TO weather_api;
+    GRANT SELECT, INSERT ON ecmwf_temperature_canary_runs, ecmwf_temperature_canary_hours TO weather_ingest;
+    GRANT UPDATE (last_received_at) ON ecmwf_temperature_canary_runs TO weather_ingest;
+  -- reject a partially installed sidecar schema
+  ELSIF to_regclass('public.ecmwf_temperature_canary_runs') IS NOT NULL
+    OR to_regclass('public.ecmwf_temperature_canary_hours') IS NOT NULL THEN
+    RAISE EXCEPTION 'ECMWF temperature canary schema is incomplete';
+  END IF;
+END;
+$canary_acl$;
 GRANT UPDATE (
   last_ingestion_run_id,
   last_received_at,
