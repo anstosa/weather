@@ -423,6 +423,7 @@ test("persistent authorization is written only after API and worker compatibilit
   assert.match(stage, /trap 'rm -f[^']*published_authorization/u);
 });
 
+// verify current strictness and the exact retained legacy format
 test("release environment validator requires exact current control metadata", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-release-env-"));
   const valid = join(directory, "valid.env");
@@ -464,6 +465,34 @@ test("release environment validator requires exact current control metadata", as
       [valid],
     );
     assert.equal(acceptedLegacy.status, 0, acceptedLegacy.stderr);
+    const separatedLegacy = allowlistedLegacy.replace(
+      "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1",
+      "\nWEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1",
+    );
+    await writeFile(valid, `${separatedLegacy}\n`, { mode: 0o600 });
+    const acceptedSeparator = runBash(
+      'source "$1"; validate_release_env "$2" "2026.08.22-1"',
+      [valid],
+    );
+    assert.equal(acceptedSeparator.status, 0, acceptedSeparator.stderr);
+    assert.equal(await readFile(valid, "utf8"), `${separatedLegacy}\n`);
+
+    // reject all broader legacy parsing exceptions
+    for (const rejectedContent of [
+      `${content}\n\n`,
+      `${separatedLegacy.replace(/c4d745/u, "04d745")}\n`,
+      `${separatedLegacy}\n \n`,
+      `${separatedLegacy}\n# comment\n`,
+      `${separatedLegacy}\nUNKNOWN_STATE=value\n`,
+      `${separatedLegacy}\nWEATHER_RELEASE=2026.08.22-1\n`,
+    ]) {
+      await writeFile(valid, rejectedContent, { mode: 0o600 });
+      const rejectedSeparator = runBash(
+        'source "$1"; validate_release_env "$2" "2026.08.22-1"',
+        [valid],
+      );
+      assert.notEqual(rejectedSeparator.status, 0);
+    }
     await writeFile(valid, `${allowlistedLegacy.replace(/c4d745/u, "04d745")}\n`, {
       mode: 0o600,
     });

@@ -177,6 +177,11 @@ validate_release_env() {
   allowed_fields='^(WEATHER_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH|WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
   control_plane=$(env_value "$path" WEATHER_CONTROL_PLANE_SHA256)
   control_version=$(env_value "$path" WEATHER_CONTROL_PLANE_VERSION)
+
+  # preserve blank separators in the exact retained wind-only release
+  if [[ "$control_version" == "$legacy_control_plane_version" && "$control_plane" == "$legacy_control_plane_sha256" ]]; then
+    allowed_fields+='|^$'
+  fi
   grep -qEv "$allowed_fields" "$path" &&
     die "release environment contains an unknown or malformed value"
 
