@@ -120,8 +120,19 @@ import {
   type TemperatureLeadResearchEvent,
 } from "./temperature-lead-research.js";
 import {
+  analyzeTemperatureBoostedHybridResearch,
+  analyzeTemperatureBoostedResearch,
+  analyzeTemperatureNearNowcastResearch,
+  analyzeTemperatureOnlyResearch,
+  analyzeTemperatureWeatherAdaptiveResearch,
+  analyzeTemperatureWeatherHorizonResearch,
+  analyzeTemperatureWeatherHybridResearch,
+  analyzeTemperatureWeatherShrinkageResearch,
+  analyzeTemperatureWeatherRecencyResearch,
   analyzeTemperatureWeatherResearch,
+  type TemperatureBoostedTrainer,
   type TemperatureWeatherResearchEvent,
+  type TemperatureWeatherResearchReport,
 } from "./temperature-weather-research.js";
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
@@ -1524,6 +1535,184 @@ export async function evaluateRetainedForecastAdjustmentTemperatureLeads(
 export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
   input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
 ) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureWeatherResearch,
+    "forecast-adjustment-retained-temperature-weather-research/v1",
+  );
+}
+
+// evaluate one fixed near-term raw gate without changing the original weather report
+export async function evaluateRetainedForecastAdjustmentTemperatureWeatherHorizon(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureWeatherHorizonResearch,
+    "forecast-adjustment-retained-temperature-weather-horizon-research/v1",
+  );
+}
+
+// isolate the existing raw-start temperature stage without refitting or gating
+export async function evaluateRetainedForecastAdjustmentTemperatureOnly(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureOnlyResearch,
+    "forecast-adjustment-retained-temperature-only-research/v1",
+  );
+}
+
+// replay live-only correction strength without inventing archive retrieval times
+export async function evaluateRetainedForecastAdjustmentTemperatureWeatherAdaptive(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureWeatherAdaptiveResearch,
+    "forecast-adjustment-retained-temperature-weather-adaptive-research/v1",
+  );
+}
+
+// combine frozen near-term adaptation with the full longer-range correction
+export async function evaluateRetainedForecastAdjustmentTemperatureWeatherHybrid(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureWeatherHybridResearch,
+    "forecast-adjustment-retained-temperature-weather-hybrid-research/v1",
+  );
+}
+
+// halve only the frozen weather component before cumulative clipping
+export async function evaluateRetainedForecastAdjustmentTemperatureWeatherShrinkage(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureWeatherShrinkageResearch,
+    "forecast-adjustment-retained-temperature-weather-shrinkage-research/v1",
+  );
+}
+
+// compare a fixed recent-year refinement fit with the original full-history model
+export async function evaluateRetainedForecastAdjustmentTemperatureWeatherRecency(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+) {
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    analyzeTemperatureWeatherRecencyResearch,
+    "forecast-adjustment-retained-temperature-weather-recency-research/v1",
+  );
+}
+
+// bind an isolated research trainer without adding a production dependency
+export interface TemperatureBoostedTrainerIdentity {
+  readonly contractVersion: "temperature-boosted-python-bridge/v1";
+  readonly runtimeSha256: string;
+  readonly sourceSha256: string;
+  readonly parametersSha256: string;
+}
+
+// evaluate one externally fitted tree challenger on the unchanged retained cohorts
+export async function evaluateRetainedForecastAdjustmentTemperatureBoosted(
+  input: RetainedResearchInputV1 & {
+    readonly experimentPlanSha256: string;
+    readonly trainer: TemperatureBoostedTrainer;
+    readonly trainerIdentity: TemperatureBoostedTrainerIdentity;
+  },
+) {
+  return evaluateRetainedTemperatureBoostedResearch(
+    input,
+    analyzeTemperatureBoostedResearch,
+    "forecast-adjustment-retained-temperature-boosted-research/v1",
+  );
+}
+
+// combine unchanged near-term adaptation with a retained longer-range tree
+export async function evaluateRetainedForecastAdjustmentTemperatureBoostedHybrid(
+  input: RetainedResearchInputV1 & {
+    readonly experimentPlanSha256: string;
+    readonly trainer: TemperatureBoostedTrainer;
+    readonly trainerIdentity: TemperatureBoostedTrainerIdentity;
+  },
+) {
+  return evaluateRetainedTemperatureBoostedResearch(
+    input,
+    analyzeTemperatureBoostedHybridResearch,
+    "forecast-adjustment-retained-temperature-boosted-hybrid-research/v1",
+  );
+}
+
+// test first-twelve-hour error persistence without changing later forecasts
+export async function evaluateRetainedForecastAdjustmentTemperatureNearNowcast(
+  input: Parameters<typeof evaluateRetainedForecastAdjustmentTemperatureBoosted>[0] &
+    Pick<Parameters<typeof analyzeTemperatureNearNowcastResearch>[0], "onPrivatePredictionAudit">,
+) {
+  const onPrivatePredictionAudit = input.onPrivatePredictionAudit;
+
+  // reject an invalid private sink before any retained filesystem reads
+  if (onPrivatePredictionAudit !== undefined && typeof onPrivatePredictionAudit !== "function") {
+    throw new RangeError("near nowcast private audit callback must be a function");
+  }
+
+  return evaluateRetainedTemperatureBoostedResearch(
+    input,
+    // preserve the captured private callback across every retained await
+    (examples) => analyzeTemperatureNearNowcastResearch({
+      ...examples,
+      ...(onPrivatePredictionAudit === undefined ? {} : { onPrivatePredictionAudit }),
+    }),
+    "forecast-adjustment-retained-temperature-near-nowcast-research/v1",
+  );
+}
+
+// capture the common isolated implementation before any retained filesystem await
+async function evaluateRetainedTemperatureBoostedResearch<
+  Analysis extends Pick<TemperatureWeatherResearchReport, "models">,
+  Contract extends string,
+>(
+  input: Parameters<typeof evaluateRetainedForecastAdjustmentTemperatureBoosted>[0],
+  analyze: (input: Parameters<typeof analyzeTemperatureBoostedResearch>[0]) => Analysis,
+  contractVersion: Contract,
+) {
+  const trainer = input.trainer;
+  const trainerIdentity = { ...input.trainerIdentity };
+
+  // reject an unbound research implementation before reading snapshots
+  if (
+    typeof trainer !== "function" ||
+    trainerIdentity.contractVersion !== "temperature-boosted-python-bridge/v1" ||
+    !HASH_PATTERN.test(trainerIdentity.runtimeSha256) ||
+    !HASH_PATTERN.test(trainerIdentity.sourceSha256) ||
+    !HASH_PATTERN.test(trainerIdentity.parametersSha256) ||
+    Object.keys(trainerIdentity).sort().join("|") !==
+      "contractVersion|parametersSha256|runtimeSha256|sourceSha256"
+  ) {
+    throw new RangeError("boosted research requires a bound isolated trainer");
+  }
+
+  return evaluateRetainedTemperatureWeatherResearch(
+    input,
+    // preserve the captured callback across retained filesystem awaits
+    (examples) => analyze({ ...examples, trainer }),
+    contractVersion,
+    trainerIdentity,
+  );
+}
+
+// share retained inputs, chronological fits and evidence binding across fixed experiments
+async function evaluateRetainedTemperatureWeatherResearch<
+  Analysis extends Pick<TemperatureWeatherResearchReport, "models">,
+  Contract extends string,
+>(
+  input: RetainedResearchInputV1 & { readonly experimentPlanSha256: string },
+  analyze: (input: Parameters<typeof analyzeTemperatureWeatherResearch>[0]) => Analysis,
+  contractVersion: Contract,
+  externalTrainer?: TemperatureBoostedTrainerIdentity,
+) {
   const experimentPlanSha256 = input.experimentPlanSha256;
 
   // bind the externally retained pre-analysis policy without authorizing promotion
@@ -1558,7 +1747,7 @@ export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
     // retain the complete matched window without cherry-picking feature support
     scoreEvents: fixedTemperatureEvents.filter((event) =>
       event.localDate >= window.fromLocalDate && event.localDate <= window.toLocalDate),
-  }));
+  }, analyze));
   diagnostics.push(createTemperatureWeatherDiagnostic({
     cohort: "legacy_v4_retrieval_snapshot",
     expectedRange: material.expectedRange,
@@ -1567,7 +1756,7 @@ export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
     key: "live-v4",
     scoreEvents: liveTemperatureEvents,
     toLocalDate: liveEndLocalDate,
-  }));
+  }, analyze));
   const moduleNames = [
     "evidence.js",
     "algorithm-v1.js",
@@ -1576,6 +1765,7 @@ export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
     "wind-canary.js",
     "temperature-lead-research.js",
     "temperature-weather-research.js",
+    "temperature-nowcast-research.js",
   ];
   // bind the research pipeline and its shared numerical/scoring dependencies
   const implementationModules = await Promise.all(moduleNames.map(async (name) => ({
@@ -1592,13 +1782,20 @@ export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
   }
 
   const runtime = { nodeVersion: process.versions.node, ...runtimeCalendarFingerprint() };
+  // preserve original identities while binding the optional isolated learner
+  const externalImplementation = externalTrainer === undefined ? {} : { externalTrainer };
   const unsigned = {
-    contractVersion: "forecast-adjustment-retained-temperature-weather-research/v1" as const,
+    contractVersion,
     diagnostics,
     expectedRange: material.expectedRange,
     experimentPlanSha256,
-    implementationIdentitySha256: canonicalSha256({ implementationModules, runtime }),
+    implementationIdentitySha256: canonicalSha256({
+      implementationModules,
+      runtime,
+      ...externalImplementation,
+    } as unknown as JsonValue),
     implementationModules,
+    ...externalImplementation,
     interpretation: "fixed_exploratory_comparisons_on_consumed_dates_not_qualification" as const,
     predictorSource: "exact_selected_temperature_forecast_row_not_observations" as const,
     productionActivationAllowed: false as const,
@@ -1623,7 +1820,9 @@ export async function evaluateRetainedForecastAdjustmentTemperatureWeather(
 }
 
 // fit one independent pre-window model and retain complete fallback coverage
-function createTemperatureWeatherDiagnostic(input: {
+function createTemperatureWeatherDiagnostic<
+  Analysis extends Pick<TemperatureWeatherResearchReport, "models">,
+>(input: {
   readonly cohort: "fixed_lead_anchor" | "legacy_v4_retrieval_snapshot";
   readonly expectedRange: { readonly fromLocalDate: string; readonly toLocalDate: string };
   readonly fixedTemperatureEvents: readonly RetainedTrainingEventV1[];
@@ -1631,7 +1830,7 @@ function createTemperatureWeatherDiagnostic(input: {
   readonly key: string;
   readonly scoreEvents: readonly RetainedTrainingEventV1[];
   readonly toLocalDate: string;
-}) {
+}, analyze: (input: Parameters<typeof analyzeTemperatureWeatherResearch>[0]) => Analysis) {
   const embargoStartLocalDate = addLocalCalendarDays(input.fromLocalDate, -7);
   let informationBoundaryMilliseconds = Number.POSITIVE_INFINITY;
 
@@ -1655,7 +1854,7 @@ function createTemperatureWeatherDiagnostic(input: {
   const fitted = fitTemperatureResearchBaseline(trainingEvents);
   const training = temperatureWeatherExamples(trainingEvents, fitted);
   const scoring = temperatureWeatherExamples(input.scoreEvents, fitted);
-  const analysis = analyzeTemperatureWeatherResearch({
+  const analysis = analyze({
     scoreCohort: input.cohort,
     scoreEvents: scoring.examples,
     trainingEvents: training.examples,

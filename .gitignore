@@ -3,6 +3,8 @@ dist/
 coverage/
 *.log
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 .DS_Store
 .weather-data/
 .weather-models/

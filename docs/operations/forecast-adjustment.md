@@ -756,3 +756,689 @@ These previously consumed dates support retrospective model comparisons, not
 untouched qualification. Seasonal archive results do not establish equivalent
 live-v4 skill. No post-score threshold tuning or best-looking slice permits
 activation; the production qualification and no-harm gates remain unchanged.
+
+## Inactive temperature horizon-gating experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureWeatherHorizon` adds one fixed
+gating ablation in a separately versioned retained research report. The existing
+weather evaluator and its five-comparison report remain unchanged. Both entry
+points reuse the same retained reader, chronological windows, baseline fitting,
+and evidence identity binding.
+
+The gate selects raw for integer `targetLeadHours <= 48` and the exact existing
+raw-start temperature/weather prediction for `targetLeadHours > 48`. It does not
+change fitting, predictors, support floors, fallbacks, or correction caps. Live
+leads retain their validated ceiling convention: exactly forty-eight hours is
+protected, while any positive amount beyond forty-eight maps to lead forty-nine.
+Archive scores above the gate contain only the seventy-two through
+one-hundred-sixty-eight-hour fixed anchors; coverage of leads forty-nine through
+seventy-one comes from live retrievals, not additional historical subdaily runs.
+
+The horizon report compares raw, ungated raw-start, and gated predictions on
+the same events. Overall, first-forty-eight-hour, after-forty-eight-hour, and all
+six diagnostic dimensions recompute losses per event before aggregation,
+including equal-valid-hour scores. Coverage distinguishes protected forecasts,
+longer-lead forecasts, actual nonzero corrections, and longer-lead fallback
+reasons. No event-level records are retained in the report.
+
+The threshold was chosen after examining the prior experiment's near-term
+regression. The externally retained plan binds that prior artifact and plan,
+the four unchanged snapshot receipts, and this fixed rule before replay.
+First-forty-eight-hour equality to raw is guaranteed by construction, not a
+qualification result. Previously consumed dates, including seasonal archive
+windows, remain exploratory; no result from this ablation authorizes activation.
+
+## Inactive temperature-only stage experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureOnly` isolates the raw-start
+temperature component in a separately versioned
+`forecast-adjustment-retained-temperature-only-research/v1` report. The original
+weather and horizon reports remain unchanged. The new analyzer reuses their
+exact temperature cells, baseline eligibility mask, chronological training
+windows, retained inputs, and evidence identity binding. It does not refit a
+different model or apply the prior forty-eight-hour gate.
+
+The prediction contains only the existing raw-start temperature coefficient:
+add that component to raw using the existing correction cap and physical
+temperature bounds. Calendar and humidity/wind residual components contribute
+nothing. Unsupported temperature cells and baseline-ineligible forecasts use
+raw; missing weather features do not remove events. This ablation concerns
+predictors of temperature error, not the separate humidity adjustment model.
+
+The `temperatureOnly` view compares raw, raw-start temperature/weather, and
+raw-start temperature-only predictions on identical event populations. Overall,
+first-forty-eight-hour, after-forty-eight-hour, and all six diagnostic dimensions
+recompute event and equal-valid-hour losses directly. Coverage reports support,
+raw fallbacks, nonzero corrections, and prediction differences from the full
+weather path; no event-level records are returned.
+
+This single stage-removal hypothesis was frozen and retained before replay,
+after examining prior temperature experiments. There is no threshold search,
+new production export, or activation. Previously consumed live and archive
+dates remain descriptive rather than independent qualification evidence.
+
+## Inactive temperature adaptive-strength experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureWeatherAdaptive` replays one fixed
+live-only shrinkage policy in a separately versioned
+`forecast-adjustment-retained-temperature-weather-adaptive-research/v1` report.
+The underlying raw-start temperature/weather prediction, fitted cells, baseline
+eligibility mask, snapshots, and six chronological model windows are unchanged.
+All prior report APIs and their source scores remain unchanged.
+
+The analyzer privately reuses `analyzeTemperatureLeadResearch`, passing the
+already capped raw-start temperature/weather prediction as its full correction.
+The adaptive prediction is `raw + alpha * (fullPrediction - raw)`. Selection
+uses the existing grid `0, 0.25, 0.5, 0.75, 1`, six-hour lead buckets, at least
+thirty prior unique valid hours across three local dates, equal-valid-hour MAE,
+and the existing smaller-alpha tie policy. Insufficient calibration support
+selects zero, so the cold-start output is raw. Neither daypart nor weather
+regime selects alpha; those dimensions are diagnostic only.
+
+Calibration starts empty at the live score-window boundary and expands using
+only same-bucket outcomes whose `validAt + 1 hour <= referenceAt` for the scored
+forecast. Archive data and pre-window outcomes cannot warm the calibration.
+The full model remains fitted strictly before the existing embargo and earliest
+live information boundary. Missing-feature and baseline-ineligible events stay
+in both calibration and scoring populations through the existing raw fallbacks.
+
+The five archive diagnostics retain their original static models and scores,
+but `adaptiveCorrection` explicitly reports `not_applicable_archive_cohort`
+with null adaptive scores. Previous Runs anchors have no observed retrieval
+timestamp; conservative `validAt - lead` boundaries are not substituted for
+truthful `referenceAt` to manufacture adaptive archive validation.
+
+Live overall, first-forty-eight-hour, after-forty-eight-hour, calibrated-subset,
+and all six diagnostic comparisons recompute exact per-event losses, including
+equal-valid-hour weighting. Aggregate coverage reports calibrated and cold-start
+counts, selected alpha counts, nonzero corrections, and availability audit
+violations. Neither raw records nor the internal event-level causal trace are
+returned in the new report.
+
+This is a post-hoc pseudo-real-time experiment on previously consumed dates.
+Actual station measurement arrival latency is not reconstructed. A calibrated
+subset is not the complete forecast population, and cold-start raw equality is
+not learned skill. The experiment neither qualifies nor activates a model.
+
+## Inactive temperature hybrid experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureWeatherHybrid` combines two
+previously examined strategies without fitting or calibrating new parameters.
+Its separately versioned
+`forecast-adjustment-retained-temperature-weather-hybrid-research/v1` report
+preserves the original weather models, chronological cutoffs, input snapshots,
+and source comparisons. Existing report entry points remain unchanged.
+
+The sole hybrid rule selects the exact prior causal-adaptive prediction for
+integer lead hours at or below forty-eight and the unchanged full raw-start
+temperature/weather prediction above forty-eight. Live leads retain their
+ceiling convention: exactly forty-eight hours selects adaptive correction;
+any positive duration beyond forty-eight maps to lead forty-nine and selects
+the full correction. The existing calibration grid, six-hour buckets, support
+floors, availability rule, cold start, raw fallbacks, and correction caps do
+not change. The shared weather fit and causal replay each execute once.
+
+The live `hybridCorrection` view compares raw, full weather correction,
+causal-adaptive correction, the prior raw/full forty-eight-hour gate, and the
+hybrid on identical events. Overall, first-forty-eight-hour, after-forty-eight-
+hour, and all six diagnostic dimensions recompute losses per event, including
+equal-valid-hour weighting. Coverage separates near-term calibration support
+and alpha selections from longer-range full corrections, and counts exact
+prediction differences from the prior gate. Internal causal traces and raw
+records are not returned.
+
+All five archive hybrid views remain explicitly not applicable with null
+scores because observed retrieval timestamps are absent. Their static source
+models and scores remain controls, not hybrid qualification evidence.
+
+The threshold and component choices were selected after examining prior
+results. Near-term equality to the adaptive strategy and longer-range equality
+to the full correction are guaranteed by construction, not independent
+validation. Previously consumed dates and assumed observation availability
+remain limitations. No result authorizes production activation.
+
+## Inactive temperature weather-component shrinkage experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureWeatherShrinkage` evaluates one
+fixed half-strength weather component across all horizons. Its separately
+versioned `forecast-adjustment-retained-temperature-weather-shrinkage-research/v1`
+report preserves the original weather models, source comparisons, snapshots,
+and six independent chronological fitting windows. Existing entry points and
+their report payloads remain unchanged.
+
+The prediction keeps the raw-start temperature coefficient at full strength
+and multiplies only the existing humidity/wind residual coefficient by `0.5`.
+The two contributions are summed before applying the existing cumulative
+correction cap and physical temperature bounds once. This is not an average
+of already clipped temperature-only and full-weather predictions. No model
+is refitted differently, and no adaptive calibration or horizon gate applies.
+
+Baseline-ineligible forecasts remain raw. Unsupported temperature cells
+contribute zero; missing or unsupported weather cells contribute zero and
+preserve the temperature-only prediction. These events remain in every score
+denominator. The `weatherShrinkage` view compares raw, temperature-only,
+half-weather, and full-weather predictions per event for overall, first and
+later forty-eight-hour windows, and all six diagnostic dimensions. Equal-hour
+scores are recomputed from event losses rather than blended endpoint scores.
+Coverage distinguishes support, fallbacks, nonzero corrections, and exact
+differences from both endpoint strategies; raw rows are not returned.
+
+All five fixed-anchor archive windows can score this static rule using their
+unchanged pre-window models and conservative information boundaries. This does
+not recreate observed retrieval timestamps or validate the live-only adaptive
+and hybrid experiments. The single weight is frozen before replay; it is not
+chosen by searching scores. All dates were previously consumed, so seasonal
+and live results remain exploratory and cannot authorize production activation.
+
+## Inactive temperature recent-training experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureWeatherRecency` compares a fixed
+recent-training model with the unchanged all-history raw-start model. The
+`forecast-adjustment-retained-temperature-weather-recency-research/v1` report
+preserves all original baseline models, eligibility masks, refinement models,
+chronological cutoffs, snapshots, and source scores. Previous report entry
+points remain unchanged.
+
+For each diagnostic, the recent interval ends on the latest admitted training
+local date, including baseline-ineligible training rows. Its inclusive start
+is that date minus 364 calendar days, calculated using the existing local-date
+helper rather than elapsed-hour arithmetic. Filtering occurs only within the
+original training set, after its embargo and information-boundary checks.
+There is no score-outcome-dependent anchor or search over lookback lengths.
+
+The existing raw-start temperature stage is refitted on the retained subset.
+The weather stage is then refitted on residuals after that new temperature
+stage, using the same retained rows. Cell keys, support floors, weights,
+pseudocount, clipping, and raw fallbacks do not change. The original baseline
+and envelope remain fixed; no recent calendar-start candidate, adaptive
+calibration, horizon gate, or coefficient scaling is added.
+
+The `recencyTraining` view exposes the candidate models and their separate
+canonical hash, available and retained training coverage, excluded row count,
+nominal local-date boundaries, and actual retained time bounds. Its coverage
+also counts temperature/weather support lost relative to the all-history
+model. All matched score events remain in raw, all-history, and recent-model
+comparisons, including fallbacks. Overall, first and later forty-eight-hour
+windows, and all six diagnostics recompute exact event and equal-hour losses.
+
+When the complete admitted training history already fits within the recent
+interval, model and score equality is guaranteed by construction. Empty
+training yields empty candidate models and null training bounds but retains
+the complete score population with raw predictions. Missing dates are not
+imputed, and the nominal 365-date interval does not imply 365 observed dates.
+
+All five archive windows can score this static rule under their original
+conservative information boundaries; they do not validate adaptive or hybrid
+archive behavior. Results use previously consumed dates. Apparent gains may
+come from different fitted coefficients or increased raw fallback, not proven
+temporal drift. No result qualifies or activates a production model.
+
+## Inactive temperature boosted-tree experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureBoosted` adds one external,
+research-only gradient-boosted residual learner. It preserves the original
+full-history baseline, envelope, static models, chronological windows and
+report fields. Its new `boostedResidual` view compares raw, full static and
+boosted predictions on the same complete forecast population. The frozen
+hybrid remains a live-only reference; archive hybrid scores are not fabricated.
+
+The isolated CPU-only XGBoost runtime is not an application dependency.
+`scripts/research/temperature_boosted.py` accepts an exact JSON training and
+prediction contract over stdin and returns native model/configuration JSON,
+ordered prediction identities and residuals. `--describe` exposes its fixed
+configuration. `--predict` reloads an already fitted native model without
+training. Runtime versions, installed package files, the trainer source and
+configuration are hashed separately and bound into the research evidence.
+Caller-supplied hashes are identifiers; the executable research runner must
+verify the referenced bytes before and after execution.
+
+The twelve ordered predictors are raw forecast temperature, relative humidity,
+wind speed, target lead hours, four local-season indicators and four local-
+daypart indicators. Numerical predictors use their existing continuous values
+rather than the previous manually chosen bins. This is a change in learner and
+encoding, not an expansion of input sources. Only the selected temperature
+forecast row supplies weather predictors. Missing humidity and wind retain
+native missing-value routing. Observation-derived state, labels, absolute dates,
+baseline corrections and other-model predictions are not predictors. Stable
+`validAt|targetLeadHours` identities travel separately and must be echoed in the
+same order; they are never columns in the feature matrix.
+
+Each window uses the original all-history training cutoff and eligibility mask.
+The response is `actual - rawForecast`. Each eligible training row receives
+weight `1 / eligibleRowsAtSameValidAt`, giving one total input weight per valid
+hour despite multiple archived lead anchors. The fixed 200-round, depth-three
+CPU histogram learner uses MAE-aligned `reg:absoluteerror`, learning rate 0.05,
+zero initial correction, seed 20260906 and a single thread. There is no search,
+early stopping, score evaluation set, horizon gate, recency filter or adaptive
+calibration. `min_child_weight=50` concerns weighted Hessian mass, not an exact
+fifty-hour support floor. Full parameters are frozen in the retained plan and
+the bridge's native saved configuration.
+
+Eligible predictions add the residual capped to `[-5,5]` degrees to raw, then
+apply physical temperature bounds once. Baseline-ineligible forecasts remain
+raw. Empty eligible training skips the trainer and preserves all score rows
+with raw predictions. Models and configuration retain their native JSON bytes
+and hashes; request, feature-schema and row-partition hashes do not expose
+training examples or individual predictions in the aggregate report.
+
+All six historical windows retain both event and equal-valid-hour MAE, the
+first and later forty-eight-hour scopes, and all existing diagnostics. Equal-
+valid-hour MAE is primary. Training contains exact leads 24, 48, 72, 96, 120,
+144 and 168 hours only: non-anchor live forecasts require cross-lead
+generalization, and leads below twenty-four hours lie below the observed lead
+range. Seen, unseen and below-range lead scopes are reported without a
+post-result gate. These consumed dates remain exploratory, regardless of gain.
+
+The prospective protocol reserves forecasts by observed retrieval/reference
+local date from September 8 through October 7, 2026 in `America/Los_Angeles`,
+with leads one through 168 hours. Candidate and comparator model identities
+must be frozen before the first retrieval. There is no interim label inspection,
+scoring for tuning, refit or window substitution. Evaluation cannot begin before
+October 15 at 08:00 UTC and must also wait for all required outcomes and
+coverage checks. The retained registration binds exact cohort boundaries,
+model artifacts, completeness criteria and comparison rules. Registration does
+not install a shadow collector or scorer; production retention remains
+unchanged. One thirty-date prospective test does not establish all-season
+safety or bypass existing production qualification and no-harm gates.
+
+The bridge's independent tests run with the explicitly approved external
+research interpreter, not the application test runtime:
+
+```bash
+"$HOME/.weather/research-runtimes/xgboost-cpu-3.4.1/bin/python" \
+  -m unittest discover -s scripts/research -p 'test_temperature_boosted.py'
+```
+
+## Inactive temperature boosted-hybrid experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureBoostedHybrid` combines the
+existing causal-adaptive prediction through forty-eight hours with the frozen
+boosted prediction beyond forty-eight hours. The threshold, ceiling convention,
+raw fallbacks and already-applied correction caps are unchanged. No additional
+clipping, learner tuning or observation-derived feature is introduced.
+
+The new `boostedHybrid` view retains raw, static, boosted, adaptive and original
+hybrid controls on the same complete live population. Overall, first and later
+forty-eight-hour MAE and all six diagnostics are recomputed from individual
+predictions; separately normalized horizon MAEs are not averaged. The original
+boosted model and report material remain unchanged. Near-term equality to the
+original hybrid and longer-range equality to the boosted model are guaranteed
+by construction, not independent evidence of generalization.
+
+The experiment runner verifies the exact preceding native request, reloads its
+frozen model through `--predict` without fitting, and requires identical native
+predictions and model/configuration hashes. The existing static coefficients
+are reconstructed only to verify equality with their frozen source. Adaptive
+calibration still uses the original static correction, all original live lead
+buckets, empty initial state and the documented `validAt + 1 hour` availability
+assumption. It does not calibrate against the tree or change its support rules.
+
+Archive hybrid scores are explicitly unavailable because the anchors lack
+observed retrieval timestamps; their original boosted/static controls remain.
+Historical dates and component choices were already examined, so this is a
+non-promotable composition experiment. The existing prospective registration
+is unchanged: this challenger is not silently substituted into that holdout,
+and no shadow collection, scoring job or production activation is installed.
+
+## Inactive first-twelve-hour recent-error persistence experiment
+
+`evaluateRetainedForecastAdjustmentTemperatureNearNowcast` preserves the full
+boosted-hybrid report and adds one fixed `nearNowcast` challenger. Only eligible
+leads one through twelve can change. Hours thirteen through forty-eight keep
+the exact prior adaptive prediction; later hours keep the exact frozen boosted
+prediction. Unsupported targets keep the prior prediction rather than leaving
+the score population. No tree is fitted, parameter searched, or dependency added.
+
+At each live forecast's observed retrieval/reference time, source errors come
+only from canonical matched live temperature rows with leads at most six hours.
+The source reference must strictly precede the target reference. Its valid time
+must lie inclusively within the preceding six hours, and its assumed observation
+availability (`validAt + 1 hour`) must not exceed the target reference. Within
+each source valid hour, the latest retained reference wins, with greatest
+canonical key breaking ties. Conflicting actuals for a source hour fail closed.
+Source errors include baseline-ineligible rows because that flag is the old
+static envelope, not observation quality control.
+
+Exactly three most recent distinct source hours are required. Their median
+`actual - rawForecast` error is decayed by `2^(-ageHours / 6)`, where age runs
+from the newest source valid time to the target valid time. The decayed
+correction is capped to `[-5,5]` degrees, added directly to raw temperature,
+then physically bounded to `[-100,70]` degrees. The prior adaptive correction
+is not added. Both this source history and the unchanged adaptive calibration
+start empty; there is no archive warm start or cross-row predictor expansion.
+
+The primary test is fallback-inclusive, equal-valid-hour first-twelve-hour
+MAE below both raw and the previous boosted hybrid. First-forty-eight-hour MAE
+must not worsen against the prior hybrid, and every prediction after twelve
+hours must remain exact. Event MAE is secondary. The report also splits hours
+one through six, seven through twelve, thirteen through twenty-four, and
+twenty-five through forty-eight. All six diagnostic dimensions are recomputed
+for both the full population and the primary first-twelve-hour population.
+
+An optional `onPrivatePredictionAudit` callback receives deeply frozen records
+for every live score event, including labels, old/new predictions, selected
+sources, availability times, decay and fallback reasons. These private records
+must remain in owned temporary memory storage before encrypted evidence
+retention; they must never be committed or included in the public report. The
+public report binds only their canonical array SHA-256 and aggregate checks.
+Independent verification reconstructs source selection, predictions and exact
+event/equal-hour losses from that audit rather than trusting report aggregates.
+
+The one-hour availability lag is an assumption, not reconstructed station
+arrival or revision evidence. The matched observations and canonical forecast
+rows are retrospective; this is not a proven real-time nowcast. Previously
+examined dates remain exploratory and non-promotable. Archive nowcast scores
+are explicitly unavailable, while existing archive controls remain untouched.
+Production and the existing future-holdout registration are unchanged.
+
+## Inactive weather-conditioned analog residual experiment
+
+`createTemperatureAnalogPredictionAudit` in `temperature-analog-research.ts`
+tests a different first-twelve-hour correction: learn the existing model's
+remaining error from past forecasts with similar forecast weather and local
+clock phase. It does not persist the latest raw error or reuse the rejected
+nowcast prediction. The standalone research runner consumes the preceding
+encrypted audit's exact frozen `priorBoostedHybridPrediction` values rather
+than refitting or rerunning the native tree. No application runtime is wired
+to this research helper.
+
+Eligible targets have leads one through twelve, the original baseline
+eligibility flag, and available raw humidity and wind. Sources must have a
+strictly earlier reference, assumed observation availability at `validAt + 1
+hour` no later than the target reference, and valid times within the preceding
+336 elapsed hours inclusively. Sources and targets share the one-through-six
+or seven-through-twelve lead band and have Los Angeles valid-time clock hours
+within two hours circularly. Source baseline eligibility is not observation
+quality control and does not exclude source errors.
+
+After those filters, one forecast per source valid hour is chosen by closest
+lead to the target, then latest reference, then greatest canonical key. This
+choice occurs before computing weather distance. The squared distance sums
+temperature differences scaled by 5°C, humidity by 20 percentage points, wind
+by 3 m/s, circular clock-hour difference by 3 hours, and lead difference by 6
+hours. Only distances at most four qualify. Exactly twelve closest distinct
+valid hours are required; distance ties prefer the latest valid time and then
+greatest key. DST repeated clock hours remain distinct UTC valid times.
+
+The correction is the median of those twelve `actual - priorPrediction`
+errors, using the mean of the sixth and seventh ordered values. It is added
+to the target's prior prediction, with the total correction relative to raw
+capped to `[-5,5]` degrees and final physical bounds `[-100,70]`. Sources always
+use frozen prior predictions, never recursively updated analog predictions.
+Unsupported targets and all leads after twelve keep the exact prior prediction
+without extra clipping. In particular, hours thirteen through forty-eight and
+the boosted component after forty-eight remain unchanged.
+
+The helper returns deeply immutable private records for every target. They
+retain candidate counts, source ranks, feature differences and distance terms,
+even-median arithmetic, pre-cap and capped deltas, and explicit fallback
+reasons. The runner joins only the original diagnostic labels and publishes
+aggregate coverage, scores and the private array hash. Individual rows stay in
+owned temporary memory storage and then encrypted evidence, never Git.
+
+Acceptance still requires full-population, fallback-inclusive first-twelve-hour
+equal-valid-hour MAE below both raw and the previous boosted hybrid, first-forty-eight-
+hour no-harm, and exact later prediction equality. All nine horizon scopes and
+both complete and first-twelve-hour diagnostic grids are checked independently.
+No parameter, support threshold or favorable subgroup is selected after scoring.
+The same consumed twelve-date cohort and assumed observation availability make
+this exploratory rather than qualified. Production and the existing prospective
+registration remain unchanged; no collector, scorer or deployment is installed.
+
+## Expanded inactive analog validation
+
+`analyzeTemperatureAnalogValidation` in `temperature-analog-validation.ts`
+validates the frozen private prediction audit without fitting, changing analog
+selection, or invoking the native tree. The existing candidate and every
+forecast after twelve hours remain unchanged. This expands the checks, not the
+number of independent observations: no new forecast dates enter this analysis.
+
+The primary result remains fallback-inclusive first-twelve-hour equal-valid-hour
+MAE, with raw and the previous boosted hybrid scored on identical targets.
+Repeated forecast vintages are averaged within their common UTC valid hour
+before hours are averaged. Secondary checks include event MAE, equal-hour signed
+bias and RMSE, quantiles of hourly mean absolute errors, and equal-hour frequency
+of individual errors exceeding two and three degrees Celsius. Quantiles of
+hourly mean errors are not quantiles of individual forecast errors.
+
+Paired circular moving-block bootstrap intervals use one-, two-, and three-local-
+date blocks, twenty thousand replicates per block length, and a fixed xorshift32
+seed. Each replicate draws the same dates for all three predictions and retains
+partial-date hour weighting. All block lengths and both comparator intervals
+are reported; the most favorable interval cannot be selected. These descriptive
+intervals do not undo model selection on the same dates or establish independent
+weather samples.
+
+Every first-twelve-hour lead, represented date, season, daypart, and frozen
+weather regime remains visible, including empty cells. Date-deletion checks
+remove one date only from scoring: the predictions and original causal source
+state remain frozen. They are influence diagnostics, not cross-validation.
+The first and second chronological halves are similarly descriptive rather
+than fresh holdouts. Supported and fallback subsets never replace the full
+population in the primary comparison.
+
+The retained four export manifests cover January 2024 through September 2026,
+but their live retrieval records begin on August 26, 2026. Earlier Previous Runs
+records provide only 24/48/72/96/120/144/168-hour anchors and no observed retrieval
+reference. They cannot validate or warm the first-twelve-hour analog component;
+no issue times or subdaily leads are synthesized. Further independent validation
+requires additional live retrieval history and an explicitly registered frozen
+candidate. The existing prospective registration is not silently changed, and
+this validation does not install collection, scoring, or production activation.
+
+Private records and event losses remain in owned temporary memory storage and
+then encrypted evidence. Aggregate reports bind the source audit, candidate,
+validation plan, and implementation hashes. Observation arrival/revision timing
+still relies on the retrospective one-hour maturity assumption, and the
+candidate remains unqualified regardless of the diagnostic intervals.
+
+## Inactive half-strength analog tuning
+
+`createTemperatureAnalogShrinkageAudit` in `temperature-analog-shrinkage.ts`
+tests one fixed conservative weight after the expanded validation exposed
+single-day sensitivity and inconsistent large-error improvements. It reruns the
+unchanged full-strength analog helper, preserving every neighbor, residual,
+support decision, and original prediction. Supported first-twelve-hour targets
+use `prior + 0.5 * (fullAnalog - prior)`. Interpolation occurs after the existing
+full-strength cumulative and physical caps; there is no additional clipping.
+Fallbacks and all forecasts after twelve hours retain the exact prior value.
+The source residuals never incorporate half-strength predictions.
+
+The immutable private audit retains the original full-strength fields and adds
+`fullStrengthIncrementC`, `retainedIncrementC`, `shrinkageWeight`, and
+`shrunkAnalogPrediction`. In particular, its original `analogPrediction` and
+correction fields still describe the full-strength model. Only the explicit
+`shrunkAnalogPrediction` field identifies the challenger.
+
+The expanded validator scores the same challenger against the old boosted
+hybrid and against the full-strength analog in separately named views. Changing
+`priorPrediction` in the second validation projection changes the comparator
+only, never model inputs or source errors. Keys, targets, raw forecasts, new
+predictions, times, leads, and support stay identical. Raw and challenger score
+objects must match between views; duplicated raw intervals are not independent
+evidence. The wrapper replaces the validator's generic no-parameter-selection
+label with explicit post-hoc selection of this fixed half weight.
+
+Retention as the next tuning candidate requires every preregistered gate:
+first-twelve-hour equal-hour MAE strictly below raw and both older models;
+first-six-hour and first-forty-eight-hour MAE no worse than full strength;
+exact key-by-key equality after twelve hours; twelve nonempty score-only
+leave-one-date-out comparisons with no harm against the old boosted hybrid;
+and no increase against full strength in equal-hour frequencies of individual
+errors strictly above two or three degrees. Missing metrics fail closed, and
+gate comparisons use no epsilon. Date omissions retain original source state
+and are not cross-validation. Every diagnostic slice and all three bootstrap
+block lengths remain reported, including unfavorable or empty cells.
+
+This is one trial on the same consumed twelve dates, not a grid search or new
+independent validation. Negative evidence is retained without a fallback tuning
+pass. Post-selection intervals are descriptive, regardless of whether every
+retention gate passes. No native model is fitted or invoked, no forecast export
+is added, and the original prospective registration and production runtime stay
+unchanged. Private material remains in owned tmpfs before encrypted retention.
+
+## Expanded half-strength stress validation
+
+`analyzeTemperatureAnalogStress` in `temperature-analog-stress-validation.ts`
+adds descriptive checks of the same frozen half-strength private audit. It
+neither fits a model nor changes neighbor selection, the half weight, original
+fallbacks, or production behavior. The original equal-valid-hour scores remain
+the primary comparison. Raw, old hybrid, full analog, and half analog always
+share the same scored population.
+
+For the twelve consumed local dates, the battery retains all 66 unordered
+pair deletions, identifying the eleven consecutive pairs as a subset rather
+than additional evidence. It also retains all ten nonwrapping three-date
+deletions and ten included-only rolling three-date windows. Deletions affect
+scoring only: omitted dates can remain in the original source state. These are
+influence diagnostics, not cross-validation or holdouts. Calendar gaps are
+rejected rather than silently joined into apparently contiguous windows.
+
+Equal-date MAE averages the twelve daily equal-valid-hour MAEs, including
+partial boundary dates. Two secondary vintage views select the earliest or
+latest reference for every first-twelve-hour valid time; equal-reference ties
+use the greatest canonical key. Both retain every represented target hour and
+report their selected-lead distributions because the lead mixture changes.
+All 48 exact-lead/daypart cells retain scores, counts, and explicit nulls for
+empty populations. No favorable date, vintage, cell, or weighting is selected.
+
+Selected-source availability is separately stressed at one, two, three, six,
+and twenty-four elapsed hours after each source valid time. When any of an
+originally supported target's twelve frozen sources would be unavailable, both
+analog variants fall back exactly to the old hybrid. Sources are not replaced;
+original fallback rows, including their partial source audits, remain unchanged.
+The one-hour scenario must reproduce every original score. Each scenario
+reports retained/newly unsupported event and distinct-hour counts and all seven
+horizons. The twenty-four-hour scenario is a severe fixed delay, not a complete
+outage or statistical worst-case bound. The old hybrid already represents
+complete loss of the analog component. This does not reconstruct actual station
+arrival or revision timing or simulate the production source-selection process.
+
+All rows and comparator ranges are retained, including adverse outcomes. This
+is a many-comparison post-selection stress battery on already consumed dates,
+not additional independent observations. It introduces no qualification gates,
+parameter selection, production activation, or changes to the existing future
+registration. Any production coverage inquiry is read-only and aggregate-only;
+new data cannot be scored by inventing earlier retrieval times or refitting a
+supposedly frozen comparator. Private evidence remains in owned tmpfs before
+verified encrypted local and Blueberry retention.
+
+## Frozen live-temperature replay
+
+`replayFrozenTemperatureHybrid` in `temperature-frozen-replay.ts` reconstructs
+the retained boosted hybrid without fitting, tuning, or changing the analog
+candidate. It derives baseline eligibility and raw-start static predictions
+from the frozen coefficients and training envelopes, reuses the original
+causal calibration, and applies the frozen native tree only through an explicit
+prediction callback. Every canonical event is sent to native prediction,
+including baseline-ineligible events whose returned residual is ignored.
+The original adaptive-through-48-hours and native-after-48-hours boundary stays
+unchanged. Model, configuration, and feature-schema hashes must match.
+
+`createTemperatureLiveReplayEvents` in `temperature-live-replay-events.ts`
+accepts sanitized export rows and reuses the original forecast deduplication,
+station catalog, and network-target rules. Weather inputs come from the exact
+selected temperature forecast. Fixed Previous Runs anchors are never assigned
+invented live retrieval times or subdaily leads. Duplicate station hours and
+malformed rows fail closed. The caller must separately verify the export
+manifest, checksums, authorized date bounds, and overlap with retained inputs.
+
+An extension replay begins with the complete original live-event history,
+not an empty state at the newly scored date. Before admitting new-date scores,
+the runner must reproduce every retained prior prediction, analog source,
+support decision, and half-strength prediction exactly. Native inference uses
+the retained model and runtime; labels never enter its prediction features.
+The analog remains `prior + 0.5 * (fullAnalog - prior)` on supported first-
+twelve-hour events, with every original fallback and later prediction intact.
+
+Newly scored retrospective dates must be distinguished from genuinely
+prospective holdouts. A partial date cannot establish complete daypart coverage
+or uniform improvement. Report missing cells and unfavorable comparisons, keep
+the frozen scoring cutoff, and do not substitute a different candidate's future
+registration or qualification receipt. These helpers do not export production
+data, install collectors, activate a model, or change application behavior.
+The documented forced-command export endpoint is required; a denied or absent
+endpoint is an access blocker, not permission to export through another route.
+Private inputs and native requests remain in owned tmpfs before encrypted
+retention. Only aggregate diagnostics and artifact hashes belong in reports.
+
+## Export endpoint compatibility repair
+
+The September 2026 installation predates the standard export command. Its
+bounded compatibility endpoint lives outside the active release tree at
+`/usr/local/lib/weather/forecast-training-export-v1/`. Only the export route is
+added to the root-owned SSH wrappers; existing operations remain unchanged.
+The exporter checks the installed common-helper digest and uses the unchanged
+repository query and package verifier. A disposable, resource-limited client
+uses the active PostgreSQL image and network namespace, without restarting the
+database or changing the release control-plane digest.
+
+The dedicated credential remains server-side at
+`/var/lib/weather/forecast-training-export/password`, mode `0400`, owner/group
+`999:999`, beneath a root-private directory. The existing export role receives
+only the missing login and database-connect capability; its default read-only
+setting and two-view-only grants remain enforced. Provisioning checks the
+complete authority envelope before and after the change and keeps exact wrapper
+backups and rollback evidence under
+`/var/lib/weather/forecast-training-export-repair-20260907/`.
+
+A later deployment that changes the common helper makes this compatibility
+exporter fail closed. Replace it through reviewed provisioning with the standard
+release exporter and its documented secret mount; do not rewrite release
+metadata or relax the hash check. Endpoint installation does not qualify or
+activate an adjustment model.
+
+## Representative near-term development panel and causal raw guard
+
+The fixed primary development panel uses every canonical live-v4 forecast on
+August 27 through September 6, 2026, inclusive. These eleven interior calendar
+dates cover all times of day without selecting only densely populated or
+favorable dates. Retrieval gaps and missing target hours remain visible;
+August 26's startup fragment and September 7's partial date are separate stress
+results. This is a broader late-summer development sample, not an all-season
+sample, fresh holdout, or proof that additional independent dates were acquired.
+
+Primary first-twelve-hour MAE averages event errors within each UTC valid hour,
+then hours within each local date, then all eleven dates equally. Equal-hour and
+event-weighted scores remain secondary. A sensitivity gives equal weight to all
+48 exact-lead/daypart cells; a missing cell produces a null aggregate rather
+than being silently omitted. All seven horizons, individual dates, leads,
+dayparts, seasons, frozen weather bins and three chronological blocks remain
+visible. The existing one-, two-, and three-date block bootstrap retains its
+equal-hour weighting and is descriptive secondary evidence, not uncertainty
+for the new equal-date primary statistic. State is never reset at block edges.
+
+`createTemperatureCausalGuardAudit` in `temperature-causal-guard.ts` tests one
+fixed decision rule between raw and the frozen half-strength analog prediction.
+It only changes leads one through twelve. Source forecasts have a strictly
+earlier reference, assumed observation availability at `validAt + 1 hour` no
+later than the target reference, and valid times within the preceding 168
+elapsed hours. Sources share the target's one-through-six or seven-through-
+twelve lead band and Los Angeles valid-time daypart. Selection retains one
+forecast per source valid hour: closest target lead, then latest reference,
+then greatest canonical key. Selection does not inspect forecast errors.
+
+At least twelve distinct source valid hours spanning three local dates are
+required. Source MAE is averaged within each source date and then equally over
+represented source dates. If the frozen half-strength prediction's source MAE
+is greater than or equal to raw's, the target uses exact raw; otherwise it keeps
+exact half strength. Unsupported targets also retain half strength. No extra
+clipping, native prediction, fit, parameter search, or recursive use of guarded
+source predictions occurs. Every prediction after twelve hours is unchanged.
+Private audits retain support, source identities, losses and decisions.
+
+Causal selection is not a guarantee of future no-harm: small source samples can
+choose badly, and observation arrival/revision latency remains assumed. The
+candidate must report every adverse date/cell, source-support shortage and
+raw/half decision, and pass future-label isolation tests. Existing historical
+selection and deployment limitations remain; no application integration or
+production model activation is performed by this research helper.
+
+Previous Runs' whole-day offsets cannot recreate subdaily issue histories.
+Historical Forecast stitches early run output; Single Runs exposes run
+initialization but does not establish equivalence with the stored legacy-v4
+Best Match product or reconstruct historical public availability. Seasonal
+proxy research must remain distinct from same-product near-term validation.
+See the official [Previous Runs](https://open-meteo.com/en/docs/previous-runs-api),
+[Historical Forecast](https://open-meteo.com/en/docs/historical-forecast-api), and
+[Single Runs](https://open-meteo.com/en/docs/single-runs-api) documentation.
