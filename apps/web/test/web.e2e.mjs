@@ -1468,6 +1468,7 @@ async function assertRejectedSiteWallClock(page, fixture, field, value) {
   assert.equal(await page.locator(".table-scroll").getByText("61.2").isVisible(), true);
 }
 
+// preserve dashboard contracts alongside the additional sunset tile
 test("real browser covers filters, pagination, last-good recovery, attribution, and mutation denial", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -1527,10 +1528,10 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       ),
       /Material Symbols Rounded/u,
     );
-    assert.equal(await page.locator(".condition-color rect").count(), 8);
-    assert.equal(await page.locator(".condition-label .material-symbols-rounded").count(), 8);
-    assert.equal(await page.locator(".condition-status-color rect").count(), 8);
-    assert.equal(await page.locator(".condition-status-dark").count(), 8);
+    assert.equal(await page.locator(".condition-color rect").count(), 9);
+    assert.equal(await page.locator(".condition-label .material-symbols-rounded").count(), 9);
+    assert.equal(await page.locator(".condition-status-color rect").count(), 9);
+    assert.equal(await page.locator(".condition-status-dark").count(), 9);
     assert.equal(await page.locator(".condition-status-light").count(), 0);
     assert.equal(
       await page.locator("[data-condition='humidity'] .condition-status-color rect").getAttribute("fill"),
@@ -1549,7 +1550,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         // freeze the requested reading order
         (cards) => cards.map((card) => card.getAttribute("data-condition")),
       ),
-      ["temperature", "wind", "rain", "tide", "humidity", "air-quality", "pressure", "uv-index"],
+      ["temperature", "wind", "rain", "tide", "humidity", "air-quality", "pressure", "uv-index", "sunset"],
     );
     assert.deepEqual(
       await page.locator(".current-conditions").evaluate(
@@ -3649,6 +3650,108 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
+// display farm-local evening times in browsers using a different timezone
+test("sunset tile shows today's sunset and golden hour on desktop and mobile", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // cover wide, phone, and narrow-phone layouts
+    for (const width of [1280, 390, 320]) {
+      const page = await createFixturePage(browser, {
+        timezoneId: "Asia/Tokyo",
+        viewport: { height: 900, width },
+      });
+      const errors = [];
+      // record uncaught browser errors
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.clock.setFixedTime(new Date("2026-09-12T20:00:00Z"));
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      const tile = page.locator("[data-condition='sunset']");
+      await tile.waitFor();
+      assert.equal(await tile.locator(".condition-primary").innerText(), "7:28PM");
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Golden hour\s*6:47PM/u);
+      assert.match(await tile.locator(".condition-status").innerText(), /Today/u);
+      assert.equal(await tile.locator(".condition-forecast-reading").count(), 0);
+      assert.equal(await tile.evaluate(
+        // reject clipped tile text and overlapping headings
+        (card) => {
+          const label = card.querySelector(".condition-label");
+          const status = card.querySelector(".condition-status");
+          const primary = card.querySelector(".condition-primary");
+          const secondary = card.querySelector(".condition-secondary");
+
+          // require each part of the visual hierarchy
+          if (!label || !status || !primary || !secondary) {
+            return false;
+          }
+
+          const contentsFit = [card, label, primary, secondary].every(
+            // check full rendered content widths
+            (element) => element.scrollWidth <= element.clientWidth,
+          );
+          return contentsFit && label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
+            primary.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top;
+        },
+      ), true);
+      const screenshot = await tile.screenshot();
+      assert.ok(screenshot.byteLength > 1_000);
+
+      await page.clock.setFixedTime(new Date("2026-09-13T06:59:59Z"));
+      await page.reload({ waitUntil: "networkidle" });
+      assert.equal(await tile.locator(".condition-primary").innerText(), "7:28PM");
+      assert.match(await tile.locator(".condition-secondary").innerText(), /6:47PM/u);
+
+      await page.clock.setFixedTime(new Date("2026-09-13T07:00:00Z"));
+      await page.reload({ waitUntil: "networkidle" });
+      assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
+      assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// roll an open homepage into the next farm day without a reload or API read
+test("sunset refreshes at farm midnight and when a suspended tab resumes", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, { timezoneId: "Asia/Tokyo" });
+    await page.clock.install({ time: new Date("2026-09-13T06:59:50Z") });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const tile = page.locator("[data-condition='sunset']");
+    assert.equal(await tile.locator(".condition-primary").innerText(), "7:28PM");
+    const requestCount = fixture.state.requests.length;
+    await page.clock.fastForward(11_000);
+    assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
+    assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
+    assert.equal(fixture.state.requests.length, requestCount);
+
+    await page.clock.setSystemTime(new Date("2026-09-15T19:00:00Z"));
+    await page.evaluate(
+      // simulate resuming after background timers were suspended
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    assert.equal(await tile.locator(".condition-primary").innerText(), "7:22PM");
+    assert.match(await tile.locator(".condition-secondary").innerText(), /6:41PM/u);
+    assert.equal(fixture.state.requests.length, requestCount);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// reserve all nine cards before current weather arrives
 test("initial skeletons preserve homepage geometry while weather data loads", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -3676,7 +3779,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
       );
       await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
       await page.locator(".current-conditions.skeleton-region").waitFor();
-      assert.equal(await page.locator(".skeleton-card").count(), 8);
+      assert.equal(await page.locator(".skeleton-card").count(), 9);
       assert.equal(
         await page.locator(".skeleton-card").evaluateAll(
           // animate every reserved condition card
@@ -3855,6 +3958,7 @@ test("real browser rejects Los Angeles DST gaps and overlaps from UTC without lo
   }
 });
 
+// retain unit preferences and geometry across all condition cards
 test("real browser configures and persists every measurement unit preference", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -4057,7 +4161,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(207, 67, 55)", condition: "uv-index", opacity: "0.75" },
       ],
     );
-    assert.equal(await page.locator(".condition-card").count(), 8);
+    assert.equal(await page.locator(".condition-card").count(), 9);
     assert.deepEqual(
       await page.locator(".condition-card").evaluateAll(
         // retain the requested dashboard sequence
@@ -4066,7 +4170,7 @@ test("real browser configures and persists every measurement unit preference", {
           (card) => card.getAttribute("data-condition"),
         ),
       ),
-      ["temperature", "wind", "rain", "tide", "humidity", "air-quality", "pressure", "uv-index"],
+      ["temperature", "wind", "rain", "tide", "humidity", "air-quality", "pressure", "uv-index", "sunset"],
     );
     assert.equal(
       await page.locator(".condition-forecast-reading").evaluateAll(

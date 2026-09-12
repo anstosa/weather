@@ -12,6 +12,7 @@ import {
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
+  eveningSunTimes,
   forecastMetricValue,
   forecastForSiteDay,
   forecastForSiteDays,
@@ -900,6 +901,98 @@ test("extended forecast retains raw values after 168 hours without an infobox", 
   assert.equal(forecastMetricValue(invalidActive.data[0], "temperatureC"), raw.metrics.temperatureC);
 });
 
+// compare solar events against independent seasonal reference instants
+// https://gml.noaa.gov/grad/solcalc/table.php?lat=47.95043&lon=-122.42797&year=2026
+// https://github.com/mourner/suncalc/blob/0ed9f4981b3e2f7a6bde7b340eb965488128c3c1/index.js
+test("evening solar events match the farm's summer, winter, and autumn reference times", () => {
+  const references = [
+    { day: "2026-09-12", goldenHourStart: "2026-09-13T01:46:59Z", sunset: "2026-09-13T02:27:49Z" },
+    { day: "2026-01-15", goldenHourStart: "2026-01-15T23:54:04Z", sunset: "2026-01-16T00:44:36Z" },
+    { day: "2026-06-15", goldenHourStart: "2026-06-16T03:22:16Z", sunset: "2026-06-16T04:10:58Z" },
+  ];
+
+  // retain independent expected instants rather than duplicating the algorithm
+  for (const reference of references) {
+    const actual = eveningSunTimes(site, new Date(`${reference.day}T20:00:00Z`));
+    assert.ok(Math.abs(actual.sunset.getTime() - Date.parse(reference.sunset)) < 15_000);
+    assert.ok(Math.abs(actual.goldenHourStart.getTime() - Date.parse(reference.goldenHourStart)) < 15_000);
+    assert.ok(actual.goldenHourStart < actual.sunset);
+    assert.notEqual(actual.sunset.getTime() - actual.goldenHourStart.getTime(), 3_600_000);
+  }
+});
+
+// keep the selected day independent of UTC midnight and the last weather sample
+test("sunset remains today's event after dusk and changes at farm midnight", () => {
+  const morning = eveningSunTimes(site, new Date("2026-09-12T15:00:00Z"));
+  const afterSunset = eveningSunTimes(site, new Date("2026-09-13T06:59:59Z"));
+  const nextDay = eveningSunTimes(site, new Date("2026-09-13T07:00:00Z"));
+  assert.deepEqual(afterSunset, morning);
+  assert.equal(toSiteWallClock(nextDay.sunset.toISOString(), site.timezone).slice(0, 10), "2026-09-13");
+  assert.notEqual(nextDay.sunset.getTime(), morning.sunset.getTime());
+});
+
+// preserve the local calendar through both daylight-saving transitions
+test("solar times use the site day across spring and autumn clock changes", () => {
+  // cover the skipped and repeated farm hours
+  for (const [before, after, expectedDay] of [
+    ["2026-03-08T09:59:59Z", "2026-03-08T10:00:00Z", "2026-03-08"],
+    ["2026-11-01T08:59:59Z", "2026-11-01T09:00:00Z", "2026-11-01"],
+  ]) {
+    const times = eveningSunTimes(site, new Date(before));
+    assert.deepEqual(eveningSunTimes(site, new Date(after)), times);
+    assert.equal(toSiteWallClock(times.sunset.toISOString(), site.timezone).slice(0, 10), expectedDay);
+  }
+});
+
+// align the civil date where a timezone crosses the longitude date boundary
+test("solar events keep the requested local day across the international date line", () => {
+  const island = { latitude: 1.8721, longitude: -157.4278, timezone: "Pacific/Kiritimati" };
+  const times = eveningSunTimes(island, new Date("2026-09-11T22:00:00Z"));
+  assert.equal(toSiteWallClock(times.sunset.toISOString(), island.timezone).slice(0, 10), "2026-09-12");
+  assert.equal(toSiteWallClock(times.goldenHourStart.toISOString(), island.timezone).slice(0, 10), "2026-09-12");
+});
+
+// preserve absent crossings during polar day and night
+test("solar events return no time when the sun never crosses the requested altitude", () => {
+  const polarSite = { latitude: 89, longitude: 0, timezone: "UTC" };
+
+  // cover both polar seasons independently
+  for (const day of ["2026-06-21", "2026-12-21"]) {
+    assert.deepEqual(eveningSunTimes(polarSite, new Date(`${day}T12:00:00Z`)), {
+      goldenHourStart: null,
+      sunset: null,
+    });
+  }
+});
+
+// render today's calculated readings rather than the older fixture observation date
+test("sunset tile emphasizes today's sunset with golden hour as the secondary stat", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-13T05:00:00Z") });
+  const state = {
+    ...new WeatherDashboardController({ storage: null }).state,
+    current: [record],
+    loading: false,
+    selectedSite: site,
+  };
+  const html = renderWeatherDashboard(state);
+  const sunset = html.match(/<article[^>]*data-condition="sunset"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(sunset);
+  assert.match(sunset, /<span>Today<\/span>/u);
+  assert.match(sunset, /class="condition-primary"><strong>7:28<small>PM<\/small><\/strong>/u);
+  assert.match(sunset, /class="condition-secondary-divider">Golden hour<\/span>\s*<strong>6:47<small>PM<\/small><\/strong>/u);
+  assert.doesNotMatch(sunset, /condition-forecast-reading /u);
+  assert.doesNotMatch(renderWeatherDashboard(state, "forecast"), /data-condition="sunset"/u);
+
+  const polarHtml = renderWeatherDashboard({
+    ...state,
+    selectedSite: { ...site, latitude: 89 },
+  });
+  const polarTile = polarHtml.match(/<article[^>]*data-condition="sunset"[\s\S]*?<\/article>/u)?.[0];
+  assert.match(polarTile, /<strong>—<\/strong>/u);
+  assert.doesNotMatch(polarTile, /Invalid|NaN/u);
+});
+
+// retain the complete dashboard and route contracts
 test("dashboard separates current conditions from the historical logs route", () => {
   const state = {
     current: [record, physicalRecord],
@@ -1335,8 +1428,8 @@ test("dashboard separates current conditions from the historical logs route", ()
     html,
     /class="panel current-panel"|id="current-heading"|class="freshness|class="provenance"|Right now|Nearby model value/u,
   );
-  assert.equal((html.match(/class="condition-card /gu) ?? []).length, 8);
-  assert.equal((html.match(/class="condition-color"/gu) ?? []).length, 8);
+  assert.equal((html.match(/class="condition-card /gu) ?? []).length, 9);
+  assert.equal((html.match(/class="condition-color"/gu) ?? []).length, 9);
   assert.equal((html.match(/<rect width="1\.4"/gu) ?? []).length, 0);
   assert.match(html, /class="condition-card temperature-condition" data-condition="temperature"/u);
   assert.match(html, /class="condition-card wind-condition" data-condition="wind"/u);
@@ -1344,7 +1437,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /class="condition-card compact-condition tide-condition" data-condition="tide"/u);
   assert.equal(html.indexOf('data-condition="wind"') < html.indexOf('data-condition="rain"'), true);
   assert.equal(
-    ["rain", "tide", "humidity", "air-quality", "pressure", "uv-index"].every(
+    ["rain", "tide", "humidity", "air-quality", "pressure", "uv-index", "sunset"].every(
       // keep every requested card after its predecessor
       (condition, index, conditions) => index === 0 ||
         html.indexOf(`data-condition="${conditions[index - 1]}"`) < html.indexOf(`data-condition="${condition}"`),
@@ -1356,7 +1449,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /Gusts/u);
   assert.match(html, /Comfortable outdoor temperature/u);
   assert.match(html, /Peak reading 16 mph/u);
-  assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 4);
+  assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 5);
   assert.match(html, /data-condition="tide"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?<span>High<\/span>[\s\S]*?<div class="condition-primary"><strong>8\.2<small>ft<\/small><\/strong>[\s\S]*?class="condition-secondary-divider">Direction<\/span>[\s\S]*?<strong>Rising<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="tide"[\s\S]*?class="condition-detail">Rising<\/p>/u);
   assert.doesNotMatch(html, /condition-forecast-heading/u);
@@ -1381,7 +1474,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /-0\.4–\+0\.9 %/u);
   assert.doesNotMatch(html, /class="current-grid"|class="metric/u);
   assert.doesNotMatch(html, /<article class="condition-card[^>]+style=/u);
-  assert.equal((html.match(/class="condition-status-color"/gu) ?? []).length, 8);
+  assert.equal((html.match(/class="condition-status-color"/gu) ?? []).length, 9);
   assert.match(html, /data-condition="air-quality"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?fill="rgb\(0, 146, 63\)"/u);
   assert.match(settingsHtml, /class="material-symbols-rounded" aria-hidden="true">settings<\/span>/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?>device_thermostat<\/span>/u);
@@ -1402,7 +1495,8 @@ test("dashboard separates current conditions from the historical logs route", ()
     /<p class="notice" role="status">Refreshing weather data…<\/p>/u,
   );
   assert.equal((initialHomeHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 1);
-  assert.equal((initialHomeHtml.match(/class="condition-card [^"]*skeleton-card"/gu) ?? []).length, 8);
+  assert.equal((initialHomeHtml.match(/class="condition-card [^"]*skeleton-card"/gu) ?? []).length, 9);
+  assert.match(initialHomeHtml, /data-condition="sunset"[\s\S]*?Golden hour/u);
   assert.match(initialHomeHtml, /data-condition="rain"[\s\S]*?Accumulation[\s\S]*?Max[\s\S]*?Total/u);
   assert.equal((initialHomeHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 0);
   assert.equal((initialHomeHtml.match(/class="trend-chart skeleton-trend-chart"/gu) ?? []).length, 0);

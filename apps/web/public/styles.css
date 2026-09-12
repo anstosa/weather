@@ -978,13 +978,23 @@ h2 {
   min-height: 12rem;
 }
 
-.rain-condition,
-.air-quality-condition {
+.rain-condition {
   grid-column: span 6;
 }
 
-.compact-condition {
+.compact-condition,
+.air-quality-condition {
   grid-column: span 3;
+}
+
+/* use the full tile width for evening clock readings */
+.sunset-condition .condition-body,
+.sunset-condition .condition-secondary {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.sunset-condition .condition-forecast {
+  display: none;
 }
 
 /* admin indoor house cross section */
@@ -3990,8 +4000,14 @@ td small {
 
 /* retain useful tablet columns */
 @media (max-width: 55rem) {
-  .compact-condition {
+  .compact-condition,
+  .air-quality-condition {
     grid-column: span 6;
+  }
+
+  /* fill the final row in two-column layouts */
+  .compact-condition.sunset-condition {
+    grid-column: 1 / -1;
   }
 
   .compact-condition .condition-detail {

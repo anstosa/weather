@@ -2452,8 +2452,42 @@ export function mountWeatherDashboard(
         ?.focus({ preventScroll: true });
     }
   });
+  bindSunsetDayRefresh(root, controller);
   void controller.initialize();
   return controller;
+}
+
+// refresh the calendar tile at farm midnight and after a suspended tab resumes
+function bindSunsetDayRefresh(root: HTMLElement, controller: WeatherDashboardController): void {
+  let timer: number | undefined;
+
+  // update only the calculated tile without refetching weather or disturbing controls
+  const refresh = (): void => {
+    window.clearTimeout(timer);
+
+    // retire the clock when its dashboard is removed
+    if (!root.isConnected) {
+      document.removeEventListener("visibilitychange", refresh);
+      return;
+    }
+
+    const tile = root.querySelector("[data-condition='sunset']:not(.skeleton-card)");
+
+    // leave loading skeletons and other routes untouched
+    if (tile !== null) {
+      tile.outerHTML = renderSunsetCondition(controller.state);
+    }
+
+    const now = new Date();
+    const timezone = controller.state.selectedSite?.timezone ?? PRODUCT_SITE.timezone;
+    const day = formatWallClockParts(now, timezone);
+    const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
+    const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
+    timer = window.setTimeout(refresh, Math.max(1, midnight - now.getTime()));
+  };
+
+  document.addEventListener("visibilitychange", refresh);
+  refresh();
 }
 
 // render the complete accessible dashboard
@@ -2831,6 +2865,7 @@ function renderCurrent(state: DashboardState): string {
           measurement: formatFixedMeasurement(uvIndex, ""),
           forecast: forecastMaximumFixed(forecast, "uvIndex", "", 1, uvBand, useForecastAdjustments),
         })}
+      ${renderSunsetCondition(state)}
     </section>
   `;
 }
@@ -2917,6 +2952,7 @@ function renderCurrentSkeleton(): string {
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "0.0" } }] }, icon: "wb_sunny", label: "UV index" },
+    { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
   ];
 
   return `
@@ -2941,6 +2977,109 @@ function renderCurrentSkeleton(): string {
       ).join("")}
     </section>
   `;
+}
+
+// calculate flat-horizon evening events for the site's current calendar day
+export function eveningSunTimes(
+  site: Pick<WeatherSite, "latitude" | "longitude" | "timezone">,
+  now = new Date(),
+): Readonly<{ goldenHourStart: Date | null; sunset: Date | null }> {
+  const day = formatWallClockParts(now, site.timezone);
+  const midnight = Date.UTC(day.year, day.month - 1, day.day);
+  const localNoon = Date.parse(fromSiteWallClock(
+    formatWallClock({ ...day, hour: 12, minute: 0 }),
+    site.timezone,
+  ));
+  const solarNoon = midnight + (720 - 4 * site.longitude) * 60_000;
+  // align civil and solar dates across the international date line
+  const solarDay = midnight + Math.round((localNoon - solarNoon) / 86_400_000) * 86_400_000;
+
+  return {
+    // use the evening +6° crossing rather than a fixed hour before sunset
+    goldenHourStart: eveningSolarEvent(solarDay, site.latitude, site.longitude, 6),
+    sunset: eveningSolarEvent(solarDay, site.latitude, site.longitude, -0.833),
+  };
+}
+
+// solve NOAA's descending hour angle with event-time declination and refraction
+// https://gml.noaa.gov/grad/solcalc/main.js
+// golden-hour convention: https://github.com/mourner/suncalc
+function eveningSolarEvent(
+  midnight: number,
+  latitude: number,
+  longitude: number,
+  altitude: number,
+): Date | null {
+  const radians = Math.PI / 180;
+  const latitudeRadians = latitude * radians;
+  let instant = midnight + 12 * 3_600_000;
+
+  // refine each event to sub-minute precision
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const century = (instant / 86_400_000 + 2_440_587.5 - 2_451_545) / 36_525;
+    const meanLongitude = (280.46646 + century * (36_000.76983 + 0.0003032 * century)) * radians;
+    const meanAnomaly = (357.52911 + century * (35_999.05029 - 0.0001537 * century)) * radians;
+    const eccentricity = 0.016708634 - century * (0.000042037 + 0.0000001267 * century);
+    const center = Math.sin(meanAnomaly) * (1.914602 - century * (0.004817 + 0.000014 * century)) +
+      Math.sin(2 * meanAnomaly) * (0.019993 - 0.000101 * century) +
+      Math.sin(3 * meanAnomaly) * 0.000289;
+    const omega = (125.04 - 1934.136 * century) * radians;
+    const apparentLongitude = meanLongitude + (center - 0.00569 - 0.00478 * Math.sin(omega)) * radians;
+    const obliquity = (23 + (26 + (21.448 - century * (46.815 +
+      century * (0.00059 - 0.001813 * century))) / 60) / 60 + 0.00256 * Math.cos(omega)) * radians;
+    const declination = Math.asin(Math.sin(obliquity) * Math.sin(apparentLongitude));
+    const tangentSquared = Math.tan(obliquity / 2) ** 2;
+    const equationMinutes = 4 / radians * (
+      tangentSquared * Math.sin(2 * meanLongitude) - 2 * eccentricity * Math.sin(meanAnomaly) +
+      4 * eccentricity * tangentSquared * Math.sin(meanAnomaly) * Math.cos(2 * meanLongitude) -
+      0.5 * tangentSquared ** 2 * Math.sin(4 * meanLongitude) -
+      1.25 * eccentricity ** 2 * Math.sin(2 * meanAnomaly)
+    );
+    const cosineHourAngle = (Math.sin(altitude * radians) -
+      Math.sin(latitudeRadians) * Math.sin(declination)) /
+      (Math.cos(latitudeRadians) * Math.cos(declination));
+
+    // preserve absent polar crossings without inventing a clock time
+    if (!Number.isFinite(cosineHourAngle) || Math.abs(cosineHourAngle) > 1) {
+      return null;
+    }
+
+    const hourAngle = Math.acos(cosineHourAngle) / radians;
+    instant = midnight + (720 - 4 * longitude + 4 * hourAngle - equationMinutes) * 60_000;
+  }
+
+  return new Date(instant);
+}
+
+// show today's evening events independently of stale weather observations
+function renderSunsetCondition(state: DashboardState): string {
+  const site = state.selectedSite ?? PRODUCT_SITE;
+  const times = eveningSunTimes(site);
+
+  return renderConditionCard({
+    band: { color: "rgb(239, 126, 31)", detail: "", label: "Today" },
+    className: "compact-condition sunset-condition",
+    forecast: { readings: [] },
+    icon: "wb_sunny",
+    label: "Sunset",
+    measurement: formatSunTime(times.sunset, site.timezone),
+    secondary: {
+      label: "Golden hour",
+      measurement: formatSunTime(times.goldenHourStart, site.timezone),
+    },
+  });
+}
+
+// round calculated events to a local minute with subordinate meridiem
+function formatSunTime(value: Date | null, timezone: string): FormattedMeasurement {
+  // keep absent solar crossings explicit
+  if (value === null) {
+    return { unit: "", value: "—" };
+  }
+
+  const rounded = new Date(Math.round(value.getTime() / 60_000) * 60_000);
+  const [time, period = ""] = formatForecastTime(rounded.toISOString(), timezone).split(" ");
+  return { unit: period, value: time! };
 }
 
 // render the latest observed tide and next local event
