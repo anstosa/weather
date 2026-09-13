@@ -162,6 +162,26 @@ npm run remote:backup:pull
 
 The SSH-backed commands require a loaded agent containing the deployment key.
 The HTTPS tunnel check and test URL commands do not require SSH access.
+The forced-command `ssh-run.sh yolo` uses bootstrap `deploy/.env`, not the
+active release's settings. When an immutable new release must preserve reviewed
+canary settings, use the host-administrator `update.sh yolo RELEASE --from`
+form with the exact absolute path to the reviewed prior release file. Confirm
+the new target release file does not already exist: `yolo` reuses an existing
+rendered target and then ignores `--from`. Review the exact source first; a
+kill-switch value of `1` kills its canary, while `0` permits the already
+authorized runtime. The source also supplies database identity, application
+image repositories, and infrastructure image references; the new release tag
+is resolved separately to immutable application image digests.
+Do not edit a published release environment to change these values.
+
+For the `2026.09.13-2` canary-restoration release, the reviewed source is the
+unchanged `2026.09.12-1.env` with both kill switches at `0`:
+
+```bash
+sudo /opt/weather/current/deploy/scripts/update.sh yolo 2026.09.13-2 \
+  --from /opt/weather/current/deploy/releases/2026.09.12-1.env
+```
+
 The Tempest backfill command imports every active configured station through
 yesterday, resumes only exact successful chunks, and stores its private report
 under `/var/lib/weather` on the server.
