@@ -11,6 +11,7 @@ import {
   listTideRecords,
   listWeatherHistory,
   listWeatherTrends,
+  readRainCollectionStatus,
   verifyMigrationReadiness,
   type ActiveSiteRow,
   type CurrentQuery,
@@ -45,7 +46,9 @@ import {
   type JsonValue,
   type SourceKind,
   type StationKind,
+  type RainCollectionStatus,
 } from "@weather/domain";
+import { projectRainCollectionStatus } from "./rain-collection.js";
 
 type DatabasePool = Parameters<typeof listActiveSites>[0];
 type LoadedApiForecastAdjustmentRuntime =
@@ -62,6 +65,7 @@ export interface HealthSnapshot {
 }
 
 export interface WeatherReadStore {
+  getRainCollectionStatus?(): Promise<RainCollectionStatus>;
   getDailyPrecipitation(
     siteSlug: string,
     from: string,
@@ -372,6 +376,7 @@ type Route =
   | Readonly<{ kind: "current"; siteSlug: string }>
   | Readonly<{ kind: "dailyPrecipitation"; siteSlug: string }>
   | Readonly<{ kind: "forecast"; siteSlug: string }>
+  | Readonly<{ kind: "rainCollection"; siteSlug: string }>
   | Readonly<{ kind: "history"; siteSlug: string }>
   | Readonly<{ kind: "tides"; siteSlug: string }>
   | Readonly<{ kind: "trends"; siteSlug: string }>;
@@ -428,6 +433,10 @@ export function createDatabaseWeatherReadStore(
   options: DatabaseStoreOptions,
 ): WeatherReadStore {
   return {
+    // read the aggregate-only view without access to raw provider bodies
+    async getRainCollectionStatus() {
+      return await readRainCollectionStatus(pool);
+    },
     // sum the nearest physical gauge for one local day
     async getDailyPrecipitation(siteSlug, from, to) {
       return await getDailyPrecipitation(pool, { from, siteSlug, to });
@@ -1066,6 +1075,20 @@ async function handleReadRoute(
   const sites = groupSites(await store.listSites());
   const site = findSite(sites, route.siteSlug);
 
+  // expose collection evidence without implying an active rain adjustment
+  if (route.kind === "rainCollection") {
+    rejectUnexpectedParameters(url.searchParams, new Set());
+    // restrict the new capture contract to its one authorized site
+    if (route.siteSlug !== "ballydidean" || store.getRainCollectionStatus === undefined) {
+      throw new HttpError(404, "not_found", "Endpoint not found");
+    }
+    return jsonResponse({
+      data: projectRainCollectionStatus(await store.getRainCollectionStatus()),
+      generatedAt,
+      version,
+    });
+  }
+
   // serve selected current rows
   if (route.kind === "current") {
     rejectUnexpectedParameters(url.searchParams, new Set(["source", "station"]));
@@ -1339,6 +1362,11 @@ function matchRoute(pathname: string): Route {
     // match forecast rows
     if (resource === "forecast") {
       return { kind: "forecast", siteSlug };
+    }
+
+    // match aggregate evidence rather than private observations or model outputs
+    if (resource === "rain-collection") {
+      return { kind: "rainCollection", siteSlug };
     }
 
     // match trend buckets

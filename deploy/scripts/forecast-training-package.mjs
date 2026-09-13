@@ -78,6 +78,17 @@ const EXPECTED_MIGRATIONS = {
     "0013_ecmwf_temperature_canary.sql",
   ],
 };
+// retain the old package ledger alongside the exact additive collection migration
+const ALLOWED_MIGRATION_LEDGERS = [
+  EXPECTED_MIGRATIONS,
+  {
+    checksums: [
+      ...EXPECTED_MIGRATIONS.checksums,
+      "2a311e2effcc975442c1011c627c125521cc4396323b32f0d0c4f92ea1ccba04",
+    ],
+    names: [...EXPECTED_MIGRATIONS.names, "0014_rain_collection.sql"],
+  },
+];
 const ROW_KEYS = [
   "adapter_contracts",
   "collision_count",
@@ -658,12 +669,13 @@ function validateUpstreamManifest(value) {
     throw new Error("database migration manifest is invalid");
   }
 
+  // accept only either exact checked repository ledger
+  const knownLedger = ALLOWED_MIGRATION_LEDGERS.some((ledger) =>
+    JSON.stringify(manifest.migration_names) === JSON.stringify(ledger.names) &&
+    JSON.stringify(manifest.migration_checksums) === JSON.stringify(ledger.checksums));
+
   // reject missing, unknown, or changed migrations
-  if (
-    JSON.stringify(manifest.migration_names) !== JSON.stringify(EXPECTED_MIGRATIONS.names) ||
-    JSON.stringify(manifest.migration_checksums) !==
-      JSON.stringify(EXPECTED_MIGRATIONS.checksums)
-  ) {
+  if (!knownLedger) {
     throw new Error("database migration manifest does not match the checked repository ledger");
   }
 

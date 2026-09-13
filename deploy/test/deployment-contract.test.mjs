@@ -1379,6 +1379,9 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /apps\/worker\/dist\/worker\.js --once/u);
   assert.match(update, /state='succeeded'/u);
   assert.match(update, /0009_forecast_anchor_records\.sql/u);
+  assert.match(update, /0014_rain_collection\.sql/u);
+  assert.match(update, /DROP VIEW IF EXISTS rain_collection_status_v1/u);
+  assert.match(update, /DROP TABLE IF EXISTS rain_capture_receipts/u);
   assert.match(update, /DROP TABLE IF EXISTS forecast_anchor_records/u);
   assert.match(update, /open-meteo-forecast-v4/u);
   assert.match(update, /\/forecast/u);
@@ -1410,14 +1413,17 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   );
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
   const composeIntegration = read("deploy/test/compose.integration.test.mjs");
-  assert.match(composeIntegration, /"git",[\s\n]*\["archive"/u);
+  // preserve prior image file modes under a restrictive umask
+  assert.match(composeIntegration, /"git",[\s\n]*\["-c", "tar\.umask=0022", "archive"/u);
+  assert.match(composeIntegration, /"--extract", "--same-permissions"/u);
   assert.match(composeIntegration, /baselineServerRelease = "2026\.09\.01-9"/u);
   assert.match(composeIntegration, /weather\.test\.baseline/u);
   assert.match(composeIntegration, /0009_forecast_anchor_records\.sql/u);
+  assert.match(composeIntegration, /0014_rain_collection\.sql/u);
   assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
-    /allowlists only the verified installed version 6[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
+    /allowlists only the verified installed version 8[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
   );
 });
 

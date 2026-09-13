@@ -1,4 +1,7 @@
 services:
+  worker:
+    environment:
+      WEATHER_RAIN_COLLECTION_ENABLED: "0"
   postgres:
     volumes:
       - weather_verify_postgres:/var/lib/postgresql/data

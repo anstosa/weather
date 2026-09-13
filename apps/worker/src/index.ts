@@ -9,3 +9,4 @@ export * from "./source-identity.js";
 export * from "./tempest-backfill-cli.js";
 export * from "./tide-backfill-cli.js";
 export * from "./worker.js";
+export * from "./rain-collection.js";

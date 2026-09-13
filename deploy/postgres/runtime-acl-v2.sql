@@ -57,6 +57,42 @@ BEGIN
   END IF;
 END;
 $canary_acl$;
+-- grant prospective capture authority only when the complete private schema exists
+DO $rain_capture_acl$
+DECLARE
+  rain_column record;
+BEGIN
+  IF to_regclass('public.rain_capture_claims') IS NOT NULL
+    AND to_regclass('public.rain_capture_receipts') IS NOT NULL
+    AND to_regclass('public.rain_collection_status_v1') IS NOT NULL THEN
+    GRANT SELECT, INSERT ON rain_capture_claims, rain_capture_receipts TO weather_ingest;
+    GRANT SELECT ON rain_collection_status_v1 TO weather_ingest, weather_api;
+    REVOKE ALL ON rain_capture_claims, rain_capture_receipts FROM weather_api, weather_training_export;
+    REVOKE ALL ON rain_collection_status_v1 FROM weather_training_export;
+    -- clear historical column grants that table-level revocation does not remove
+    FOR rain_column IN
+      SELECT relation.relname AS table_name, attribute.attname AS column_name
+      FROM pg_class relation
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+      WHERE namespace.nspname = 'public'
+        AND relation.relname IN (
+          'rain_capture_claims', 'rain_capture_receipts', 'rain_collection_status_v1'
+        )
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    LOOP
+      EXECUTE format(
+        'REVOKE ALL (%I) ON %I FROM weather_api, weather_ingest, weather_training_export',
+        rain_column.column_name, rain_column.table_name
+      );
+    END LOOP;
+  ELSIF to_regclass('public.rain_capture_claims') IS NOT NULL
+    OR to_regclass('public.rain_capture_receipts') IS NOT NULL
+    OR to_regclass('public.rain_collection_status_v1') IS NOT NULL THEN
+    RAISE EXCEPTION 'prospective rain capture schema is incomplete';
+  END IF;
+END;
+$rain_capture_acl$;
 GRANT UPDATE (
   last_ingestion_run_id,
   last_received_at,

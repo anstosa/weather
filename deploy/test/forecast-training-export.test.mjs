@@ -99,6 +99,10 @@ const migrationHistory = createHash("sha256")
   .update(migrationNames.map((name, index) =>
     `${name}:${migrationChecksums[index]}`).join("\n"))
   .digest("hex");
+const rainCollectionMigration = {
+  checksum: "2a311e2effcc975442c1011c627c125521cc4396323b32f0d0c4f92ea1ccba04",
+  name: "0014_rain_collection.sql",
+};
 const stationProviders = new Map([
   ["ambient-maxweather", "ambient"],
   ["ambient-merlin", "ambient"],
@@ -668,6 +672,62 @@ test("package migration ledger matches immutable repository bytes", async () => 
       join(repoRoot, "packages/database/migrations", migrationNames[index]),
     );
     assert.equal(createHash("sha256").update(bytes).digest("hex"), migrationChecksums[index]);
+  }
+  const rainMigration = await readFile(
+    join(repoRoot, "packages/database/migrations", rainCollectionMigration.name),
+  );
+  assert.equal(createHash("sha256").update(rainMigration).digest("hex"), rainCollectionMigration.checksum);
+});
+
+// preserve retained snapshots while allowing the exact additive migration
+test("package verifies both retained 13 and new 14 migration ledgers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-training-rain-ledger-"));
+
+  try {
+    const retainedDirectory = join(directory, "retained");
+    await mkdir(retainedDirectory);
+    const retained = await buildFixture(retainedDirectory);
+    const retainedVerified = runHelper(["verify", retained.output]);
+    assert.equal(retainedVerified.status, 0, retainedVerified.stderr);
+
+    const input = join(directory, "new-transaction.jsonl");
+    await writeTransaction(input);
+    const lines = (await readFile(input, "utf8")).trimEnd().split("\n");
+    const envelope = JSON.parse(lines[0]);
+    envelope.payload.migration_names.push(rainCollectionMigration.name);
+    envelope.payload.migration_checksums.push(rainCollectionMigration.checksum);
+    envelope.payload.migration_history_sha256 = createHash("sha256")
+      .update(envelope.payload.migration_names.map((name, index) =>
+        `${name}:${envelope.payload.migration_checksums[index]}`).join("\n"))
+      .digest("hex");
+    lines[0] = JSON.stringify(envelope);
+    await writeFile(input, `${lines.join("\n")}\n`);
+
+    const output = join(directory, "new-package");
+    const built = runHelper(["build", input, output, "2026-08-23", "2026-08-24"]);
+    assert.equal(built.status, 0, built.stderr);
+    const verified = runHelper(["verify", output]);
+    assert.equal(verified.status, 0, verified.stderr);
+    assert.equal(verified.stdout.trim(), built.stdout.trim());
+    const packageManifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
+    assert.deepEqual(packageManifest.databaseManifest.migration_names, [
+      ...migrationNames,
+      rainCollectionMigration.name,
+    ]);
+
+    // reject a self-consistent forged additive checksum
+    envelope.payload.migration_checksums[envelope.payload.migration_checksums.length - 1] = hashA;
+    envelope.payload.migration_history_sha256 = createHash("sha256")
+      .update(envelope.payload.migration_names.map((name, index) =>
+        `${name}:${envelope.payload.migration_checksums[index]}`).join("\n"))
+      .digest("hex");
+    lines[0] = JSON.stringify(envelope);
+    await writeFile(input, `${lines.join("\n")}\n`);
+    const forged = runHelper(["build", input, join(directory, "forged-package"), "2026-08-23", "2026-08-24"]);
+    assert.notEqual(forged.status, 0);
+    assert.match(forged.stderr, /checked repository ledger/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
   }
 });
 

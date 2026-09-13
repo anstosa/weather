@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
@@ -188,14 +188,16 @@ async function buildBaselineServerImage(directory, targetImage) {
   await mkdir(buildRoot);
   await executeFile(
     "git",
-    ["archive", "--format=tar", "--output", archivePath, revision],
+    ["-c", "tar.umask=0022", "archive", "--format=tar", "--output", archivePath, revision],
     { cwd: repoRoot, timeout: 30_000 },
   );
   await executeFile(
     "tar",
-    ["--extract", "--file", archivePath, "--directory", buildRoot],
+    ["--extract", "--same-permissions", "--file", archivePath, "--directory", buildRoot],
     { timeout: 30_000 },
   );
+  // preserve the committed package mode for the non-root prior image
+  assert.equal((await stat(join(buildRoot, "package.json"))).mode & 0o777, 0o644);
   await executeFile(
     "docker",
     [
@@ -541,7 +543,7 @@ test(
         "sh",
         previousServerImage,
         "-c",
-        "test ! -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test ! -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test ! -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test ! -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test ! -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test ! -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
+        "test ! -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test ! -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test ! -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test ! -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test ! -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test ! -f /opt/weather/packages/database/migrations/0014_rain_collection.sql && test ! -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       await executeFile("docker", [
         "run",
@@ -550,7 +552,7 @@ test(
         "sh",
         targetServerImage,
         "-c",
-        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
+        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test -f /opt/weather/packages/database/migrations/0014_rain_collection.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
@@ -1172,7 +1174,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
             "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
             "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
             `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
-            "WEATHER_CONTROL_PLANE_VERSION=8",
+            "WEATHER_CONTROL_PLANE_VERSION=9",
             "",
           ].join("\n"),
           { mode: 0o600 },

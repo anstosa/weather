@@ -38,14 +38,14 @@ do not run a host policy that widens those limits after container creation.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
-   Control-plane version 8 allowlists only the verified installed version 6
-   production digest `c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5`
-   as its predecessor. That ten-field release format includes the wind kill
-   switch; new releases have eleven fields and persist the independent
-   temperature switch as well. All other cross-version or cross-digest handoffs
-   are unsupported. Do not rewrite release metadata or
-   use wildcard handoffs: every mutating lifecycle action rejects any other
-   mismatch before changing images, containers, the database, or release state.
+   Control-plane version 9 allowlists only the verified installed version 8
+   production digest `399bb66688833b73e6a6679db66f0f3c54814c0962b7909f31734190030608e3`
+   as its predecessor. Version 8 and 9 releases use the same eleven-field
+   format; rain collection adds no persisted release field or model activation.
+   All other cross-version or cross-digest handoffs are unsupported. Do not
+   rewrite release metadata or use wildcard handoffs: every mutating lifecycle
+   action rejects any other mismatch before changing images, containers, the
+   database, or release state.
 4. Generate separate long random administrator, owner, API, and ingestion
    passwords. The administrator and owner values must differ. Install the four
    `weather_postgres_*` sources for `999:999`; the administrator source is
@@ -166,6 +166,81 @@ The Tempest backfill command imports every active configured station through
 yesterday, resumes only exact successful chunks, and stores its private report
 under `/var/lib/weather` on the server.
 
+### One-time version-eight to version-nine host handoff
+
+The forced-command release client runs the already-installed `update.sh`; an
+image-only `yolo` cannot install the new Compose, ACL, or lifecycle files. Before
+the first rain-collection release, use a serialized host-administrator window
+with no Weather `yolo`, stage, activate, rollback, recover, backup, restore, or
+migration in flight. Keep the existing containers running. Do not modify
+`deploy/.env`, `deploy/releases`, `deploy/state`, or `deploy/secrets`.
+
+Build a candidate only from the reviewed immutable release tag, not the dirty
+worktree. The five installed files are `deploy/compose.yaml`,
+`deploy/postgres/runtime-acl-v2.sql`, `deploy/scripts/common.sh`,
+`deploy/scripts/forecast-training-package.mjs`, and
+`deploy/scripts/update.sh`. Replace `REVIEWED_TAG` with the actual tag:
+
+```bash
+tag=REVIEWED_TAG
+git rev-parse --verify "$tag^{commit}"
+handoff=$(mktemp -d)
+git -c tar.umask=0022 archive --format=tar --output="$handoff/control.tar" "$tag" \
+  deploy/scripts deploy/postgres deploy/systemd deploy/sudoers deploy/compose.yaml
+git show "$tag:scripts/install-rain-control-plane.sh" >"$handoff/install.sh"
+tar --no-same-owner --same-permissions -xf "$handoff/control.tar" -C "$handoff"
+archive_sha=$(sha256sum "$handoff/control.tar" | awk '{print $1}')
+helper_sha=$(sha256sum "$handoff/install.sh" | awk '{print $1}')
+candidate_sha=$(bash -c 'source "$1"; control_digest "$2"' \
+  handoff "$handoff/install.sh" "$handoff")
+remote_handoff=$(ssh blueberry 'umask 077; mktemp -d "$HOME/.weather-rain-control.XXXXXX"')
+scp "$handoff/control.tar" "$handoff/install.sh" "blueberry:$remote_handoff/"
+ssh blueberry "printf '%s  %s\n%s  %s\n' \
+  '$archive_sha' '$remote_handoff/control.tar' \
+  '$helper_sha' '$remote_handoff/install.sh' | sha256sum -c -"
+printf 'admin_stage=%q\narchive_sha=%q\nhelper_sha=%q\ncandidate_sha=%q\n' \
+  "$remote_handoff" "$archive_sha" "$helper_sha" "$candidate_sha"
+ssh -t blueberry
+```
+
+In that host-administrator session, enter `sudo -s` using the protected
+interactive prompt. Paste the four exact assignment lines printed above, then
+run the following in the root shell. The uploaded helper is never executed
+directly: root first copies it into new private staging and verifies that copy.
+
+```bash
+set -euo pipefail
+umask 077
+install -d -m 0700 /var/lib/weather/control-plane-backups
+root_handoff=$(mktemp -d /var/lib/weather/control-plane-backups/.handoff.XXXXXX)
+trap 'rm -r -- "$root_handoff"' EXIT
+install -m 0700 "$admin_stage/install.sh" "$root_handoff/install.sh"
+printf '%s  %s\n' "$helper_sha" "$root_handoff/install.sh" | sha256sum -c -
+bash "$root_handoff/install.sh" \
+  "$admin_stage/control.tar" "$archive_sha" "$candidate_sha"
+exit
+```
+
+The verified root-private helper requires the exact installed `2026.09.12-1`
+version-eight release metadata and pinned predecessor digest. It snapshots and rehashes the
+archive in private staging, allows only reviewed paths, enforces safe modes,
+retains an exact private version-eight backup, and tests that only those five
+files produce the candidate digest. It then replaces files by same-directory
+atomic rename with `update.sh` last, verifies the final digest, and restores the
+backup on a normal failure. Its private lock excludes another invocation of
+this helper only; it does **not** exclude the existing release client. An
+operator must maintain the serialized window throughout. The five renames are
+not one transaction: a host crash or `SIGKILL` cannot run shell rollback. If
+interrupted, inspect the retained backup and installed digest before any
+release command; restore the exact version-eight files as an administrator if
+needed. The version-nine allowlisted handoff trusts this verified root-owned
+installation; it does not independently attest arbitrary later host-file drift
+while the previous release still has version-eight metadata.
+
+After the helper succeeds, use the ordinary `yolo` release command above, then
+verify status and live behavior. Do not repeat the helper after version nine is
+installed, and do not rewrite the previous release metadata to bypass a guard.
+
 ## Xweather map budget
 
 The forecast map requests one 256×168 single-layer static image per provider
@@ -193,6 +268,9 @@ Compose render, pulls images, applies checked forward migrations, starts the
 Weather stack with Compose health gates, and records release state last. It does
 not require capacity evidence, create a compatibility database, or create a
 deployment-time backup. The nightly local encrypted backup is the recovery copy.
+Migration `0014_rain_collection.sql` adds private immutable capture claims and
+receipts plus an aggregate-only status view. The production worker collects
+prospective rain evidence; this release does not activate a rain adjustment model.
 
 ## Legacy staged diagnostics
 

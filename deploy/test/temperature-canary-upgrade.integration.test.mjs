@@ -109,7 +109,10 @@ test(
 
       const upgraded = await runMigrations(pool, migrationDirectory);
       assert.deepEqual(upgraded.current, prefix);
-      assert.deepEqual(upgraded.applied, ["0013_ecmwf_temperature_canary.sql"]);
+      assert.deepEqual(upgraded.applied, [
+        "0013_ecmwf_temperature_canary.sql",
+        "0014_rain_collection.sql",
+      ]);
       await applyRuntimeAcl(server, runtimeAclPath, "runtime-acl-v2-upgraded.sql");
 
       const privileges = await pool.query(`

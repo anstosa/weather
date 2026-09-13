@@ -6,4 +6,5 @@ export * from "./open-meteo.js";
 export * from "./open-meteo-previous-runs.js";
 export * from "./open-meteo-single-runs.js";
 export * from "./public-stations.js";
+export * from "./rain-capture.js";
 export * from "./tempest.js";

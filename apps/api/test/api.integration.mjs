@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
@@ -35,6 +37,11 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
   try {
     await createRuntimeRoles(admin);
     await runMigrations(admin, migrationDirectory);
+    // apply deployed privileges before exercising the private collection view
+    execFileSync("docker", ["exec", "-i", postgres.name, "psql", "--set=ON_ERROR_STOP=1",
+      "--username", postgres.user, "--dbname", "weather_test"], {
+      input: await readFile(join(repositoryRoot, "deploy/postgres/runtime-acl-v2.sql")),
+    });
     const configuration = await loadSiteConfiguration(siteConfigurationPath);
     await bootstrapSiteConfiguration(admin, configuration);
     const sources = await admin.query(
@@ -117,6 +124,22 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     const address = server.address();
     assert.ok(address && typeof address === "object");
     const origin = `http://127.0.0.1:${String(address.port)}`;
+
+    // exercise the real aggregate view through the restricted API role
+    await context.test("rain collection exposes empty evidence without model activation", async () => {
+      const response = await fetch(`${origin}/api/v1/sites/ballydidean/rain-collection`);
+      const body = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.equal(body.data.contractVersion, "rain-prospective-capture/v1");
+      assert.equal(body.data.claims, 0);
+      assert.equal(body.data.receipts, 0);
+      assert.equal(body.data.modelEnabled, false);
+      assert.equal(body.data.qualificationEnabled, false);
+      assert.equal(body.data.stationAccessAuthorized, false);
+      assert.equal(body.data.lastReceiptAt, null);
+      assert.doesNotMatch(JSON.stringify(body), /compressed_body|body_sha256|apiKey|password/u);
+    });
 
     await context.test("sites omit every inactive entity", async () => {
       const response = await fetch(`${origin}/api/v1/sites`);
@@ -293,7 +316,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0013_ecmwf_temperature_canary.sql",
+        version: "0014_rain_collection.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
@@ -339,7 +362,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0013_ecmwf_temperature_canary.sql",
+        version: "0014_rain_collection.sql",
       });
 
       const ledger = await admin.query(

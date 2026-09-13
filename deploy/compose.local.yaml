@@ -52,6 +52,8 @@ services:
     image: ${WEATHER_LOCAL_SERVER_IMAGE:-weather-server:local}
     platform: ${WEATHER_LOCAL_PLATFORM:-linux/amd64}
     build: !reset null
+    environment:
+      WEATHER_RAIN_COLLECTION_ENABLED: "0"
 
 networks:
   local_postgres_ingress:

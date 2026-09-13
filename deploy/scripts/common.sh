@@ -226,6 +226,47 @@ verify_runtime_database_acl() {
         AND has_column_privilege('weather_ingest', 'forecast_anchor_records', 'revision_count', 'UPDATE')
         AND has_sequence_privilege('weather_ingest', 'forecast_anchor_records_id_seq', 'USAGE')
         AND has_sequence_privilege('weather_ingest', 'weather_records_id_seq', 'USAGE')
+        AND has_table_privilege('weather_api', 'rain_collection_status_v1', 'SELECT')
+        AND NOT has_table_privilege('weather_api', 'rain_collection_status_v1', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND has_table_privilege('weather_ingest', 'rain_collection_status_v1', 'SELECT')
+        AND NOT has_table_privilege('weather_ingest', 'rain_collection_status_v1', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND has_table_privilege('weather_ingest', 'rain_capture_claims', 'SELECT')
+        AND has_table_privilege('weather_ingest', 'rain_capture_claims', 'INSERT')
+        AND has_table_privilege('weather_ingest', 'rain_capture_receipts', 'SELECT')
+        AND has_table_privilege('weather_ingest', 'rain_capture_receipts', 'INSERT')
+        AND NOT has_table_privilege('weather_ingest', 'rain_capture_claims', 'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND NOT has_table_privilege('weather_ingest', 'rain_capture_receipts', 'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(ARRAY['rain_capture_claims', 'rain_capture_receipts']) relation(name)
+          CROSS JOIN LATERAL unnest(ARRAY['weather_api', 'weather_training_export']) consumer(name)
+          CROSS JOIN LATERAL unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) privilege(name)
+          WHERE has_table_privilege(consumer.name, relation.name, privilege.name)
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(ARRAY['rain_capture_claims', 'rain_capture_receipts']) relation(name)
+          JOIN pg_class table_relation ON table_relation.oid = relation.name::regclass
+          JOIN pg_attribute attribute ON attribute.attrelid = table_relation.oid
+            AND attribute.attnum > 0 AND NOT attribute.attisdropped
+          CROSS JOIN LATERAL unnest(ARRAY['weather_api', 'weather_training_export']) consumer(name)
+          CROSS JOIN LATERAL unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) privilege(name)
+          WHERE has_column_privilege(consumer.name, table_relation.oid, attribute.attnum, privilege.name)
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM unnest(ARRAY['rain_capture_claims', 'rain_capture_receipts']) relation(name)
+          JOIN pg_class table_relation ON table_relation.oid = relation.name::regclass
+          JOIN pg_attribute attribute ON attribute.attrelid = table_relation.oid
+            AND attribute.attnum > 0 AND NOT attribute.attisdropped
+          WHERE has_column_privilege('weather_ingest', table_relation.oid, attribute.attnum, 'UPDATE')
+        )
+        AND NOT has_table_privilege('weather_training_export', 'rain_collection_status_v1', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_auth_members membership
+          WHERE membership.member IN ('weather_api'::regrole, 'weather_ingest'::regrole)
+        )
         AND has_database_privilege('weather_training_export', current_database(), 'CONNECT')
         AND NOT has_database_privilege('weather_training_export', current_database(), 'CREATE')
         AND NOT has_database_privilege('weather_training_export', current_database(), 'TEMP')

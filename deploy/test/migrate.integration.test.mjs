@@ -338,6 +338,7 @@ test(
         "0011_forecast_runtime_provenance.sql",
         "0012_hide_archive_only_forecasts_from_live_reads.sql",
         "0013_ecmwf_temperature_canary.sql",
+        "0014_rain_collection.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -356,6 +357,7 @@ test(
         "0011_forecast_runtime_provenance.sql",
         "0012_hide_archive_only_forecasts_from_live_reads.sql",
         "0013_ecmwf_temperature_canary.sql",
+        "0014_rain_collection.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondEvent.ecowittBootstrap, firstEvent.ecowittBootstrap);
@@ -385,6 +387,7 @@ test(
         { name: "0011_forecast_runtime_provenance.sql" },
         { name: "0012_hide_archive_only_forecasts_from_live_reads.sql" },
         { name: "0013_ecmwf_temperature_canary.sql" },
+        { name: "0014_rain_collection.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -945,6 +948,7 @@ test(
         { name: "0011_forecast_runtime_provenance.sql" },
         { name: "0012_hide_archive_only_forecasts_from_live_reads.sql" },
         { name: "0013_ecmwf_temperature_canary.sql" },
+        { name: "0014_rain_collection.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(

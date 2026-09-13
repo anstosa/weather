@@ -30,6 +30,7 @@ export interface WorkerConfiguration {
   readonly migrationDirectory: string;
   readonly openMeteoCompatibilityOrigin: string | null;
   readonly publicStations: PublicStationConfiguration | null;
+  readonly rainCollectionEnabled: boolean;
   readonly site: SiteConfiguration;
   readonly siteConfigurationPath: string;
   readonly tempest: TempestConfiguration | null;
@@ -98,6 +99,7 @@ export async function loadWorkerConfiguration(
       publicStationConfigurationPath === null
         ? null
         : await loadPublicStationConfiguration(publicStationConfigurationPath),
+    rainCollectionEnabled: environment.WEATHER_RAIN_COLLECTION_ENABLED === "1",
     site: await loadSiteConfiguration(siteConfigurationPath),
     siteConfigurationPath,
     tempest:

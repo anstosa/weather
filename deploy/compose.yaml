@@ -187,6 +187,7 @@ services:
       WEATHER_TEMPEST_CONFIG_PATH: /opt/weather/config/tempest/stations.json
       WEATHER_TIDE_CONFIG_PATH: /opt/weather/config/tides/noaa.json
       WEATHER_WORKER_INSTANCE: weather-worker
+      WEATHER_RAIN_COLLECTION_ENABLED: "1"
       WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
     secrets:
       - source: weather_worker_ingest_password

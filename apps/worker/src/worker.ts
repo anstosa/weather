@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 
-import { FORECAST_OBSERVATION_STATIONS } from "@weather/domain";
+import { FORECAST_OBSERVATION_STATIONS, RAIN_COLLECTION_POLICY } from "@weather/domain";
 import {
   abandonExpiredRuns,
   acquireSourceSession,
@@ -81,6 +81,7 @@ import {
   readWorkerHealth,
 } from "./health.js";
 import { planIngestionDeadlines } from "./run-deadline.js";
+import { collectRainEvidence, isRainCollectionEnabled, type RainCollectionOptions } from "./rain-collection.js";
 import {
   executePublicStationBackfill,
   resolvePublicStationBackfillSources,
@@ -131,6 +132,7 @@ export interface WorkerIterationOptions {
   readonly site: SiteConfiguration;
   readonly ecowitt?: EcowittConfiguration | null;
   readonly publicStations?: PublicStationConfiguration | null;
+  readonly rainCollection?: RainCollectionOptions;
   readonly tempest?: TempestConfiguration | null;
   readonly temperatureCanaryRuntime?: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
   readonly tides?: TideConfiguration | null;
@@ -327,6 +329,38 @@ async function runWorkerIterationWithState(
           sourceId: "ecmwf-temperature-canary",
         }),
       );
+    }
+  }
+
+  // isolate the separately authorized evidence collector from serving and canaries
+  if (options.rainCollection !== undefined) {
+    const startedAt = now().getTime();
+
+    try {
+      const result = await collectRainEvidence(pool, options.version, {
+        ...options.rainCollection,
+        now,
+      });
+      diagnosticWriter(createWorkerDiagnostic({
+        count: result.valid,
+        durationMs: elapsedMilliseconds(startedAt, now()),
+        errorCode: result.failed === 0 ? null : "rain_collection_failed",
+        event: "source_run",
+        release: options.version,
+        runId: null,
+        sourceId: "rain-prospective-capture",
+      }));
+    } catch {
+      // contain storage and transport failures without claiming collection success
+      diagnosticWriter(createWorkerDiagnostic({
+        count: 0,
+        durationMs: elapsedMilliseconds(startedAt, now()),
+        errorCode: "rain_collection_failed",
+        event: "source_run",
+        release: options.version,
+        runId: null,
+        sourceId: "rain-prospective-capture",
+      }));
     }
   }
 
@@ -1396,6 +1430,15 @@ export async function startWorkerProcess(
     lastSuccessAt: durableHealth.lastSuccessAt,
     site: configuration.site,
     publicStations: configuration.publicStations,
+    // require explicit capture opt-in and reject compatibility runs
+    ...(isRainCollectionEnabled(configuration)
+      ? {
+          rainCollection: {
+            stationsAuthorized: RAIN_COLLECTION_POLICY.stationAccessAuthorized,
+            ...(configuration.tempestApiKey === null ? {} : { apiKey: configuration.tempestApiKey }),
+          },
+        }
+      : {}),
     ecowitt: configuration.ecowitt,
     tempest: configuration.tempest,
     temperatureCanaryRuntime,
