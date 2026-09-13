@@ -38,10 +38,10 @@ do not run a host policy that widens those limits after container creation.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
-   Control-plane version 9 allowlists only the verified installed version 8
-   production digest `399bb66688833b73e6a6679db66f0f3c54814c0962b7909f31734190030608e3`
-   as its predecessor. Version 8 and 9 releases use the same eleven-field
-   format; rain collection adds no persisted release field or model activation.
+   Control-plane version 10 allowlists only the verified installed version 9
+   production digest `0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0`
+   as its predecessor. Version 9 and 10 releases use the same eleven-field
+   format; station evidence capture adds no persisted release field or model activation.
    All other cross-version or cross-digest handoffs are unsupported. Do not
    rewrite release metadata or use wildcard handoffs: every mutating lifecycle
    action rejects any other mismatch before changing images, containers, the
@@ -261,6 +261,35 @@ After the helper succeeds, use the ordinary `yolo` release command above, then
 verify status and live behavior. Do not repeat the helper after version nine is
 installed, and do not rewrite the previous release metadata to bypass a guard.
 
+### One-time version-nine to version-ten station-capture handoff
+
+Use the same serialized, hash-verified, five-file root handoff above for the
+immutable station-capture release tag, but use the installer from that new tag.
+Its exact predecessor is active `2026.09.13-2`, control-plane version 9, and
+digest `0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0`.
+It retains a private version-nine backup and installs version 10. The previous
+version-eight handoff helper must not be reused. Check the live release, digest,
+quiet lifecycle window, and absent target release file before starting; neither
+the helper lock nor `yolo` protects against a concurrent administrator command.
+
+After the helper succeeds, deploy the already-published and validated immutable
+release through the host-administrator command below. The exact active `2026.09.13-2.env` is the
+source because default forced-command `yolo` instead reads bootstrap `.env` and
+could kill the already-authorized wind and temperature canaries. Confirm both
+source kill switches are `0` and that `2026.09.13-3.env` does not already exist.
+The station-access migration permits only the frozen prospective capture policy;
+it does not activate a rain adjustment model or retroactively qualify old data.
+
+```bash
+sudo /opt/weather/current/deploy/scripts/update.sh yolo 2026.09.13-3 \
+  --from /opt/weather/current/deploy/releases/2026.09.13-2.env
+```
+
+Verify the live version, schema ledger through `0015_rain_station_access.sql`,
+forecast and station receipt counts, and the original active wind and
+temperature canary bundle identities. Keep the retained old environments and
+backup immutable; do not rewrite old control-plane metadata to bypass a guard.
+
 ## Xweather map budget
 
 The forecast map requests one 256×168 single-layer static image per provider
@@ -290,7 +319,9 @@ not require capacity evidence, create a compatibility database, or create a
 deployment-time backup. The nightly local encrypted backup is the recovery copy.
 Migration `0014_rain_collection.sql` adds private immutable capture claims and
 receipts plus an aggregate-only status view. The production worker collects
-prospective rain evidence; this release does not activate a rain adjustment model.
+prospective rain evidence. Migration `0015_rain_station_access.sql` authorizes
+the same fixed station catalog under the new exact capture-policy digest; neither
+migration activates a rain adjustment model.
 
 ## Legacy staged diagnostics
 

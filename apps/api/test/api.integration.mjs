@@ -136,7 +136,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(body.data.receipts, 0);
       assert.equal(body.data.modelEnabled, false);
       assert.equal(body.data.qualificationEnabled, false);
-      assert.equal(body.data.stationAccessAuthorized, false);
+      assert.equal(body.data.stationAccessAuthorized, true);
       assert.equal(body.data.lastReceiptAt, null);
       assert.doesNotMatch(JSON.stringify(body), /compressed_body|body_sha256|apiKey|password/u);
     });
@@ -316,7 +316,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0014_rain_collection.sql",
+        version: "0015_rain_station_access.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
@@ -362,7 +362,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0014_rain_collection.sql",
+        version: "0015_rain_station_access.sql",
       });
 
       const ledger = await admin.query(

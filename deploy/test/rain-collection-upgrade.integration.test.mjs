@@ -99,7 +99,7 @@ test(
 
       const upgraded = await runMigrations(pool, migrationDirectory);
       assert.deepEqual(upgraded.current, prefix);
-      assert.deepEqual(upgraded.applied, ["0014_rain_collection.sql"]);
+      assert.deepEqual(upgraded.applied, ["0014_rain_collection.sql", "0015_rain_station_access.sql"]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
 
@@ -161,7 +161,7 @@ test(
         status: null,
       });
       const replayed = await runMigrations(pool, migrationDirectory);
-      assert.equal(replayed.applied.at(-1), "0014_rain_collection.sql");
+      assert.deepEqual(replayed.applied.slice(-2), ["0014_rain_collection.sql", "0015_rain_station_access.sql"]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
     } finally {

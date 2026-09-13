@@ -46,6 +46,7 @@ test("rain status is read-only aggregate evidence with no raw response or key", 
   const body = await response.json();
   assert.equal(body.data.modelEnabled, false);
   assert.equal(body.data.qualificationEnabled, false);
+  assert.equal(body.data.stationAccessAuthorized, true);
   assert.equal(body.data.expectedStations, 12);
   assert.equal(body.data.timelyForecasts, 1);
   assert.equal(body.data.unknownRequests, 1);

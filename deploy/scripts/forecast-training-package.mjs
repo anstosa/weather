@@ -78,7 +78,7 @@ const EXPECTED_MIGRATIONS = {
     "0013_ecmwf_temperature_canary.sql",
   ],
 };
-// retain the old package ledger alongside the exact additive collection migration
+// retain exact prior package ledgers alongside the additive station authorization
 const ALLOWED_MIGRATION_LEDGERS = [
   EXPECTED_MIGRATIONS,
   {
@@ -87,6 +87,14 @@ const ALLOWED_MIGRATION_LEDGERS = [
       "2a311e2effcc975442c1011c627c125521cc4396323b32f0d0c4f92ea1ccba04",
     ],
     names: [...EXPECTED_MIGRATIONS.names, "0014_rain_collection.sql"],
+  },
+  {
+    checksums: [
+      ...EXPECTED_MIGRATIONS.checksums,
+      "2a311e2effcc975442c1011c627c125521cc4396323b32f0d0c4f92ea1ccba04",
+      "2f560ccec001246a3caa5d27476900b2694dfb7cc0701b35181265ef1fb78822",
+    ],
+    names: [...EXPECTED_MIGRATIONS.names, "0014_rain_collection.sql", "0015_rain_station_access.sql"],
   },
 ];
 const ROW_KEYS = [

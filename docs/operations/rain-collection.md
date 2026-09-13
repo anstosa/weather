@@ -17,15 +17,23 @@ The policy expires October 8, 2027. A new
 release can disable the collector; existing receipts must not be deleted or
 rewritten to reset its budgets or history.
 
-Station capture additionally requires confirmed provider entitlement.
-`stationAccessAuthorized` is initially false: the existing Tempest credential
-and earlier public access do not establish authorization for this persistent
-twelve-station service. Current [Tempest access policy](https://apidocs.tempestwx.com/reference/remote-data-access-policy)
+Station capture additionally requires confirmed provider entitlement. The
+operator confirmed access for this twelve-station collection on September 13,
+2026. `stationAccessAuthorized` is now true; this confirmation does not authorize
+additional stations or wider request limits. Current [Tempest access policy](https://apidocs.tempestwx.com/reference/remote-data-access-policy)
 requires appropriate access to other public stations' observation data; its
 [device API reference](https://apidocs.tempestwx.com/reference/getobservationsbydeviceid)
-does not publish a numeric per-key quota. An authorized key/agreement and its
-limits must be confirmed before enabling station polling. The collector must
-report forecast-only capture honestly while that requirement is unresolved.
+does not publish a numeric per-key quota. No higher account-specific quota was
+asserted: retain the existing conservative request ceilings and stop on provider
+access or rate-limit responses. The existing credential remains private and
+unchanged. Successful access does not prove that every gauge has observations.
+
+Migration `0015_rain_station_access.sql` accepts the newly authorized policy
+identity without rewriting `0014` or any prior evidence. It retains the original
+forecast-only policy for older workers during rollout or rollback, but that
+policy still cannot authorize station requests. All source, cadence, lifetime,
+cooldown and storage bounds remain unchanged. Neither policy authorizes a rain
+model or a qualification study.
 
 ## Frozen capture schedule
 
@@ -94,12 +102,16 @@ Before deployment, verify provider byte capture, failed responses, duplicate
 interval rejection, exact grid/units, deadlines, late receipt handling,
 cross-worker/restart budgets, storage caps, immutable receipts and API redaction.
 Run database and deployment integration against PostgreSQL 17, including an
-0013-to-0014 upgrade and denial of raw access to API/export roles. Keep the
-temperature canary regression suite green.
+0013-to-0014 capture upgrade, an 0014-to-0015 station-access upgrade with prior
+receipts preserved, and denial of raw access to API/export roles. Keep the wind
+and temperature canary regression suites green.
 
 Publish an immutable release through the documented Weather release process,
 deploy it to Blueberry, then inspect the live release and status endpoint.
-Require an actual retained response before claiming capture works. If station
-entitlement remains unresolved, report that limitation and do not claim a
+Require actual retained nonempty station responses before claiming observations
+were obtained: the aggregate endpoint's valid-window count also includes
+schema-valid empty responses. Verify per-station row counts and receipt clocks
+through a bounded operator aggregate check without exporting raw bodies. Report
+missing gauges or intervals explicitly rather than claiming a complete
 twelve-gauge dataset. Fresh qualification remains a separate future protocol;
 none of the frozen 49 development gates or populations is changed here.

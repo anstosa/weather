@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-previous_digest=399bb66688833b73e6a6679db66f0f3c54814c0962b7909f31734190030608e3
-previous_release=2026.09.12-1
+previous_digest=0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0
+previous_release=2026.09.13-2
 control_files=(
   compose.yaml
   postgres/runtime-acl-v2.sql
@@ -95,7 +95,7 @@ install_control_plane() (
 
     # recover only when installation actually began
     if ((status != 0 && replaced > 0)); then
-      printf 'Restoring retained version-eight control plane from %s\n' "$backup" >&2
+      printf 'Restoring retained version-nine control plane from %s\n' "$backup" >&2
       for file in "${control_files[@]}"; do
         install_atomic_file "$backup/deploy/$file" "$destination/deploy/$file" || status=2
       done
@@ -130,14 +130,14 @@ install_control_plane() (
     ! -L "$destination/deploy/state/current-release" ]] ||
     fail "installed release state is missing or linked"
   [[ "$(cat "$destination/deploy/state/current-release")" == "$previous_release" ]] ||
-    fail "installed release is not the verified version-eight predecessor"
+    fail "installed release is not the verified version-nine predecessor"
   [[ -f "$destination/deploy/releases/$previous_release.env" &&
     ! -L "$destination/deploy/releases/$previous_release.env" ]] ||
     fail "predecessor release metadata is missing or linked"
   [[ "$(grep -c '^WEATHER_CONTROL_PLANE_VERSION=' "$destination/deploy/releases/$previous_release.env")" == 1 &&
     "$(grep -c '^WEATHER_CONTROL_PLANE_SHA256=' "$destination/deploy/releases/$previous_release.env")" == 1 ]] ||
     fail "predecessor release metadata is ambiguous"
-  grep -Fxq 'WEATHER_CONTROL_PLANE_VERSION=8' \
+  grep -Fxq 'WEATHER_CONTROL_PLANE_VERSION=9' \
     "$destination/deploy/releases/$previous_release.env" ||
     fail "predecessor release version differs"
   grep -Fxq "WEATHER_CONTROL_PLANE_SHA256=$previous_digest" \
@@ -193,8 +193,8 @@ install_control_plane() (
     fail "candidate update script is missing"
   [[ "$(grep -c '^control_plane_version=' "$candidate_root/deploy/scripts/update.sh")" == 1 ]] ||
     fail "candidate control version is ambiguous"
-  grep -Fxq 'control_plane_version=9' "$candidate_root/deploy/scripts/update.sh" ||
-    fail "candidate control version is not nine"
+  grep -Fxq 'control_plane_version=10' "$candidate_root/deploy/scripts/update.sh" ||
+    fail "candidate control version is not ten"
   grep -Fxq "previous_control_plane_sha256=$previous_digest" \
     "$candidate_root/deploy/scripts/update.sh" ||
     fail "candidate does not pin the predecessor"
@@ -202,7 +202,7 @@ install_control_plane() (
     fail "candidate control-plane digest differs"
 
   # retain only the exact previous control plane, never state or secrets
-  backup=$(mktemp -d "$backup_root/v8-${previous_digest:0:12}.XXXXXX")
+  backup=$(mktemp -d "$backup_root/v9-${previous_digest:0:12}.XXXXXX")
   mkdir -p "$backup/deploy"
   cp -a "$destination/deploy/scripts" "$destination/deploy/postgres" \
     "$destination/deploy/systemd" "$destination/deploy/sudoers" \
@@ -247,7 +247,7 @@ install_control_plane() (
   done
   [[ "$(control_digest "$destination")" == "$candidate_digest" ]] ||
     fail "installed control-plane digest differs from the candidate"
-  printf 'Installed version-nine control plane: %s\nRetained backup: %s\n' \
+  printf 'Installed version-ten control plane: %s\nRetained backup: %s\n' \
     "$candidate_digest" "$backup"
 )
 

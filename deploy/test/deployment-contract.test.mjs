@@ -1380,6 +1380,7 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /state='succeeded'/u);
   assert.match(update, /0009_forecast_anchor_records\.sql/u);
   assert.match(update, /0014_rain_collection\.sql/u);
+  assert.match(update, /0015_rain_station_access\.sql/u);
   assert.match(update, /DROP VIEW IF EXISTS rain_collection_status_v1/u);
   assert.match(update, /DROP TABLE IF EXISTS rain_capture_receipts/u);
   assert.match(update, /DROP TABLE IF EXISTS forecast_anchor_records/u);
@@ -1420,10 +1421,11 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(composeIntegration, /weather\.test\.baseline/u);
   assert.match(composeIntegration, /0009_forecast_anchor_records\.sql/u);
   assert.match(composeIntegration, /0014_rain_collection\.sql/u);
+  assert.match(composeIntegration, /0015_rain_station_access\.sql/u);
   assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
-    /allowlists only the verified installed version 8[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
+    /allowlists only the verified installed version 9[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
   );
 });
 

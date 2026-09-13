@@ -77,6 +77,59 @@ test("authorized hourly sweeps retain all gauges and rotate priority", () => {
   assert.equal(waiting[0].endExclusive, "2026-09-14T11:00:01.000Z");
 });
 
+// complete the authorized sweep across restarted collectors without duplicate traffic
+test("confirmed station policy captures twelve gauges across bounded collector invocations", async () => {
+  assert.equal(RAIN_COLLECTION_POLICY.stationAccessAuthorized, true);
+  assert.equal(RAIN_COLLECTION_POLICY.modelEnabled, false);
+  assert.equal(RAIN_COLLECTION_POLICY.qualificationEnabled, false);
+  const planned = planRainCaptureRequests(new Date(instant), RAIN_COLLECTION_POLICY.stationAccessAuthorized);
+  const claimed = new Set([planned[0].slotKey]);
+  const captured = [];
+  const retained = [];
+  const options = {
+    // keep every invocation in the same completed observation window
+    now: () => new Date(instant),
+    stationsAuthorized: RAIN_COLLECTION_POLICY.stationAccessAuthorized,
+    repository: {
+      // retain slot identity independently of each collector invocation
+      async claimRainCaptureSlot(_pool, { request }) {
+        // preserve old forecast and completed station claims across restarts
+        if (claimed.has(request.slotKey)) {
+          return null;
+        }
+        claimed.add(request.slotKey);
+        return request.slotKey;
+      },
+      // retain every successful station response before subsequent requests
+      async appendRainCaptureReceipt(_pool, id) { retained.push(id); },
+    },
+    // avoid provider traffic while proving exact catalog coverage
+    async fetchCapture(request) {
+      assert.equal(request.kind, "station");
+      captured.push(request.stationId);
+      return { ...receipt(), availableByDecision: null, rowCount: 120 };
+    },
+    // verify the unchanged pacing without delaying the deterministic test
+    async sleep(milliseconds) { assert.equal(milliseconds, 1_100); },
+  };
+  // model six fresh worker invocations sharing only durable repository state
+  for (let iteration = 0; iteration < 6; iteration += 1) {
+    assert.deepEqual(await collectRainEvidence({}, "2026.09.14-1", options), {
+      attempted: 2, valid: 2, failed: 0,
+    });
+  }
+  assert.equal(captured.length, 12);
+  assert.equal(new Set(captured).size, 12);
+  assert.deepEqual(new Set(captured), new Set(RAIN_COLLECTION_STATIONS.map(
+    // compare only the frozen physical station identities
+    (station) => station.locationId,
+  )));
+  assert.equal(retained.length, 12);
+  assert.deepEqual(await collectRainEvidence({}, "2026.09.14-1", options), {
+    attempted: 0, valid: 0, failed: 0,
+  });
+});
+
 // prove durable claims precede traffic and responses precede paced successors
 test("rain capture enforces two requests, immutable receipt order and spacing", async () => {
   const events = [];

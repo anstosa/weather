@@ -6,7 +6,8 @@ export const RAIN_COLLECTION_POLICY = Object.freeze({
   longitude: -122.42797012608193,
   startsAt: "2026-09-13T00:00:00.000Z",
   expiresAt: "2027-10-08T00:00:00.000Z",
-  stationAccessAuthorized: false,
+  // enable the fixed catalog after operator-confirmed provider access
+  stationAccessAuthorized: true,
   forecastHours: 49,
   decisionDelayHours: 8,
   forecastFirstAttemptHours: 6,

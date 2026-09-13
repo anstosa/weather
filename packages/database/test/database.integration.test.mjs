@@ -93,9 +93,10 @@ test(
           "0012_hide_archive_only_forecasts_from_live_reads.sql",
           "0013_ecmwf_temperature_canary.sql",
           "0014_rain_collection.sql",
+          "0015_rain_station_access.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 14);
+        assert.equal(ledger.rowCount, 15);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -131,6 +132,7 @@ test(
             "0012_hide_archive_only_forecasts_from_live_reads.sql",
             "0013_ecmwf_temperature_canary.sql",
             "0014_rain_collection.sql",
+            "0015_rain_station_access.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -162,8 +164,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 14);
-          assert.equal(first.current.length + second.current.length, 14);
+          assert.equal(first.applied.length + second.applied.length, 15);
+          assert.equal(first.current.length + second.current.length, 15);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -396,7 +398,7 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0014_rain_collection.sql" },
+            { version: "0015_rain_station_access.sql" },
           );
           try {
             // reject unproven candidate history
@@ -427,7 +429,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0014_rain_collection.sql" },
+              { version: "0015_rain_station_access.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
