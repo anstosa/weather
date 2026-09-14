@@ -842,6 +842,18 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const adminBeforeBootstrap = await fetch(`http://127.0.0.1:${webPort}/admin`);
     const publicLayoutBefore = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/property-sensor-layout`);
     const publicSwitchesBeforeBootstrap = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/forecast-adjustment-settings`);
+    // keep direct-origin clients unprivileged even when they spoof forwarding headers
+    const viewerContext = await fetch(`http://127.0.0.1:${webPort}/api/v1/viewer-context`, {
+      headers: { "cf-connecting-ip": "203.0.113.20", "x-forwarded-for": "192.168.11.20" },
+    });
+    assert.equal(viewerContext.status, 200);
+    assert.equal(viewerContext.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(await viewerContext.json(), { data: { homeNetwork: false } });
+    const viewerHead = await fetch(`http://127.0.0.1:${webPort}/api/v1/viewer-context`, { method: "HEAD" });
+    assert.equal(viewerHead.status, 200);
+    assert.equal(await viewerHead.text(), "");
+    const viewerMutation = await fetch(`http://127.0.0.1:${webPort}/api/v1/viewer-context`, { method: "POST" });
+    assert.equal(viewerMutation.status, 405);
     const rejectedBootstrap = await fetch(`http://127.0.0.1:${webPort}/api/v1/admin/bootstrap`, {
       body: JSON.stringify({ password: "test-admin-password" }),
       headers: {

@@ -668,6 +668,8 @@ async function startFixtureServer() {
       (entry) => ({ ...entry }),
     ),
     tileDelayMs: 0,
+    viewerContext: { data: { homeNetwork: false } },
+    viewerContextStatus: 200,
   };
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://weather.test");
@@ -821,6 +823,13 @@ async function startFixtureServer() {
     // serve site metadata
     if (url.pathname === "/api/v1/sites") {
       sendJson(response, { data: [site] });
+      return;
+    }
+
+    // serve one uncached display-only viewer context
+    if (url.pathname === "/api/v1/viewer-context") {
+      response.setHeader("cache-control", "private, no-store");
+      sendJson(response, state.viewerContext, state.viewerContextStatus);
       return;
     }
 
@@ -2569,6 +2578,142 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
   }
 });
 
+// verify local-network panels never grant administrator authority
+test("anonymous home-network viewers see indoor and soil panels only while allowed", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 844, width: 390 },
+    });
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.locator("[data-indoor-house]").waitFor();
+    await page.locator("[data-admin-soil-map]").waitFor();
+    assert.equal(await page.locator("html").getAttribute("data-weather-admin"), "false");
+    assert.equal(await page.locator('[data-soil-moisture-sensor="soil-1"]').count(), 1);
+    assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout").length, 1);
+    assert.equal(fixture.state.requests.some((entry) => entry.includes("/api/v1/admin/")), false);
+
+    const weatherReads = fixture.state.requests.filter(
+      // exclude the display-only context and optional layout reads
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
+    ).length;
+    fixture.state.viewerContext = { data: { homeNetwork: false } };
+    const denied = page.waitForResponse(
+      // await the uncached location claim before changing the fixture again
+      (response) => new URL(response.url()).pathname === "/api/v1/viewer-context",
+    );
+    await page.evaluate(
+      // simulate a tab resuming away from home Wi-Fi
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await denied;
+    await page.locator("[data-indoor-house]").waitFor({ state: "detached" });
+    assert.equal(await page.locator("[data-admin-soil-map]").count(), 0);
+    assert.equal(fixture.state.requests.filter(
+      // recheck location without reloading weather
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
+    ).length, weatherReads);
+    assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout").length, 1);
+
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    const allowed = page.waitForResponse(
+      // await the renewed location claim
+      (response) => new URL(response.url()).pathname === "/api/v1/viewer-context",
+    );
+    await page.evaluate(
+      // simulate the browser regaining the home connection
+      () => window.dispatchEvent(new Event("online")),
+    );
+    await allowed;
+    await page.locator("[data-indoor-house]").waitFor();
+    fixture.state.viewerContext = { data: { homeNetwork: "true" } };
+    const malformed = page.waitForResponse(
+      // await the malformed location claim
+      (response) => new URL(response.url()).pathname === "/api/v1/viewer-context",
+    );
+    await page.evaluate(
+      // reject a malformed positive claim during the next check
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await malformed;
+    await page.locator("[data-indoor-house]").waitFor({ state: "detached" });
+
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    fixture.state.viewerContextStatus = 503;
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.locator("[data-indoor-house]").count(), 0);
+    fixture.state.viewerContextStatus = 200;
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator("[data-admin-soil-map]").waitFor();
+    await page.getByRole("link", { name: "Forecast" }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    assert.equal(await page.locator("[data-indoor-house]").count(), 0);
+    fixture.state.viewerContext = { data: { homeNetwork: false } };
+    await page.getByRole("link", { name: "Home" }).click();
+    await page.waitForURL(fixture.origin + "/");
+    assert.equal(await page.locator("[data-indoor-house]").count(), 0);
+
+    await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    assert.equal(await page.getByRole("heading", { name: "Admin sign in" }).isVisible(), true);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// recheck visible home access on a bounded timer without polling weather
+test("home-network timer revokes access without rereading weather on other routes", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, { timezoneId: "America/Los_Angeles" });
+    await page.clock.install({ time: new Date("2026-09-14T19:00:00Z") });
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.locator("[data-indoor-house]").waitFor();
+    const contextReads = fixture.state.requests.filter(
+      // count private-context checks only
+      (entry) => entry === "GET /api/v1/viewer-context",
+    ).length;
+    const weatherReads = fixture.state.requests.filter(
+      // exclude the context and optional positions from weather reads
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
+    ).length;
+
+    fixture.state.viewerContext = { data: { homeNetwork: false } };
+    const expired = page.waitForResponse(
+      // wait for the interval check to finish
+      (response) => new URL(response.url()).pathname === "/api/v1/viewer-context",
+    );
+    await page.clock.fastForward(60_100);
+    await expired;
+    await page.locator("[data-indoor-house]").waitFor({ state: "detached" });
+    assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/viewer-context").length, contextReads + 1);
+    assert.equal(fixture.state.requests.filter(
+      // preserve weather-read volume during the timer check
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
+    ).length, weatherReads);
+
+    await page.getByRole("link", { name: "Forecast" }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    const routeContextReads = fixture.state.requests.filter((entry) => entry === "GET /api/v1/viewer-context").length;
+    await page.clock.fastForward(60_100);
+    assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/viewer-context").length, routeContextReads);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // verify the complete administrator session inside a cross-site iframe
 test("admin login and logout work inside an iframe", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -3844,7 +3989,13 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:22PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:41PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
-    assert.equal(fixture.state.requests.length, requestCount);
+    assert.equal(fixture.state.requests.filter(
+      // the visibility event may recheck viewer context but not weather
+      (entry) => entry !== "GET /api/v1/viewer-context",
+    ).length, requestCount - fixture.state.requests.slice(0, requestCount).filter(
+      // subtract the initial viewer-context read
+      (entry) => entry === "GET /api/v1/viewer-context",
+    ).length);
   } finally {
     await browser?.close();
     fixture.server.close();

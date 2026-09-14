@@ -417,6 +417,7 @@ export interface DashboardState {
   readonly dailyPrecipitation: DailyPrecipitation | null;
   readonly error: string | null;
   readonly filters: HistoryFilters;
+  readonly homeNetwork: boolean;
   readonly forecastAdjustmentMode: ForecastAdjustmentMode;
   readonly forecastAdjustmentSettings: ForecastAdjustmentSettings | null;
   readonly forecastAdjustmentRuntime: ForecastAdjustmentRuntimeStatus | null;
@@ -432,7 +433,7 @@ export interface DashboardState {
   readonly nextCursor: string | null;
   readonly page: number;
   readonly propertyMapLayer: MapLayer;
-  readonly propertySensorLayout: readonly PropertySensorLayout[];
+  readonly propertySensorLayout: readonly PropertySensorLayout[] | null;
   readonly selectedPropertySensorKey: string | null;
   readonly selectedStationSlug: string | null;
   readonly trendDetail: TrendDetail;
@@ -568,6 +569,7 @@ const EMPTY_STATE: DashboardState = {
   dailyPrecipitation: null,
   error: null,
   filters: {},
+  homeNetwork: false,
   forecastAdjustmentMode: "adjusted",
   forecastAdjustmentSettings: null,
   forecastAdjustmentRuntime: null,
@@ -583,7 +585,7 @@ const EMPTY_STATE: DashboardState = {
   nextCursor: null,
   page: 0,
   propertyMapLayer: "satellite",
-  propertySensorLayout: [],
+  propertySensorLayout: null,
   selectedPropertySensorKey: null,
   selectedStationSlug: null,
   trendDetail: "rolling",
@@ -2108,6 +2110,9 @@ export class WeatherDashboardController {
   readonly #isAdmin: boolean;
   readonly #listeners = new Set<DashboardListener>();
   readonly #storage: UnitPreferenceStorage | null;
+  #homeNetworkGeneration = 0;
+  #homeNetworkLayoutRequest: Promise<void> | null = null;
+  #homeNetworkRefresh: Promise<void> | null = null;
   #view: WeatherView;
   #state: DashboardState;
 
@@ -2201,8 +2206,127 @@ export class WeatherDashboardController {
       return;
     }
 
+    // invalidate any in-flight homepage location check
+    this.#homeNetworkGeneration += 1;
+    this.#homeNetworkLayoutRequest = null;
+    this.#homeNetworkRefresh = null;
     this.#view = view;
+    this.patch({ homeNetwork: false });
     await this.loadSelectedSite();
+  }
+
+  // recheck one ephemeral homepage display boundary
+  async refreshHomeNetwork(force = false): Promise<void> {
+    // keep local-network display separate from administrator authority
+    if (this.#view !== "home" || this.#isAdmin) {
+      return;
+    }
+
+    // avoid overlapping timer and resume checks
+    if (!force && this.#homeNetworkRefresh !== null) {
+      return this.#homeNetworkRefresh;
+    }
+
+    // preserve an authorized layout read through a positive recheck
+    const generation = force || !this.#state.homeNetwork
+      ? ++this.#homeNetworkGeneration
+      : this.#homeNetworkGeneration;
+
+    // abandon layout from a former full-weather refresh
+    if (force) {
+      this.#homeNetworkLayoutRequest = null;
+    }
+
+    // clear access only for an explicit full-weather refresh
+    if (force && this.#state.homeNetwork) {
+      this.patch({ homeNetwork: false });
+    }
+
+    // resolve only the current location check
+    const refresh = (async (): Promise<void> => {
+      const allowed = await getHomeNetworkViewerContext(this.#fetcher, this.#apiBaseUrl);
+
+      // ignore a response from a former route or check
+      if (generation !== this.#homeNetworkGeneration || this.#view !== "home") {
+        return;
+      }
+
+      // leave former local-network panels hidden on denial or failure
+      if (!allowed) {
+        // reject any outstanding layout from the former positive claim
+        this.#homeNetworkGeneration += 1;
+        this.#homeNetworkLayoutRequest = null;
+
+        // revoke a visible panel only after a negative result
+        if (this.#state.homeNetwork) {
+          this.patch({ homeNetwork: false });
+        }
+
+        return;
+      }
+
+      // keep a positive periodic recheck from redrawing the homepage
+      if (this.#state.homeNetwork) {
+        // retry only a missing layout without duplicating an active read
+        if (this.#state.propertySensorLayout === null) {
+          this.loadHomeNetworkLayout(generation);
+        }
+
+        return;
+      }
+
+      this.patch({ homeNetwork: true, propertySensorLayout: null });
+      this.loadHomeNetworkLayout(generation);
+    })();
+    this.#homeNetworkRefresh = refresh;
+
+    try {
+      await refresh;
+    } finally {
+      // release only the completed check
+      if (this.#homeNetworkRefresh === refresh) {
+        this.#homeNetworkRefresh = null;
+      }
+    }
+  }
+
+  // load one optional layout without duplicating an active read
+  private loadHomeNetworkLayout(generation: number): void {
+    // avoid duplicate reads during a positive recheck
+    if (this.#homeNetworkLayoutRequest !== null) {
+      return;
+    }
+
+    const request = getJson<PropertySensorLayoutResponse>(
+      this.#fetcher,
+      buildPropertySensorLayoutUrl(this.#apiBaseUrl, PRODUCT_SITE.slug),
+    ).then(
+      // publish only a valid layout for the current grant
+      (layout) => {
+        // reject malformed or revoked layout responses
+        if (
+          Array.isArray(layout.data) &&
+          generation === this.#homeNetworkGeneration &&
+          this.#view === "home" &&
+          this.#state.homeNetwork
+        ) {
+          this.patch({ propertySensorLayout: layout.data });
+        }
+      },
+    ).catch(
+      // leave the map's unavailable message visible on failure
+      () => undefined,
+    );
+    this.#homeNetworkLayoutRequest = request;
+    void request.finally(
+      // release only the completed layout read
+      () => {
+        // preserve any newer layout request
+        if (this.#homeNetworkLayoutRequest === request) {
+          this.#homeNetworkLayoutRequest = null;
+        }
+      },
+    );
   }
 
   // switch and reload the forecast horizon
@@ -2348,7 +2472,7 @@ export class WeatherDashboardController {
         buildAdminPropertySensorLayoutUrl(this.#apiBaseUrl, PRODUCT_SITE.slug, sensorKey),
         { displayName, icon, latitude, longitude },
       );
-      const next = this.#state.propertySensorLayout.filter(
+      const next = (this.#state.propertySensorLayout ?? []).filter(
         // replace only the saved sensor key
         (entry) => entry.sensorKey !== response.data.sensorKey,
       );
@@ -2492,7 +2616,12 @@ export class WeatherDashboardController {
       return;
     }
 
-    this.patch({ error: null, loading: true });
+    this.patch({ error: null, homeNetwork: false, loading: true });
+
+    // start the private location check without delaying weather rendering
+    if (this.#view === "home" && !this.#isAdmin) {
+      void this.refreshHomeNetwork(true);
+    }
 
     try {
       const needsCurrent = this.#view === "home" || this.#view === "map" || this.#view === "forecast" || this.#view === "admin";
@@ -2654,6 +2783,16 @@ export class WeatherDashboardController {
   // publish a bounded error
   private fail(error: unknown): void {
     const message = error instanceof Error ? error.message : "Weather data could not be loaded";
+
+    // revoke former anonymous homepage access after a failed weather refresh
+    if (this.#view === "home" && !this.#isAdmin) {
+      this.#homeNetworkGeneration += 1;
+      this.#homeNetworkLayoutRequest = null;
+      this.#homeNetworkRefresh = null;
+      this.patch({ error: message, homeNetwork: false, loading: false });
+      return;
+    }
+
     this.patch({ error: message, loading: false });
   }
 
@@ -2762,6 +2901,11 @@ export function buildPropertySensorLayoutUrl(
   return `${normalizeBaseUrl(apiBaseUrl)}/sites/${encodeURIComponent(siteSlug)}/property-sensor-layout`;
 }
 
+// construct the private per-request viewer context endpoint
+export function buildViewerContextUrl(apiBaseUrl: string): string {
+  return `${normalizeBaseUrl(apiBaseUrl)}/viewer-context`;
+}
+
 // construct one authenticated property sensor update endpoint
 export function buildAdminPropertySensorLayoutUrl(
   apiBaseUrl: string,
@@ -2816,8 +2960,41 @@ export function mountWeatherDashboard(
     }
   });
   bindSunsetDayRefresh(root, controller);
+  bindHomeNetworkRefresh(root, controller);
   void controller.initialize();
   return controller;
+}
+
+// revalidate a visible homepage without refreshing weather data
+function bindHomeNetworkRefresh(root: HTMLElement, controller: WeatherDashboardController): void {
+  let timer: number | undefined;
+
+  // retire listeners with the mounted dashboard
+  const cleanup = (): void => {
+    window.clearInterval(timer);
+    window.removeEventListener("online", refresh);
+    document.removeEventListener("visibilitychange", refresh);
+  };
+
+  // check only a visible anonymous homepage
+  const refresh = (): void => {
+    // discard a detached dashboard
+    if (!root.isConnected) {
+      cleanup();
+      return;
+    }
+
+    // avoid background and unrelated-route requests
+    if (document.visibilityState !== "visible" || controller.view !== "home" || controller.isAdmin) {
+      return;
+    }
+
+    void controller.refreshHomeNetwork();
+  };
+
+  window.addEventListener("online", refresh);
+  document.addEventListener("visibilitychange", refresh);
+  timer = window.setInterval(refresh, 60_000);
 }
 
 // refresh the calendar tile at farm midnight and after a suspended tab resumes
@@ -2976,12 +3153,12 @@ function renderWeatherView(state: DashboardState, view: WeatherView, isAdmin: bo
   return renderHomepage(state, isAdmin);
 }
 
-// render the complete decision-first homepage
+// render homepage panels for administrators or home-network viewers
 function renderHomepage(state: DashboardState, isAdmin: boolean): string {
   return `
     ${renderAlerts(state)}
     ${renderCurrent(state)}
-    ${isAdmin ? `${renderIndoorHouse(state)}${renderAdminSoilMoistureMap(state)}` : ""}
+    ${isAdmin || state.homeNetwork ? `${renderIndoorHouse(state)}${renderAdminSoilMoistureMap(state)}` : ""}
   `;
 }
 
@@ -6321,7 +6498,7 @@ interface MapViewport {
   readonly zoom: number;
 }
 
-// render the protected soil-only farm overview
+// render the soil-only farm overview for eligible viewers
 function renderAdminSoilMoistureMap(state: DashboardState): string {
   const site = state.selectedSite;
 
@@ -6365,6 +6542,7 @@ function renderAdminSoilMoistureMap(state: DashboardState): string {
     ),
   ).join("");
 
+  // distinguish unavailable positions from an empty saved layout
   return `
     <section class="admin-soil-map-panel" data-admin-soil-map aria-labelledby="admin-soil-map-heading">
       <div class="section-heading">
@@ -6386,10 +6564,12 @@ function renderAdminSoilMoistureMap(state: DashboardState): string {
         </div>
         ${renderPropertyMapAttribution(state.propertyMapLayer)}
       </div>
-      ${placed.length === 0
-        ? `<p class="empty-panel">${state.loading ? "Loading soil moisture…" : "No soil moisture sensors have been placed yet."}</p>`
-        : ""}
-      ${sensors.length > placed.length
+      ${state.propertySensorLayout === null
+        ? `<p class="empty-panel">${state.loading ? "Loading soil moisture…" : "Soil moisture sensor positions are unavailable."}</p>`
+        : placed.length === 0
+          ? `<p class="empty-panel">No soil moisture sensors have been placed yet.</p>`
+          : ""}
+      ${state.propertySensorLayout !== null && sensors.length > placed.length
         ? `<p class="property-map-note">${String(sensors.length - placed.length)} soil moisture sensor${sensors.length - placed.length === 1 ? " still needs" : "s still need"} a position in Admin.</p>`
         : ""}
     </section>
@@ -11161,6 +11341,51 @@ async function getJson<ResponseBody>(
   }
 
   return (await response.json()) as ResponseBody;
+}
+
+// read one bounded uncached location claim without browser credentials
+async function getHomeNetworkViewerContext(fetcher: typeof fetch, apiBaseUrl: string): Promise<boolean> {
+  const abort = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<boolean>(
+    // fail closed after the bounded deadline
+    (resolve) => {
+      // deny a stalled private-context request
+      timeout = setTimeout(() => {
+        abort.abort();
+        resolve(false);
+      }, 4_000);
+    },
+  );
+
+  try {
+    return await Promise.race([
+      fetcher(buildViewerContextUrl(apiBaseUrl), {
+        cache: "no-store",
+        credentials: "omit",
+        headers: { accept: "application/json" },
+        signal: abort.signal,
+      }).then(
+        // accept only a successful boolean claim
+        async (response) => {
+          // deny HTTP errors and malformed positive claims
+          if (!response.ok) {
+            return false;
+          }
+
+          const body: unknown = await response.json();
+          return forecastAdjustmentObject(forecastAdjustmentObject(body)?.data)?.homeNetwork === true;
+        },
+      ).catch(
+        // deny failed requests or invalid JSON
+        () => false,
+      ),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timeout);
+    abort.abort();
+  }
 }
 
 // load and sanitize one forecast response

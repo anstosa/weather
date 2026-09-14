@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { XweatherTileMemoryCache } from "./xweather-tile-cache.mjs";
 import { XweatherUsageBudget } from "./xweather-usage-budget.mjs";
 import { WeatherAdminStore } from "./weather-admin-store.mjs";
+import { HomeNetworkMatcher } from "./home-network.mjs";
 
 const root = resolve(process.cwd());
 const publicRoot = join(root, "apps/web/public");
@@ -22,6 +23,7 @@ const xweatherOrigin = parseXweatherOrigin(
 const xweatherCredentials = await loadXweatherCredentials();
 const port = parsePort(process.env.PORT ?? "3000");
 const release = parseAssetRelease(process.env.WEATHER_RELEASE ?? "development");
+const homeNetworkMatcher = new HomeNetworkMatcher();
 const forecastMapPreloadSite = await loadForecastMapPreloadSite(
   process.env.WEATHER_SITE_CONFIG_PATH ?? join(root, "config/sites/ballydidean.json"),
 );
@@ -70,9 +72,28 @@ const versionedAssets = new Map([
   ["units.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "units.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 
+// route isolated edge requests without trusting browser-supplied identities
 const server = createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url ?? "/", "http://weather.invalid");
+
+    // expose only ephemeral home-network display eligibility
+    if (requestUrl.pathname === "/api/v1/viewer-context") {
+      // keep viewer context read-only and off every shared cache
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        sendText(response, 405, "method not allowed\n", { Allow: "GET, HEAD" });
+        return;
+      }
+      const body = JSON.stringify({ data: { homeNetwork: await homeNetworkMatcher.matches(request) } });
+      setSecurityHeaders(response);
+      response.writeHead(200, {
+        "Cache-Control": "private, no-store",
+        "Content-Length": String(Buffer.byteLength(body)),
+        "Content-Type": "application/json; charset=utf-8",
+      });
+      response.end(request.method === "HEAD" ? undefined : body);
+      return;
+    }
 
     // exchange the HTML login form for an opaque session cookie
     if (requestUrl.pathname === "/admin/login") {

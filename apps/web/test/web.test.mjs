@@ -9,6 +9,7 @@ import {
   buildHistoryUrl,
   buildTidesUrl,
   buildTrendsUrl,
+  buildViewerContextUrl,
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   eveningSunTimes,
@@ -2476,6 +2477,343 @@ test("authenticated homepage loads saved soil sensor positions", async () => {
 
   assert.equal(requested.some((url) => url.includes("/property-sensor-layout")), true);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
+});
+
+test("homepage viewer context shows private panels without administrator authority", async () => {
+  const requested = [];
+  const layout = {
+    displayName: "Orchard soil",
+    icon: "temperature",
+    latitude: 47.9505,
+    longitude: -122.4281,
+    sensorKey: "soil-1",
+    updatedAt: "2026-08-22T04:59:00.000Z",
+  };
+  let context = { data: { homeNetwork: false } };
+  let contextStatus = 200;
+  let failWeather = false;
+
+  // serve a mutable display-only location claim
+  async function fetcher(input, options = {}) {
+    const url = String(input);
+    requested.push({ url, options });
+
+    // return the exact ephemeral viewer context
+    if (url === buildViewerContextUrl("/api/v1")) {
+      return Response.json(context, { status: contextStatus });
+    }
+
+    // return shared sensor positions only on eligible routes
+    if (url.includes("/property-sensor-layout")) {
+      return Response.json({ data: [layout] });
+    }
+
+    // return current property readings
+    if (url.includes("/current")) {
+      // simulate a weather failure after local access was granted
+      if (failWeather) {
+        return Response.json({ error: "unavailable" }, { status: 503 });
+      }
+
+      return Response.json({ data: [ecowittRecord], site });
+    }
+
+    // return the homepage forecast
+    if (url.includes("/forecast")) {
+      return Response.json({ data: [forecastRecord], site });
+    }
+
+    // return today's rain accumulation
+    if (url.includes("/daily-precipitation")) {
+      return Response.json({ data: dailyPrecipitation, site });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, isAdmin: false });
+  await controller.initialize();
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.isAdmin, false);
+  assert.doesNotMatch(renderWeatherDashboard(controller.state, "home", controller.isAdmin), /data-indoor-house|data-admin-soil-map/u);
+  assert.equal(requested.some(({ url }) => url.includes("/property-sensor-layout")), false);
+  assert.equal(requested.some(({ url }) => url.includes("/admin/")), false);
+  const viewerRequest = requested.find(({ url }) => url.endsWith("/viewer-context"));
+  assert.equal(viewerRequest?.options.credentials, "omit");
+  assert.equal(viewerRequest?.options.cache, "no-store");
+  assert.equal(viewerRequest?.options.method, undefined);
+
+  context = { data: { homeNetwork: true } };
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+  assert.equal(controller.isAdmin, false);
+  assert.match(renderWeatherDashboard(controller.state, "home", controller.isAdmin), /data-indoor-house[\s\S]*data-admin-soil-map/u);
+  assert.equal(requested.filter(({ url }) => url.includes("/property-sensor-layout")).length, 1);
+
+  await new Promise(
+    // settle the initial optional layout before checking redraws
+    (resolve) => setImmediate(resolve),
+  );
+
+  const stableState = controller.state;
+  const positiveRecheck = controller.refreshHomeNetwork();
+  assert.equal(controller.state, stableState);
+  await positiveRecheck;
+  assert.equal(controller.state, stableState);
+  assert.equal(requested.filter(({ url }) => url.includes("/property-sensor-layout")).length, 1);
+
+  failWeather = true;
+  await controller.loadCurrent();
+  assert.equal(controller.state.homeNetwork, false);
+  assert.match(controller.state.error ?? "", /status 503/u);
+  failWeather = false;
+  await controller.loadCurrent();
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+
+  context = { data: { homeNetwork: false } };
+  const negativeRecheck = controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+  await negativeRecheck;
+  assert.equal(controller.state.homeNetwork, false);
+  assert.doesNotMatch(renderWeatherDashboard(controller.state, "home", controller.isAdmin), /data-indoor-house|data-admin-soil-map/u);
+
+  context = { data: { homeNetwork: "true" } };
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, false);
+
+  contextStatus = 503;
+  context = { data: { homeNetwork: true } };
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, false);
+
+  contextStatus = 200;
+  await controller.setView("forecast");
+  assert.equal(controller.state.homeNetwork, false);
+  context = { data: { homeNetwork: true } };
+  await controller.setView("home");
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+
+  const adminRequests = [];
+  const admin = new WeatherDashboardController({
+    fetcher: async (input, options) => {
+      adminRequests.push(String(input));
+      return fetcher(input, options);
+    },
+    isAdmin: true,
+  });
+  await admin.initialize();
+  assert.equal(admin.state.homeNetwork, false);
+  assert.equal(adminRequests.some((url) => url.endsWith("/viewer-context")), false);
+  assert.equal(adminRequests.some((url) => url.includes("/property-sensor-layout")), true);
+  assert.match(renderWeatherDashboard(admin.state, "home", admin.isAdmin), /data-indoor-house[\s\S]*data-admin-soil-map/u);
+});
+
+// reject stale route responses and late answers after the viewer deadline
+test("homepage viewer context times out and ignores stale positive replies", { timeout: 10_000 }, async () => {
+  const pending = [];
+  let layoutReads = 0;
+
+  // hold context reads while weather remains available
+  async function fetcher(input, options = {}) {
+    const url = String(input);
+
+    // expose one deferred location claim and its abort signal
+    if (url === buildViewerContextUrl("/api/v1")) {
+      return new Promise(
+        // let each test step complete one chosen response
+        (resolve) => pending.push({ resolve, signal: options.signal }),
+      );
+    }
+
+    // count only eligible layout reads
+    if (url.includes("/property-sensor-layout")) {
+      layoutReads += 1;
+      return Response.json({ data: [] });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, isAdmin: false });
+  await controller.initialize();
+  assert.equal(pending.length, 1);
+  assert.equal(controller.state.homeNetwork, false);
+
+  await controller.setView("forecast");
+  await controller.setView("home");
+  assert.equal(pending.length, 2);
+  pending[0].resolve(Response.json({ data: { homeNetwork: true } }));
+  await new Promise(
+    // flush the old reply after returning to the homepage
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.homeNetwork, false);
+  assert.equal(layoutReads, 0);
+
+  pending[1].resolve(Response.json({ data: { homeNetwork: true } }));
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+  assert.equal(layoutReads, 1);
+
+  const timeoutRefresh = controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+  assert.equal(pending.length, 3);
+  await timeoutRefresh;
+  assert.equal(pending[2].signal.aborted, true);
+  assert.equal(controller.state.homeNetwork, false);
+  pending[2].resolve(Response.json({ data: { homeNetwork: true } }));
+  await new Promise(
+    // flush the reply ignored after the four-second deadline
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.homeNetwork, false);
+  assert.equal(layoutReads, 1);
+});
+
+// preserve a delayed soil layout through positive location rechecks only
+test("homepage viewer context keeps authorized layouts but rejects revoked ones", async () => {
+  const layouts = [];
+  const savedLayout = {
+    displayName: "Orchard soil",
+    icon: "temperature",
+    latitude: 47.9505,
+    longitude: -122.4281,
+    sensorKey: "soil-1",
+    updatedAt: "2026-08-22T04:59:00.000Z",
+  };
+  let homeNetwork = true;
+
+  // delay only the optional property-layout response
+  async function fetcher(input) {
+    const url = String(input);
+
+    // return the current location claim
+    if (url === buildViewerContextUrl("/api/v1")) {
+      return Response.json({ data: { homeNetwork } });
+    }
+
+    // hold each optional layout independently
+    if (url.includes("/property-sensor-layout")) {
+      return new Promise(
+        // resolve only the selected layout attempt
+        (resolve) => layouts.push(resolve),
+      );
+    }
+
+    // preserve a reporting soil sensor for the rendered marker
+    if (url.includes("/current")) {
+      return Response.json({ data: [ecowittRecord], site });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, isAdmin: false });
+  await controller.initialize();
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.homeNetwork, true);
+  assert.equal(layouts.length, 1);
+  const beforeRecheck = controller.state;
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state, beforeRecheck);
+  assert.equal(layouts.length, 1);
+  layouts[0](Response.json({ data: [savedLayout] }));
+  await new Promise(
+    // allow the delayed layout to reach the renderer
+    (resolve) => setImmediate(resolve),
+  );
+  assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
+  assert.match(renderWeatherDashboard(controller.state, "home", false), /data-soil-moisture-sensor="soil-1"/u);
+
+  await controller.loadCurrent();
+  await controller.refreshHomeNetwork();
+  assert.equal(layouts.length, 2);
+  homeNetwork = false;
+  await controller.refreshHomeNetwork();
+  layouts[1](Response.json({ data: [] }));
+  await new Promise(
+    // reject layout after a negative location claim
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.state.propertySensorLayout, null);
+
+  homeNetwork = true;
+  await controller.refreshHomeNetwork();
+  assert.equal(layouts.length, 3);
+  await controller.setView("forecast");
+  layouts[2](Response.json({ data: [] }));
+  await new Promise(
+    // reject layout from the previous route
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.state.propertySensorLayout, null);
+});
+
+// retry an unavailable soil layout after a later positive viewer check
+test("homepage viewer context retries a failed soil layout without false placement notes", async () => {
+  let layoutStatus = 503;
+  let layoutReads = 0;
+  const savedLayout = {
+    displayName: "Orchard soil",
+    icon: "temperature",
+    latitude: 47.9505,
+    longitude: -122.4281,
+    sensorKey: "soil-1",
+    updatedAt: "2026-08-22T04:59:00.000Z",
+  };
+
+  // fail the optional layout once while the location claim stays positive
+  async function fetcher(input) {
+    const url = String(input);
+
+    // keep the home-network display claim granted
+    if (url === buildViewerContextUrl("/api/v1")) {
+      return Response.json({ data: { homeNetwork: true } });
+    }
+
+    // switch the optional layout from outage to recovery
+    if (url.includes("/property-sensor-layout")) {
+      layoutReads += 1;
+      return Response.json({ data: [savedLayout] }, { status: layoutStatus });
+    }
+
+    // keep one reporting soil probe available
+    if (url.includes("/current")) {
+      return Response.json({ data: [ecowittRecord], site });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, isAdmin: false });
+  await controller.initialize();
+  await new Promise(
+    // settle the failed optional layout
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.homeNetwork, true);
+  assert.equal(controller.state.propertySensorLayout, null);
+  assert.equal(layoutReads, 1);
+  const unavailable = renderWeatherDashboard(controller.state, "home", false);
+  assert.match(unavailable, /Soil moisture sensor positions are unavailable\./u);
+  assert.doesNotMatch(unavailable, /soil moisture sensors? still needs? a position in Admin/u);
+
+  layoutStatus = 200;
+  await controller.refreshHomeNetwork();
+  await new Promise(
+    // settle the recovered optional layout
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(layoutReads, 2);
+  assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
+  const recovered = renderWeatherDashboard(controller.state, "home", false);
+  assert.match(recovered, /data-soil-moisture-sensor="soil-1"/u);
+  assert.doesNotMatch(recovered, /Soil moisture sensor positions are unavailable\./u);
 });
 
 test("admin independently saves adjustment switches and verifies readback", async () => {

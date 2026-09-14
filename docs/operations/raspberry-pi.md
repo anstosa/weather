@@ -24,6 +24,39 @@ connector token is not interchangeable with any other connector token.
 The service-level `mem_limit` values are authoritative on ordinary Compose;
 do not run a host policy that widens those limits after container creation.
 
+## Home-network homepage panels
+
+The homepage shows indoor temperatures and soil moisture to administrators and
+visitors sharing Blueberry's public IPv4 egress. This deliberately includes other
+networks sharing the same home internet connection; it is not a private-subnet
+check for `192.168.11.0/24`.
+
+The web edge serves `/api/v1/viewer-context` with `private, no-store` caching and
+returns only a `homeNetwork` boolean. It trusts `CF-Connecting-IP` only when the
+immediate socket peer matches the isolated Compose `cloudflared` service's DNS
+address. Forwarded-address chains, Workers subrequests, and IPv6 visitor headers
+do not grant eligibility. See Cloudflare's [visitor-header reference](https://developers.cloudflare.com/fundamentals/reference/http-headers/).
+
+Blueberry discovers its IPv4 egress over HTTPS using the `ip` field in
+[Cloudflare's trace diagnostic](https://developers.cloudflare.com/privacy-proxy/get-started/).
+Discovery is bounded, shared between concurrent requests, and refreshed after
+60 seconds. Missing, expired, malformed, or failed discovery hides the extra
+panels for non-admins; it never reuses stale addresses. The trace endpoint is a
+diagnostic service rather than a guaranteed availability contract. IPv6-only
+visitors do not match; a VPN using a different egress also prevents recognition.
+Discovery failures emit one sanitized warning per refresh interval without
+logging visitor addresses or upstream error details.
+
+The browser does not persist eligibility in HTML, service-worker caches, or
+local storage, and rechecks while the homepage is visible and after reconnecting
+or returning to the tab. Network recognition never supplies an admin identity,
+admin cookie, editor access, or write authorization. Existing sensor readings and
+layout endpoints remain public: this feature controls homepage presentation,
+not confidentiality of the underlying sensor API.
+
+No host listener, router/DNS change, or control-plane installation is required;
+the detector ships with the web image through the ordinary release process.
+
 ## Provisioning
 
 1. Create `/opt/weather`, `/var/lib/weather/postgres`, `/var/lib/weather/xweather`,
