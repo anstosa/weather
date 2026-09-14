@@ -1104,11 +1104,39 @@ test("solar events return no time when the sun never crosses the requested altit
     assert.deepEqual(eveningSunTimes(polarSite, new Date(`${day}T12:00:00Z`)), {
       goldenHourStart: null,
       sunset: null,
+      sunsetChangeMinutes: null,
     });
   }
 });
 
-// render today's calculated readings rather than the older fixture observation date
+// compare displayed farm-local minutes across seasons and calendar boundaries
+test("sunset change compares yesterday's rounded local clock time", () => {
+  // include unchanged sunsets and both daylight-saving clock changes
+  for (const [day, expectedMinutes] of [
+    ["2026-09-12", -2],
+    ["2026-01-15", 2],
+    ["2026-06-21", 0],
+    ["2026-01-01", 1],
+    ["2028-03-01", 1],
+    ["2026-03-08", 61],
+    ["2026-11-01", -62],
+  ]) {
+    const times = eveningSunTimes(site, new Date(`${day}T20:00:00Z`));
+    assert.equal(times.sunsetChangeMinutes, expectedMinutes, day);
+  }
+});
+
+// avoid inventing a comparison when the previous polar day has no sunset
+test("sunset change stays unavailable for the first sunset after polar day", () => {
+  const polarSite = { latitude: 69.6492, longitude: 18.9553, timezone: "Europe/Oslo" };
+  const previous = eveningSunTimes(polarSite, new Date("2026-07-25T12:00:00Z"));
+  const today = eveningSunTimes(polarSite, new Date("2026-07-26T12:00:00Z"));
+  assert.equal(previous.sunset, null);
+  assert.ok(today.sunset instanceof Date);
+  assert.equal(today.sunsetChangeMinutes, null);
+});
+
+// render today's solar readings and signed comparison independently of observations
 test("sunset tile emphasizes today's sunset with golden hour as the secondary stat", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-13T05:00:00Z") });
   const state = {
@@ -1123,7 +1151,7 @@ test("sunset tile emphasizes today's sunset with golden hour as the secondary st
   assert.match(sunset, /<span>Today<\/span>/u);
   assert.match(sunset, /class="condition-primary"><strong>7:28<small>PM<\/small><\/strong>/u);
   assert.match(sunset, /class="condition-secondary-divider">Golden hour<\/span>\s*<strong>6:47<small>PM<\/small><\/strong>/u);
-  assert.doesNotMatch(sunset, /condition-forecast-reading /u);
+  assert.match(sunset, /class="condition-forecast-label">vs yesterday<\/span>\s*<strong>-2 <small>mins<\/small><\/strong>/u);
   assert.doesNotMatch(renderWeatherDashboard(state, "forecast"), /data-condition="sunset"/u);
 
   const polarHtml = renderWeatherDashboard({
@@ -1132,7 +1160,15 @@ test("sunset tile emphasizes today's sunset with golden hour as the secondary st
   });
   const polarTile = polarHtml.match(/<article[^>]*data-condition="sunset"[\s\S]*?<\/article>/u)?.[0];
   assert.match(polarTile, /<strong>—<\/strong>/u);
+  assert.match(polarTile, /class="condition-forecast-label">vs yesterday<\/span>\s*<strong>—<\/strong>/u);
   assert.doesNotMatch(polarTile, /Invalid|NaN/u);
+
+  // retain an explicit positive sign and avoid signed zero
+  for (const [day, expected] of [["2026-01-15", "+2"], ["2026-06-21", "0"]]) {
+    context.mock.timers.setTime(new Date(`${day}T20:00:00Z`).getTime());
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="sunset"[\s\S]*?<\/article>/u)?.[0];
+    assert.ok(tile.includes(`<strong>${expected} <small>mins</small></strong>`));
+  }
 });
 
 // retain the complete dashboard and route contracts
@@ -1600,7 +1636,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((html.match(/condition-forecast-tone-blue/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-orange/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-yellow/gu) ?? []).length, 1);
-  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 2);
+  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 3);
   assert.doesNotMatch(html, /Next 24h/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?Max[\s\S]*?61<small>°F[\s\S]*?Min[\s\S]*?61<small>°F[\s\S]*?Max[\s\S]*?60<small>°F[\s\S]*?Min[\s\S]*?60<small>°F/u);
   assert.match(html, /data-condition="wind"[\s\S]*?Max[\s\S]*?9 <small>mph[\s\S]*?Max[\s\S]*?16 <small>mph/u);

@@ -3330,7 +3330,7 @@ function renderCurrentSkeleton(): string {
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "0.0" } }] }, icon: "wb_sunny", label: "UV index" },
-    { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
+    { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [{ label: "vs yesterday", measurement: { unit: "mins", value: "+0" } }] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
   ];
 
   return `
@@ -3357,11 +3357,11 @@ function renderCurrentSkeleton(): string {
   `;
 }
 
-// calculate flat-horizon evening events for the site's current calendar day
+// calculate today's evening events and sunset's change from the previous site day
 export function eveningSunTimes(
   site: Pick<WeatherSite, "latitude" | "longitude" | "timezone">,
   now = new Date(),
-): Readonly<{ goldenHourStart: Date | null; sunset: Date | null }> {
+): Readonly<{ goldenHourStart: Date | null; sunset: Date | null; sunsetChangeMinutes: number | null }> {
   const day = formatWallClockParts(now, site.timezone);
   const midnight = Date.UTC(day.year, day.month - 1, day.day);
   const localNoon = Date.parse(fromSiteWallClock(
@@ -3371,11 +3371,22 @@ export function eveningSunTimes(
   const solarNoon = midnight + (720 - 4 * site.longitude) * 60_000;
   // align civil and solar dates across the international date line
   const solarDay = midnight + Math.round((localNoon - solarNoon) / 86_400_000) * 86_400_000;
+  const sunset = eveningSolarEvent(solarDay, site.latitude, site.longitude, -0.833);
+  const previousSunset = eveningSolarEvent(solarDay - 86_400_000, site.latitude, site.longitude, -0.833);
+  let sunsetChangeMinutes: number | null = null;
+
+  // compare the displayed local minutes including daylight-saving clock changes
+  if (sunset !== null && previousSunset !== null) {
+    const todayClock = formatWallClockParts(new Date(Math.round(sunset.getTime() / 60_000) * 60_000), site.timezone);
+    const previousClock = formatWallClockParts(new Date(Math.round(previousSunset.getTime() / 60_000) * 60_000), site.timezone);
+    sunsetChangeMinutes = (wallClockEpoch(todayClock) - wallClockEpoch(previousClock)) / 60_000 - 1_440;
+  }
 
   return {
     // use the evening +6° crossing rather than a fixed hour before sunset
     goldenHourStart: eveningSolarEvent(solarDay, site.latitude, site.longitude, 6),
-    sunset: eveningSolarEvent(solarDay, site.latitude, site.longitude, -0.833),
+    sunset,
+    sunsetChangeMinutes,
   };
 }
 
@@ -3429,15 +3440,24 @@ function eveningSolarEvent(
   return new Date(instant);
 }
 
-// show today's evening events independently of stale weather observations
+// show today's evening events and signed sunset change independently of observations
 function renderSunsetCondition(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const times = eveningSunTimes(site);
+  const change = times.sunsetChangeMinutes;
 
   return renderConditionCard({
     band: { color: "rgb(239, 126, 31)", detail: "", label: "Today" },
     className: "compact-condition sunset-condition",
-    forecast: { readings: [] },
+    forecast: {
+      readings: [{
+        label: "vs yesterday",
+        measurement: {
+          unit: change === null ? "" : "mins",
+          value: change === null ? "—" : `${change > 0 ? "+" : ""}${change}`,
+        },
+      }],
+    },
     icon: "wb_sunny",
     label: "Sunset",
     measurement: formatSunTime(times.sunset, site.timezone),

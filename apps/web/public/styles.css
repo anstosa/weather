@@ -987,14 +987,24 @@ h2 {
   grid-column: span 3;
 }
 
-/* use the full tile width for evening clock readings */
-.sunset-condition .condition-body,
+/* keep sunset's daily change beside the primary clock reading */
+.sunset-condition .condition-body {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+/* preserve the full-width golden-hour row */
 .sunset-condition .condition-secondary {
   grid-template-columns: minmax(0, 1fr);
 }
 
 .sunset-condition .condition-forecast {
-  display: none;
+  grid-row: 1;
+  align-self: center;
+}
+
+.sunset-condition .condition-forecast-reading {
+  display: grid;
+  gap: 0.1rem;
 }
 
 /* admin indoor house cross section */
@@ -4049,6 +4059,13 @@ td small {
 
   .filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* fit sunset and its comparison before the card becomes full-width */
+@media (55rem < width <= 60rem) {
+  .sunset-condition .condition-primary strong {
+    font-size: clamp(1.6rem, 3vw, 1.8rem);
   }
 }
 

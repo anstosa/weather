@@ -3736,7 +3736,7 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
-// display farm-local evening times in browsers using a different timezone
+// display farm-local evening times and their daily change in another browser timezone
 test("sunset tile shows today's sunset and golden hour on desktop and mobile", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -3744,8 +3744,8 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
   try {
     browser = await launchBrowser();
 
-    // cover wide, phone, and narrow-phone layouts
-    for (const width of [1280, 390, 320]) {
+    // cover compact desktop cards and both sides of the full-width breakpoint
+    for (const width of [1280, 960, 881, 880, 390, 320]) {
       const page = await createFixturePage(browser, {
         timezoneId: "Asia/Tokyo",
         viewport: { height: 900, width },
@@ -3760,28 +3760,33 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
       assert.equal(await tile.locator(".condition-primary").innerText(), "7:28PM");
       assert.match(await tile.locator(".condition-secondary").innerText(), /Golden hour\s*6:47PM/u);
       assert.match(await tile.locator(".condition-status").innerText(), /Today/u);
-      assert.equal(await tile.locator(".condition-forecast-reading").count(), 0);
+      assert.equal(await tile.locator(".condition-forecast-label").innerText(), "vs yesterday");
+      assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
       assert.equal(await tile.evaluate(
-        // reject clipped tile text and overlapping headings
+        // require the comparison to fit to the right without clipping or overlap
         (card) => {
           const label = card.querySelector(".condition-label");
           const status = card.querySelector(".condition-status");
           const primary = card.querySelector(".condition-primary");
           const secondary = card.querySelector(".condition-secondary");
+          const comparison = card.querySelector(".condition-forecast");
+          const sunset = card.querySelector(".condition-primary strong");
 
           // require each part of the visual hierarchy
-          if (!label || !status || !primary || !secondary) {
+          if (!label || !status || !primary || !secondary || !comparison || !sunset) {
             return false;
           }
 
-          const contentsFit = [card, label, primary, secondary].every(
+          const contentsFit = [card, label, primary, secondary, comparison].every(
             // check full rendered content widths
             (element) => element.scrollWidth <= element.clientWidth,
           );
           return contentsFit && label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
-            primary.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top;
+            primary.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top &&
+            sunset.getBoundingClientRect().right <= comparison.getBoundingClientRect().left &&
+            comparison.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top;
         },
-      ), true);
+      ), true, `sunset layout overlaps or clips at ${width}px`);
       const screenshot = await tile.screenshot();
       assert.ok(screenshot.byteLength > 1_000);
 
@@ -3794,6 +3799,14 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
       assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
+      assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
+
+      // show later and unchanged sunsets without losing the signed comparison
+      for (const [day, expected] of [["2026-01-15", "+2 mins"], ["2026-06-21", "0 mins"]]) {
+        await page.clock.setFixedTime(new Date(`${day}T20:00:00Z`));
+        await page.reload({ waitUntil: "networkidle" });
+        assert.equal(await tile.locator(".condition-forecast strong").innerText(), expected);
+      }
       assert.deepEqual(errors, []);
       await page.close();
     }
@@ -3820,6 +3833,7 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
     await page.clock.fastForward(11_000);
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
+    assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
     assert.equal(fixture.state.requests.length, requestCount);
 
     await page.clock.setSystemTime(new Date("2026-09-15T19:00:00Z"));
@@ -3829,6 +3843,7 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
     );
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:22PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:41PM/u);
+    assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
     assert.equal(fixture.state.requests.length, requestCount);
   } finally {
     await browser?.close();
@@ -4050,6 +4065,7 @@ test("real browser rejects Los Angeles DST gaps and overlaps from UTC without lo
 });
 
 // retain unit preferences and geometry across all condition cards
+// preserve unit preferences and comparison styling across the complete dashboard
 test("real browser configures and persists every measurement unit preference", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -4065,8 +4081,8 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*16\s*mph/u);
     assert.equal(
-      await page.locator(".condition-primary strong").evaluateAll(
-        // use one primary reading scale across every card
+      await page.locator(".condition-card:not(.sunset-condition) .condition-primary strong").evaluateAll(
+        // keep measurement scales shared while the sunset clock reserves comparison space
         (readings) => new Set(readings.map(
           // read one primary scale
           (reading) => getComputedStyle(reading).fontSize,
@@ -4250,6 +4266,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(207, 67, 55)", condition: "uv-index", opacity: "0.75" },
+        { color: "rgb(0, 0, 0)", condition: "sunset", opacity: "0.75" },
       ],
     );
     assert.equal(await page.locator(".condition-card").count(), 9);
@@ -4417,6 +4434,7 @@ test("real browser configures and persists every measurement unit preference", {
   }
 });
 
+// preserve tablet geometry while the sunset clock reserves room for its comparison
 test("real browser keeps the tablet masthead and compact navigation in separate rows", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -4426,8 +4444,8 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
     const page = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     assert.equal(
-      await page.locator(".condition-primary strong").evaluateAll(
-        // retain the shared primary scale on tablets
+      await page.locator(".condition-card:not(.sunset-condition) .condition-primary strong").evaluateAll(
+        // retain tablet measurement scales apart from the compact sunset clock
         (readings) => new Set(readings.map(
           // read one tablet primary scale
           (reading) => getComputedStyle(reading).fontSize,
