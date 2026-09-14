@@ -93,6 +93,31 @@ BEGIN
   END IF;
 END;
 $rain_capture_acl$;
+-- grant only the bounded inferred rain projection after its migration exists
+DO $rain_adjustment_acl$
+DECLARE
+  adjustment_column record;
+BEGIN
+  -- retain compatibility with pre-adjustment rollback schemas
+  IF to_regclass('public.rain_adjustment_runs') IS NOT NULL THEN
+    GRANT SELECT ON rain_adjustment_runs TO weather_api, weather_ingest;
+    GRANT INSERT ON rain_adjustment_runs TO weather_ingest;
+    REVOKE ALL ON rain_adjustment_runs FROM weather_training_export;
+    -- erase historical column grants before granting table-scoped authority
+    FOR adjustment_column IN
+      SELECT attribute.attname AS column_name
+      FROM pg_attribute attribute
+      WHERE attribute.attrelid = 'public.rain_adjustment_runs'::regclass
+        AND attribute.attnum > 0 AND NOT attribute.attisdropped
+    LOOP
+      EXECUTE format(
+        'REVOKE ALL (%I) ON rain_adjustment_runs FROM weather_api, weather_ingest, weather_training_export',
+        adjustment_column.column_name
+      );
+    END LOOP;
+  END IF;
+END;
+$rain_adjustment_acl$;
 GRANT UPDATE (
   last_ingestion_run_id,
   last_received_at,

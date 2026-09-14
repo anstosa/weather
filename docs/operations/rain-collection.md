@@ -91,8 +91,10 @@ export is unchanged; any future raw rain export needs a separately versioned,
 bounded read-only contract rather than a production SQL bypass.
 
 The [collection status endpoint](https://weather.ballydidean.farm/api/v1/sites/ballydidean/rain-collection)
-exposes only aggregate counts, byte totals, last receipt times and suspension
-time. It explicitly reports model and qualification disabled. A schema-valid
+exposes aggregate counts, byte totals, last receipt times and suspension
+time. After the separate [live adjustment release](rain-live-adjustment.md),
+`modelEnabled` reflects a currently usable output and the administrator rain
+switch, while `qualificationEnabled` remains false. A schema-valid
 forecast or station response does not by itself prove complete model features,
 a complete hourly target, timely availability, or season/event support.
 

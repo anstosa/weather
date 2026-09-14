@@ -12,6 +12,7 @@ import {
   listWeatherHistory,
   listWeatherTrends,
   readRainCollectionStatus,
+  readRainAdjustmentRun,
   verifyMigrationReadiness,
   type ActiveSiteRow,
   type CurrentQuery,
@@ -49,6 +50,8 @@ import {
   type RainCollectionStatus,
 } from "@weather/domain";
 import { projectRainCollectionStatus } from "./rain-collection.js";
+import type { RainAdjustmentRun } from "@weather/database";
+import { rainAdjustmentDecision, rainAdjustmentRuntime, validRainAdjustmentRun, type ApiRainAdjustmentDecision } from "./rain-adjustment.js";
 
 type DatabasePool = Parameters<typeof listActiveSites>[0];
 type LoadedApiForecastAdjustmentRuntime =
@@ -65,6 +68,7 @@ export interface HealthSnapshot {
 }
 
 export interface WeatherReadStore {
+  getRainAdjustmentRun?(siteSlug: string, asOf: string): Promise<RainAdjustmentRun | null>;
   getRainCollectionStatus?(): Promise<RainCollectionStatus>;
   getDailyPrecipitation(
     siteSlug: string,
@@ -205,6 +209,7 @@ export interface ApiWeatherRecord {
 
 // extend only forecast rows with fail-raw adjustment decisions
 export interface ApiForecastWeatherRecord extends ApiWeatherRecord {
+  readonly rainAdjustment: ApiRainAdjustmentDecision;
   readonly adjustment: ForecastAdjustmentDecision;
   readonly temperatureAdjustment: ForecastTemperatureCanaryDecisionV1;
 }
@@ -315,7 +320,7 @@ export type ForecastDays = 1 | 5 | 10;
 export interface ApiDiagnostic {
   readonly errorCode: string | null;
   readonly errorName: string;
-  readonly event: "api_request_failed" | "temperature_canary_fallback";
+  readonly event: "api_request_failed" | "temperature_canary_fallback" | "rain_adjustment_fallback";
   readonly method: string;
   readonly operation?: TemperatureCanaryOperation;
   readonly status: number;
@@ -433,6 +438,10 @@ export function createDatabaseWeatherReadStore(
   options: DatabaseStoreOptions,
 ): WeatherReadStore {
   return {
+    // read only bounded model output, never private provider receipts
+    async getRainAdjustmentRun(siteSlug, asOf) {
+      return await readRainAdjustmentRun(pool, siteSlug, asOf);
+    },
     // read the aggregate-only view without access to raw provider bodies
     async getRainCollectionStatus() {
       return await readRainCollectionStatus(pool);
@@ -545,6 +554,9 @@ export function createWeatherApi(
   // route one request
   return async function handleWeatherRequest(request: Request): Promise<Response> {
     const temperatureFailures = new Map<TemperatureCanaryOperation, unknown>();
+    let rainReadFailed = false;
+    // record bounded rain degradation without inspecting private error details
+    const reportRainFailure = (): void => { rainReadFailed = true; };
     // retain only the first failure at each request boundary
     const reportTemperatureFailure: TemperatureCanaryFailureReporter = (operation, error) => {
       // avoid unbounded per-row diagnostics or unused error retention
@@ -591,6 +603,7 @@ export function createWeatherApi(
           temperatureAdjustmentRuntime,
           applyTemperatureAdjustment,
           reportTemperatureFailure,
+          reportRainFailure,
         );
       }
     } catch (error) {
@@ -607,6 +620,15 @@ export function createWeatherApi(
 
     // report optional degradation with the actual public response status
     if (logDiagnostic !== undefined) {
+      // distinguish broken rain serving from an ordinary absent source
+      if (rainReadFailed) {
+        emitApiDiagnostic(logDiagnostic, {
+          ...createApiDiagnostic(null, request.method, response.status),
+          errorCode: "rain_sidecar_read_failed",
+          event: "rain_adjustment_fallback",
+          operation: "sidecar_read",
+        });
+      }
       // emit at most one event per optional operation
       for (const [operation, error] of temperatureFailures) {
         let diagnostic: ApiDiagnostic;
@@ -1040,6 +1062,7 @@ async function handleReadRoute(
     input: ApplyTemperatureCanaryInputV1,
   ) => ForecastTemperatureCanaryDecisionV1,
   reportTemperatureFailure: TemperatureCanaryFailureReporter,
+  reportRainFailure: () => void,
 ): Promise<Response> {
   // serve liveness and readiness
   if (route.kind === "health") {
@@ -1082,8 +1105,10 @@ async function handleReadRoute(
     if (route.siteSlug !== "ballydidean" || store.getRainCollectionStatus === undefined) {
       throw new HttpError(404, "not_found", "Endpoint not found");
     }
+    const rainRun = await readRainAdjustmentSafely(store, route.siteSlug, generatedAt, reportRainFailure);
     return jsonResponse({
-      data: projectRainCollectionStatus(await store.getRainCollectionStatus()),
+      data: { ...projectRainCollectionStatus(await store.getRainCollectionStatus()),
+        modelEnabled: rainAdjustmentRuntime(rainRun, generatedAt).state === "active" },
       generatedAt,
       version,
     });
@@ -1158,6 +1183,7 @@ async function handleReadRoute(
             ),
           ])
         : [null, null];
+    const rainRun = await readRainAdjustmentSafely(store, route.siteSlug, generatedAt, reportRainFailure);
     const records = mapForecastWeatherRecords(
       rows,
       indexSources(site),
@@ -1168,9 +1194,11 @@ async function handleReadRoute(
       temperatureSidecar,
       applyTemperatureAdjustment,
       reportTemperatureFailure,
+      rainRun,
     );
     return jsonResponse({
       adjustmentRuntime,
+      rainAdjustmentRuntime: rainAdjustmentRuntime(rainRun, generatedAt),
       data: records,
       days,
       generatedAt,
@@ -1619,6 +1647,7 @@ function mapForecastWeatherRecords(
     input: ApplyTemperatureCanaryInputV1,
   ) => ForecastTemperatureCanaryDecisionV1,
   reportTemperatureFailure: TemperatureCanaryFailureReporter,
+  rainRun: RainAdjustmentRun | null,
 ): readonly ApiForecastWeatherRecord[] {
   const rawRecords = mapWeatherRecords(rows, sources, generatedAt);
   const temperatureHours = new Map(
@@ -1628,6 +1657,10 @@ function mapForecastWeatherRecords(
   // retain storage order and raw record bytes
   return rawRecords.map((record, index) => ({
     ...record,
+    rainAdjustment: rainAdjustmentDecision(
+      rows[index]!.upstreamModel === "best_match" ? rainRun : null,
+      record.validAt, record.metrics.precipitationMm, generatedAt,
+    ),
     adjustment: applyForecastAdjustmentSafely(
       runtime,
       rows[index]!,
@@ -1644,6 +1677,27 @@ function mapForecastWeatherRecords(
       reportTemperatureFailure,
     ),
   }));
+}
+
+// isolate rain storage failure from every ordinary forecast and other adjustment
+async function readRainAdjustmentSafely(
+  store: WeatherReadStore,
+  siteSlug: string,
+  asOf: string,
+  reportFailure: () => void,
+): Promise<RainAdjustmentRun | null> {
+  try {
+    const run = await store.getRainAdjustmentRun?.(siteSlug, asOf) ?? null;
+    // report corrupt or unbound projections separately from normal missing data
+    if (run !== null && !validRainAdjustmentRun(run, asOf)) {
+      reportFailure();
+      return null;
+    }
+    return run;
+  } catch {
+    reportFailure();
+    return null;
+  }
 }
 
 // contain every temperature model or projection failure

@@ -516,8 +516,9 @@ function forecastAdjustmentRuntime(mode) {
 }
 
 // create one complete adjusted forecast response
-function forecastResponse(mode) {
+function forecastResponse(mode, settings = { version: 1, temperature: true, wind: true, rain: true }) {
   return {
+    adjustmentSettings: settings,
     adjustmentRuntime: forecastAdjustmentRuntime(mode),
     data: forecast.map(
       // attach one exact per-row decision
@@ -656,6 +657,8 @@ async function assertForecastTitleClearance(page) {
 async function startFixtureServer() {
   const state = {
     adjustmentMode: "inactive",
+    adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
+    adjustmentSettingsUpdates: 0,
     adminUpdates: 0,
     failReads: false,
     mutations: 0,
@@ -720,6 +723,37 @@ async function startFixtureServer() {
         `weather_admin_session=; Path=/; HttpOnly; Max-Age=0; ${cookieContext}`,
       );
       response.end();
+      return;
+    }
+
+    // persist one authenticated-editor fixture update
+    if (url.pathname === "/api/v1/admin/sites/ballydidean/forecast-adjustment-settings") {
+      // require an authenticated browser session
+      if (!isAdmin) {
+        sendJson(response, { error: { code: "unauthorized" } }, 401);
+        return;
+      }
+
+      // keep the fixture resource read/write only
+      if (request.method !== "GET" && request.method !== "PUT") {
+        sendJson(response, { error: { code: "method_not_allowed" } }, 405);
+        return;
+      }
+
+      // save all three independent controls
+      if (request.method === "PUT") {
+        const chunks = [];
+
+        // collect one bounded JSON update
+        for await (const chunk of request) {
+          chunks.push(Buffer.from(chunk));
+        }
+
+        state.adjustmentSettings = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        state.adjustmentSettingsUpdates += 1;
+      }
+
+      sendJson(response, { data: state.adjustmentSettings });
       return;
     }
 
@@ -820,7 +854,7 @@ async function startFixtureServer() {
 
     // serve normalized forecast hours
     if (url.pathname === "/api/v1/sites/ballydidean/forecast") {
-      sendJson(response, forecastResponse(state.adjustmentMode));
+      sendJson(response, forecastResponse(state.adjustmentMode, state.adjustmentSettings));
       return;
     }
 
@@ -1234,8 +1268,8 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
   }
 });
 
-// preserve explicit canary opt-in with a stable label
-test("wind canary keeps an Adjusted label and persists explicit wind-only opt-in", { timeout: 60_000 }, async () => {
+// preserve explicit raw selection with a stable label
+test("wind adjustment keeps an Adjusted label and persists the raw choice", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1251,10 +1285,10 @@ test("wind canary keeps an Adjusted label and persists explicit wind-only opt-in
 
     const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
     const rawTemperature = await page.locator('[data-forecast-chart="temperature"]').textContent();
-    const rawWind = await page.locator('[data-forecast-chart="wind"]').textContent();
+    const adjustedWind = await page.locator('[data-forecast-chart="wind"]').textContent();
 
     assert.equal(await toggle.isEnabled(), true);
-    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.equal(await toggle.getAttribute("aria-checked"), "true");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
@@ -1266,7 +1300,7 @@ test("wind canary keeps an Adjusted label and persists explicit wind-only opt-in
     );
     assert.equal(
       await page.evaluate(
-        // prove the default is not an implicit stored opt-in
+        // prove the default needs no stored preference
         (key) => localStorage.getItem(key),
         FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
       ),
@@ -1274,7 +1308,7 @@ test("wind canary keeps an Adjusted label and persists explicit wind-only opt-in
     );
 
     await toggle.click();
-    assert.equal(await toggle.getAttribute("aria-checked"), "true");
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
@@ -1283,28 +1317,28 @@ test("wind canary keeps an Adjusted label and persists explicit wind-only opt-in
     );
     assert.notEqual(
       await page.locator('[data-forecast-chart="wind"]').textContent(),
-      rawWind,
+      adjustedWind,
     );
     assert.equal(
       await page.evaluate(
-        // retain only an explicit user selection
+        // retain the explicit raw selection
         (key) => localStorage.getItem(key),
         FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
       ),
-      "adjusted",
+      "raw",
     );
 
     await page.reload({ waitUntil: "networkidle" });
-    assert.equal(await toggle.getAttribute("aria-checked"), "true");
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await page.getByRole("link", { name: "Home", exact: true }).click();
-    assert.equal(await toggle.getAttribute("aria-checked"), "true");
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await toggle.click();
-    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.equal(await toggle.getAttribute("aria-checked"), "true");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await page.reload({ waitUntil: "networkidle" });
-    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.equal(await toggle.getAttribute("aria-checked"), "true");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await page.close();
   } finally {
@@ -2583,6 +2617,58 @@ test("admin login and logout work inside an iframe", { timeout: 60_000 }, async 
   }
 });
 
+test("admin forecast switches persist and hide the public toggle when all off", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 850, width: 1100 },
+    });
+    await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await page.getByLabel("Username").fill("admin");
+    await page.getByLabel("Password").fill("test-admin-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
+    const form = page.locator("[data-admin-forecast-adjustments]");
+    assert.equal(await form.getByRole("checkbox", { name: "Temperature" }).isChecked(), true);
+    assert.equal(await form.getByRole("checkbox", { name: "Wind" }).isChecked(), true);
+    assert.equal(await form.getByRole("checkbox", { name: "Rain" }).isChecked(), true);
+    await form.getByRole("checkbox", { name: "Temperature" }).uncheck();
+    await form.getByRole("checkbox", { name: "Wind" }).uncheck();
+    await form.getByRole("checkbox", { name: "Rain" }).uncheck();
+    await form.getByRole("button", { name: "Save adjustments" }).click();
+    await form.getByText("Forecast adjustments saved.").waitFor();
+    assert.equal(fixture.state.adjustmentSettingsUpdates, 1);
+    assert.deepEqual(fixture.state.adjustmentSettings, {
+      version: 1, temperature: false, wind: false, rain: false,
+    });
+
+    await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+    assert.equal(await page.locator("[data-forecast-adjustment-toggle]").count(), 0);
+    await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
+    const reopened = page.locator("[data-admin-forecast-adjustments]");
+    assert.equal(await reopened.getByRole("checkbox", { name: "Temperature" }).isChecked(), false);
+    assert.equal(await reopened.getByRole("checkbox", { name: "Wind" }).isChecked(), false);
+    assert.equal(await reopened.getByRole("checkbox", { name: "Rain" }).isChecked(), false);
+    await reopened.getByRole("checkbox", { name: "Rain" }).check();
+    await reopened.getByRole("button", { name: "Save adjustments" }).click();
+    await reopened.getByText("Forecast adjustments saved.").waitFor();
+    await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+    assert.equal(await page.locator("[data-forecast-adjustment-toggle]").count(), 1);
+    assert.deepEqual(fixture.state.adjustmentSettings, {
+      version: 1, temperature: false, wind: false, rain: true,
+    });
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 test("admin editor signs in, names, and places a reporting EcoWitt sensor", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -2649,7 +2735,7 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
       "device_thermostat",
     );
     assert.equal(await page.locator('input[name="icon"]').count(), 4);
-    assert.equal(await page.getByLabel("Temperature").isChecked(), true);
+    assert.equal(await page.getByRole("radio", { name: "Temperature" }).isChecked(), true);
     assert.equal(await page.getByRole("button", { name: "Save sensor" }).locator("svg").count(), 1);
     assert.equal(await page.locator(".property-admin-map [data-property-map-layer]").count(), 3);
     await page.locator(".property-admin-map").getByRole("button", { name: "Roads" }).click();

@@ -337,7 +337,7 @@ test("rain station access upgrades the exact policy without mutating prior evide
 
     // append 0015 without replaying or rewriting the published prefix
     const upgraded = await runMigrations(owner, migrationDirectory);
-    assert.deepEqual(upgraded.applied, ["0015_rain_station_access.sql"]);
+    assert.deepEqual(upgraded.applied, ["0015_rain_station_access.sql", "0016_rain_adjustment.sql"]);
     await applyAcl(server);
     const after = (await ingest.query(`
       SELECT c.id, c.policy, c.policy_sha256, r.body_sha256, r.compressed_body

@@ -77,3 +77,23 @@ test("invalid rain aggregates and unavailable storage produce a redacted error",
   assert.equal(response.status, 500);
   assert.equal((await response.text()).includes("private-key"), false);
 });
+
+// keep raw serving while exposing failed model reads in bounded operator diagnostics
+test("rain read failures stay public-safe and emit an explicit degradation event", async () => {
+  const failing = store();
+  failing.getRainAdjustmentRun = async () => { throw new Error("private-gauge-body-and-key"); };
+  const diagnostics = [];
+  const handler = createWeatherApi(failing, {
+    now: () => new Date("2026-09-14T12:01:00Z"),
+    logDiagnostic: (event) => diagnostics.push(event),
+  });
+  const response = await handler(new Request(endpoint));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.data.modelEnabled, false);
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].event, "rain_adjustment_fallback");
+  assert.equal(diagnostics[0].errorCode, "rain_sidecar_read_failed");
+  assert.equal(diagnostics[0].status, 200);
+  assert.equal(JSON.stringify({ body, diagnostics }).includes("private-gauge"), false);
+});

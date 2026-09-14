@@ -82,6 +82,7 @@ import {
 } from "./health.js";
 import { planIngestionDeadlines } from "./run-deadline.js";
 import { collectRainEvidence, isRainCollectionEnabled, type RainCollectionOptions } from "./rain-collection.js";
+import { publishRainAdjustment } from "./rain-adjustment.js";
 import {
   executePublicStationBackfill,
   resolvePublicStationBackfillSources,
@@ -133,6 +134,7 @@ export interface WorkerIterationOptions {
   readonly ecowitt?: EcowittConfiguration | null;
   readonly publicStations?: PublicStationConfiguration | null;
   readonly rainCollection?: RainCollectionOptions;
+  readonly rainAdjustmentEnabled?: boolean;
   readonly tempest?: TempestConfiguration | null;
   readonly temperatureCanaryRuntime?: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
   readonly tides?: TideConfiguration | null;
@@ -360,6 +362,26 @@ async function runWorkerIterationWithState(
         release: options.version,
         runId: null,
         sourceId: "rain-prospective-capture",
+      }));
+    }
+  }
+
+  // publish model output independently of collection and other adjustment failures
+  if (options.rainAdjustmentEnabled === true) {
+    const startedAt = now().getTime();
+    try {
+      const published = await publishRainAdjustment(pool, now());
+      diagnosticWriter(createWorkerDiagnostic({
+        count: published ? 1 : 0, durationMs: elapsedMilliseconds(startedAt, now()),
+        errorCode: null, event: "source_run", release: options.version,
+        runId: null, sourceId: "rain-adjustment",
+      }));
+    } catch {
+      // leave raw fallback available when source aggregation or inference fails
+      diagnosticWriter(createWorkerDiagnostic({
+        count: 0, durationMs: elapsedMilliseconds(startedAt, now()),
+        errorCode: "rain_adjustment_failed", event: "source_run", release: options.version,
+        runId: null, sourceId: "rain-adjustment",
       }));
     }
   }
@@ -1433,6 +1455,7 @@ export async function startWorkerProcess(
     // require explicit capture opt-in and reject compatibility runs
     ...(isRainCollectionEnabled(configuration)
       ? {
+          rainAdjustmentEnabled: true,
           rainCollection: {
             stationsAuthorized: RAIN_COLLECTION_POLICY.stationAccessAuthorized,
             ...(configuration.tempestApiKey === null ? {} : { apiKey: configuration.tempestApiKey }),

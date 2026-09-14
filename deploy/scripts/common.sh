@@ -262,6 +262,24 @@ verify_runtime_database_acl() {
           WHERE has_column_privilege('weather_ingest', table_relation.oid, attribute.attnum, 'UPDATE')
         )
         AND NOT has_table_privilege('weather_training_export', 'rain_collection_status_v1', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND has_table_privilege('weather_api', 'rain_adjustment_runs', 'SELECT')
+        AND NOT has_table_privilege('weather_api', 'rain_adjustment_runs', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND has_table_privilege('weather_ingest', 'rain_adjustment_runs', 'SELECT')
+        AND has_table_privilege('weather_ingest', 'rain_adjustment_runs', 'INSERT')
+        AND NOT has_table_privilege('weather_ingest', 'rain_adjustment_runs', 'UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND NOT has_table_privilege('weather_training_export', 'rain_adjustment_runs', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pg_attribute attribute
+          CROSS JOIN LATERAL unnest(ARRAY['weather_api', 'weather_ingest', 'weather_training_export']) consumer(name)
+          CROSS JOIN LATERAL unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) privilege(name)
+          WHERE attribute.attrelid = 'rain_adjustment_runs'::regclass
+            AND attribute.attnum > 0 AND NOT attribute.attisdropped
+            AND (consumer.name = 'weather_training_export'
+              OR privilege.name IN ('UPDATE', 'REFERENCES')
+              OR (consumer.name = 'weather_api' AND privilege.name = 'INSERT'))
+            AND has_column_privilege(consumer.name, 'rain_adjustment_runs', attribute.attnum, privilege.name)
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM pg_auth_members membership

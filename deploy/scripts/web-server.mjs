@@ -98,6 +98,18 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // expose only the current public adjustment switches
+    if (requestUrl.pathname === "/api/v1/sites/ballydidean/forecast-adjustment-settings") {
+      await serveForecastAdjustmentSettings(request, response, false);
+      return;
+    }
+
+    // protect adjustment switch reads and writes with the admin session
+    if (requestUrl.pathname === "/api/v1/admin/sites/ballydidean/forecast-adjustment-settings") {
+      await serveForecastAdjustmentSettings(request, response, true);
+      return;
+    }
+
     // update one layout entry behind the administrator session
     if (requestUrl.pathname.startsWith("/api/v1/admin/sites/ballydidean/property-sensor-layout/")) {
       await updatePropertySensorLayout(request, response, requestUrl.pathname);
@@ -337,6 +349,73 @@ async function servePropertySensorLayout(request, response) {
   sendJson(response, 200, body, request.method === "HEAD", {
     "Cache-Control": "no-cache",
   });
+}
+
+// serve or replace the persisted global adjustment switches
+async function serveForecastAdjustmentSettings(request, response, admin) {
+  // require the administrator session before private reads or writes
+  if (admin && !adminStore.authenticateSession(readAdminSessionCookie(request.headers.cookie))) {
+    sendAdminUnauthorized(response);
+    return;
+  }
+
+  // provide a small public read without exposing storage diagnostics
+  if (request.method === "GET" || request.method === "HEAD") {
+    const status = await adminStore.readAdjustmentSettingsStatus();
+    sendJson(
+      response,
+      200,
+      admin && status.error !== null
+        ? { data: status.settings, error: status.error }
+        : { data: status.settings },
+      request.method === "HEAD",
+    );
+    return;
+  }
+
+  // reject non-admin methods and cross-site browser mutations
+  if (!admin || request.method !== "PUT") {
+    sendText(response, 405, "method not allowed\n", { Allow: admin ? "GET, HEAD, PUT" : "GET, HEAD" });
+    return;
+  }
+
+  // require one genuine same-origin mutation
+  if (!isSameOriginMutation(request)) {
+    sendText(response, 403, "same-origin request required\n");
+    return;
+  }
+
+  try {
+    const body = await readRequestJson(request, 1_024);
+    const settings = await adminStore.writeAdjustmentSettings(body);
+    sendJson(response, 200, { data: settings });
+  } catch (error) {
+    // separate malformed switches from private storage failures
+    if (error instanceof RangeError || error instanceof SyntaxError) {
+      sendText(response, 400, "invalid request\n");
+    } else {
+      sendText(response, 500, "internal server error\n");
+    }
+  }
+}
+
+// bind a state-changing request to the document's own origin
+function isSameOriginMutation(request) {
+  const origin = request.headers.origin;
+  const host = request.headers.host;
+
+  // require one concrete browser origin and host
+  if (typeof origin !== "string" || typeof host !== "string") {
+    return false;
+  }
+
+  try {
+    const expected = new URL(`${requestUsesHttps(request) ? "https" : "http"}://${host}`);
+    const submitted = new URL(origin);
+    return expected.host === host && submitted.origin === expected.origin && origin === submitted.origin;
+  } catch {
+    return false;
+  }
 }
 
 // update one server-persisted sensor layout entry
@@ -647,36 +726,246 @@ async function proxyApi(request, response, requestUrl) {
   }
 
   const target = new URL(`${requestUrl.pathname}${requestUrl.search}`, apiOrigin);
+  const isForecast = requestUrl.pathname === "/api/v1/sites/ballydidean/forecast";
+  const isRainStatus = requestUrl.pathname === "/api/v1/sites/ballydidean/rain-collection";
+  const projectsAdjustmentSettings = isForecast || isRainStatus;
   // relax only the exact site trends route
   const maximumResponseBytes = /^\/api\/v1\/sites\/[^/]+\/trends$/u.test(requestUrl.pathname)
     ? maximumTrendsApiBytes
     : maximumApiBytes;
 
   try {
+    const settings = projectsAdjustmentSettings
+      ? (await adminStore.readAdjustmentSettingsStatus()).settings
+      : null;
     const upstream = await fetch(target, {
       headers: { Accept: request.headers.accept ?? "application/json" },
-      method: request.method,
+      // read complete projected JSON even for HEAD so its length stays accurate
+      method: request.method === "HEAD" && projectsAdjustmentSettings ? "GET" : request.method,
       redirect: "manual",
       signal: AbortSignal.timeout(apiRequestTimeoutMs(requestUrl.pathname)),
     });
-    const body = request.method === "HEAD"
+    const sourceBody = request.method === "HEAD" && !projectsAdjustmentSettings
       ? Buffer.alloc(0)
       : await readBoundedBody(upstream, maximumResponseBytes, "API");
+    const body = upstream.ok && isForecast
+      ? filterForecastResponse(sourceBody, settings)
+      : upstream.ok && isRainStatus
+        ? filterRainCollectionStatus(sourceBody, settings)
+        : sourceBody;
     const contentLength =
-      request.method === "HEAD"
+      request.method === "HEAD" && !projectsAdjustmentSettings
         ? boundedContentLength(upstream.headers.get("content-length"), maximumResponseBytes)
         : body.byteLength;
     setSecurityHeaders(response);
     response.writeHead(upstream.status, {
-      "Cache-Control": upstream.ok ? apiCacheControl(requestUrl.pathname) : "no-store",
+      "Cache-Control": upstream.ok && !projectsAdjustmentSettings ? apiCacheControl(requestUrl.pathname) : "no-store",
       "Content-Length": String(contentLength),
-      "Content-Type": upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
+      "Content-Type": projectsAdjustmentSettings && upstream.ok
+        ? "application/json; charset=utf-8"
+        : upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
       Vary: "Accept",
     });
-    response.end(body);
+    response.end(request.method === "HEAD" ? undefined : body);
   } catch {
     sendText(response, 502, "upstream unavailable\n");
   }
+}
+
+// project one API response through the persisted admin switches
+function filterForecastResponse(body, settings) {
+  const forecast = JSON.parse(body.toString("utf8"));
+
+  // reject malformed upstream envelopes rather than bypassing a switch
+  if (forecast === null || typeof forecast !== "object" || !Array.isArray(forecast.data)) {
+    throw new Error("forecast API response is invalid");
+  }
+
+  forecast.adjustmentSettings = settings;
+  const runtime = forecast.adjustmentRuntime;
+
+  // constrain generic runtime metrics before row decisions are exposed
+  if (runtime?.state === "active" && Array.isArray(runtime.enabledMetrics)) {
+    runtime.enabledMetrics = runtime.enabledMetrics.filter(
+      // retain only categories allowed by the current snapshot
+      (metric) => isAdjustmentMetricEnabled(metric, settings),
+    );
+
+    // disable a runtime without any permitted metric
+    if (runtime.enabledMetrics.length === 0) {
+      forecast.adjustmentRuntime = disabledForecastRuntime(runtime);
+    }
+  }
+
+  // suppress independent runtime identities when their switches are off
+  if (!settings.temperature && forecast.temperatureAdjustmentRuntime?.state === "active") {
+    forecast.temperatureAdjustmentRuntime = disabledTemperatureRuntime(
+      forecast.temperatureAdjustmentRuntime,
+    );
+  }
+
+  // suppress the rain runtime separately from both existing models
+  if (!settings.rain && forecast.rainAdjustmentRuntime?.state === "active") {
+    forecast.rainAdjustmentRuntime = disabledRainRuntime(forecast.rainAdjustmentRuntime);
+  }
+
+  // apply the same one-request snapshot to every hour
+  for (const row of forecast.data) {
+    // reject malformed rows instead of leaking unchecked adjustment values
+    if (row === null || typeof row !== "object") {
+      throw new Error("forecast row is invalid");
+    }
+
+    // remove only disallowed generic adjusted metrics
+    if (row.adjustment?.state === "active") {
+      const permitted = row.adjustment.appliedMetrics?.filter(
+        // project the model's selected metrics through admin controls
+        (metric) => isAdjustmentMetricEnabled(metric, settings),
+      );
+
+      // reject malformed active decisions before responding
+      if (!Array.isArray(permitted) || row.adjustment.adjustedMetrics === null ||
+        typeof row.adjustment.adjustedMetrics !== "object") {
+        throw new Error("forecast adjustment decision is invalid");
+      }
+
+      // preserve the active decision only when a metric remains permitted
+      if (permitted.length > 0) {
+        row.adjustment.appliedMetrics = permitted;
+        row.adjustment.adjustedMetrics = Object.fromEntries(
+          permitted.map((metric) => [metric, row.adjustment.adjustedMetrics[metric]]),
+        );
+      } else {
+        row.adjustment = disabledForecastDecision();
+      }
+    }
+
+    // remove sidecar corrections without changing stored raw weather
+    if (!settings.temperature && row.temperatureAdjustment?.state === "active") {
+      row.temperatureAdjustment = disabledTemperatureDecision(row.temperatureAdjustment);
+    }
+
+    // remove rain corrections independently of wind and temperature
+    if (!settings.rain && row.rainAdjustment?.state === "active") {
+      row.rainAdjustment = disabledRainDecision(row.rainAdjustment);
+    }
+  }
+
+  return Buffer.from(`${JSON.stringify(forecast)}\n`);
+}
+
+// keep aggregate model status aligned with the public rain switch
+function filterRainCollectionStatus(body, settings) {
+  const status = JSON.parse(body.toString("utf8"));
+
+  // reject malformed aggregate envelopes instead of bypassing a switch
+  if (status === null || typeof status !== "object" || status.data === null ||
+    typeof status.data !== "object" || typeof status.data.modelEnabled !== "boolean") {
+    throw new Error("rain collection status is invalid");
+  }
+
+  status.data.modelEnabled = status.data.modelEnabled && settings.rain;
+  return Buffer.from(`${JSON.stringify(status)}\n`);
+}
+
+// map one metric to its global adjustment category
+function isAdjustmentMetricEnabled(metric, settings) {
+  // hide every adjusted value when all three switches are off
+  if (!settings.temperature && !settings.wind && !settings.rain) {
+    return false;
+  }
+
+  // keep the optional qualified humidity correction independent otherwise
+  if (metric === "relativeHumidityPercent") {
+    return true;
+  }
+
+  // bind thermal and wind metrics to their respective controls
+  if (metric === "temperatureC" || metric === "apparentTemperatureC") {
+    return settings.temperature;
+  }
+
+  return settings.wind &&
+    (metric === "windDirectionDegrees" || metric === "windGustMps" || metric === "windSpeedMps");
+}
+
+// redact one disallowed generic runtime identity
+function disabledForecastRuntime(runtime) {
+  return {
+    activationMode: null,
+    activeBundle: null,
+    authorizationSha256: null,
+    candidateArtifactSha256: null,
+    enabledMetrics: [],
+    evaluationReportSha256: null,
+    expiresAt: null,
+    loadedAt: runtime.loadedAt,
+    qualificationReceiptSha256: null,
+    reasonCode: "admin_disabled",
+    state: "disabled",
+    transferReportSha256: null,
+  };
+}
+
+// redact one disallowed generic row decision
+function disabledForecastDecision() {
+  return {
+    adjustedMetrics: {},
+    appliedMetrics: [],
+    contractVersion: "forecast-adjustment-decision/v1",
+    reasonCode: "admin_disabled",
+    state: "disabled",
+  };
+}
+
+// redact one disallowed temperature runtime identity
+function disabledTemperatureRuntime(runtime) {
+  return {
+    activeBundle: null,
+    authorizationSha256: null,
+    expiresAt: null,
+    loadedAt: runtime.loadedAt,
+    reasonCode: "admin_disabled",
+    source: null,
+    state: "disabled",
+  };
+}
+
+// redact one disallowed temperature row correction
+function disabledTemperatureDecision(decision) {
+  return {
+    ...decision,
+    branch: null,
+    bundleSha256: null,
+    correctedTemperatureC: null,
+    reasonCode: "admin_disabled",
+    recentErrorStateSha256: null,
+    sourceForecast: null,
+    state: "disabled",
+  };
+}
+
+// redact one disallowed rain runtime identity
+function disabledRainRuntime(runtime) {
+  return {
+    activeBundle: null,
+    loadedAt: runtime.loadedAt,
+    reasonCode: "admin_disabled",
+    source: null,
+    state: "disabled",
+  };
+}
+
+// redact one disallowed rain row correction
+function disabledRainDecision(decision) {
+  return {
+    ...decision,
+    bundleSha256: null,
+    correctedPrecipitationMm: null,
+    reasonCode: "admin_disabled",
+    sourceForecast: null,
+    state: "disabled",
+  };
 }
 
 // select one freshness-aware public API cache policy

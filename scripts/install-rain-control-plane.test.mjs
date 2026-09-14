@@ -8,13 +8,15 @@ import test from "node:test";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const installer = join(repoRoot, "scripts/install-rain-control-plane.sh");
-const previousCommit = "bf7c8ab54825c57818ca33fa7613a9786a428c2d";
-const previousDigest = "0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0";
+const previousCommit = "f1c02d3e4f09e1e5d5dde94114440e6cbb337607";
+const previousDigest = "b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722";
 const controlFiles = [
   "compose.yaml",
   "postgres/runtime-acl-v2.sql",
   "scripts/common.sh",
   "scripts/forecast-training-package.mjs",
+  "scripts/weather-admin-store.mjs",
+  "scripts/web-server.mjs",
   "scripts/update.sh",
 ];
 const archivePaths = [
@@ -49,7 +51,7 @@ async function fileHash(path) {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
-// create one exact version-nine predecessor and five-file candidate
+// create one exact version-ten predecessor and seven-file candidate
 async function createFixture() {
   const root = await mkdtemp(join(tmpdir(), "weather-rain-control-install-"));
   const old = join(root, "old");
@@ -69,11 +71,11 @@ async function createFixture() {
     mkdir(join(installed, "deploy/state")),
     mkdir(join(installed, "deploy/releases")),
   ]);
-  await writeFile(join(installed, "deploy/state/current-release"), "2026.09.13-2\n", { mode: 0o600 });
-  await writeFile(join(installed, "deploy/releases/2026.09.13-2.env"), [
-    "WEATHER_RELEASE=2026.09.13-2",
+  await writeFile(join(installed, "deploy/state/current-release"), "2026.09.13-3\n", { mode: 0o600 });
+  await writeFile(join(installed, "deploy/releases/2026.09.13-3.env"), [
+    "WEATHER_RELEASE=2026.09.13-3",
     `WEATHER_CONTROL_PLANE_SHA256=${previousDigest}`,
-    "WEATHER_CONTROL_PLANE_VERSION=9",
+    "WEATHER_CONTROL_PLANE_VERSION=10",
     "",
   ].join("\n"), { mode: 0o600 });
   await writeFile(join(installed, "deploy/.env"), "PRIVATE_EXISTING_BOOTSTRAP=unchanged\n", { mode: 0o600 });
@@ -81,7 +83,8 @@ async function createFixture() {
   // overlay only the reviewed new production files
   for (const file of controlFiles) {
     await copyFile(join(repoRoot, "deploy", file), join(candidate, "deploy", file));
-    await chmod(join(candidate, "deploy", file), file === "compose.yaml" || file.endsWith(".sql") ? 0o644 : 0o755);
+    await chmod(join(candidate, "deploy", file), file === "compose.yaml" || file.endsWith(".sql") ||
+      file === "scripts/weather-admin-store.mjs" || file === "scripts/web-server.mjs" ? 0o644 : 0o755);
   }
   execFileSync("tar", ["-cf", archive, "-C", candidate, ...archivePaths]);
   const digestCommand = 'source "$1"; control_digest "$2"';
@@ -107,18 +110,18 @@ async function createFixture() {
   };
 }
 
-// prove the exact five-file handoff and retained prior state
-test("installer atomically installs only the five reviewed files and retains version nine", async () => {
+// prove the exact seven-file handoff and retained prior state
+test("installer atomically installs only the seven reviewed files and retains version ten", async () => {
   const fixture = await createFixture();
 
   try {
     const result = runInstaller(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Installed version-ten control plane:/u);
+    assert.match(result.stdout, /Installed version-eleven control plane:/u);
     assert.equal((await readFile(join(fixture.installed, "deploy/.env"), "utf8")), "PRIVATE_EXISTING_BOOTSTRAP=unchanged\n");
-    assert.equal((await readFile(join(fixture.installed, "deploy/state/current-release"), "utf8")), "2026.09.13-2\n");
+    assert.equal((await readFile(join(fixture.installed, "deploy/state/current-release"), "utf8")), "2026.09.13-3\n");
     const backups = await readdir(fixture.backups);
-    const retained = backups.find((name) => name.startsWith("v9-"));
+    const retained = backups.find((name) => name.startsWith("v10-"));
     assert.notEqual(retained, undefined);
 
     // compare every installed and retained control file
@@ -163,28 +166,28 @@ test("installer rejects tampered archive, current drift, and forbidden archive p
     const drift = runInstaller(fixture);
     assert.notEqual(drift.status, 0);
     assert.match(drift.stderr, /installed control plane differs/u);
-    assert.equal((await readdir(fixture.backups)).some((name) => name.startsWith("v9-")), false);
+    assert.equal((await readdir(fixture.backups)).some((name) => name.startsWith("v10-")), false);
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
   }
 });
 
-// fail midway and verify exact version-nine restoration
-test("installer restores all five old files after an interrupted replacement", async () => {
+// fail midway and verify exact version-ten restoration
+test("installer restores all seven old files after an interrupted replacement", async () => {
   const fixture = await createFixture();
 
   try {
     const result = runInstaller(fixture, fixture.archive, fixture.archiveSha, 2);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /internal mid-install failure probe/u);
-    assert.match(result.stderr, /Restoring retained version-nine control plane/u);
+    assert.match(result.stderr, /Restoring retained version-ten control plane/u);
     const digest = spawnSync("bash", [
       "-c", 'source "$1"; control_digest "$2"', "rain-control-test", installer, fixture.installed,
     ], { cwd: repoRoot, encoding: "utf8" });
     assert.equal(digest.stdout.trim(), previousDigest);
-    assert.equal((await readFile(join(fixture.installed, "deploy/state/current-release"), "utf8")), "2026.09.13-2\n");
+    assert.equal((await readFile(join(fixture.installed, "deploy/state/current-release"), "utf8")), "2026.09.13-3\n");
     assert.equal((await readFile(join(fixture.installed, "deploy/.env"), "utf8")), "PRIVATE_EXISTING_BOOTSTRAP=unchanged\n");
-    assert.equal((await readdir(fixture.backups)).some((name) => name.startsWith("v9-")), true);
+    assert.equal((await readdir(fixture.backups)).some((name) => name.startsWith("v10-")), true);
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
   }
@@ -225,7 +228,7 @@ test("installer rejects an unsafe candidate file mode", async () => {
     const result = runInstaller(fixture, unsafe, await fileHash(unsafe));
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /mode is unsafe/u);
-    assert.equal((await readdir(fixture.backups)).some((name) => name.startsWith("v9-")), true);
+    assert.equal((await readdir(fixture.backups)).some((name) => name.startsWith("v10-")), true);
   } finally {
     await rm(fixture.root, { force: true, recursive: true });
   }

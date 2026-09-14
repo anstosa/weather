@@ -3221,6 +3221,60 @@ h2 {
   width: min(70rem, 100%);
 }
 
+.forecast-adjustment-admin {
+  width: min(70rem, 100%);
+  margin-bottom: 1rem;
+}
+
+.forecast-adjustment-admin form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem 1.2rem;
+  margin-top: 1rem;
+}
+
+.forecast-adjustment-admin label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.forecast-adjustment-admin input {
+  accent-color: var(--md-sys-color-primary);
+}
+
+.forecast-adjustment-admin-actions {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.forecast-adjustment-admin-actions button {
+  padding: 0.5rem 0.85rem;
+  border: 0;
+  border-radius: var(--md-sys-shape-full);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.forecast-adjustment-admin-actions button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.forecast-adjustment-admin-actions span {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.72rem;
+}
+
 .property-admin-intro {
   margin: 0.6rem 0 0;
   color: var(--md-sys-color-on-surface-variant);

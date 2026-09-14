@@ -113,6 +113,7 @@ export interface WeatherRecord {
   };
   readonly receivedAt: string;
   readonly revisionCount: number;
+  readonly rainAdjustment?: ForecastRainAdjustmentDecision;
   readonly temperatureAdjustment?: ForecastTemperatureCanaryDecision;
   readonly validAt: string;
 }
@@ -131,6 +132,7 @@ export type ForecastAdjustmentActivationMode = "qualified" | "wind_canary";
 // name one bounded adjustment failure
 export type ForecastAdjustmentReasonCode =
   | "adjustment_error"
+  | "admin_disabled"
   | "bundle_invalid"
   | "bundle_missing"
   | "canary_expired"
@@ -246,6 +248,7 @@ export interface ForecastAdjustmentRuntimeStatus {
 // name bounded temperature-canary failures
 type ForecastTemperatureCanaryReasonCode =
   | "adjustment_error"
+  | "admin_disabled"
   | "bundle_invalid"
   | "bundle_missing"
   | "canary_expired"
@@ -324,6 +327,51 @@ interface ForecastTemperatureAdjustmentRuntimeStatus {
   readonly state: "active" | "disabled";
 }
 
+// describe one independently controlled adjustment group
+export interface ForecastAdjustmentSettings {
+  readonly version: 1;
+  readonly temperature: boolean;
+  readonly wind: boolean;
+  readonly rain: boolean;
+}
+
+// describe one received rain model hour
+interface ForecastRainAdjustmentSource {
+  readonly runInitializedAt: string;
+  readonly firstReceivedAt: string;
+  readonly validAt: string;
+  readonly rawPrecipitationMm: number;
+  readonly modelLeadHours: number;
+  readonly decisionAt: string;
+  readonly upstreamModel: "ecmwf_ifs";
+  readonly providerKey: "open-meteo";
+}
+
+// describe one independently verified rain decision
+interface ForecastRainAdjustmentDecision {
+  readonly contractVersion: "forecast-rain-adjustment-decision/v1";
+  readonly state: "active" | "disabled" | "raw_fallback";
+  readonly reasonCode: string | null;
+  readonly bundleSha256: string | null;
+  readonly correctedPrecipitationMm: number | null;
+  readonly rawBestMatchPrecipitationMm: number | null;
+  readonly sourceForecast: ForecastRainAdjustmentSource | null;
+}
+
+// describe one bounded rain runtime
+interface ForecastRainAdjustmentRuntimeStatus {
+  readonly state: "active" | "disabled";
+  readonly activeBundle: string | null;
+  readonly reasonCode: string | null;
+  readonly loadedAt: string | null;
+  readonly source: null | {
+    readonly runInitializedAt: string;
+    readonly firstReceivedAt: string;
+    readonly decisionAt: string;
+    readonly hourCount: number;
+  };
+}
+
 export interface PropertySensorSnapshot {
   readonly channel: number | null;
   readonly key: string;
@@ -370,8 +418,12 @@ export interface DashboardState {
   readonly error: string | null;
   readonly filters: HistoryFilters;
   readonly forecastAdjustmentMode: ForecastAdjustmentMode;
+  readonly forecastAdjustmentSettings: ForecastAdjustmentSettings | null;
   readonly forecastAdjustmentRuntime: ForecastAdjustmentRuntimeStatus | null;
+  readonly forecastRainAdjustmentRuntime: ForecastRainAdjustmentRuntimeStatus | null;
   readonly forecastTemperatureAdjustmentRuntime: ForecastTemperatureAdjustmentRuntimeStatus | null;
+  readonly adminAdjustmentSettingsSaving: boolean;
+  readonly adminAdjustmentSettingsMessage: string | null;
   readonly forecast: readonly WeatherRecord[];
   readonly forecastDays: ForecastDays;
   readonly history: readonly WeatherRecord[];
@@ -481,7 +533,9 @@ interface RecordsResponse {
 
 // describe the adjusted forecast boundary
 interface ForecastRecordsResponse extends RecordsResponse {
+  readonly adjustmentSettings: ForecastAdjustmentSettings | null;
   readonly adjustmentRuntime: ForecastAdjustmentRuntimeStatus;
+  readonly rainAdjustmentRuntime: ForecastRainAdjustmentRuntimeStatus;
   readonly temperatureAdjustmentRuntime: ForecastTemperatureAdjustmentRuntimeStatus;
 }
 
@@ -515,8 +569,12 @@ const EMPTY_STATE: DashboardState = {
   error: null,
   filters: {},
   forecastAdjustmentMode: "adjusted",
+  forecastAdjustmentSettings: null,
   forecastAdjustmentRuntime: null,
+  forecastRainAdjustmentRuntime: null,
   forecastTemperatureAdjustmentRuntime: null,
+  adminAdjustmentSettingsSaving: false,
+  adminAdjustmentSettingsMessage: null,
   forecast: [],
   forecastDays: 1,
   history: [],
@@ -544,8 +602,6 @@ const EMPTY_STATE: DashboardState = {
 };
 
 export const FORECAST_ADJUSTMENT_MODE_STORAGE_KEY = "weather.forecast-adjustment-mode.v1";
-export const FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY =
-  "weather.forecast-temperature-canary-consent.v1";
 
 // load one validated forecast display preference
 function loadForecastAdjustmentMode(
@@ -562,82 +618,6 @@ function loadForecastAdjustmentMode(
       : "adjusted";
   } catch {
     return "adjusted";
-  }
-}
-
-// detect one explicit forecast display choice
-function hasForecastAdjustmentModePreference(
-  storage: UnitPreferenceStorage | null,
-): boolean {
-  // reject unavailable browser storage
-  if (storage === null) {
-    return false;
-  }
-
-  try {
-    const value = storage.getItem(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY);
-    return value === "adjusted" || value === "raw";
-  } catch {
-    return false;
-  }
-}
-
-// default an unselected canary to regional values
-function forecastAdjustmentModeForRuntime(
-  mode: ForecastAdjustmentMode,
-  runtime: ForecastAdjustmentRuntimeStatus,
-  temperatureRuntime: ForecastTemperatureAdjustmentRuntimeStatus,
-  hasExplicitPreference: boolean,
-  temperatureCanaryConsent: string | null,
-): ForecastAdjustmentMode {
-  // require opt-in for either unqualified canary
-  if (
-    (!hasExplicitPreference && runtime.activationMode === "wind_canary") ||
-    (temperatureRuntime.state === "active" &&
-      temperatureCanaryConsent !== temperatureRuntime.activeBundle)
-  ) {
-    return "raw";
-  }
-
-  return mode;
-}
-
-// load one bundle-specific temperature consent
-function loadForecastTemperatureCanaryConsent(
-  storage: UnitPreferenceStorage | null,
-): string | null {
-  // reject unavailable browser storage
-  if (storage === null) {
-    return null;
-  }
-
-  try {
-    const value = storage.getItem(
-      FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
-    );
-    return value !== null && SHA256_HEX_PATTERN.test(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-// persist consent for one exact temperature bundle
-function persistForecastTemperatureCanaryConsent(
-  storage: UnitPreferenceStorage | null,
-  bundleSha256: string,
-): void {
-  // skip unavailable browser storage
-  if (storage === null) {
-    return;
-  }
-
-  try {
-    storage.setItem(
-      FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
-      bundleSha256,
-    );
-  } catch {
-    // retain the in-memory consent
   }
 }
 
@@ -682,6 +662,7 @@ const FORECAST_ADJUSTMENT_METRIC_KEYS = new Set<ForecastAdjustmentMetric>([
 ]);
 const FORECAST_ADJUSTMENT_REASON_CODE_KEYS = new Set<ForecastAdjustmentReasonCode>([
   "adjustment_error",
+  "admin_disabled",
   "bundle_invalid",
   "bundle_missing",
   "canary_expired",
@@ -779,6 +760,7 @@ const FORECAST_ADJUSTMENT_METRIC_BOUNDS: Readonly<
 const FORECAST_TEMPERATURE_REASON_CODE_KEYS =
   new Set<ForecastTemperatureCanaryReasonCode>([
     "adjustment_error",
+    "admin_disabled",
     "bundle_invalid",
     "bundle_missing",
     "canary_expired",
@@ -852,6 +834,50 @@ const FORECAST_TEMPERATURE_SOURCE_KEYS = new Set([
   "upstreamModel",
   "validAt",
 ]);
+const FORECAST_ADJUSTMENT_SETTINGS_KEYS = new Set([
+  "version",
+  "temperature",
+  "wind",
+  "rain",
+]);
+const FORECAST_RAIN_RUNTIME_KEYS = new Set([
+  "state",
+  "activeBundle",
+  "reasonCode",
+  "loadedAt",
+  "source",
+]);
+const FORECAST_RAIN_RUNTIME_SOURCE_KEYS = new Set([
+  "runInitializedAt",
+  "firstReceivedAt",
+  "decisionAt",
+  "hourCount",
+]);
+const FORECAST_RAIN_DECISION_KEYS = new Set([
+  "contractVersion",
+  "state",
+  "reasonCode",
+  "bundleSha256",
+  "correctedPrecipitationMm",
+  "rawBestMatchPrecipitationMm",
+  "sourceForecast",
+]);
+const FORECAST_RAIN_SOURCE_KEYS = new Set([
+  "runInitializedAt",
+  "firstReceivedAt",
+  "validAt",
+  "rawPrecipitationMm",
+  "modelLeadHours",
+  "decisionAt",
+  "upstreamModel",
+  "providerKey",
+]);
+const DISABLED_FORECAST_ADJUSTMENT_SETTINGS: ForecastAdjustmentSettings = {
+  version: 1,
+  temperature: false,
+  wind: false,
+  rain: false,
+};
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/u;
 
 // freeze the raw weather record allowlists
@@ -916,6 +942,17 @@ function invalidForecastTemperatureAdjustmentRuntime(): ForecastTemperatureAdjus
     reasonCode: "adjustment_error",
     source: null,
     state: "disabled",
+  };
+}
+
+// create one isolated invalid rain fallback
+function invalidForecastRainAdjustmentRuntime(): ForecastRainAdjustmentRuntimeStatus {
+  return {
+    state: "disabled",
+    activeBundle: null,
+    reasonCode: "adjustment_error",
+    loadedAt: null,
+    source: null,
   };
 }
 
@@ -1689,6 +1726,239 @@ function parseForecastAdjustmentDecision(
     : parseForecastAdjustmentFailRawDecision(decision);
 }
 
+// accept only the three independent server controls
+function parseForecastAdjustmentSettings(value: unknown): ForecastAdjustmentSettings | null {
+  const settings = forecastAdjustmentObject(value);
+
+  // reject partial and unversioned settings
+  if (
+    settings === null ||
+    !hasExactForecastAdjustmentKeys(settings, FORECAST_ADJUSTMENT_SETTINGS_KEYS) ||
+    settings.version !== 1 ||
+    typeof settings.temperature !== "boolean" ||
+    typeof settings.wind !== "boolean" ||
+    typeof settings.rain !== "boolean"
+  ) {
+    return null;
+  }
+
+  return settings as unknown as ForecastAdjustmentSettings;
+}
+
+// map legacy mixed adjustments onto the three admin groups
+function forecastAdjustmentMetricEnabled(
+  metric: ForecastAdjustmentMetric,
+  settings: ForecastAdjustmentSettings | null,
+): boolean {
+  // preserve the prior contract when settings are absent
+  if (settings === null) {
+    return true;
+  }
+
+  // preserve qualified humidity unless every switch is off
+  if (metric === "relativeHumidityPercent") {
+    return settings.temperature || settings.wind || settings.rain;
+  }
+
+  return metric === "windDirectionDegrees" || metric === "windGustMps" || metric === "windSpeedMps"
+    ? settings.wind
+    : settings.temperature;
+}
+
+// remove disabled metrics from one validated mixed decision
+function projectForecastAdjustmentDecision(
+  decision: ForecastAdjustmentDecision | undefined,
+  settings: ForecastAdjustmentSettings | null,
+): ForecastAdjustmentDecision | undefined {
+  // retain existing behavior without a settings contract
+  if (decision === undefined || settings === null) {
+    return decision;
+  }
+
+  // hide a disabled or valueless group entirely
+  if (decision.state !== "active") {
+    return settings.temperature || settings.wind ? decision : undefined;
+  }
+
+  const appliedMetrics = decision.appliedMetrics.filter(
+    // retain only allowed adjusted metrics
+    (metric) => forecastAdjustmentMetricEnabled(metric, settings),
+  );
+
+  // remove a fully disabled active decision
+  if (appliedMetrics.length === 0) {
+    return undefined;
+  }
+
+  const adjustedMetrics: Partial<Record<ForecastAdjustmentMetric, number>> = {};
+
+  // copy only values selected for this view
+  for (const metric of appliedMetrics) {
+    adjustedMetrics[metric] = decision.adjustedMetrics[metric]!;
+  }
+
+  return { ...decision, appliedMetrics, adjustedMetrics };
+}
+
+// validate the rain model's bounded source summary
+function parseForecastRainRuntimeSource(
+  value: unknown,
+): ForecastRainAdjustmentRuntimeStatus["source"] | undefined {
+  // preserve a disabled or cold source
+  if (value === null) {
+    return null;
+  }
+
+  const source = forecastAdjustmentObject(value);
+
+  // reject incomplete source clocks or counts
+  if (
+    source === null ||
+    !hasExactForecastAdjustmentKeys(source, FORECAST_RAIN_RUNTIME_SOURCE_KEYS) ||
+    !isForecastAdjustmentInstant(source.runInitializedAt) ||
+    !isForecastAdjustmentInstant(source.firstReceivedAt) ||
+    !isForecastAdjustmentInstant(source.decisionAt) ||
+    !Number.isSafeInteger(source.hourCount) ||
+    (source.hourCount as number) < 0 ||
+    (source.hourCount as number) > 23
+  ) {
+    return undefined;
+  }
+
+  return source as unknown as ForecastRainAdjustmentRuntimeStatus["source"];
+}
+
+// validate one independent rain runtime
+function parseForecastRainAdjustmentRuntime(value: unknown): ForecastRainAdjustmentRuntimeStatus | null {
+  const runtime = forecastAdjustmentObject(value);
+
+  // require one complete runtime identity
+  if (
+    runtime === null ||
+    !hasExactForecastAdjustmentKeys(runtime, FORECAST_RAIN_RUNTIME_KEYS) ||
+    (runtime.loadedAt !== null && !isForecastAdjustmentInstant(runtime.loadedAt)) ||
+    parseForecastRainRuntimeSource(runtime.source) === undefined
+  ) {
+    return null;
+  }
+
+  // accept a bound active bundle
+  if (
+    runtime.state === "active" &&
+    isForecastAdjustmentSha256(runtime.activeBundle) &&
+    runtime.reasonCode === null &&
+    isForecastAdjustmentInstant(runtime.loadedAt)
+  ) {
+    return runtime as unknown as ForecastRainAdjustmentRuntimeStatus;
+  }
+
+  // accept an explicit disabled boundary
+  if (
+    runtime.state === "disabled" &&
+    runtime.activeBundle === null &&
+    isBoundedForecastAdjustmentText(runtime.reasonCode)
+  ) {
+    return runtime as unknown as ForecastRainAdjustmentRuntimeStatus;
+  }
+
+  return null;
+}
+
+// validate one causal ECMWF rain source
+function parseForecastRainSource(
+  value: unknown,
+  record: WeatherRecord,
+): ForecastRainAdjustmentSource | null {
+  const source = forecastAdjustmentObject(value);
+
+  // bind the source to its displayed forecast hour
+  if (
+    source === null ||
+    !hasExactForecastAdjustmentKeys(source, FORECAST_RAIN_SOURCE_KEYS) ||
+    !isForecastAdjustmentInstant(source.runInitializedAt) ||
+    !isForecastAdjustmentInstant(source.firstReceivedAt) ||
+    !isForecastAdjustmentInstant(source.validAt) ||
+    !isForecastAdjustmentInstant(source.decisionAt) ||
+    source.validAt !== record.validAt ||
+    source.upstreamModel !== "ecmwf_ifs" ||
+    source.providerKey !== "open-meteo" ||
+    !Number.isSafeInteger(source.modelLeadHours) ||
+    (source.modelLeadHours as number) < 9 ||
+    (source.modelLeadHours as number) > 31 ||
+    typeof source.rawPrecipitationMm !== "number" ||
+    !Number.isFinite(source.rawPrecipitationMm) ||
+    source.rawPrecipitationMm < 0 ||
+    source.rawPrecipitationMm > 2000 ||
+    Date.parse(source.validAt as string) - Date.parse(source.runInitializedAt as string) !==
+      (source.modelLeadHours as number) * 3_600_000 ||
+    Date.parse(source.firstReceivedAt as string) > Date.parse(source.decisionAt as string) ||
+    Date.parse(source.decisionAt as string) - Date.parse(source.runInitializedAt as string) !== 8 * 3_600_000 ||
+    Date.parse(source.decisionAt as string) > Date.parse(source.validAt as string)
+  ) {
+    return null;
+  }
+
+  return source as unknown as ForecastRainAdjustmentSource;
+}
+
+// validate one rain amount without rewriting raw metrics
+function parseForecastRainDecision(
+  value: unknown,
+  record: WeatherRecord,
+  runtime: ForecastRainAdjustmentRuntimeStatus,
+): ForecastRainAdjustmentDecision | null {
+  const decision = forecastAdjustmentObject(value);
+
+  // require the exact decision and raw Best Match amount
+  if (
+    decision === null ||
+    !hasExactForecastAdjustmentKeys(decision, FORECAST_RAIN_DECISION_KEYS) ||
+    decision.contractVersion !== "forecast-rain-adjustment-decision/v1" ||
+    decision.rawBestMatchPrecipitationMm !== record.metrics.precipitationMm
+  ) {
+    return null;
+  }
+
+  // accept only a finite, bound active correction
+  if (decision.state === "active") {
+    const source = parseForecastRainSource(decision.sourceForecast, record);
+
+    // reject orphaned or impossible amounts
+    if (
+      runtime.state !== "active" ||
+      source === null ||
+      decision.bundleSha256 !== runtime.activeBundle ||
+      decision.reasonCode !== null ||
+      typeof decision.correctedPrecipitationMm !== "number" ||
+      !Number.isFinite(decision.correctedPrecipitationMm) ||
+      decision.correctedPrecipitationMm < 0 ||
+      decision.correctedPrecipitationMm > 30
+    ) {
+      return null;
+    }
+
+    return { ...decision, sourceForecast: source } as ForecastRainAdjustmentDecision;
+  }
+
+  // require an explicit raw fallback state
+  if (
+    (decision.state !== "disabled" && decision.state !== "raw_fallback") ||
+    !isBoundedForecastAdjustmentText(decision.reasonCode) ||
+    decision.correctedPrecipitationMm !== null ||
+    (decision.state === "disabled" &&
+      (runtime.state !== "disabled" || decision.bundleSha256 !== null || decision.sourceForecast !== null)) ||
+    (decision.state === "raw_fallback" &&
+      (runtime.state !== "active" ||
+        decision.bundleSha256 !== runtime.activeBundle ||
+        (decision.sourceForecast !== null &&
+          parseForecastRainSource(decision.sourceForecast, record) === null)))
+  ) {
+    return null;
+  }
+
+  return decision as unknown as ForecastRainAdjustmentDecision;
+}
+
 // remove untrusted adjustment metadata from one raw record
 function rawForecastRecord(value: unknown): WeatherRecord | null {
   const record = forecastAdjustmentObject(value);
@@ -1700,6 +1970,7 @@ function rawForecastRecord(value: unknown): WeatherRecord | null {
 
   const {
     adjustment: _adjustment,
+    rainAdjustment: _rainAdjustment,
     temperatureAdjustment: _temperatureAdjustment,
     ...raw
   } = record;
@@ -1774,11 +2045,57 @@ export function parseForecastRecordsResponse(value: unknown): ForecastRecordsRes
     temperatureRuntime === null || invalidTemperatureDecision
       ? invalidForecastTemperatureAdjustmentRuntime()
       : temperatureRuntime;
+  const rainRuntime = parseForecastRainAdjustmentRuntime(response.rainAdjustmentRuntime);
+  const rainBaseRecords = invalidTemperatureDecision ? effectiveRecords : temperatureRecords;
+  let invalidRainDecision = false;
+  const rainRecords = rainRuntime === null
+    ? rainBaseRecords
+    : rainBaseRecords.map((record, index) => {
+        const source = forecastAdjustmentObject(responseData[index]);
+        const decision = parseForecastRainDecision(source?.rainAdjustment, record, rainRuntime);
+
+        // reject any incomplete rain decision set
+        if (decision === null) {
+          invalidRainDecision = true;
+          return record;
+        }
+
+        return { ...record, rainAdjustment: decision };
+      });
+  const effectiveRainRuntime = rainRuntime === null || invalidRainDecision
+    ? invalidForecastRainAdjustmentRuntime()
+    : rainRuntime;
+  const settings = parseForecastAdjustmentSettings(response.adjustmentSettings) ??
+    (Object.hasOwn(response, "adjustmentSettings")
+      ? DISABLED_FORECAST_ADJUSTMENT_SETTINGS
+      : null);
+  const safeRecords = (invalidRainDecision ? rainBaseRecords : rainRecords).map((record) => {
+    // apply the three independent server switches at the browser boundary
+    if (settings === null) {
+      return record;
+    }
+
+    const {
+      adjustment,
+      rainAdjustment,
+      temperatureAdjustment,
+      ...raw
+    } = record;
+    const selectedAdjustment = projectForecastAdjustmentDecision(adjustment, settings);
+    return {
+      ...raw,
+      ...selectedAdjustment === undefined ? {} : { adjustment: selectedAdjustment },
+      ...settings.rain && rainAdjustment !== undefined ? { rainAdjustment } : {},
+      ...settings.temperature && temperatureAdjustment !== undefined ? { temperatureAdjustment } : {},
+    };
+  });
 
   return {
     ...(response as unknown as RecordsResponse),
+    adjustmentSettings: settings,
     adjustmentRuntime: effectiveRuntime,
-    data: invalidTemperatureDecision ? effectiveRecords : temperatureRecords,
+    data: safeRecords,
+    rainAdjustmentRuntime: effectiveRainRuntime,
     temperatureAdjustmentRuntime: effectiveTemperatureRuntime,
   };
 }
@@ -1791,8 +2108,6 @@ export class WeatherDashboardController {
   readonly #isAdmin: boolean;
   readonly #listeners = new Set<DashboardListener>();
   readonly #storage: UnitPreferenceStorage | null;
-  #forecastAdjustmentModeExplicit: boolean;
-  #forecastTemperatureCanaryConsent: string | null;
   #view: WeatherView;
   #state: DashboardState;
 
@@ -1804,9 +2119,6 @@ export class WeatherDashboardController {
     this.#storage = options.storage === undefined
       ? browserUnitPreferenceStorage()
       : options.storage;
-    this.#forecastAdjustmentModeExplicit = hasForecastAdjustmentModePreference(this.#storage);
-    this.#forecastTemperatureCanaryConsent =
-      loadForecastTemperatureCanaryConsent(this.#storage);
     this.#view = options.view ?? "home";
     this.#state = {
       ...EMPTY_STATE,
@@ -1877,16 +2189,6 @@ export class WeatherDashboardController {
     const forecastAdjustmentMode = this.#state.forecastAdjustmentMode === "raw"
       ? "adjusted"
       : "raw";
-    this.#forecastAdjustmentModeExplicit = true;
-    const temperatureBundle =
-      this.#state.forecastTemperatureAdjustmentRuntime?.activeBundle;
-
-    // bind explicit adjusted consent to the current temperature bundle
-    if (forecastAdjustmentMode === "adjusted" && temperatureBundle !== null &&
-      temperatureBundle !== undefined) {
-      this.#forecastTemperatureCanaryConsent = temperatureBundle;
-      persistForecastTemperatureCanaryConsent(this.#storage, temperatureBundle);
-    }
 
     persistForecastAdjustmentMode(this.#storage, forecastAdjustmentMode);
     this.patch({ forecastAdjustmentMode });
@@ -1924,14 +2226,10 @@ export class WeatherDashboardController {
       this.patch({
         error: null,
         forecast: response.data,
-        forecastAdjustmentMode: forecastAdjustmentModeForRuntime(
-          this.#state.forecastAdjustmentMode,
-          response.adjustmentRuntime,
-          response.temperatureAdjustmentRuntime,
-          this.#forecastAdjustmentModeExplicit,
-          this.#forecastTemperatureCanaryConsent,
-        ),
+        forecastAdjustmentMode: this.#state.forecastAdjustmentMode,
+        forecastAdjustmentSettings: response.adjustmentSettings,
         forecastAdjustmentRuntime: response.adjustmentRuntime,
+        forecastRainAdjustmentRuntime: response.rainAdjustmentRuntime,
         forecastTemperatureAdjustmentRuntime:
           response.temperatureAdjustmentRuntime,
         loading: false,
@@ -2068,6 +2366,57 @@ export class WeatherDashboardController {
     }
   }
 
+  // persist all three protected forecast switches together
+  async saveForecastAdjustmentSettings(value: ForecastAdjustmentSettings): Promise<void> {
+    // reject non-admin or concurrent updates
+    if (!this.#isAdmin || this.#state.adminAdjustmentSettingsSaving) {
+      return;
+    }
+
+    const settings = parseForecastAdjustmentSettings(value);
+
+    // reject a partial local form
+    if (settings === null) {
+      this.patch({ adminAdjustmentSettingsMessage: "Invalid forecast adjustment settings." });
+      return;
+    }
+
+    this.patch({ adminAdjustmentSettingsSaving: true, adminAdjustmentSettingsMessage: null });
+
+    try {
+      const url = buildAdminForecastAdjustmentSettingsUrl(this.#apiBaseUrl, PRODUCT_SITE.slug);
+      const written = await putJson<unknown>(this.#fetcher, url, { ...settings });
+      const writeSettings = parseForecastAdjustmentSettings(forecastAdjustmentObject(written)?.data);
+      const read = await getJson<unknown>(this.#fetcher, url);
+      const readSettings = parseForecastAdjustmentSettings(forecastAdjustmentObject(read)?.data);
+
+      // require server acknowledgment and persisted readback
+      if (
+        writeSettings === null ||
+        readSettings === null ||
+        writeSettings.temperature !== settings.temperature ||
+        writeSettings.wind !== settings.wind ||
+        writeSettings.rain !== settings.rain ||
+        readSettings.temperature !== settings.temperature ||
+        readSettings.wind !== settings.wind ||
+        readSettings.rain !== settings.rain
+      ) {
+        throw new Error("Forecast adjustment settings did not persist.");
+      }
+
+      this.patch({
+        adminAdjustmentSettingsSaving: false,
+        adminAdjustmentSettingsMessage: "Forecast adjustments saved.",
+        forecastAdjustmentSettings: readSettings,
+      });
+    } catch (error) {
+      this.patch({
+        adminAdjustmentSettingsSaving: false,
+        adminAdjustmentSettingsMessage: error instanceof Error ? error.message : "Forecast adjustment settings could not be saved.",
+      });
+    }
+  }
+
   // advance to the next cursor page
   async nextPage(): Promise<void> {
     // stop at the final page
@@ -2155,7 +2504,7 @@ export class WeatherDashboardController {
         this.#view === "map" ||
         this.#view === "admin" ||
         (this.#view === "home" && this.#isAdmin);
-      const [current, dailyPrecipitation, forecast, tides, trends, propertySensorLayout] = await Promise.all([
+      const [current, dailyPrecipitation, forecast, tides, trends, propertySensorLayout, adminSettings] = await Promise.all([
         // load observations only where rendered
         needsCurrent
           ? getJson<RecordsResponse>(
@@ -2205,6 +2554,14 @@ export class WeatherDashboardController {
             buildPropertySensorLayoutUrl(this.#apiBaseUrl, site.slug),
           )
           : Promise.resolve(null),
+        // read independent adjustment controls only for the protected editor
+        this.#view === "admin"
+          ? getJson<unknown>(
+            this.#fetcher,
+            buildAdminForecastAdjustmentSettingsUrl(this.#apiBaseUrl, site.slug),
+          ).then((value) => parseForecastAdjustmentSettings(forecastAdjustmentObject(value)?.data))
+            .catch(() => null)
+          : Promise.resolve(null),
       ]);
       const responseSite = requireProductSite(
         current?.site ?? dailyPrecipitation?.site ?? forecast?.site ?? tides?.site ?? trends?.site ?? site,
@@ -2217,19 +2574,17 @@ export class WeatherDashboardController {
           : dailyPrecipitation.data,
         error: null,
         forecast: forecast?.data ?? this.#state.forecast,
-        forecastAdjustmentMode: forecast === null
-          ? this.#state.forecastAdjustmentMode
-          : forecastAdjustmentModeForRuntime(
-            this.#state.forecastAdjustmentMode,
-            forecast.adjustmentRuntime,
-            forecast.temperatureAdjustmentRuntime,
-            this.#forecastAdjustmentModeExplicit,
-            this.#forecastTemperatureCanaryConsent,
-          ),
+        forecastAdjustmentMode: this.#state.forecastAdjustmentMode,
+        forecastAdjustmentSettings: adminSettings ?? forecast?.adjustmentSettings ?? this.#state.forecastAdjustmentSettings,
         forecastAdjustmentRuntime: forecast?.adjustmentRuntime ?? this.#state.forecastAdjustmentRuntime,
+        forecastRainAdjustmentRuntime:
+          forecast?.rainAdjustmentRuntime ?? this.#state.forecastRainAdjustmentRuntime,
         forecastTemperatureAdjustmentRuntime:
           forecast?.temperatureAdjustmentRuntime ??
           this.#state.forecastTemperatureAdjustmentRuntime,
+        adminAdjustmentSettingsMessage: this.#view === "admin" && adminSettings === null
+          ? "Forecast adjustment settings could not be loaded."
+          : this.#state.adminAdjustmentSettingsMessage,
         loading: false,
         propertySensorLayout: propertySensorLayout?.data ?? this.#state.propertySensorLayout,
         selectedSite: responseSite,
@@ -2416,6 +2771,14 @@ export function buildAdminPropertySensorLayoutUrl(
   return `${normalizeBaseUrl(apiBaseUrl)}/admin/sites/${encodeURIComponent(siteSlug)}/property-sensor-layout/${encodeURIComponent(sensorKey)}`;
 }
 
+// construct the authenticated adjustment settings endpoint
+export function buildAdminForecastAdjustmentSettingsUrl(
+  apiBaseUrl: string,
+  siteSlug: string,
+): string {
+  return `${normalizeBaseUrl(apiBaseUrl)}/admin/sites/${encodeURIComponent(siteSlug)}/forecast-adjustment-settings`;
+}
+
 // construct one bounded trend endpoint
 export function buildTrendsUrl(
   apiBaseUrl: string,
@@ -2525,9 +2888,17 @@ function renderForecastAdjustmentToggle(
     return "";
   }
 
+  // omit a switch with no enabled adjustment group
+  if (
+    state.forecastAdjustmentSettings != null &&
+    !state.forecastAdjustmentSettings.temperature &&
+    !state.forecastAdjustmentSettings.wind &&
+    !state.forecastAdjustmentSettings.rain
+  ) {
+    return "";
+  }
+
   const available = forecastAdjustmentsAvailable(state);
-  const temperatureCanary =
-    state.forecastTemperatureAdjustmentRuntime?.state === "active";
   // reflect the persisted preference even during regional fallback
   const adjusted = state.forecastAdjustmentMode !== "raw";
   return `
@@ -2537,9 +2908,7 @@ function renderForecastAdjustmentToggle(
       role="switch"
       aria-checked="${String(adjusted)}"
       aria-label="Adjusted"
-      title="${temperatureCanary
-        ? "Adjusted temperature uses an experimental ECMWF IFS single-run correction. Raw uses Open-Meteo Best Match."
-        : "Switch between adjusted and raw forecast values."}"
+      title="Switch between adjusted and raw forecast values."
       data-forecast-adjustment-toggle
       data-forecast-adjustment-activation-mode="${escapeHtml(state.forecastAdjustmentRuntime?.activationMode ?? "disabled")}"
       data-forecast-adjustment-available="${String(available)}"
@@ -2553,13 +2922,22 @@ function renderForecastAdjustmentToggle(
 
 // detect one usable adjusted forecast value
 function forecastAdjustmentsAvailable(state: DashboardState): boolean {
+  const settings = state.forecastAdjustmentSettings ?? null;
   return state.forecast.some(
     // require one validated active decision from either isolated runtime
     (record) =>
       (state.forecastAdjustmentRuntime?.state === "active" &&
-        record.adjustment?.state === "active") ||
-      (state.forecastTemperatureAdjustmentRuntime?.state === "active" &&
-        record.temperatureAdjustment?.state === "active"),
+        record.adjustment?.state === "active" &&
+        record.adjustment.appliedMetrics.some(
+          // expose any permitted qualified or wind metric
+          (metric) => forecastAdjustmentMetricEnabled(metric, settings),
+        )) ||
+      ((settings === null || settings.temperature) &&
+        state.forecastTemperatureAdjustmentRuntime?.state === "active" &&
+        record.temperatureAdjustment?.state === "active") ||
+      ((settings === null || settings.rain) &&
+        state.forecastRainAdjustmentRuntime?.state === "active" &&
+        record.rainAdjustment?.state === "active"),
   );
 }
 
@@ -2567,7 +2945,7 @@ function forecastAdjustmentsAvailable(state: DashboardState): boolean {
 function renderWeatherView(state: DashboardState, view: WeatherView, isAdmin: boolean): string {
   // render the authenticated property sensor editor
   if (view === "admin") {
-    return renderPropertySensorAdmin(state);
+    return `${renderForecastAdjustmentAdmin(state)}${renderPropertySensorAdmin(state)}`;
   }
 
   // render historical records alone
@@ -2712,7 +3090,7 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
     : "";
   const temperatureCanaryCredit =
     state.forecastTemperatureAdjustmentRuntime?.state === "active"
-      ? `<span>Experimental adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match.</span><span aria-hidden="true">·</span>`
+      ? `<span>Adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match.</span><span aria-hidden="true">·</span>`
       : "";
 
   return `
@@ -6166,6 +6544,31 @@ function propertySensorMarkerOffsets(
   return offsets;
 }
 
+// render three independently persisted forecast controls
+function renderForecastAdjustmentAdmin(state: DashboardState): string {
+  const settings = state.forecastAdjustmentSettings ?? null;
+  const disabled = settings === null || state.adminAdjustmentSettingsSaving;
+  const message = state.adminAdjustmentSettingsMessage ?? null;
+
+  return `
+    <section class="panel forecast-adjustment-admin" aria-labelledby="forecast-adjustment-admin-heading">
+      <div class="section-heading">
+        <div><p class="eyebrow">Administration</p><h2 id="forecast-adjustment-admin-heading">Forecast adjustments</h2></div>
+      </div>
+      <p class="property-admin-intro">Choose which adjustments are available in the forecast. Visitors can still switch between adjusted and raw values.</p>
+      <form data-admin-forecast-adjustments>
+        <label><input type="checkbox" name="temperature"${settings?.temperature ? " checked" : ""}${disabled ? " disabled" : ""}><span>Temperature</span></label>
+        <label><input type="checkbox" name="wind"${settings?.wind ? " checked" : ""}${disabled ? " disabled" : ""}><span>Wind</span></label>
+        <label><input type="checkbox" name="rain"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain</span></label>
+        <div class="forecast-adjustment-admin-actions">
+          <button type="submit"${disabled ? " disabled" : ""}>${state.adminAdjustmentSettingsSaving ? "Saving…" : "Save adjustments"}</button>
+          <span role="status" aria-live="polite">${message === null ? "" : escapeHtml(message)}</span>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
 // render the protected name and position editor
 function renderPropertySensorAdmin(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
@@ -7739,6 +8142,7 @@ function bindDashboardControls(
   bindPropertyMapControls(root, controller);
   bindPropertySensorMap(root, controller);
   bindPropertySensorAdmin(root, controller);
+  bindForecastAdjustmentAdmin(root, controller);
   const filterDisclosure = root.querySelector<HTMLDetailsElement>("[data-history-filter-disclosure]");
 
   // expand filters on wide screens or when active
@@ -7804,6 +8208,31 @@ function bindDashboardControls(
       void controller.nextPage();
     });
   }
+}
+
+// bind the protected forecast adjustment form
+function bindForecastAdjustmentAdmin(
+  root: HTMLElement,
+  controller: WeatherDashboardController,
+): void {
+  const form = root.querySelector<HTMLFormElement>("[data-admin-forecast-adjustments]");
+
+  // skip non-admin pages and unavailable settings
+  if (form === null || controller.state.forecastAdjustmentSettings === null) {
+    return;
+  }
+
+  // submit one complete set of independent switches
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    void controller.saveForecastAdjustmentSettings({
+      version: 1,
+      temperature: data.has("temperature"),
+      wind: data.has("wind"),
+      rain: data.has("rain"),
+    });
+  });
 }
 
 // connect the shared forecast adjustment switch
@@ -10161,7 +10590,17 @@ export function forecastMetricValue(
   useAdjustments = true,
 ): number | null {
   const decision = record.adjustment;
+  const rainDecision = record.rainAdjustment;
   const temperatureDecision = record.temperatureAdjustment;
+
+  // reuse the hourly rain amount as its hourly rate
+  if (
+    useAdjustments &&
+    (metric === "precipitationMm" || metric === "precipitationRateMmPerHour") &&
+    rainDecision?.state === "active"
+  ) {
+    return rainDecision.correctedPrecipitationMm;
+  }
 
   // use only explicit ECMWF temperature output when opted in
   if (

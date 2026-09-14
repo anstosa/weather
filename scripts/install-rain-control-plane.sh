@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-previous_digest=0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0
-previous_release=2026.09.13-2
+previous_digest=b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722
+previous_release=2026.09.13-3
 control_files=(
   compose.yaml
   postgres/runtime-acl-v2.sql
   scripts/common.sh
   scripts/forecast-training-package.mjs
+  scripts/weather-admin-store.mjs
+  scripts/web-server.mjs
   scripts/update.sh
 )
 
@@ -77,7 +79,7 @@ install_atomic_file() (
   mv -Tf -- "$temporary" "$target"
 )
 
-# install one pinned five-file control-plane transition
+# install one pinned seven-file control-plane transition
 install_control_plane() (
   local destination=$1
   local backup_root=$2
@@ -87,7 +89,7 @@ install_control_plane() (
   local fail_after=${6:-0}
   local stage='' backup='' replaced=0 status candidate_root candidate_archive entry line file expected_mode lock_fd
 
-  # restore all five original files after an interrupted replacement
+  # restore all seven original files after an interrupted replacement
   # shellcheck disable=SC2329
   restore_on_exit() {
     status=$?
@@ -95,7 +97,7 @@ install_control_plane() (
 
     # recover only when installation actually began
     if ((status != 0 && replaced > 0)); then
-      printf 'Restoring retained version-nine control plane from %s\n' "$backup" >&2
+      printf 'Restoring retained version-ten control plane from %s\n' "$backup" >&2
       for file in "${control_files[@]}"; do
         install_atomic_file "$backup/deploy/$file" "$destination/deploy/$file" || status=2
       done
@@ -119,7 +121,7 @@ install_control_plane() (
   [[ -f "$archive" && ! -L "$archive" ]] || fail "candidate archive is missing or linked"
   [[ "$archive_sha256" =~ ^[a-f0-9]{64}$ && "$candidate_digest" =~ ^[a-f0-9]{64}$ ]] ||
     fail "candidate hashes must be complete SHA-256 values"
-  [[ "$fail_after" =~ ^[0-4]$ ]] || fail "invalid internal failure probe"
+  [[ "$fail_after" =~ ^[0-7]$ ]] || fail "invalid internal failure probe"
   [[ "$(sha256sum "$archive" | awk '{print $1}')" == "$archive_sha256" ]] ||
     fail "candidate archive hash differs from the committed artifact"
   [[ -d "$destination/deploy" && ! -L "$destination/deploy" ]] ||
@@ -130,14 +132,14 @@ install_control_plane() (
     ! -L "$destination/deploy/state/current-release" ]] ||
     fail "installed release state is missing or linked"
   [[ "$(cat "$destination/deploy/state/current-release")" == "$previous_release" ]] ||
-    fail "installed release is not the verified version-nine predecessor"
+    fail "installed release is not the verified version-ten predecessor"
   [[ -f "$destination/deploy/releases/$previous_release.env" &&
     ! -L "$destination/deploy/releases/$previous_release.env" ]] ||
     fail "predecessor release metadata is missing or linked"
   [[ "$(grep -c '^WEATHER_CONTROL_PLANE_VERSION=' "$destination/deploy/releases/$previous_release.env")" == 1 &&
     "$(grep -c '^WEATHER_CONTROL_PLANE_SHA256=' "$destination/deploy/releases/$previous_release.env")" == 1 ]] ||
     fail "predecessor release metadata is ambiguous"
-  grep -Fxq 'WEATHER_CONTROL_PLANE_VERSION=9' \
+  grep -Fxq 'WEATHER_CONTROL_PLANE_VERSION=10' \
     "$destination/deploy/releases/$previous_release.env" ||
     fail "predecessor release version differs"
   grep -Fxq "WEATHER_CONTROL_PLANE_SHA256=$previous_digest" \
@@ -193,8 +195,8 @@ install_control_plane() (
     fail "candidate update script is missing"
   [[ "$(grep -c '^control_plane_version=' "$candidate_root/deploy/scripts/update.sh")" == 1 ]] ||
     fail "candidate control version is ambiguous"
-  grep -Fxq 'control_plane_version=10' "$candidate_root/deploy/scripts/update.sh" ||
-    fail "candidate control version is not ten"
+  grep -Fxq 'control_plane_version=11' "$candidate_root/deploy/scripts/update.sh" ||
+    fail "candidate control version is not eleven"
   grep -Fxq "previous_control_plane_sha256=$previous_digest" \
     "$candidate_root/deploy/scripts/update.sh" ||
     fail "candidate does not pin the predecessor"
@@ -202,7 +204,7 @@ install_control_plane() (
     fail "candidate control-plane digest differs"
 
   # retain only the exact previous control plane, never state or secrets
-  backup=$(mktemp -d "$backup_root/v9-${previous_digest:0:12}.XXXXXX")
+  backup=$(mktemp -d "$backup_root/v10-${previous_digest:0:12}.XXXXXX")
   mkdir -p "$backup/deploy"
   cp -a "$destination/deploy/scripts" "$destination/deploy/postgres" \
     "$destination/deploy/systemd" "$destination/deploy/sudoers" \
@@ -210,14 +212,14 @@ install_control_plane() (
   [[ "$(control_digest "$backup")" == "$previous_digest" ]] ||
     fail "retained predecessor backup differs"
 
-  # prove that only the five selected files produce the candidate digest
+  # prove that only the seven selected files produce the candidate digest
   cp -a "$backup/deploy" "$stage/trial-deploy"
   for file in "${control_files[@]}"; do
     [[ -f "$candidate_root/deploy/$file" && ! -L "$candidate_root/deploy/$file" ]] ||
       fail "candidate control file is missing or linked: $file"
     # keep archive file modes from widening host control access
     case "$file" in
-      compose.yaml|postgres/runtime-acl-v2.sql) expected_mode=644 ;;
+      compose.yaml|postgres/runtime-acl-v2.sql|scripts/weather-admin-store.mjs|scripts/web-server.mjs) expected_mode=644 ;;
       *) expected_mode=755 ;;
     esac
     [[ "$(stat -c '%a' "$candidate_root/deploy/$file")" == "$expected_mode" ]] ||
@@ -227,7 +229,7 @@ install_control_plane() (
   mkdir -p "$stage/trial"
   mv "$stage/trial-deploy" "$stage/trial/deploy"
   [[ "$(control_digest "$stage/trial")" == "$candidate_digest" ]] ||
-    fail "candidate changes exceed the five reviewed control files"
+    fail "candidate changes exceed the seven reviewed control files"
 
   # recheck the serialized handoff immediately before file replacement
   require_quiet_weather
@@ -247,7 +249,7 @@ install_control_plane() (
   done
   [[ "$(control_digest "$destination")" == "$candidate_digest" ]] ||
     fail "installed control-plane digest differs from the candidate"
-  printf 'Installed version-ten control plane: %s\nRetained backup: %s\n' \
+  printf 'Installed version-eleven control plane: %s\nRetained backup: %s\n' \
     "$candidate_digest" "$backup"
 )
 

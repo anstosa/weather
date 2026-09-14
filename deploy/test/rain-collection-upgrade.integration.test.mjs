@@ -99,7 +99,7 @@ test(
 
       const upgraded = await runMigrations(pool, migrationDirectory);
       assert.deepEqual(upgraded.current, prefix);
-      assert.deepEqual(upgraded.applied, ["0014_rain_collection.sql", "0015_rain_station_access.sql"]);
+      assert.deepEqual(upgraded.applied, ["0014_rain_collection.sql", "0015_rain_station_access.sql", "0016_rain_adjustment.sql"]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
 
@@ -115,6 +115,10 @@ test(
       await assert.rejects(exportPool.query("SELECT claims FROM rain_collection_status_v1"), { code: "42501" });
       await assert.rejects(exportPool.query("SELECT id FROM rain_capture_claims"), { code: "42501" });
       await assert.rejects(ingestPool.query("UPDATE rain_capture_claims SET slot_key = slot_key WHERE false"), { code: "42501" });
+      assert.deepEqual((await apiPool.query("SELECT count(*)::integer AS runs FROM rain_adjustment_runs")).rows, [{ runs: 0 }]);
+      await assert.rejects(exportPool.query("SELECT hours FROM rain_adjustment_runs"), { code: "42501" });
+      await assert.rejects(apiPool.query("INSERT INTO rain_adjustment_runs DEFAULT VALUES"), { code: "42501" });
+      await assert.rejects(ingestPool.query("UPDATE rain_adjustment_runs SET hours = hours WHERE false"), { code: "42501" });
 
       // prove the checker rejects drift in every sensitive role
       for (const [drift, undo] of [
@@ -122,6 +126,8 @@ test(
         ["GRANT SELECT (station_id) ON rain_capture_claims TO weather_api", "REVOKE SELECT (station_id) ON rain_capture_claims FROM weather_api"],
         ["GRANT UPDATE (slot_key) ON rain_capture_claims TO weather_ingest", "REVOKE UPDATE (slot_key) ON rain_capture_claims FROM weather_ingest"],
         ["GRANT SELECT ON rain_capture_receipts TO weather_training_export", null],
+        ["REVOKE SELECT ON rain_adjustment_runs FROM weather_api", null],
+        ["GRANT SELECT (hours) ON rain_adjustment_runs TO weather_training_export", "REVOKE SELECT (hours) ON rain_adjustment_runs FROM weather_training_export"],
         ["GRANT weather_owner TO weather_api", "REVOKE weather_owner FROM weather_api"],
       ]) {
         await pool.query(drift);
@@ -146,12 +152,16 @@ test(
           to_regclass('rain_capture_claims') AS claims,
           to_regclass('rain_capture_receipts') AS receipts,
           to_regclass('rain_collection_status_v1') AS status,
+          to_regclass('rain_adjustment_runs') AS adjustment_runs,
+          to_regprocedure('weather_guard_rain_adjustment_run()') AS adjustment_guard,
           to_regprocedure('weather_guard_rain_capture_claim()') AS claim_guard,
           to_regprocedure('weather_guard_rain_capture_receipt()') AS receipt_guard,
           to_regprocedure('weather_reject_rain_capture_mutation()') AS mutation_guard
         FROM schema_migrations
       `);
       assert.deepEqual(boundary.rows[0], {
+        adjustment_guard: null,
+        adjustment_runs: null,
         claim_guard: null,
         claims: null,
         migrations: "8",
@@ -161,7 +171,7 @@ test(
         status: null,
       });
       const replayed = await runMigrations(pool, migrationDirectory);
-      assert.deepEqual(replayed.applied.slice(-2), ["0014_rain_collection.sql", "0015_rain_station_access.sql"]);
+      assert.deepEqual(replayed.applied.slice(-3), ["0014_rain_collection.sql", "0015_rain_station_access.sql", "0016_rain_adjustment.sql"]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
     } finally {

@@ -781,6 +781,15 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
     receivedAt: "2026-08-22T05:00:00.000Z",
     revisionCount: 0,
     validAt: "2026-08-22T06:00:00.000Z",
+    rainAdjustment: {
+      contractVersion: "forecast-rain-adjustment-decision/v1",
+      state: "disabled",
+      reasonCode: "model_unavailable",
+      bundleSha256: null,
+      correctedPrecipitationMm: null,
+      rawBestMatchPrecipitationMm: 0.1,
+      sourceForecast: null,
+    },
     adjustment: {
       adjustedMetrics: {},
       appliedMetrics: [],
@@ -1577,9 +1586,10 @@ test("I-API-05 provenance permission failures preserve raw API metrics", async (
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(queries.length, 3);
+  assert.equal(queries.length, 4);
   assert.doesNotMatch(queries[1].text, /forecast_runtime_provenance_v1/u);
   assert.match(queries[2].text, /FROM forecast_runtime_provenance_v1/u);
+  assert.match(queries[3].text, /FROM rain_adjustment_runs/u);
   assert.equal(JSON.stringify(body.data[0].metrics), JSON.stringify({
     apparentTemperatureC: rawRow.apparentTemperatureC,
     blackGlobeTemperatureC: rawRow.blackGlobeTemperatureC,

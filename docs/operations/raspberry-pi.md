@@ -38,10 +38,11 @@ do not run a host policy that widens those limits after container creation.
    Staging also records a digest and compatibility version for Compose,
    lifecycle scripts, and the runtime ACL contract. Stage, activate, recover,
    and rollback fail closed on an incompatible control-plane version or digest.
-   Control-plane version 10 allowlists only the verified installed version 9
-   production digest `0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0`
-   as its predecessor. Version 9 and 10 releases use the same eleven-field
-   format; station evidence capture adds no persisted release field or model activation.
+   Control-plane version 11 allowlists only the verified installed version 10
+   production digest `b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722`
+   as its predecessor. Versions 9 through 11 use the same eleven-field
+   release format; administrator adjustment settings are stored separately in
+   the backed-up web volume.
    All other cross-version or cross-digest handoffs are unsupported. Do not
    rewrite release metadata or use wildcard handoffs: every mutating lifecycle
    action rejects any other mismatch before changing images, containers, the
@@ -289,6 +290,35 @@ Verify the live version, schema ledger through `0015_rain_station_access.sql`,
 forecast and station receipt counts, and the original active wind and
 temperature canary bundle identities. Keep the retained old environments and
 backup immutable; do not rewrite old control-plane metadata to bypass a guard.
+
+### One-time version-ten to version-eleven live-adjustment handoff
+
+Use the same hash-verified, serialized root handoff steps above with the new
+immutable release tag and that tag's installer. This handoff requires active
+`2026.09.13-3`, control-plane version 10 and digest
+`b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722`.
+It retains the exact version-ten control plane in a new private backup. The
+seven allowlisted replacement files are `deploy/compose.yaml`,
+`deploy/postgres/runtime-acl-v2.sql`, `deploy/scripts/common.sh`,
+`deploy/scripts/forecast-training-package.mjs`,
+`deploy/scripts/weather-admin-store.mjs`, `deploy/scripts/web-server.mjs` and
+`deploy/scripts/update.sh`. The earlier version-nine-to-ten helper must not be
+reused. Verify no lifecycle or migration command overlaps this handoff.
+
+After the helper succeeds, deploy the published immutable release from the
+active `2026.09.13-3.env`, not bootstrap `.env`; preserve the existing wind and
+temperature kill-switch values. Ensure the target release environment does not
+already exist before running `yolo`. The new migration adds only bounded rain
+model outputs and preserves private capture evidence. Check schema migration
+`0016_rain_adjustment.sql`, real forecast adjustment decisions, each admin
+switch and the all-off raw forecast before reporting success. Do not re-run
+the helper after version eleven is installed, rewrite the old release metadata,
+or remove the retained backup. The web volume retains both
+`forecast-adjustment-settings.json` and its `.initialized` marker. Initial
+enabled defaults require an existing valid admin-auth record; missing or
+damaged retained state fails closed, and an authenticated switch update repairs
+it. Preserve these files in the normal encrypted backup. See
+[rain adjustment operations](rain-live-adjustment.md).
 
 ## Xweather map budget
 

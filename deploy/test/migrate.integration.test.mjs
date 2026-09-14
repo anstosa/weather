@@ -340,6 +340,7 @@ test(
         "0013_ecmwf_temperature_canary.sql",
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
+        "0016_rain_adjustment.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -360,6 +361,7 @@ test(
         "0013_ecmwf_temperature_canary.sql",
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
+        "0016_rain_adjustment.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondEvent.ecowittBootstrap, firstEvent.ecowittBootstrap);
@@ -391,6 +393,7 @@ test(
         { name: "0013_ecmwf_temperature_canary.sql" },
         { name: "0014_rain_collection.sql" },
         { name: "0015_rain_station_access.sql" },
+        { name: "0016_rain_adjustment.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -953,6 +956,7 @@ test(
         { name: "0013_ecmwf_temperature_canary.sql" },
         { name: "0014_rain_collection.sql" },
         { name: "0015_rain_station_access.sql" },
+        { name: "0016_rain_adjustment.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(

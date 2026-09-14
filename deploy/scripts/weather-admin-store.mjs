@@ -4,13 +4,27 @@ import {
   scrypt as scryptCallback,
   timingSafeEqual,
 } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const scrypt = promisify(scryptCallback);
 const AUTH_VERSION = 1;
 const LAYOUT_VERSION = 1;
+const ADJUSTMENT_SETTINGS_VERSION = 1;
+const ADJUSTMENT_SETTINGS_MARKER = "forecast-adjustment-settings/v1";
+const DEFAULT_ADJUSTMENT_SETTINGS = Object.freeze({
+  version: ADJUSTMENT_SETTINGS_VERSION,
+  temperature: true,
+  wind: true,
+  rain: true,
+});
+const DISABLED_ADJUSTMENT_SETTINGS = Object.freeze({
+  version: ADJUSTMENT_SETTINGS_VERSION,
+  temperature: false,
+  wind: false,
+  rain: false,
+});
 export const ADMIN_SESSION_TTL_SECONDS = 12 * 60 * 60;
 const MAXIMUM_ADMIN_SESSIONS = 64;
 const SESSION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
@@ -19,6 +33,9 @@ const SENSOR_ICONS = new Set(["air-quality", "rain", "temperature", "wind"]);
 
 export class WeatherAdminStore {
   #authPath;
+  #adjustmentSettingsPath;
+  #adjustmentSettingsMarkerPath;
+  #adjustmentSettingsInitialized = false;
   #bootstrapTokenPath;
   #center;
   #layoutPath;
@@ -33,6 +50,11 @@ export class WeatherAdminStore {
       "bootstrapTokenPath",
     );
     this.#layoutPath = requirePath(options.layoutPath, "layoutPath");
+    this.#adjustmentSettingsPath = requirePath(
+      options.adjustmentSettingsPath ?? join(dirname(this.#layoutPath), "forecast-adjustment-settings.json"),
+      "adjustmentSettingsPath",
+    );
+    this.#adjustmentSettingsMarkerPath = `${this.#adjustmentSettingsPath}.initialized`;
     this.#center = validateCoordinate(options.center, "center");
     this.#now = options.now ?? Date.now;
 
@@ -180,6 +202,97 @@ export class WeatherAdminStore {
     return parseLayoutState(state);
   }
 
+  // read a complete persistent adjustment switch snapshot
+  async readAdjustmentSettingsStatus() {
+    try {
+      await this.#initializeAdjustmentSettings();
+      const state = await readOptionalJson(this.#adjustmentSettingsPath);
+
+      // distinguish a lost file from a first-run default
+      if (state === null) {
+        throw new Error("forecast adjustment settings file is missing");
+      }
+
+      return { settings: parseAdjustmentSettings(state), error: null };
+    } catch {
+      // fail closed when persisted state cannot be trusted
+      return {
+        settings: { ...DISABLED_ADJUSTMENT_SETTINGS },
+        error: "adjustment_settings_unavailable",
+      };
+    }
+  }
+
+  // replace all three independently chosen admin switches
+  async writeAdjustmentSettings(input) {
+    const settings = parseAdjustmentSettings(input);
+    const marker = await readOptionalText(this.#adjustmentSettingsMarkerPath);
+
+    // let an authenticated update repair a damaged marker last
+    if (marker !== ADJUSTMENT_SETTINGS_MARKER &&
+      (marker !== null || this.#adjustmentSettingsInitialized)) {
+      await atomicWriteJson(this.#adjustmentSettingsPath, settings);
+      await atomicWriteText(this.#adjustmentSettingsMarkerPath, `${ADJUSTMENT_SETTINGS_MARKER}\n`);
+      this.#adjustmentSettingsInitialized = true;
+      return settings;
+    }
+
+    await this.#initializeAdjustmentSettings();
+    await atomicWriteJson(this.#adjustmentSettingsPath, settings);
+    return settings;
+  }
+
+  // record first initialization before making defaults visible
+  async #initializeAdjustmentSettings() {
+    const marker = await readOptionalText(this.#adjustmentSettingsMarkerPath);
+
+    // never recreate defaults after initialization or marker damage
+    if (marker !== null) {
+      if (marker !== ADJUSTMENT_SETTINGS_MARKER) {
+        throw new Error("forecast adjustment settings marker is invalid");
+      }
+      this.#adjustmentSettingsInitialized = true;
+      return;
+    }
+
+    // reject an in-process loss of both persistent switch files
+    if (this.#adjustmentSettingsInitialized) {
+      throw new Error("forecast adjustment settings marker is missing");
+    }
+
+    // distinguish a configured first release from a lost whole web volume
+    const auth = await readOptionalJson(this.#authPath);
+    if (auth === null) {
+      throw new Error("admin authentication is not configured");
+    }
+    parseAuthState(auth);
+
+    await mkdir(dirname(this.#adjustmentSettingsPath), { mode: 0o700, recursive: true });
+    try {
+      await writeFile(this.#adjustmentSettingsMarkerPath, `${ADJUSTMENT_SETTINGS_MARKER}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (error) {
+      // another first reader owns default initialization
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      const installedMarker = await readOptionalText(this.#adjustmentSettingsMarkerPath);
+
+      // reject a raced or invalid marker instead of assuming authority
+      if (installedMarker !== ADJUSTMENT_SETTINGS_MARKER) {
+        throw new Error("forecast adjustment settings marker is invalid");
+      }
+      this.#adjustmentSettingsInitialized = true;
+      return;
+    }
+
+    // link a complete default only if no concurrent admin value exists
+    await atomicCreateJsonIfMissing(this.#adjustmentSettingsPath, DEFAULT_ADJUSTMENT_SETTINGS);
+    this.#adjustmentSettingsInitialized = true;
+  }
+
   // update one sensor without overwriting other placements
   async upsertSensor(sensorKey, input) {
     const key = validateSensorKey(sensorKey);
@@ -219,6 +332,28 @@ export class WeatherAdminStore {
     });
     return saved;
   }
+}
+
+// require one exact versioned switch record
+function parseAdjustmentSettings(value) {
+  // reject missing, extra, or non-boolean fields
+  if (
+    !isObject(value) ||
+    Object.keys(value).length !== 4 ||
+    value.version !== ADJUSTMENT_SETTINGS_VERSION ||
+    typeof value.temperature !== "boolean" ||
+    typeof value.wind !== "boolean" ||
+    typeof value.rain !== "boolean"
+  ) {
+    throw new RangeError("forecast adjustment settings are invalid");
+  }
+
+  return {
+    version: ADJUSTMENT_SETTINGS_VERSION,
+    temperature: value.temperature,
+    wind: value.wind,
+    rain: value.rain,
+  };
 }
 
 // parse one immutable auth record
@@ -435,10 +570,40 @@ async function readOptionalText(path) {
 
 // replace one state file atomically
 async function atomicWriteJson(path, value) {
+  await atomicWriteText(path, `${JSON.stringify(value)}\n`);
+}
+
+// replace one bounded text state file atomically
+async function atomicWriteText(path, content) {
   await mkdir(dirname(path), { mode: 0o700, recursive: true });
   const temporaryPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(temporaryPath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await writeFile(temporaryPath, content, { mode: 0o600 });
   await rename(temporaryPath, path);
+}
+
+// publish a complete first-run file without replacing an admin write
+async function atomicCreateJsonIfMissing(path, value) {
+  const temporaryPath = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+    try {
+      await link(temporaryPath, path);
+    } catch (error) {
+      // preserve a concurrently committed administrator value
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+    }
+  } finally {
+    await unlink(temporaryPath).catch(
+      // tolerate a write failure before the temporary file existed
+      (error) => {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      },
+    );
+  }
 }
 
 // test plain object membership

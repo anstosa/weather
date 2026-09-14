@@ -660,8 +660,75 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
 
   const largeApiBody = Buffer.alloc((1024 * 1024) + 1, "t");
   const oversizedTrendsApiBody = Buffer.alloc((2 * 1024 * 1024) + 1, "x");
+  const forecastFixture = {
+    adjustmentRuntime: {
+      activationMode: "wind_canary",
+      activeBundle: "wind-bundle",
+      authorizationSha256: "wind-authorization",
+      candidateArtifactSha256: "wind-candidate",
+      enabledMetrics: ["windSpeedMps"],
+      evaluationReportSha256: null,
+      expiresAt: "2026-09-22T00:00:00.000Z",
+      loadedAt: "2026-09-13T00:00:00.000Z",
+      qualificationReceiptSha256: null,
+      reasonCode: null,
+      state: "active",
+      transferReportSha256: "wind-transfer",
+    },
+    temperatureAdjustmentRuntime: {
+      activeBundle: "temperature-bundle",
+      authorizationSha256: "temperature-authorization",
+      expiresAt: "2026-09-22T00:00:00.000Z",
+      loadedAt: "2026-09-13T00:00:00.000Z",
+      reasonCode: null,
+      source: { hourCount: 1 },
+      state: "active",
+    },
+    rainAdjustmentRuntime: {
+      activeBundle: "rain-bundle",
+      loadedAt: "2026-09-13T00:00:00.000Z",
+      reasonCode: null,
+      source: { hourCount: 1 },
+      state: "active",
+    },
+    data: [{
+      metrics: { precipitationMm: 1, temperatureC: 12, windSpeedMps: 3 },
+      provenance: { sourceKey: "fixture-forecast" },
+      adjustment: {
+        adjustedMetrics: { windSpeedMps: 4 },
+        appliedMetrics: ["windSpeedMps"],
+        contractVersion: "forecast-adjustment-decision/v1",
+        reasonCode: null,
+        state: "active",
+      },
+      temperatureAdjustment: {
+        branch: "direct",
+        bundleSha256: "temperature-bundle",
+        contractVersion: "forecast-temperature-canary-decision/v1",
+        correctedTemperatureC: 13,
+        rawBestMatchTemperatureC: 12,
+        reasonCode: null,
+        recentErrorStateSha256: "temperature-error-state",
+        sourceForecast: { rawTemperatureC: 11 },
+        state: "active",
+      },
+      rainAdjustment: {
+        bundleSha256: "rain-bundle",
+        contractVersion: "forecast-rain-adjustment-decision/v1",
+        correctedPrecipitationMm: 1.5,
+        rawBestMatchPrecipitationMm: 1,
+        reasonCode: null,
+        sourceForecast: { rawPrecipitationMm: 1.2 },
+        state: "active",
+      },
+    }],
+  };
   // map route fixtures to bounded response bodies
   const apiFixtureBodies = new Map([
+    ["/api/v1/sites/ballydidean/forecast", Buffer.from(JSON.stringify(forecastFixture))],
+    ["/api/v1/sites/ballydidean/rain-collection", Buffer.from(JSON.stringify({
+      data: { modelEnabled: true, qualificationEnabled: false, receipts: 1 },
+    }))],
     ["/api/v1/sites/ballydidean/current?large=1", largeApiBody],
     ["/api/v1/sites/ballydidean/trends", largeApiBody],
     ["/api/v1/sites/oversized/trends", oversizedTrendsApiBody],
@@ -774,6 +841,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     );
     const adminBeforeBootstrap = await fetch(`http://127.0.0.1:${webPort}/admin`);
     const publicLayoutBefore = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/property-sensor-layout`);
+    const publicSwitchesBeforeBootstrap = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/forecast-adjustment-settings`);
     const rejectedBootstrap = await fetch(`http://127.0.0.1:${webPort}/api/v1/admin/bootstrap`, {
       body: JSON.stringify({ password: "test-admin-password" }),
       headers: {
@@ -846,6 +914,136 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       },
       method: "PUT",
     });
+    const forecastUrl = `http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/forecast`;
+    const rainStatusUrl = `http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/rain-collection`;
+    const publicSwitchUrl = `http://127.0.0.1:${webPort}/api/v1/sites/ballydidean/forecast-adjustment-settings`;
+    const adminSwitchUrl = `http://127.0.0.1:${webPort}/api/v1/admin/sites/ballydidean/forecast-adjustment-settings`;
+    const sameOrigin = `http://127.0.0.1:${webPort}`;
+    const initialSwitches = await fetch(publicSwitchUrl);
+    const forecastMutation = await fetch(forecastUrl, { method: "POST" });
+    const rainStatusMutation = await fetch(rainStatusUrl, { method: "PUT" });
+    const unauthenticatedSwitches = await fetch(adminSwitchUrl);
+    const unauthenticatedWrite = await fetch(adminSwitchUrl, {
+      body: JSON.stringify({ version: 1, temperature: false, wind: false, rain: false }),
+      headers: { "content-type": "application/json", origin: sameOrigin },
+      method: "PUT",
+    });
+    assert.deepEqual(await initialSwitches.json(), {
+      data: { version: 1, temperature: true, wind: true, rain: true },
+    });
+    assert.equal(forecastMutation.status, 405);
+    assert.equal(rainStatusMutation.status, 405);
+    assert.equal(unauthenticatedSwitches.status, 401);
+    assert.equal(unauthenticatedWrite.status, 401);
+
+    // reject authenticated cross-site writes before touching persistence
+    for (const origin of [undefined, "https://foreign.example"]) {
+      const rejected = await fetch(adminSwitchUrl, {
+        body: JSON.stringify({ version: 1, temperature: false, wind: false, rain: false }),
+        headers: {
+          cookie: sessionCookie,
+          "content-type": "application/json",
+          ...(origin === undefined ? {} : { origin }),
+        },
+        method: "PUT",
+      });
+      assert.equal(rejected.status, 403);
+    }
+
+    const invalidWrite = await fetch(adminSwitchUrl, {
+      body: JSON.stringify({ version: 1, temperature: true, wind: false, rain: "false" }),
+      headers: { cookie: sessionCookie, "content-type": "application/json", origin: sameOrigin },
+      method: "PUT",
+    });
+    assert.equal(invalidWrite.status, 400);
+    const adjustmentSettingsPath = join(fixtureRoot, "forecast-adjustment-settings.json");
+
+    // verify every admin combination against persisted and projected forecast state
+    for (let mask = 0; mask < 8; mask += 1) {
+      const switches = {
+        version: 1,
+        temperature: Boolean(mask & 1),
+        wind: Boolean(mask & 2),
+        rain: Boolean(mask & 4),
+      };
+      const updated = await fetch(adminSwitchUrl, {
+        body: JSON.stringify(switches),
+        headers: { cookie: sessionCookie, "content-type": "application/json", origin: sameOrigin },
+        method: "PUT",
+      });
+      const publicRead = await fetch(publicSwitchUrl);
+      const adminRead = await fetch(adminSwitchUrl, { headers: { cookie: sessionCookie } });
+      const projectedResponse = await fetch(forecastUrl);
+      const projected = await projectedResponse.json();
+      const rainStatus = await (await fetch(rainStatusUrl)).json();
+      const row = projected.data[0];
+
+      assert.equal(updated.status, 200);
+      assert.deepEqual(await updated.json(), { data: switches });
+      assert.deepEqual(await publicRead.json(), { data: switches });
+      assert.deepEqual(await adminRead.json(), { data: switches });
+      assert.deepEqual(JSON.parse(await readFile(adjustmentSettingsPath, "utf8")), switches);
+      assert.deepEqual(projected.adjustmentSettings, switches);
+      assert.equal(projectedResponse.headers.get("cache-control"), "no-store");
+      assert.deepEqual(row.metrics, forecastFixture.data[0].metrics);
+      assert.deepEqual(row.provenance, forecastFixture.data[0].provenance);
+      assert.equal(row.adjustment.state, switches.wind ? "active" : "disabled");
+      assert.equal(projected.adjustmentRuntime.state, switches.wind ? "active" : "disabled");
+      assert.equal(row.temperatureAdjustment.state, switches.temperature ? "active" : "disabled");
+      assert.equal(projected.temperatureAdjustmentRuntime.state, switches.temperature ? "active" : "disabled");
+      assert.equal(row.rainAdjustment.state, switches.rain ? "active" : "disabled");
+      assert.equal(projected.rainAdjustmentRuntime.state, switches.rain ? "active" : "disabled");
+      assert.equal(row.adjustment.adjustedMetrics.windSpeedMps, switches.wind ? 4 : undefined);
+      assert.equal(row.temperatureAdjustment.correctedTemperatureC, switches.temperature ? 13 : null);
+      assert.equal(row.rainAdjustment.correctedPrecipitationMm, switches.rain ? 1.5 : null);
+      assert.equal(rainStatus.data.modelEnabled, switches.rain);
+      assert.equal(rainStatus.data.qualificationEnabled, false);
+    }
+
+    const projectedHead = await fetch(forecastUrl, { method: "HEAD" });
+    const projectedGet = await fetch(forecastUrl);
+    assert.equal(projectedHead.status, 200);
+    assert.equal(Number(projectedHead.headers.get("content-length")),
+      (await projectedGet.arrayBuffer()).byteLength);
+
+    // preserve a visible admin diagnostic while corrupted state fails raw
+    await writeFile(adjustmentSettingsPath, "{invalid json\n");
+    const corruptPublic = await fetch(publicSwitchUrl);
+    const corruptAdmin = await fetch(adminSwitchUrl, { headers: { cookie: sessionCookie } });
+    const corruptForecast = await (await fetch(forecastUrl)).json();
+    const corruptRainStatus = await (await fetch(rainStatusUrl)).json();
+    assert.deepEqual(await corruptPublic.json(), {
+      data: { version: 1, temperature: false, wind: false, rain: false },
+    });
+    assert.deepEqual(await corruptAdmin.json(), {
+      data: { version: 1, temperature: false, wind: false, rain: false },
+      error: "adjustment_settings_unavailable",
+    });
+    assert.equal(corruptForecast.data[0].adjustment.state, "disabled");
+    assert.equal(corruptForecast.data[0].temperatureAdjustment.state, "disabled");
+    assert.equal(corruptForecast.data[0].rainAdjustment.state, "disabled");
+    assert.equal(corruptRainStatus.data.modelEnabled, false);
+
+    // permit the administrator to repair a malformed settings file
+    const repairedSwitches = await fetch(adminSwitchUrl, {
+      body: JSON.stringify({ version: 1, temperature: true, wind: true, rain: true }),
+      headers: { cookie: sessionCookie, "content-type": "application/json", origin: sameOrigin },
+      method: "PUT",
+    });
+    assert.equal(repairedSwitches.status, 200);
+    await writeFile(`${adjustmentSettingsPath}.initialized`, "damaged marker\n");
+    const damagedMarker = await (await fetch(adminSwitchUrl, { headers: { cookie: sessionCookie } })).json();
+    assert.equal(damagedMarker.error, "adjustment_settings_unavailable");
+    assert.deepEqual(damagedMarker.data, {
+      version: 1, temperature: false, wind: false, rain: false,
+    });
+    const repairedMarker = await fetch(adminSwitchUrl, {
+      body: JSON.stringify({ version: 1, temperature: false, wind: true, rain: false }),
+      headers: { cookie: sessionCookie, "content-type": "application/json", origin: sameOrigin },
+      method: "PUT",
+    });
+    assert.equal(repairedMarker.status, 200);
+    assert.equal((await (await fetch(publicSwitchUrl)).json()).data.wind, true);
     const logout = await fetch(`http://127.0.0.1:${webPort}/admin/logout`, {
       headers: {
         cookie: sessionCookie,
@@ -943,6 +1141,9 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(adminBeforeBootstrap.headers.get("cross-origin-resource-policy"), "cross-origin");
     assert.equal(adminBeforeBootstrap.headers.get("x-frame-options"), null);
     assert.deepEqual(await publicLayoutBefore.json(), { data: [] });
+    assert.deepEqual(await publicSwitchesBeforeBootstrap.json(), {
+      data: { version: 1, temperature: false, wind: false, rain: false },
+    });
     assert.equal(rejectedBootstrap.status, 401);
     assert.equal(acceptedBootstrap.status, 201);
     assert.equal(basicAdmin.status, 200);
@@ -1381,7 +1582,9 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /0009_forecast_anchor_records\.sql/u);
   assert.match(update, /0014_rain_collection\.sql/u);
   assert.match(update, /0015_rain_station_access\.sql/u);
+  assert.match(update, /0016_rain_adjustment\.sql/u);
   assert.match(update, /DROP VIEW IF EXISTS rain_collection_status_v1/u);
+  assert.match(update, /DROP TABLE IF EXISTS rain_adjustment_runs/u);
   assert.match(update, /DROP TABLE IF EXISTS rain_capture_receipts/u);
   assert.match(update, /DROP TABLE IF EXISTS forecast_anchor_records/u);
   assert.match(update, /open-meteo-forecast-v4/u);
@@ -1422,10 +1625,11 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(composeIntegration, /0009_forecast_anchor_records\.sql/u);
   assert.match(composeIntegration, /0014_rain_collection\.sql/u);
   assert.match(composeIntegration, /0015_rain_station_access\.sql/u);
+  assert.match(composeIntegration, /0016_rain_adjustment\.sql/u);
   assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),
-    /allowlists only the verified installed version 9[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
+    /allowlists only the verified installed version 10[\s\S]*rejects any other[\s\S]*mismatch before changing/u,
   );
 });
 

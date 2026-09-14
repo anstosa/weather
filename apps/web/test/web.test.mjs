@@ -11,7 +11,6 @@ import {
   buildTrendsUrl,
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
-  FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY,
   eveningSunTimes,
   forecastMetricValue,
   forecastForSiteDay,
@@ -507,6 +506,44 @@ function temperatureCanaryDecision(recordValue) {
   };
 }
 
+// create one active causal rain source and decision
+function rainAdjustmentDecision(recordValue) {
+  return {
+    contractVersion: "forecast-rain-adjustment-decision/v1",
+    state: "active",
+    reasonCode: null,
+    bundleSha256: "4".repeat(64),
+    correctedPrecipitationMm: 2.5,
+    rawBestMatchPrecipitationMm: recordValue.metrics.precipitationMm,
+    sourceForecast: {
+      runInitializedAt: "2026-08-21T18:00:00.000Z",
+      firstReceivedAt: "2026-08-22T00:05:00.000Z",
+      validAt: recordValue.validAt,
+      rawPrecipitationMm: 2,
+      modelLeadHours: 12,
+      decisionAt: "2026-08-22T02:00:00.000Z",
+      upstreamModel: "ecmwf_ifs",
+      providerKey: "open-meteo",
+    },
+  };
+}
+
+// create one active bounded rain runtime
+function rainAdjustmentRuntime() {
+  return {
+    state: "active",
+    activeBundle: "4".repeat(64),
+    reasonCode: null,
+    loadedAt: "2026-08-22T03:00:00.000Z",
+    source: {
+      runInitializedAt: "2026-08-21T18:00:00.000Z",
+      firstReceivedAt: "2026-08-22T00:05:00.000Z",
+      decisionAt: "2026-08-22T02:00:00.000Z",
+      hourCount: 23,
+    },
+  };
+}
+
 // create one exact active row decision
 function activeAdjustment(recordValue, targetLeadHours = 1) {
   const referenceAt = new Date(
@@ -584,9 +621,13 @@ function forecastState(records, runtime, forecastDays = 1) {
     error: null,
     filters: {},
     forecastAdjustmentMode: "adjusted",
+    forecastAdjustmentSettings: null,
     forecast: records,
     forecastAdjustmentRuntime: runtime,
+    forecastRainAdjustmentRuntime: null,
     forecastTemperatureAdjustmentRuntime: null,
+    adminAdjustmentSettingsSaving: false,
+    adminAdjustmentSettingsMessage: null,
     forecastDays,
     history: [],
     loading: false,
@@ -707,7 +748,7 @@ test("temperature canary overrides only adjusted temperature with truthful prove
   const html = renderWeatherDashboard(state, "forecast");
   assert.match(
     html,
-    /Experimental adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match\./u,
+    /Adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match\./u,
   );
 
   const malformed = parseForecastRecordsResponse({
@@ -839,6 +880,108 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
   const missing = parseForecastRecordsResponse({ data: [raw], site });
   assert.equal(missing.adjustmentRuntime.reasonCode, "adjustment_error");
   assert.equal(forecastMetricValue(missing.data[0], "temperatureC"), raw.metrics.temperatureC);
+});
+
+// cover every independent admin switch combination
+test("temperature wind and rain settings independently gate one shared adjusted mode", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+
+  // exercise all three-bit switch states
+  for (let bits = 0; bits < 8; bits += 1) {
+    const settings = {
+      version: 1,
+      temperature: Boolean(bits & 1),
+      wind: Boolean(bits & 2),
+      rain: Boolean(bits & 4),
+    };
+    const parsed = parseForecastRecordsResponse({
+      adjustmentSettings: settings,
+      adjustmentRuntime: windCanaryRuntime(),
+      data: [{
+        ...raw,
+        adjustment: windCanaryAdjustment(raw),
+        temperatureAdjustment: temperatureCanaryDecision(raw),
+        rainAdjustment: rainAdjustmentDecision(raw),
+      }],
+      rainAdjustmentRuntime: rainAdjustmentRuntime(),
+      site,
+      temperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+    });
+    const row = parsed.data[0];
+    const state = {
+      ...forecastState(parsed.data, parsed.adjustmentRuntime),
+      forecastAdjustmentSettings: parsed.adjustmentSettings,
+      forecastRainAdjustmentRuntime: parsed.rainAdjustmentRuntime,
+      forecastTemperatureAdjustmentRuntime: parsed.temperatureAdjustmentRuntime,
+      units: { ...DEFAULT_UNIT_PREFERENCES, precipitation: "millimeters" },
+    };
+    const html = renderWeatherDashboard(state, "forecast");
+    assert.equal(forecastMetricValue(row, "temperatureC"), settings.temperature ? 15 : raw.metrics.temperatureC);
+    assert.equal(forecastMetricValue(row, "windSpeedMps"), settings.wind ? raw.metrics.windSpeedMps + 0.4 : raw.metrics.windSpeedMps);
+    assert.equal(forecastMetricValue(row, "precipitationMm"), settings.rain ? 2.5 : raw.metrics.precipitationMm);
+    assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour"), settings.rain ? 2.5 : raw.metrics.precipitationRateMmPerHour);
+    assert.equal(forecastMetricValue(row, "precipitationMm", false), raw.metrics.precipitationMm);
+    assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour", false), raw.metrics.precipitationRateMmPerHour);
+    assert.equal(html.includes("data-forecast-adjustment-toggle"), bits !== 0);
+    assert.doesNotMatch(html, /experimental/i);
+    assert.equal(html.includes("2.5 mm"), settings.rain);
+  }
+});
+
+test("malformed settings and rain evidence fall back to unchanged raw values", () => {
+  const active = {
+    adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
+    adjustmentRuntime: adjustmentRuntime("disabled", "registry_inactive"),
+    data: [{
+      ...forecastRecord,
+      adjustment: failRawAdjustment("disabled", "registry_inactive"),
+      rainAdjustment: rainAdjustmentDecision(forecastRecord),
+    }],
+    rainAdjustmentRuntime: rainAdjustmentRuntime(),
+    site,
+  };
+  const parsed = parseForecastRecordsResponse(active);
+  assert.equal(parsed.rainAdjustmentRuntime.state, "active");
+  assert.equal(forecastMetricValue(parsed.data[0], "precipitationMm"), 2.5);
+
+  const badSource = parseForecastRecordsResponse({
+    ...active,
+    data: [{
+      ...active.data[0],
+      rainAdjustment: {
+        ...rainAdjustmentDecision(forecastRecord),
+        sourceForecast: {
+          ...rainAdjustmentDecision(forecastRecord).sourceForecast,
+          validAt: "2026-08-22T07:00:00.000Z",
+        },
+      },
+    }],
+  });
+  assert.equal(badSource.rainAdjustmentRuntime.state, "disabled");
+  assert.equal(forecastMetricValue(badSource.data[0], "precipitationMm"), forecastRecord.metrics.precipitationMm);
+  assert.equal(forecastMetricValue(badSource.data[0], "precipitationRateMmPerHour"), forecastRecord.metrics.precipitationRateMmPerHour);
+
+  const malformedSettings = parseForecastRecordsResponse({
+    ...active,
+    adjustmentSettings: { version: 1, temperature: true, wind: true },
+  });
+  assert.deepEqual(malformedSettings.adjustmentSettings, {
+    version: 1,
+    temperature: false,
+    wind: false,
+    rain: false,
+  });
+  assert.equal(forecastMetricValue(malformedSettings.data[0], "precipitationMm"), forecastRecord.metrics.precipitationMm);
+  assert.doesNotMatch(renderWeatherDashboard({
+    ...forecastState(malformedSettings.data, malformedSettings.adjustmentRuntime),
+    forecastAdjustmentSettings: malformedSettings.adjustmentSettings,
+  }, "forecast"), /data-forecast-adjustment-toggle/u);
 });
 
 test("forecast adjustment boundary rejects malformed raw records", () => {
@@ -1788,7 +1931,7 @@ test("controller loads validated unit preferences and persists changes", () => {
   assert.equal(new WeatherDashboardController({ storage }).state.forecastAdjustmentMode, "raw");
 });
 
-test("new wind-canary sessions default regional while explicit opt-in persists", async () => {
+test("new wind sessions default adjusted while explicit raw preference persists", async () => {
   const values = new Map();
   const storage = {
     // read one stored choice
@@ -1831,19 +1974,19 @@ test("new wind-canary sessions default regional while explicit opt-in persists",
 
   const controller = new WeatherDashboardController({ fetcher, storage, view: "forecast" });
   await controller.initialize();
-  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
   assert.equal(values.has(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), false);
 
   controller.toggleForecastAdjustmentMode();
-  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
-  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "adjusted");
+  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "raw");
 
   const restored = new WeatherDashboardController({ fetcher, storage, view: "forecast" });
   await restored.initialize();
-  assert.equal(restored.state.forecastAdjustmentMode, "adjusted");
+  assert.equal(restored.state.forecastAdjustmentMode, "raw");
 });
 
-test("new temperature-canary sessions require explicit opt-in", async () => {
+test("temperature adjustments follow the shared persisted forecast mode", async () => {
   const values = new Map();
   values.set(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY, "adjusted");
   let temperatureBundle = temperatureCanaryRuntime().activeBundle;
@@ -1900,21 +2043,13 @@ test("new temperature-canary sessions require explicit opt-in", async () => {
     view: "forecast",
   });
   await controller.initialize();
-  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
   assert.equal(controller.state.forecastTemperatureAdjustmentRuntime.state, "active");
   assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "adjusted");
-  assert.equal(
-    values.has(FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY),
-    false,
-  );
 
   controller.toggleForecastAdjustmentMode();
-  assert.equal(controller.state.forecastAdjustmentMode, "adjusted");
-  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "adjusted");
-  assert.equal(
-    values.get(FORECAST_TEMPERATURE_CANARY_CONSENT_STORAGE_KEY),
-    temperatureBundle,
-  );
+  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(values.get(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY), "raw");
 
   const restored = new WeatherDashboardController({
     fetcher,
@@ -1922,7 +2057,7 @@ test("new temperature-canary sessions require explicit opt-in", async () => {
     view: "forecast",
   });
   await restored.initialize();
-  assert.equal(restored.state.forecastAdjustmentMode, "adjusted");
+  assert.equal(restored.state.forecastAdjustmentMode, "raw");
 
   temperatureBundle = "6".repeat(64);
   const changed = new WeatherDashboardController({
@@ -2305,6 +2440,81 @@ test("authenticated homepage loads saved soil sensor positions", async () => {
 
   assert.equal(requested.some((url) => url.includes("/property-sensor-layout")), true);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
+});
+
+test("admin independently saves adjustment switches and verifies readback", async () => {
+  let persisted = { version: 1, temperature: true, wind: true, rain: false };
+  let staleReadback = false;
+  let rejectWrite = false;
+  const writes = [];
+
+  // serve the protected settings and standard admin panels
+  async function fetcher(input, init = {}) {
+    const url = String(input);
+
+    // serve and mutate the adjustment settings resource
+    if (url.endsWith("/admin/sites/ballydidean/forecast-adjustment-settings")) {
+      if (init.method === "PUT") {
+        writes.push(init);
+
+        // simulate a rejected protected write
+        if (rejectWrite) {
+          return Response.json({ error: "rejected" }, { status: 403 });
+        }
+
+        persisted = JSON.parse(init.body);
+        return Response.json({ data: persisted });
+      }
+
+      return Response.json({ data: staleReadback ? {
+        version: 1, temperature: true, wind: true, rain: false,
+      } : persisted });
+    }
+
+    // serve current conditions for the admin layout
+    if (url.includes("/current")) {
+      return Response.json({ data: [record], site });
+    }
+
+    // serve saved sensor positions for the admin layout
+    if (url.includes("/property-sensor-layout")) {
+      return Response.json({ data: [] });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, isAdmin: true, view: "admin" });
+  await controller.initialize();
+  assert.deepEqual(controller.state.forecastAdjustmentSettings, persisted);
+  const initialHtml = renderWeatherDashboard(controller.state, "admin", true);
+  assert.match(initialHtml, /data-admin-forecast-adjustments/u);
+  assert.match(initialHtml, /name="temperature" checked/u);
+  assert.match(initialHtml, /name="wind" checked/u);
+  assert.doesNotMatch(initialHtml, /name="rain" checked/u);
+
+  const rainOnly = { version: 1, temperature: false, wind: false, rain: true };
+  await controller.saveForecastAdjustmentSettings(rainOnly);
+  assert.deepEqual(controller.state.forecastAdjustmentSettings, rainOnly);
+  assert.equal(controller.state.adminAdjustmentSettingsMessage, "Forecast adjustments saved.");
+  assert.equal(writes[0].credentials, "same-origin");
+  assert.equal(writes[0].method, "PUT");
+  assert.deepEqual(JSON.parse(writes[0].body), rainOnly);
+  const savedHtml = renderWeatherDashboard(controller.state, "admin", true);
+  assert.match(savedHtml, /name="rain" checked/u);
+  assert.doesNotMatch(savedHtml, /name="temperature" checked/u);
+
+  staleReadback = true;
+  await controller.saveForecastAdjustmentSettings({ version: 1, temperature: true, wind: false, rain: false });
+  assert.deepEqual(controller.state.forecastAdjustmentSettings, rainOnly);
+  assert.equal(controller.state.adminAdjustmentSettingsMessage, "Forecast adjustment settings did not persist.");
+  assert.equal(controller.state.adminAdjustmentSettingsSaving, false);
+
+  staleReadback = false;
+  rejectWrite = true;
+  await controller.saveForecastAdjustmentSettings({ version: 1, temperature: false, wind: false, rain: false });
+  assert.deepEqual(controller.state.forecastAdjustmentSettings, rainOnly);
+  assert.match(controller.state.adminAdjustmentSettingsMessage, /status 403/u);
 });
 
 test("failed next-page reads keep the prior page label and cursor", async () => {

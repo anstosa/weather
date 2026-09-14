@@ -176,6 +176,7 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
       "0013_ecmwf_temperature_canary.sql",
       "0014_rain_collection.sql",
       "0015_rain_station_access.sql",
+      "0016_rain_adjustment.sql",
     ]);
     assert.deepEqual(after.rows[0].record, before.rows[0].record);
     assert.equal(

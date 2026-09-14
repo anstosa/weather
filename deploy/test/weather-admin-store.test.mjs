@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -126,4 +126,118 @@ test("property layout defaults legacy sensor icons safely", async (t) => {
   }));
   const store = new WeatherAdminStore(options);
   assert.equal((await store.readLayout())[0]?.icon, null);
+});
+
+// persist every independent switch combination without weakening invalid state
+test("forecast adjustment switches retain all eight combinations and fail closed on corruption", async (t) => {
+  const options = await fixture(t);
+  const store = new WeatherAdminStore(options);
+  const path = join(dirname(options.layoutPath), "forecast-adjustment-settings.json");
+
+  assert.deepEqual(await store.readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+  assert.deepEqual(await store.bootstrap(
+    "test-bootstrap-token-with-32-bytes-minimum", "P@ssword-test",
+  ), { status: "configured" });
+  assert.deepEqual(await store.readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: true, wind: true, rain: true },
+    error: null,
+  });
+
+  // exercise every independent three-bit selection
+  for (let mask = 0; mask < 8; mask += 1) {
+    const settings = {
+      version: 1,
+      temperature: Boolean(mask & 1),
+      wind: Boolean(mask & 2),
+      rain: Boolean(mask & 4),
+    };
+    assert.deepEqual(await store.writeAdjustmentSettings(settings), settings);
+    assert.deepEqual((await store.readAdjustmentSettingsStatus()).settings, settings);
+    assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, settings);
+  }
+
+  await assert.rejects(
+    store.writeAdjustmentSettings({ version: 1, temperature: true, wind: false, rain: "false" }),
+    /settings are invalid/u,
+  );
+  await assert.rejects(
+    store.writeAdjustmentSettings({ version: 1, temperature: true, wind: false, rain: false, extra: true }),
+    /settings are invalid/u,
+  );
+  await assert.rejects(
+    store.writeAdjustmentSettings({ version: 2, temperature: true, wind: false, rain: false }),
+    /settings are invalid/u,
+  );
+  assert.deepEqual((await store.readAdjustmentSettingsStatus()).settings, {
+    version: 1,
+    temperature: true,
+    wind: true,
+    rain: true,
+  });
+
+  // a lost saved file must not silently reactivate all adjustments
+  await unlink(path);
+  assert.deepEqual(await store.readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+  assert.deepEqual(await new WeatherAdminStore(options).readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+
+  await writeFile(path, "{broken json\n");
+  assert.deepEqual(await store.readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+  assert.deepEqual(await store.writeAdjustmentSettings({
+    version: 1,
+    temperature: true,
+    wind: false,
+    rain: false,
+  }), { version: 1, temperature: true, wind: false, rain: false });
+  assert.equal((await store.readAdjustmentSettingsStatus()).error, null);
+
+  // keep damaged marker reads off until an authenticated rewrite repairs it
+  await writeFile(`${path}.initialized`, "damaged marker\n");
+  assert.deepEqual(await new WeatherAdminStore(options).readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+  const recovered = { version: 1, temperature: false, wind: true, rain: false };
+  assert.deepEqual(await store.writeAdjustmentSettings(recovered), recovered);
+  assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, recovered);
+
+  // losing the whole web volume cannot become a new enabled first run
+  await Promise.all([
+    unlink(path),
+    unlink(`${path}.initialized`),
+    unlink(options.authPath),
+  ]);
+  assert.deepEqual(await new WeatherAdminStore(options).readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+  assert.deepEqual(await store.readAdjustmentSettingsStatus(), {
+    settings: { version: 1, temperature: false, wind: false, rain: false },
+    error: "adjustment_settings_unavailable",
+  });
+});
+
+// prevent a first-read default from overwriting a simultaneous admin choice
+test("first-run adjustment initialization preserves a concurrent admin write", async (t) => {
+  const options = await fixture(t);
+  const store = new WeatherAdminStore(options);
+  const chosen = { version: 1, temperature: false, wind: true, rain: false };
+  await store.bootstrap("test-bootstrap-token-with-32-bytes-minimum", "P@ssword-test");
+
+  await Promise.all([
+    store.readAdjustmentSettingsStatus(),
+    store.writeAdjustmentSettings(chosen),
+  ]);
+  assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, chosen);
 });

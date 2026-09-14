@@ -13,3 +13,4 @@ export * from "./temperature-canary.js";
 export * from "./temperature-mos-runtime.js";
 export * from "./temperature-weather-research.js";
 export * from "./wind-canary.js";
+export * from "./rain-hurdle-wind.js";

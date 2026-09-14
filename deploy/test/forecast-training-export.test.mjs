@@ -107,6 +107,10 @@ const rainStationAccessMigration = {
   checksum: "2f560ccec001246a3caa5d27476900b2694dfb7cc0701b35181265ef1fb78822",
   name: "0015_rain_station_access.sql",
 };
+const rainAdjustmentMigration = {
+  checksum: "9fa5659c032dc21fdf82dca693fa962d8b5212d1192ae35c4cfd04bef94be5f9",
+  name: "0016_rain_adjustment.sql",
+};
 const stationProviders = new Map([
   ["ambient-maxweather", "ambient"],
   ["ambient-merlin", "ambient"],
@@ -685,6 +689,10 @@ test("package migration ledger matches immutable repository bytes", async () => 
     join(repoRoot, "packages/database/migrations", rainStationAccessMigration.name),
   );
   assert.equal(createHash("sha256").update(stationAccessMigration).digest("hex"), rainStationAccessMigration.checksum);
+  const adjustmentMigration = await readFile(
+    join(repoRoot, "packages/database/migrations", rainAdjustmentMigration.name),
+  );
+  assert.equal(createHash("sha256").update(adjustmentMigration).digest("hex"), rainAdjustmentMigration.checksum);
 });
 
 // preserve retained snapshots while allowing the exact additive migration
@@ -770,6 +778,61 @@ test("package verifies the exact 15 migration ledger and rejects a forged statio
     ]);
 
     // reject one forged but self-consistent station ledger
+    envelope.payload.migration_checksums[envelope.payload.migration_checksums.length - 1] = hashA;
+    envelope.payload.migration_history_sha256 = createHash("sha256")
+      .update(envelope.payload.migration_names.map((name, index) =>
+        `${name}:${envelope.payload.migration_checksums[index]}`).join("\n"))
+      .digest("hex");
+    lines[0] = JSON.stringify(envelope);
+    await writeFile(input, `${lines.join("\n")}\n`);
+    const forged = runHelper(["build", input, join(directory, "forged"), "2026-08-23", "2026-08-24"]);
+    assert.notEqual(forged.status, 0);
+    assert.match(forged.stderr, /checked repository ledger/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// bind the bounded rain projection to the next exact ordered ledger
+test("package verifies the exact 16 migration ledger and rejects a forged adjustment checksum", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-training-adjustment-ledger-"));
+
+  try {
+    const input = join(directory, "transaction.jsonl");
+    await writeTransaction(input);
+    const lines = (await readFile(input, "utf8")).trimEnd().split("\n");
+    const envelope = JSON.parse(lines[0]);
+    envelope.payload.migration_names.push(
+      rainCollectionMigration.name,
+      rainStationAccessMigration.name,
+      rainAdjustmentMigration.name,
+    );
+    envelope.payload.migration_checksums.push(
+      rainCollectionMigration.checksum,
+      rainStationAccessMigration.checksum,
+      rainAdjustmentMigration.checksum,
+    );
+    envelope.payload.migration_history_sha256 = createHash("sha256")
+      .update(envelope.payload.migration_names.map((name, index) =>
+        `${name}:${envelope.payload.migration_checksums[index]}`).join("\n"))
+      .digest("hex");
+    lines[0] = JSON.stringify(envelope);
+    await writeFile(input, `${lines.join("\n")}\n`);
+
+    const output = join(directory, "package");
+    const built = runHelper(["build", input, output, "2026-08-23", "2026-08-24"]);
+    assert.equal(built.status, 0, built.stderr);
+    const verified = runHelper(["verify", output]);
+    assert.equal(verified.status, 0, verified.stderr);
+    const packageManifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
+    assert.deepEqual(packageManifest.databaseManifest.migration_names, [
+      ...migrationNames,
+      rainCollectionMigration.name,
+      rainStationAccessMigration.name,
+      rainAdjustmentMigration.name,
+    ]);
+
+    // reject a self-consistent but unreviewed migration identity
     envelope.payload.migration_checksums[envelope.payload.migration_checksums.length - 1] = hashA;
     envelope.payload.migration_history_sha256 = createHash("sha256")
       .update(envelope.payload.migration_names.map((name, index) =>

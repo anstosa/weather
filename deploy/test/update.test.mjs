@@ -424,32 +424,38 @@ test("persistent authorization is written only after API and worker compatibilit
 });
 
 // pin the backward-compatible migration boundary
-test("compatibility clone removes rain evidence before replaying migrations 0014 and 0015", async () => {
+test("compatibility clone removes rain evidence before replaying migrations 0014 through 0016", async () => {
   const update = await readFile(updateScript, "utf8");
   const compatibility = update
     .split("verify_previous_image_compatibility() (")[1]
     .split("\n)\n\n# reconcile retained PostgreSQL administrator authority")[0];
   const viewDrop = compatibility.indexOf("DROP VIEW IF EXISTS rain_collection_status_v1");
+  const modelDrop = compatibility.indexOf("DROP TABLE IF EXISTS rain_adjustment_runs");
+  const modelGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_adjustment_run()");
   const receiptDrop = compatibility.indexOf("DROP TABLE IF EXISTS rain_capture_receipts");
   const claimDrop = compatibility.indexOf("DROP TABLE IF EXISTS rain_capture_claims");
   const claimGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_capture_claim()");
   const receiptGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_capture_receipt()");
   const mutationGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_reject_rain_capture_mutation()");
-  const ledgerReset = compatibility.indexOf("'0014_rain_collection.sql', '0015_rain_station_access.sql')");
+  const ledgerReset = compatibility.indexOf("'0014_rain_collection.sql', '0015_rain_station_access.sql', '0016_rain_adjustment.sql')");
   const replay = compatibility.indexOf("compose run --rm --no-deps");
   const replayProof = compatibility.indexOf("rain_collection_migration_count=$(WEATHER_ENV_FILE=");
   const stationReplayProof = compatibility.indexOf("station_access_migration_count=$(WEATHER_ENV_FILE=");
+  const modelReplayProof = compatibility.indexOf("rain_adjustment_migration_count=$(WEATHER_ENV_FILE=");
 
-  assert.equal(viewDrop >= 0 && viewDrop < receiptDrop, true);
+  assert.equal(viewDrop >= 0 && viewDrop < modelDrop, true);
+  assert.equal(modelDrop < modelGuardDrop && modelGuardDrop < receiptDrop, true);
   assert.equal(receiptDrop < claimDrop, true);
   assert.equal(claimDrop < claimGuardDrop && claimGuardDrop < receiptGuardDrop, true);
   assert.equal(receiptGuardDrop < mutationGuardDrop, true);
   assert.equal(mutationGuardDrop < ledgerReset && ledgerReset < replay, true);
   assert.equal(replay < replayProof, true);
   assert.equal(replayProof < stationReplayProof, true);
+  assert.equal(stationReplayProof < modelReplayProof, true);
   assert.match(compatibility, /baseline_schema_state" == "8:::::::"/u);
   assert.match(compatibility, /rain collection migration is missing from the compatibility database/u);
   assert.match(compatibility, /rain station access migration is missing from the compatibility database/u);
+  assert.match(compatibility, /rain adjustment migration is missing from the compatibility database/u);
 });
 
 // verify current strictness and the exact retained legacy format
@@ -797,7 +803,7 @@ start_release 2026.08.22-1`,
   }
 });
 
-test("release operations accept only current and exact version-nine predecessor control planes", async () => {
+test("release operations accept only current and exact version-ten predecessor control planes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
   const release = join(directory, "release.env");
 
@@ -805,15 +811,15 @@ test("release operations accept only current and exact version-nine predecessor 
     const digest = runBash('source "$1"; control_plane_digest').stdout.trim();
     await writeFile(
       release,
-      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=10\n`,
+      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=11\n`,
     );
     const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
     assert.equal(accepted.status, 0, accepted.stderr);
     await writeFile(
       release,
       [
-        "WEATHER_CONTROL_PLANE_SHA256=0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0",
-        "WEATHER_CONTROL_PLANE_VERSION=9",
+        "WEATHER_CONTROL_PLANE_SHA256=b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722",
+        "WEATHER_CONTROL_PLANE_VERSION=10",
         "",
       ].join("\n"),
     );
@@ -824,7 +830,7 @@ test("release operations accept only current and exact version-nine predecessor 
     assert.equal(predecessorAccepted.status, 0, predecessorAccepted.stderr);
     await writeFile(
       release,
-      "WEATHER_CONTROL_PLANE_SHA256=399bb66688833b73e6a6679db66f0f3c54814c0962b7909f31734190030608e3\nWEATHER_CONTROL_PLANE_VERSION=8\n",
+      "WEATHER_CONTROL_PLANE_SHA256=0ee05795357e59877a1bf210da6a8147519c0ad46640f104a09a27d7c2fdf6e0\nWEATHER_CONTROL_PLANE_VERSION=9\n",
     );
     const olderHandoffRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
@@ -855,7 +861,7 @@ test("release operations accept only current and exact version-nine predecessor 
     assert.notEqual(obsoleteLegacyRejected.status, 0);
     await writeFile(
       release,
-      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=9\n`,
+      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=10\n`,
     );
     const versionRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
@@ -865,7 +871,7 @@ test("release operations accept only current and exact version-nine predecessor 
     assert.match(versionRejected.stderr, /unsupported without an exact versioned allowlisted handoff/u);
     await writeFile(
       release,
-      `WEATHER_CONTROL_PLANE_SHA256=${"a".repeat(64)}\nWEATHER_CONTROL_PLANE_VERSION=9\n`,
+      `WEATHER_CONTROL_PLANE_SHA256=${"a".repeat(64)}\nWEATHER_CONTROL_PLANE_VERSION=10\n`,
     );
     const digestRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
@@ -873,7 +879,7 @@ test("release operations accept only current and exact version-nine predecessor 
     );
     assert.notEqual(digestRejected.status, 0);
     assert.match(digestRejected.stderr, /unsupported without an exact versioned allowlisted handoff/u);
-    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=10\n");
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=11\n");
     const metadataRejected = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
       [release],
