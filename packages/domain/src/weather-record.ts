@@ -323,11 +323,19 @@ export function validateUtcInstant(value: string, fieldName: string): string {
   return parsed.toISOString();
 }
 
-// validate timezone identifiers
+const VALID_TIMEZONE_CACHE_LIMIT = 64;
+const validatedTimeZones = new Set<string>();
+
+// validate timezone identifiers without repeated native ICU allocation
 export function validateTimeZone(value: string): string {
   // reject oversized identifiers
   if (value.length === 0 || value.length > 64) {
     throw new RangeError("timezone must be non-empty and bounded");
+  }
+
+  // reuse only successfully validated identities
+  if (validatedTimeZones.has(value)) {
+    return value;
   }
 
   try {
@@ -336,6 +344,11 @@ export function validateTimeZone(value: string): string {
     throw new RangeError(`unsupported IANA timezone: ${value}`);
   }
 
+  // bound retained strings independently of input diversity
+  if (validatedTimeZones.size >= VALID_TIMEZONE_CACHE_LIMIT) {
+    validatedTimeZones.delete(validatedTimeZones.values().next().value!);
+  }
+  validatedTimeZones.add(value);
   return value;
 }
 
