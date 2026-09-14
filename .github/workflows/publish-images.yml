@@ -7,14 +7,25 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   validate-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: read
     outputs:
       release: ${{ steps.release.outputs.release }}
     steps:
+      - name: Check out exact release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
       - id: release
         name: Validate immutable release tag
         shell: bash
@@ -30,44 +41,31 @@ jobs:
             echo "release tag contains an invalid date" >&2
             exit 1
           fi
-          echo "release=${release}" >> "${GITHUB_OUTPUT}"
+          tag_sha=$(git rev-parse "refs/tags/${release}^{commit}")
+          if [[ "${tag_sha}" != "$(git rev-parse HEAD)" ]]; then
+            echo "checked out commit does not match immutable tag" >&2
+            exit 1
+          fi
+          printf 'release=%s\n' "${release}" >> "${GITHUB_OUTPUT}"
+          printf 'sha=%s\n' "${tag_sha}" >> "${GITHUB_OUTPUT}"
+      - name: Wait for successful exact-SHA branch Check
+        env:
+          CI_CHECK_MODE: release
+          CI_SHA: ${{ steps.release.outputs.sha }}
+          CI_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/await-check.mjs
 
-  quality-gates:
-    runs-on: ubuntu-latest
+  dependency-manifests:
+    needs: validate-release
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          cache: npm
           node-version-file: .nvmrc
-      - name: Install dependencies
-        run: npm ci
-      - name: Install deployment validators
-        run: sudo apt-get update && sudo apt-get install --yes age shellcheck
-      - name: Run deterministic repository checks
-        run: npm run check
-      - name: Run PostgreSQL integration gates
-        run: npm run test:integration
-      - name: Run browser end-to-end gates
-        run: npm run test:e2e
-      - name: Run deployment gates
-        # let the package script isolate serial integration checks
-        run: npm run test:deploy
-      - name: Verify static deployment contracts
-        run: deploy/scripts/verify-static.sh
-
-  dependency-manifests:
-    needs: [validate-release, quality-gates]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
       - name: Resolve pinned dependency ARM64 digests
@@ -79,10 +77,10 @@ jobs:
             reference=$(docker buildx imagetools inspect "${image}" --raw |
               node deploy/scripts/resolve-image.mjs "${image}")
             printf '%s=%s\n' "${variable}" "${reference}" >> dependency-images.env
-          done <<'EOF'
+          done <<'IMAGES'
           POSTGRES_IMAGE postgres:17.10-bookworm
           CLOUDFLARED_IMAGE cloudflare/cloudflared:2026.7.2
-          EOF
+          IMAGES
           docker run --rm --platform linux/arm64 postgres:17.10-bookworm \
             postgres --version | grep -E '^postgres \(PostgreSQL\) (1[7-9]|[2-9][0-9])\.'
       - name: Retain dependency digest references
@@ -92,17 +90,18 @@ jobs:
           path: dependency-images.env
 
   publish:
-    needs: [validate-release, quality-gates, dependency-manifests]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [server, web]
+    needs: [validate-release, dependency-manifests]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
       - name: Authenticate to GHCR
@@ -111,30 +110,69 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - id: build
-        name: Build and publish ARM64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          target: ${{ matrix.target }}
-          platforms: linux/arm64
-          push: true
-          tags: ghcr.io/anstosa/weather-${{ matrix.target }}:${{ needs.validate-release.outputs.release }}
-          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha,scope=${{ matrix.target }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
-      - name: Resolve published ARM64 digest
+      - name: Build inspectable native ARM64 images
         shell: bash
         run: |
           set -euo pipefail
-          image="ghcr.io/anstosa/weather-${{ matrix.target }}:${{ needs.validate-release.outputs.release }}"
-          reference=$(docker buildx imagetools inspect "${image}" --raw |
-            node deploy/scripts/resolve-image.mjs "${image}")
-          variable=$(printf '%s' "${{ matrix.target }}" | tr '[:lower:]' '[:upper:]')
-          printf 'WEATHER_%s_IMAGE=%s\n' "${variable}" "${reference}" > image-digest.env
-      - name: Retain published digest reference
+          docker buildx build --platform linux/arm64 --target server \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --tag weather-server:inspect --load .
+          docker buildx build --platform linux/arm64 --target web \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --tag weather-web:inspect --load .
+      - name: Extract exact build-stage comparison files
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/arm64 --target image-check-files \
+            --output "type=local,dest=${RUNNER_TEMP}/weather-image-check-files" .
+      - name: Verify exact production image boundary
+        env:
+          WEATHER_RUN_DEPLOY_INTEGRATION: '1'
+          WEATHER_TEST_SERVER_IMAGE: weather-server:inspect
+          WEATHER_TEST_WEB_IMAGE: weather-web:inspect
+          WEATHER_TEST_BUILD_PACKAGE_ROOT: ${{ runner.temp }}/weather-image-check-files/forecast-adjustment
+        run: node --test deploy/test/forecast-adjustment-image.integration.test.mjs
+      - name: Publish validated native ARM64 images
+        env:
+          RELEASE: ${{ needs.validate-release.outputs.release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # the same builder reuses the inspected compilation layers
+          for target in server web; do
+            docker buildx build --platform linux/arm64 --target "${target}" \
+              --provenance=true --push \
+              --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+              --tag "ghcr.io/anstosa/weather-${target}:${RELEASE}" .
+          done
+      - name: Resolve published ARM64 digests
+        env:
+          RELEASE: ${{ needs.validate-release.outputs.release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in server web; do
+            image="ghcr.io/anstosa/weather-${target}:${RELEASE}"
+            reference=$(docker buildx imagetools inspect "${image}" --raw |
+              node deploy/scripts/resolve-image.mjs "${image}")
+            remote_config=$(docker buildx imagetools inspect "${reference}" --raw |
+              node -e 'let raw = ""; process.stdin.on("data", (part) => raw += part); process.stdin.on("end", () => process.stdout.write(JSON.parse(raw).config?.digest ?? ""))')
+            local_config=$(docker image inspect "weather-${target}:inspect" --format '{{.Id}}')
+            if [[ "${remote_config}" != "${local_config}" ]]; then
+              echo "published ${target} image differs from inspected candidate" >&2
+              exit 1
+            fi
+            variable=$(printf '%s' "${target}" | tr '[:lower:]' '[:upper:]')
+            printf 'WEATHER_%s_IMAGE=%s\n' "${variable}" "${reference}" > "${target}-image-digest.env"
+          done
+      - name: Retain server digest reference
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}-image-digest
-          path: image-digest.env
+          name: server-image-digest
+          path: server-image-digest.env
+      - name: Retain web digest reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-image-digest
+          path: web-image-digest.env

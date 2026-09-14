@@ -19,7 +19,14 @@ FROM dependencies AS build
 COPY tsconfig.base.json ./
 COPY apps apps
 COPY packages packages
+# compile the dependency graph once for both runtime targets
+COPY scripts/build-workspaces.mjs scripts/build-workspaces.mjs
 RUN npm run build
+
+# export the cached build bytes for independent runtime image inspection
+FROM scratch AS image-check-files
+COPY --from=build /opt/weather/packages/forecast-adjustment/dist /forecast-adjustment/dist
+COPY --from=build /opt/weather/packages/forecast-adjustment/package.json /forecast-adjustment/package.json
 
 FROM dependencies AS production-dependencies
 RUN npm prune --omit=dev --ignore-scripts

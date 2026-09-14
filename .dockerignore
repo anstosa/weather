@@ -1,0 +1,6 @@
+# exclude local state and regenerate outputs inside the image build
+.git
+.omx
+node_modules
+**/node_modules
+**/dist

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
@@ -11,10 +12,12 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 const providedServerImage = process.env.WEATHER_TEST_SERVER_IMAGE;
 const providedWebImage = process.env.WEATHER_TEST_WEB_IMAGE;
+const providedBuildPackageRoot = process.env.WEATHER_TEST_BUILD_PACKAGE_ROOT;
 
 // hash the exact server package files expected from the build stage
-async function collectExpectedPackageFiles() {
-  const packageRoot = join(repoRoot, "packages/forecast-adjustment");
+async function collectExpectedPackageFiles(
+  packageRoot = providedBuildPackageRoot ?? join(repoRoot, "packages/forecast-adjustment"),
+) {
   const files = new Map();
 
   // hash one regular package subtree without following links
@@ -52,6 +55,23 @@ async function collectExpectedPackageFiles() {
   return Object.fromEntries([...files].sort(([left], [right]) =>
     left.localeCompare(right)));
 }
+
+// compare exported build bytes without compiling a second reference package
+test("image inspection hashes an exported build package without local compilation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-image-build-export-"));
+  try {
+    await mkdir(join(directory, "dist"));
+    await writeFile(join(directory, "dist/index.js"), "export const value = 1;\n");
+    await writeFile(join(directory, "package.json"), "{}\n");
+    assert.deepEqual(await collectExpectedPackageFiles(directory), {
+      "dist/index.js": createHash("sha256").update("export const value = 1;\n").digest("hex"),
+      "package.json": createHash("sha256").update("{}\n").digest("hex"),
+    });
+    await assert.rejects(collectExpectedPackageFiles(join(directory, "missing")), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 // inspect image nodes with lstat and without following links
 const imageInspectionScript = `

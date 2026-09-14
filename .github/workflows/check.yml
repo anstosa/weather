@@ -4,10 +4,14 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - '**'
+  schedule:
+    - cron: '19 8 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   quality-gates:
@@ -16,7 +20,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          # retain baseline release tags for deployment integration
+          # retain the merge base and historical deployment tags
           fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -27,18 +31,69 @@ jobs:
         run: npm ci
       - name: Install deployment validators
         run: sudo apt-get update && sudo apt-get install --yes age shellcheck
-      - name: Run deterministic repository checks
-        run: npm run check
-      - name: Run PostgreSQL integration gates
-        run: npm run test:integration
-      - name: Run browser end-to-end gates
-        run: npm run test:e2e
-      - name: Run deployment gates
-        # let the package script isolate serial integration checks
-        run: npm run test:deploy
-      - name: Verify static deployment contracts
-        run: deploy/scripts/verify-static.sh
-      - name: Build production image targets
+      - id: baseline
+        name: Resolve comparison baseline
+        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_PREVIOUS_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.sha }}
+        shell: bash
         run: |
-          docker build --target server --tag weather-server:check .
-          docker build --target web --tag weather-web:check .
+          set -euo pipefail
+          baseline=${CI_PREVIOUS_SHA}
+          if [[ "${CI_EVENT}" == "pull_request" ]]; then
+            baseline=$(git merge-base "${baseline}" "${CI_HEAD_SHA}" || true)
+          fi
+          printf 'sha=%s\n' "${baseline}" >> "${GITHUB_OUTPUT}"
+      - id: trusted-baseline
+        name: Check exact baseline validation
+        if: steps.baseline.outputs.sha != ''
+        env:
+          CI_CHECK_MODE: baseline
+          CI_SHA: ${{ steps.baseline.outputs.sha }}
+          CI_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/await-check.mjs
+      - id: changes
+        name: Select conservative dependent suites
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ steps.baseline.outputs.sha }}
+          CI_BASE_VERIFIED: ${{ steps.trusted-baseline.outputs.baseline_verified }}
+          CI_HEAD_SHA: ${{ github.sha }}
+        run: node scripts/ci-changes.mjs
+      - name: Lint repository
+        run: npm run lint
+      - name: Build and typecheck once
+        run: npm run build
+      - name: Run compiled unit tests
+        env:
+          FULL_TESTS: ${{ steps.changes.outputs.full_tests }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${FULL_TESTS}" == "true" ]]; then
+            npm run test:compiled
+          else
+            npm run test:fast:compiled
+          fi
+      - name: Run PostgreSQL integration gates
+        if: steps.changes.outputs.integration == 'true'
+        run: npm run test:integration:compiled
+      - name: Run browser gates
+        env:
+          FULL_BROWSER: ${{ steps.changes.outputs.full_browser }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${FULL_BROWSER}" == "true" ]]; then
+            npm run test:e2e:compiled
+          else
+            npm run test:e2e:smoke:compiled
+          fi
+      - name: Verify static deployment contracts once
+        run: deploy/scripts/verify-static.sh
+      - name: Run deployment and recovery rehearsal
+        if: steps.changes.outputs.deploy_integration == 'true'
+        run: WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy/test/*.integration.test.mjs

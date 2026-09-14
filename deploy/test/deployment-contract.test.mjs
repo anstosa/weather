@@ -1788,20 +1788,22 @@ test("deployment artifacts contain no neighboring identity or production secret"
   assert.doesNotMatch(combined, /cloudflared\s+tunnel\s+(?:create|delete|route)/iu);
 });
 
-// keep integration enablement inside the package script's serial phase
-test("deployment workflows run integration gates once after static checks", () => {
+// retain a complete local command without repeating static checks in ci
+test("deployment workflows run static checks once and scope expensive integration", () => {
   const manifest = JSON.parse(read("package.json"));
   assert.equal(
     manifest.scripts["test:deploy"],
     "bash deploy/scripts/verify-static.sh && WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy/test/*.integration.test.mjs",
   );
 
-  // prevent workflow-wide integration enablement from reaching static checks
-  for (const path of [".github/workflows/check.yml", ".github/workflows/publish-images.yml"]) {
-    const workflow = read(path);
-    assert.match(workflow, /run: npm run test:deploy/u);
-    assert.doesNotMatch(workflow, /WEATHER_RUN_DEPLOY_INTEGRATION/u);
-  }
+  const check = read(".github/workflows/check.yml");
+  const publish = read(".github/workflows/publish-images.yml");
+  assert.equal((check.match(/run: deploy\/scripts\/verify-static\.sh/gu) ?? []).length, 1);
+  assert.doesNotMatch(check, /run: npm run test:deploy/u);
+  assert.match(check, /if: steps\.changes\.outputs\.deploy_integration == 'true'/u);
+  assert.match(check, /run: WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy\/test\/\*\.integration\.test\.mjs/u);
+  assert.doesNotMatch(check, /^\s+WEATHER_RUN_DEPLOY_INTEGRATION:/mu);
+  assert.doesNotMatch(publish, /verify-static\.sh|npm run (?:check|test:deploy|test:integration|test:e2e)/u);
 });
 
 // verify release workflow immutability
@@ -1812,23 +1814,43 @@ test("release workflow publishes only immutable ARM64 server and web images", ()
     /tags:\n\s+- "20\[0-9\]\[0-9\]\.\[0-9\]\[0-9\]\.\[0-9\]\[0-9\]-\[0-9\]\+"/u,
   );
   assert.doesNotMatch(workflow, /tags:\n\s+- "[^"\n]*\?/u);
-  assert.match(workflow, /matrix:[\s\S]*target: \[server, web\]/u);
-  assert.match(workflow, /platforms: linux\/arm64/u);
-  assert.match(workflow, /push: true/u);
+  assert.match(workflow, /for target in server web/u);
+  assert.match(workflow, /--platform linux\/arm64/u);
+  assert.match(workflow, /--provenance=true --push/u);
+  assert.match(workflow, /--load/u);
   assert.match(workflow, /imagetools inspect/u);
   assert.match(workflow, /postgres:17\.10-bookworm/u);
   assert.match(workflow, /upload-artifact/u);
   const dependencyJob = workflow.split("  dependency-manifests:\n")[1].split("\n  publish:\n")[0];
-  assert.match(dependencyJob, /docker\/setup-qemu-action@v3/u);
-  assert.ok(
-    dependencyJob.indexOf("docker/setup-qemu-action@v3") <
-      dependencyJob.indexOf("docker run --rm --platform linux/arm64"),
-  );
-  assert.match(workflow, /npm run check/u);
-  assert.match(workflow, /npm run test:integration/u);
-  assert.match(workflow, /npm run test:e2e/u);
-  assert.match(workflow, /npm run test:deploy/u);
+  assert.match(dependencyJob, /runs-on: ubuntu-24\.04-arm/u);
+  assert.match(workflow.split("\n  publish:\n")[1], /runs-on: ubuntu-24\.04-arm/u);
+  assert.doesNotMatch(workflow, /setup-qemu/u);
+  assert.match(workflow, /run: node scripts\/await-check\.mjs/u);
+  assert.match(workflow, /CI_CHECK_MODE: release/u);
+  assert.match(workflow, /CI_SHA: \$\{\{ steps\.release\.outputs\.sha \}\}/u);
+  assert.match(workflow, /git rev-parse "refs\/tags\/\$\{release\}\^\{commit\}"/u);
+  assert.match(workflow, /--target image-check-files/u);
+  assert.match(workflow, /WEATHER_TEST_BUILD_PACKAGE_ROOT:/u);
+  const inspection = workflow.indexOf("run: node --test deploy/test/forecast-adjustment-image.integration.test.mjs");
+  const publication = workflow.indexOf("--provenance=true --push");
+  assert.ok(inspection > 0 && publication > inspection);
+  // retain separately named immutable digest evidence for host deployment
+  for (const artifact of ["server-image-digest", "web-image-digest", "dependency-image-digests"]) {
+    assert.ok(workflow.includes(`name: ${artifact}`));
+  }
   assert.doesNotMatch(workflow, /:latest|ssh-run|update\.sh activate/u);
+});
+
+// retain build output comparison without another compilation or local state
+test("image builds share one compilation and export exact comparison bytes", () => {
+  const dockerfile = read("Dockerfile");
+  assert.equal((dockerfile.match(/RUN npm run build/gu) ?? []).length, 1);
+  assert.match(dockerfile, /COPY scripts\/build-workspaces\.mjs scripts\/build-workspaces\.mjs/u);
+  assert.match(dockerfile, /FROM scratch AS image-check-files[\s\S]*COPY --from=build \/opt\/weather\/packages\/forecast-adjustment\/dist \/forecast-adjustment\/dist/u);
+  const ignored = read(".dockerignore").split("\n");
+  assert.ok(ignored.includes("**/dist"));
+  assert.ok(ignored.includes("node_modules"));
+  assert.ok(ignored.includes(".omx"));
 });
 
 // verify canonical PostgreSQL version output
@@ -1887,6 +1909,54 @@ exit 64
   }
 });
 
+// reject any published runtime that differs from its inspected candidate
+test("published digest verification requires the inspected image configuration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-image-digest-verification-"));
+  const bin = join(directory, "bin");
+  const script = workflowRunScript(read(".github/workflows/publish-images.yml"), "Resolve published ARM64 digests")
+    .replaceAll("deploy/scripts/resolve-image.mjs", join(scriptsRoot, "resolve-image.mjs"));
+  const digest = `sha256:${"d".repeat(64)}`;
+  try {
+    await mkdir(bin);
+    await writeFile(join(bin, "docker"), `#!/usr/bin/env bash
+set -euo pipefail
+# emulate the published index and platform manifest
+if [[ "$1 $2 $3" == "buildx imagetools inspect" ]]; then
+  # return the platform configuration for immutable references
+  if [[ "$4" == *@sha256:* ]]; then
+    printf '{"config":{"digest":"%s"}}\\n' "$REMOTE_CONFIG"
+  else
+    printf '{"manifests":[{"digest":"sha256:%s","platform":{"architecture":"arm64","os":"linux"}}]}\\n' "$(printf 'c%.0s' {1..64})"
+  fi
+  exit 0
+fi
+# report the previously inspected local configuration
+if [[ "$1 $2" == "image inspect" ]]; then
+  printf '%s\\n' "$LOCAL_CONFIG"
+  exit 0
+fi
+exit 64
+`);
+    await chmod(join(bin, "docker"), 0o700);
+    // execute the exact publishing shell without contacting a registry
+    const verify = (remoteConfig) => spawnSync("bash", ["-c", script], {
+      cwd: directory,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, RELEASE: "2026.09.14-6", LOCAL_CONFIG: digest, REMOTE_CONFIG: remoteConfig },
+    });
+    const mismatch = verify(`sha256:${"e".repeat(64)}`);
+    assert.equal(mismatch.status, 1);
+    assert.match(mismatch.stderr, /differs from inspected candidate/u);
+    assert.equal(readdirSync(directory).includes("server-image-digest.env"), false);
+    const success = verify(digest);
+    assert.equal(success.status, 0, success.stderr);
+    assert.match(readFileSync(join(directory, "server-image-digest.env"), "utf8"), /^WEATHER_SERVER_IMAGE=ghcr\.io\/anstosa\/weather-server@sha256:[a-f0-9]{64}\n$/u);
+    assert.match(readFileSync(join(directory, "web-image-digest.env"), "utf8"), /^WEATHER_WEB_IMAGE=ghcr\.io\/anstosa\/weather-web@sha256:[a-f0-9]{64}\n$/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("production release reaches the API and deployment status exposes operations evidence", () => {
   const compose = renderCompose(["compose.verify.yaml"]);
   const status = read("deploy/scripts/status.sh");
@@ -1901,17 +1971,24 @@ test("production release reaches the API and deployment status exposes operation
   assert.match(status, /failure_evidence/u);
 });
 
-// verify pull-request quality gates
-test("check workflow runs every substantive root and deployment gate", () => {
+// keep mandatory smoke gates while scheduling full dependent coverage
+test("check workflow builds once and retains conservative conditional coverage", () => {
   const workflow = read(".github/workflows/check.yml");
   assert.match(workflow, /actions\/checkout@v4[\s\S]*fetch-depth: 0/u);
-  assert.match(workflow, /npm run check/u);
-  assert.match(workflow, /npm run test:integration/u);
-  assert.match(workflow, /npm run test:e2e/u);
-  assert.match(workflow, /npm run test:deploy/u);
-  assert.match(workflow, /deploy\/scripts\/verify-static\.sh/u);
-  assert.match(workflow, /docker build --target server/u);
-  assert.match(workflow, /docker build --target web/u);
+  assert.match(workflow, /schedule:\n\s+- cron:/u);
+  assert.match(workflow, /workflow_dispatch:/u);
+  assert.match(workflow, /branches:\n\s+- '\*\*'/u);
+  assert.match(workflow, /CI_CHECK_MODE: baseline/u);
+  assert.match(workflow, /CI_BASE_VERIFIED:/u);
+  assert.match(workflow, /run: node scripts\/ci-changes\.mjs/u);
+  assert.equal((workflow.match(/run: npm run build/gu) ?? []).length, 1);
+  assert.match(workflow, /run: npm run lint/u);
+  assert.match(workflow, /npm run test:compiled/u);
+  assert.match(workflow, /npm run test:fast:compiled/u);
+  assert.match(workflow, /npm run test:integration:compiled/u);
+  assert.match(workflow, /npm run test:e2e:compiled/u);
+  assert.match(workflow, /npm run test:e2e:smoke:compiled/u);
+  assert.doesNotMatch(workflow, /run: npm run check|docker build --target/u);
 });
 
 // keep helper coverage visible

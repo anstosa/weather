@@ -168,6 +168,46 @@ autovacuum_vacuum_insert_scale_factor, autovacuum_analyze_scale_factor)`.
 See PostgreSQL 17's [vacuuming guidance](https://www.postgresql.org/docs/17/routine-vacuuming.html)
 and [online VACUUM options](https://www.postgresql.org/docs/17/sql-vacuum.html).
 
+## Validation and release pipeline
+
+`Check` is the authoritative validation run for a commit. Push the branch before
+creating its immutable release tag. Publishing waits for a successful `Check`
+push run from this repository at the exact tag commit; a different commit, pull
+request run, failed attempt, or missing validation cannot authorize publication.
+
+Every check runs text/import lint, a dependency-ordered TypeScript build, fast
+unit tests, static deployment checks, and a small browser smoke. The compiler
+checks the same strict TypeScript configuration while emitting the files needed
+by tests; there is no separate repeat of the entire no-emit/build chain.
+
+Expensive suites run when the changed area requires them:
+
+- model code and configuration: synthetic research and retained-promotion tests
+- backend, database and shared dependencies: real PostgreSQL integration
+- frontend and its dependencies: the full responsive browser suite
+- deployment, containers, migrations and shared infrastructure: the complete
+  disposable Compose upgrade, isolation, backup/restore and recovery rehearsal
+
+Missing or unverified comparison baselines and unknown paths select full
+coverage. Nightly and manually dispatched checks also run every suite. A change
+filter never suppresses the entire workflow or replaces a failing check with
+success. Fast model tests retain runtime and authorization safeguards; neither
+test profile is a live forecast-accuracy qualification.
+
+Native ARM64 runners build the production server and web targets using a shared
+builder. Both candidate images are inspected for the model-filesystem boundary
+before publication, then their cached layers are published with immutable
+release tags and ARM64 digest artifacts. No emulated TypeScript compilation or
+second copy of the repository test suite is required during publishing.
+
+For local work, run the narrow affected tests after the final edit. `npm run
+check` remains the full local check; `npm run check:fast` runs the fast profile.
+The `:compiled` test commands consume an existing successful build, so run
+`npm run build` first when invoking them directly. Do not repeat a full local
+pass solely because the same exact commit is about to run in CI. The production
+release identity, migrations, permissions, health checks and affected live-page
+verification remain required.
+
 ## Direct deployment
 
 After completing Weather changes, deploy the validated result to `blueberry`
