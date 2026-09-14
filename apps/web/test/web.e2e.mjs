@@ -3837,7 +3837,7 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
   }
 });
 
-// reserve all nine cards before current weather arrives
+// preserve responsive labels and geometry while current weather loads
 test("initial skeletons preserve homepage geometry while weather data loads", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -3866,6 +3866,10 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
       await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
       await page.locator(".current-conditions.skeleton-region").waitFor();
       assert.equal(await page.locator(".skeleton-card").count(), 9);
+      // abbreviate only the compact homepage label
+      const temperatureLabel = page.locator('[data-condition="temperature"] .condition-label > span:last-child');
+      const expectedTemperatureLabel = width <= 672 ? "TEMP" : "TEMPERATURE";
+      assert.equal(await temperatureLabel.innerText(), expectedTemperatureLabel);
       assert.equal(
         await page.locator(".skeleton-card").evaluateAll(
           // animate every reserved condition card
@@ -3894,6 +3898,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
         // require every first-load skeleton to clear
         () => document.querySelector(".skeleton-region") === null,
       );
+      assert.equal(await temperatureLabel.innerText(), expectedTemperatureLabel);
       const loadedGeometry = await captureSectionGeometry(page, selectors);
       const loadedCardHeights = await page.locator(".condition-card").evaluateAll(
         // recapture every responsive card track

@@ -3340,7 +3340,7 @@ function renderCurrentSkeleton(): string {
         (card) => `
           <article class="condition-card ${card.className} skeleton-card" data-condition="${card.label.toLowerCase().replaceAll(" ", "-")}" aria-hidden="true">
             <div class="condition-card-content">
-              <div class="condition-card-heading"><span class="condition-label">${renderMaterialIcon(card.icon)}<span>${card.label}</span></span><span class="condition-status">Loading</span></div>
+              <div class="condition-card-heading"><span class="condition-label">${renderMaterialIcon(card.icon)}<span>${renderConditionLabel(card.label)}</span></span><span class="condition-status">Loading</span></div>
               <div class="condition-body${card.secondary === undefined ? "" : " condition-body-secondary"}">
                 <div class="condition-live">
                   <div class="condition-primary"><strong>00<small>unit</small></strong></div>
@@ -7527,6 +7527,13 @@ function distanceMiles(
   return 3_958.8 * 2 * Math.atan2(Math.sqrt(left + right), Math.sqrt(1 - left - right));
 }
 
+// keep homepage temperature labels responsive during loading and after
+function renderConditionLabel(label: string): string {
+  return label === "Temperature"
+    ? 'Temp<span class="condition-label-suffix">erature</span>'
+    : escapeHtml(label);
+}
+
 // render one friendly current-condition card
 function renderConditionCard(options: ConditionCardOptions): string {
   // keep related readings inside one visual card
@@ -7548,7 +7555,7 @@ function renderConditionCard(options: ConditionCardOptions): string {
       ${renderConditionColor(options.band.color)}
       <div class="condition-card-content">
         <div class="condition-card-heading">
-          <span class="condition-label">${renderMaterialIcon(options.icon)}<span>${escapeHtml(options.label)}</span></span>
+          <span class="condition-label">${renderMaterialIcon(options.icon)}<span>${renderConditionLabel(options.label)}</span></span>
           ${renderConditionStatus(options.band)}
         </div>
         <div class="condition-body${options.secondary === undefined ? "" : " condition-body-secondary"}">

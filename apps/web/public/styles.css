@@ -4266,6 +4266,11 @@ td small {
     font-size: 0.56rem;
   }
 
+  /* shorten only the homepage temperature heading */
+  .temperature-condition .condition-label-suffix {
+    display: none;
+  }
+
   .temperature-condition .condition-label .material-symbols-rounded {
     font-size: 0.85rem;
   }
