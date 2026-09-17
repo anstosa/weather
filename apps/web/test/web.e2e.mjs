@@ -3901,6 +3901,18 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
       await page.clock.install({ time: new Date("2026-08-22T06:59:50Z") });
       let forecastDay = 0;
       let forecastReads = 0;
+      let currentCloudCover = 100;
+      // exercise the longest cloud reading and dry rain status
+      await page.route("**/api/v1/sites/ballydidean/current", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        // keep current cloud status independent of daily forecast extrema
+        body.data = body.data.map((record) => ({
+          ...record,
+          metrics: { ...record.metrics, cloudCoverPercent: currentCloudCover, precipitationRateMmPerHour: 0 },
+        }));
+        await route.fulfill({ response, json: body });
+      });
       // control cloud forecasts without changing fixture globals
       await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
         const response = await route.fetch();
@@ -3909,17 +3921,18 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
         // give two earlier hours the same minimum and omit an earlier value
         body.data = body.data.map((record, index) => ({
           ...record,
-          metrics: { ...record.metrics, cloudCoverPercent: index === 1 ? null : index === 2 || index === 5 ? 0 : 80 },
+          metrics: { ...record.metrics, cloudCoverPercent: index === 1 ? null : index === 2 || index === 5 ? 0 : 100 },
         })).slice(forecastDay * 24, (forecastDay + 1) * 24);
         await route.fulfill({ response, json: body });
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
-      assert.equal(await tile.locator(".condition-primary").innerText(), "42%");
+      assert.equal(await tile.locator(".condition-primary").innerText(), "100%");
       assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*2:00AM/u);
-      assert.equal(await tile.locator(".condition-status").innerText(), "Modeled");
-      assert.equal(await tile.locator(".condition-forecast").isVisible(), false);
-      assert.equal(await tile.locator(".condition-forecast-reading").count(), 0);
+      assert.equal(await tile.locator(".condition-status").innerText(), "Heavy");
+      assert.equal(await page.locator("[data-condition='rain'] .condition-status").innerText(), "Dry");
+      assert.equal(await tile.locator(".condition-forecast").isVisible(), true);
+      assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
       assert.match(await tile.getAttribute("class"), /compact-condition clouds-condition/u);
       assert.equal(await tile.locator(".condition-color rect").getAttribute("fill"), "rgb(105, 133, 155)");
       assert.equal(await tile.evaluate(
@@ -3929,8 +3942,11 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
           const status = card.querySelector(".condition-status");
           const primary = card.querySelector(".condition-primary");
           const secondary = card.querySelector(".condition-secondary");
-          return label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
-            [card, label, primary, secondary].every(
+          const extrema = card.querySelector(".condition-forecast");
+          return primary.getBoundingClientRect().right <= extrema.getBoundingClientRect().left &&
+            extrema.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top &&
+            label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
+            [card, label, primary, secondary, extrema].every(
               // require full content width at narrow breakpoints
               (element) => element.scrollWidth <= element.clientWidth,
             );
@@ -3954,28 +3970,38 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
 
       // fetch the new one-day forecast at farm midnight without a page reload
       forecastDay = 1;
+      currentCloudCover = 0;
       const refreshed = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
       await page.clock.fastForward(10_100);
       await refreshed;
       await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
       assert.equal(forecastReads, 2);
+      assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
+      assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
+      assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 100%"]);
       assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*12:00AM/u);
       assert.deepEqual(errors, []);
       await page.close();
     }
 
     const page = await createFixturePage(browser, { viewport: { height: 900, width: 390 } });
-    // remove both model cloud statistics from the response
+    let cloudCover = 42;
+    // exercise light clouds and then unavailable model statistics
     await page.route(/\/api\/v1\/sites\/ballydidean\/(?:current|forecast)/u, async (route) => {
       const response = await route.fetch();
       const body = await response.json();
-      // exercise unavailable cloud metrics without affecting other readings
-      body.data = body.data.map((record) => ({ ...record, metrics: { ...record.metrics, cloudCoverPercent: null } }));
+      // update both cloud summaries without affecting other readings
+      body.data = body.data.map((record) => ({ ...record, metrics: { ...record.metrics, cloudCoverPercent: cloudCover } }));
       await route.fulfill({ response, json: body });
     });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const tile = page.locator("[data-condition='clouds']");
+    assert.equal(await tile.locator(".condition-status").innerText(), "Light");
+    cloudCover = null;
+    await page.reload({ waitUntil: "networkidle" });
     assert.equal(await tile.locator(".condition-primary").innerText(), "—");
+    assert.equal(await tile.locator(".condition-status").innerText(), "Unavailable");
+    assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max —", "Min —"]);
     assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*—/u);
   } finally {
     await browser?.close();
@@ -4532,6 +4558,8 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(230, 181, 25)", condition: "wind", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "rain", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "rain", opacity: "0.75" },
+        { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
+        { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
         { color: "rgb(239, 126, 31)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },

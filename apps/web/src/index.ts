@@ -3519,7 +3519,7 @@ function renderCurrentSkeleton(): string {
     { className: "temperature-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }, { label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }] }, icon: "device_thermostat", label: "Temperature", secondary: "Feels like" },
     { className: "wind-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "mph", value: "00" } }, { label: "Max", measurement: { unit: "mph", value: "00" } }] }, icon: "air", label: "Wind", secondary: "Gusts" },
     { className: "rain-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "in/h", value: "0.00" } }, { label: "Total", measurement: { unit: "in", value: "0.00" } }] }, icon: "rainy", label: "Rain", secondary: "Accumulation" },
-    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [] }, icon: "cloud", label: "Clouds", secondary: "Clearest today" },
+    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest today" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
@@ -3560,7 +3560,8 @@ function renderCloudsCondition(state: DashboardState): string {
     (record) => record.provenance.sourceKind === "model_current",
   );
   const cover = findMetric(current, "cloudCoverPercent");
-  const clearest = forecastForSiteDay(state.forecast, new Date().toISOString(), site.timezone)
+  const forecast = forecastForSiteDay(state.forecast, new Date().toISOString(), site.timezone);
+  const clearest = forecast
     .filter(
       // do not mistake missing cover for clear skies
       (record) => record.metrics.cloudCoverPercent !== null,
@@ -3572,9 +3573,14 @@ function renderCloudsCondition(state: DashboardState): string {
     )[0];
 
   return renderConditionCard({
-    band: { color: "rgb(105, 133, 155)", detail: "", label: "Modeled" },
+    band: cloudBand(cover),
     className: "compact-condition clouds-condition",
-    forecast: { readings: [] },
+    forecast: {
+      readings: [
+        { label: "Max", measurement: formatFixedMeasurement(maximumMetric(forecast, "cloudCoverPercent", false), "%", 0) },
+        { label: "Min", measurement: formatFixedMeasurement(minimumMetric(forecast, "cloudCoverPercent", false), "%", 0) },
+      ],
+    },
     icon: "cloud",
     label: "Clouds",
     measurement: formatFixedMeasurement(cover, "%", 0),
@@ -8132,6 +8138,26 @@ export function humidityBand(value: number | null): ConditionBand {
   return { color: "rgb(207, 67, 55)", detail: "Oppressively humid air", label: "Very humid" };
 }
 
+// classify modeled cloud cover using the dashboard's three display bands
+export function cloudBand(value: number | null): ConditionBand {
+  // keep missing model values distinct from clear skies
+  if (value === null) {
+    return unavailableBand("");
+  }
+
+  // show nearly cloud-free skies as clear
+  if (value <= 10) {
+    return { color: "rgb(105, 133, 155)", detail: "", label: "Clear" };
+  }
+
+  // keep up to half-covered skies in the light band
+  if (value <= 50) {
+    return { color: "rgb(105, 133, 155)", detail: "", label: "Light" };
+  }
+
+  return { color: "rgb(105, 133, 155)", detail: "", label: "Heavy" };
+}
+
 // describe the current precipitation rate
 function rainBand(valueMmPerHour: number | null): ConditionBand {
   // preserve unavailable rain-rate data honestly
@@ -8141,7 +8167,7 @@ function rainBand(valueMmPerHour: number | null): ConditionBand {
 
   // label dry conditions
   if (valueMmPerHour === 0) {
-    return { color: "rgb(84, 84, 80)", detail: "No rain detected", label: "Dry now" };
+    return { color: "rgb(84, 84, 80)", detail: "No rain detected", label: "Dry" };
   }
 
   // label light rain

@@ -10,6 +10,7 @@ import {
   buildTidesUrl,
   buildTrendsUrl,
   buildViewerContextUrl,
+  cloudBand,
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   eveningSunTimes,
@@ -1166,9 +1167,11 @@ test("clouds tile shows model cover and the earliest clearest farm-local hour", 
   const tile = html.match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
   assert.ok(tile);
   assert.match(tile, /class="condition-primary"><strong>42<small>%<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-status condition-status-dark">[\s\S]*?<span>Light<\/span>/u);
   assert.match(tile, /class="condition-secondary-divider">Clearest today<\/span>\s*<strong>12:00<small>PM<\/small><\/strong>/u);
-  assert.match(tile, /Modeled/u);
-  assert.doesNotMatch(tile, /condition-forecast-reading |NaN|Invalid/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>30<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>12<small>%<\/small><\/strong>/u);
+  assert.doesNotMatch(tile, /Modeled|NaN|Invalid/u);
+  assert.equal((tile.match(/condition-forecast-reading condition-forecast-tone-neutral/gu) ?? []).length, 2);
   assert.equal(state.forecast, forecasts);
   assert.equal(forecasts[0].validAt, "2026-09-13T07:00:00Z");
   assert.doesNotMatch(renderWeatherDashboard(state, "forecast"), /data-condition="clouds"/u);
@@ -1177,6 +1180,7 @@ test("clouds tile shows model cover and the earliest clearest farm-local hour", 
   context.mock.timers.setTime(new Date("2026-09-13T07:00:00Z").getTime());
   const nextDay = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
   assert.match(nextDay, /Clearest today<\/span>\s*<strong>12:00<small>AM<\/small>/u);
+  assert.match(nextDay, /condition-forecast-label">Max<\/span> <strong>0<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>0<small>%<\/small><\/strong>/u);
 });
 
 // preserve genuine zero cover and keep absent model values unavailable
@@ -1184,11 +1188,11 @@ test("clouds tile handles clear skies and missing current or forecast cover", (c
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
 
   // exercise independent availability of both cloud statistics
-  for (const [cover, forecastCover, expectedCover, expectedTime] of [
-    [0, 0, /<strong>0<small>%<\/small><\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u],
-    [null, null, /<strong>—<\/strong>/u, /<strong>—<\/strong>/u],
-    [42, null, /<strong>42<small>%<\/small><\/strong>/u, /<strong>—<\/strong>/u],
-    [null, 12, /<strong>—<\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u],
+  for (const [cover, forecastCover, expectedStatus, expectedCover, expectedTime, expectedRange] of [
+    [0, 0, /<span>Clear<\/span>/u, /<strong>0<small>%<\/small><\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u, /Max<\/span> <strong>0<small>%<\/small><\/strong>[\s\S]*?Min<\/span> <strong>0<small>%<\/small><\/strong>/u],
+    [null, null, /<span>Unavailable<\/span>/u, /<strong>—<\/strong>/u, /<strong>—<\/strong>/u, /Max<\/span> <strong>—<\/strong>[\s\S]*?Min<\/span> <strong>—<\/strong>/u],
+    [42, null, /<span>Light<\/span>/u, /<strong>42<small>%<\/small><\/strong>/u, /<strong>—<\/strong>/u, /Max<\/span> <strong>—<\/strong>[\s\S]*?Min<\/span> <strong>—<\/strong>/u],
+    [null, 12, /<span>Unavailable<\/span>/u, /<strong>—<\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u, /Max<\/span> <strong>12<small>%<\/small><\/strong>[\s\S]*?Min<\/span> <strong>12<small>%<\/small><\/strong>/u],
   ]) {
     const state = {
       ...new WeatherDashboardController({ storage: null }).state,
@@ -1200,14 +1204,30 @@ test("clouds tile handles clear skies and missing current or forecast cover", (c
     const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
     const primary = tile.match(/class="condition-primary">([\s\S]*?)<\/div>/u)?.[1];
     const secondary = tile.match(/class="condition-secondary">([\s\S]*?)<\/div>/u)?.[1];
+    assert.match(tile, expectedStatus);
     assert.match(primary, expectedCover);
     assert.match(secondary, expectedTime);
+    assert.match(tile, expectedRange);
 
     // refuse to substitute on-site values for missing model data
     const noModel = renderWeatherDashboard({ ...state, current: [physicalRecord], forecast: [] })
       .match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
-    assert.equal((noModel.match(/<strong>—<\/strong>/gu) ?? []).length, 2);
+    assert.equal((noModel.match(/<strong>—<\/strong>/gu) ?? []).length, 4);
   }
+});
+
+// keep the rain chip concise when no rainfall is detected
+test("rain tile labels zero precipitation as dry without a temporal qualifier", () => {
+  const state = {
+    ...new WeatherDashboardController({ storage: null }).state,
+    current: [physicalRecord],
+    loading: false,
+    selectedSite: site,
+  };
+  const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="rain"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(tile);
+  assert.match(tile, /class="condition-status condition-status-light">[\s\S]*?<span>Dry<\/span>/u);
+  assert.doesNotMatch(tile, /Dry now/u);
 });
 
 // render today's solar readings and signed comparison independently of observations
@@ -1710,7 +1730,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((html.match(/condition-forecast-tone-blue/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-orange/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-yellow/gu) ?? []).length, 1);
-  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 3);
+  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 5);
   assert.doesNotMatch(html, /Next 24h/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?Max[\s\S]*?61<small>°F[\s\S]*?Min[\s\S]*?61<small>°F[\s\S]*?Max[\s\S]*?60<small>°F[\s\S]*?Min[\s\S]*?60<small>°F/u);
   assert.match(html, /data-condition="wind"[\s\S]*?Max[\s\S]*?9 <small>mph[\s\S]*?Max[\s\S]*?16 <small>mph/u);
@@ -1921,7 +1941,22 @@ test("daily forecasts use the site calendar", () => {
   );
 });
 
+// verify the published current-condition threshold boundaries
 test("current condition bands follow requested weather and health thresholds", () => {
+  assert.deepEqual(
+    [0, 10, 10.1, 50, 50.1].map(
+      // collect every cloud-cover boundary
+      (value) => cloudBand(value),
+    ),
+    [
+      { color: "rgb(105, 133, 155)", detail: "", label: "Clear" },
+      { color: "rgb(105, 133, 155)", detail: "", label: "Clear" },
+      { color: "rgb(105, 133, 155)", detail: "", label: "Light" },
+      { color: "rgb(105, 133, 155)", detail: "", label: "Light" },
+      { color: "rgb(105, 133, 155)", detail: "", label: "Heavy" },
+    ],
+  );
+  assert.deepEqual(cloudBand(null), { color: "rgb(136, 136, 130)", detail: "", label: "Unavailable" });
   assert.equal(temperatureBand(0).color, "rgb(56, 120, 197)");
   assert.equal(temperatureBand((60 - 32) * 5 / 9).color, "rgb(67, 151, 86)");
   assert.equal(temperatureBand((80 - 32) * 5 / 9).color, "rgb(207, 67, 55)");

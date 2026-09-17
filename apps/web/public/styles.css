@@ -994,15 +994,20 @@ h2 {
   grid-column: span 6;
 }
 
-/* give cloud cover and its clearest hour the full card width */
-.clouds-condition .condition-body,
+/* keep daily cloud extrema beside the current cover */
+.clouds-condition .condition-body {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+/* preserve the full-width clearest-hour row */
 .clouds-condition .condition-secondary {
   grid-template-columns: minmax(0, 1fr);
 }
 
-/* omit unused forecast space from the two-stat cloud tile */
+/* keep both percentages above the secondary divider */
 .clouds-condition .condition-forecast {
-  display: none;
+  grid-row: 1;
+  align-self: start;
 }
 
 /* keep sunset's daily change beside the primary clock reading */
