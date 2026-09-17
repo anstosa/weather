@@ -1137,6 +1137,79 @@ test("sunset change stays unavailable for the first sunset after polar day", () 
   assert.equal(today.sunsetChangeMinutes, null);
 });
 
+// select the earliest minimum in the farm day regardless of forecast order or stale observations
+test("clouds tile shows model cover and the earliest clearest farm-local hour", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-13T05:00:00Z") });
+  const forecasts = [
+    ["2026-09-13T07:00:00Z", 0],
+    ["2026-09-12T06:00:00Z", 0],
+    ["2026-09-12T07:00:00Z", null],
+    ["2026-09-12T22:00:00Z", 12],
+    ["2026-09-12T19:00:00Z", 12],
+    ["2026-09-12T18:00:00Z", 30],
+  ].map(
+    // build deliberately unsorted hourly model values
+    ([validAt, cloudCoverPercent]) => ({
+      ...forecastRecord,
+      validAt,
+      metrics: { ...forecastRecord.metrics, cloudCoverPercent },
+    }),
+  );
+  const state = {
+    ...new WeatherDashboardController({ storage: null }).state,
+    current: [physicalRecord, record],
+    forecast: forecasts,
+    loading: false,
+    selectedSite: site,
+  };
+  const html = renderWeatherDashboard(state);
+  const tile = html.match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(tile);
+  assert.match(tile, /class="condition-primary"><strong>42<small>%<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary-divider">Clearest today<\/span>\s*<strong>12:00<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /Modeled/u);
+  assert.doesNotMatch(tile, /condition-forecast-reading |NaN|Invalid/u);
+  assert.equal(state.forecast, forecasts);
+  assert.equal(forecasts[0].validAt, "2026-09-13T07:00:00Z");
+  assert.doesNotMatch(renderWeatherDashboard(state, "forecast"), /data-condition="clouds"/u);
+
+  // change the calendar day independently of old current observations
+  context.mock.timers.setTime(new Date("2026-09-13T07:00:00Z").getTime());
+  const nextDay = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
+  assert.match(nextDay, /Clearest today<\/span>\s*<strong>12:00<small>AM<\/small>/u);
+});
+
+// preserve genuine zero cover and keep absent model values unavailable
+test("clouds tile handles clear skies and missing current or forecast cover", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+
+  // exercise independent availability of both cloud statistics
+  for (const [cover, forecastCover, expectedCover, expectedTime] of [
+    [0, 0, /<strong>0<small>%<\/small><\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u],
+    [null, null, /<strong>—<\/strong>/u, /<strong>—<\/strong>/u],
+    [42, null, /<strong>42<small>%<\/small><\/strong>/u, /<strong>—<\/strong>/u],
+    [null, 12, /<strong>—<\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u],
+  ]) {
+    const state = {
+      ...new WeatherDashboardController({ storage: null }).state,
+      current: [{ ...record, metrics: { ...record.metrics, cloudCoverPercent: cover } }],
+      forecast: [{ ...forecastRecord, validAt: "2026-09-12T20:00:00Z", metrics: { ...forecastRecord.metrics, cloudCoverPercent: forecastCover } }],
+      loading: false,
+      selectedSite: site,
+    };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
+    const primary = tile.match(/class="condition-primary">([\s\S]*?)<\/div>/u)?.[1];
+    const secondary = tile.match(/class="condition-secondary">([\s\S]*?)<\/div>/u)?.[1];
+    assert.match(primary, expectedCover);
+    assert.match(secondary, expectedTime);
+
+    // refuse to substitute on-site values for missing model data
+    const noModel = renderWeatherDashboard({ ...state, current: [physicalRecord], forecast: [] })
+      .match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
+    assert.equal((noModel.match(/<strong>—<\/strong>/gu) ?? []).length, 2);
+  }
+});
+
 // render today's solar readings and signed comparison independently of observations
 test("sunset tile emphasizes today's sunset with golden hour as the secondary stat", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-13T05:00:00Z") });
@@ -1608,8 +1681,8 @@ test("dashboard separates current conditions from the historical logs route", ()
     html,
     /class="panel current-panel"|id="current-heading"|class="freshness|class="provenance"|Right now|Nearby model value/u,
   );
-  assert.equal((html.match(/class="condition-card /gu) ?? []).length, 9);
-  assert.equal((html.match(/class="condition-color"/gu) ?? []).length, 9);
+  assert.equal((html.match(/class="condition-card /gu) ?? []).length, 10);
+  assert.equal((html.match(/class="condition-color"/gu) ?? []).length, 10);
   assert.equal((html.match(/<rect width="1\.4"/gu) ?? []).length, 0);
   assert.match(html, /class="condition-card temperature-condition" data-condition="temperature"/u);
   assert.match(html, /class="condition-card wind-condition" data-condition="wind"/u);
@@ -1617,7 +1690,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /class="condition-card compact-condition tide-condition" data-condition="tide"/u);
   assert.equal(html.indexOf('data-condition="wind"') < html.indexOf('data-condition="rain"'), true);
   assert.equal(
-    ["rain", "tide", "humidity", "air-quality", "pressure", "uv-index", "sunset"].every(
+    ["rain", "clouds", "humidity", "air-quality", "pressure", "uv-index", "tide", "sunset"].every(
       // keep every requested card after its predecessor
       (condition, index, conditions) => index === 0 ||
         html.indexOf(`data-condition="${conditions[index - 1]}"`) < html.indexOf(`data-condition="${condition}"`),
@@ -1629,7 +1702,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /Gusts/u);
   assert.match(html, /Comfortable outdoor temperature/u);
   assert.match(html, /Peak reading 16 mph/u);
-  assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 5);
+  assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 6);
   assert.match(html, /data-condition="tide"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?<span>High<\/span>[\s\S]*?<div class="condition-primary"><strong>8\.2<small>ft<\/small><\/strong>[\s\S]*?class="condition-secondary-divider">Direction<\/span>[\s\S]*?<strong>Rising<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="tide"[\s\S]*?class="condition-detail">Rising<\/p>/u);
   assert.doesNotMatch(html, /condition-forecast-heading/u);
@@ -1654,7 +1727,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /-0\.4–\+0\.9 %/u);
   assert.doesNotMatch(html, /class="current-grid"|class="metric/u);
   assert.doesNotMatch(html, /<article class="condition-card[^>]+style=/u);
-  assert.equal((html.match(/class="condition-status-color"/gu) ?? []).length, 9);
+  assert.equal((html.match(/class="condition-status-color"/gu) ?? []).length, 10);
   assert.match(html, /data-condition="air-quality"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?fill="rgb\(0, 146, 63\)"/u);
   assert.match(settingsHtml, /class="material-symbols-rounded" aria-hidden="true">settings<\/span>/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?>device_thermostat<\/span>/u);
@@ -1675,7 +1748,7 @@ test("dashboard separates current conditions from the historical logs route", ()
     /<p class="notice" role="status">Refreshing weather data…<\/p>/u,
   );
   assert.equal((initialHomeHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 1);
-  assert.equal((initialHomeHtml.match(/class="condition-card [^"]*skeleton-card"/gu) ?? []).length, 9);
+  assert.equal((initialHomeHtml.match(/class="condition-card [^"]*skeleton-card"/gu) ?? []).length, 10);
   assert.match(initialHomeHtml, /data-condition="sunset"[\s\S]*?Golden hour/u);
   assert.match(initialHomeHtml, /data-condition="rain"[\s\S]*?Accumulation[\s\S]*?Max[\s\S]*?Total/u);
   assert.equal((initialHomeHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 0);

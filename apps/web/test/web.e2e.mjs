@@ -1511,7 +1511,7 @@ async function assertRejectedSiteWallClock(page, fixture, field, value) {
   assert.equal(await page.locator(".table-scroll").getByText("61.2").isVisible(), true);
 }
 
-// preserve dashboard contracts alongside the additional sunset tile
+// preserve dashboard contracts alongside the clouds tile and final tide pair
 test("real browser covers filters, pagination, last-good recovery, attribution, and mutation denial", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -1571,10 +1571,10 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       ),
       /Material Symbols Rounded/u,
     );
-    assert.equal(await page.locator(".condition-color rect").count(), 9);
-    assert.equal(await page.locator(".condition-label .material-symbols-rounded").count(), 9);
-    assert.equal(await page.locator(".condition-status-color rect").count(), 9);
-    assert.equal(await page.locator(".condition-status-dark").count(), 9);
+    assert.equal(await page.locator(".condition-color rect").count(), 10);
+    assert.equal(await page.locator(".condition-label .material-symbols-rounded").count(), 10);
+    assert.equal(await page.locator(".condition-status-color rect").count(), 10);
+    assert.equal(await page.locator(".condition-status-dark").count(), 10);
     assert.equal(await page.locator(".condition-status-light").count(), 0);
     assert.equal(
       await page.locator("[data-condition='humidity'] .condition-status-color rect").getAttribute("fill"),
@@ -1593,7 +1593,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
         // freeze the requested reading order
         (cards) => cards.map((card) => card.getAttribute("data-condition")),
       ),
-      ["temperature", "wind", "rain", "tide", "humidity", "air-quality", "pressure", "uv-index", "sunset"],
+      ["temperature", "wind", "rain", "clouds", "humidity", "air-quality", "pressure", "uv-index", "tide", "sunset"],
     );
     assert.deepEqual(
       await page.locator(".current-conditions").evaluate(
@@ -3881,6 +3881,109 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
+// keep cloud summaries and the final tide/sunset pair usable at every breakpoint
+test("clouds tile shows cover and the clearest farm-local hour beside the reordered cards", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // verify wide, tablet and narrow paired layouts in a different browser timezone
+    for (const width of [1440, 960, 880, 390, 320]) {
+      const page = await createFixturePage(browser, {
+        timezoneId: "Asia/Tokyo",
+        viewport: { height: 900, width },
+      });
+      const errors = [];
+      // retain uncaught rendering failures
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.clock.install({ time: new Date("2026-08-22T06:59:50Z") });
+      let forecastDay = 0;
+      let forecastReads = 0;
+      // control cloud forecasts without changing fixture globals
+      await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        forecastReads += 1;
+        // give two earlier hours the same minimum and omit an earlier value
+        body.data = body.data.map((record, index) => ({
+          ...record,
+          metrics: { ...record.metrics, cloudCoverPercent: index === 1 ? null : index === 2 || index === 5 ? 0 : 80 },
+        })).slice(forecastDay * 24, (forecastDay + 1) * 24);
+        await route.fulfill({ response, json: body });
+      });
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      const tile = page.locator("[data-condition='clouds']");
+      assert.equal(await tile.locator(".condition-primary").innerText(), "42%");
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*2:00AM/u);
+      assert.equal(await tile.locator(".condition-status").innerText(), "Modeled");
+      assert.equal(await tile.locator(".condition-forecast").isVisible(), false);
+      assert.equal(await tile.locator(".condition-forecast-reading").count(), 0);
+      assert.match(await tile.getAttribute("class"), /compact-condition clouds-condition/u);
+      assert.equal(await tile.locator(".condition-color rect").getAttribute("fill"), "rgb(105, 133, 155)");
+      assert.equal(await tile.evaluate(
+        // reject overlapping headings or clipped cloud statistics
+        (card) => {
+          const label = card.querySelector(".condition-label");
+          const status = card.querySelector(".condition-status");
+          const primary = card.querySelector(".condition-primary");
+          const secondary = card.querySelector(".condition-secondary");
+          return label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
+            [card, label, primary, secondary].every(
+              // require full content width at narrow breakpoints
+              (element) => element.scrollWidth <= element.clientWidth,
+            );
+        },
+      ), true, `clouds layout overlaps or clips at ${width}px`);
+      assert.deepEqual(await page.locator(".condition-card:nth-last-child(-n+2)").evaluateAll(
+        // retain the final pair in document order
+        (cards) => cards.map(
+          // read each final card identity
+          (card) => card.dataset.condition,
+        ),
+      ), ["tide", "sunset"]);
+      assert.equal(await page.locator(".current-conditions").evaluate(
+        // keep tide immediately beside sunset with equal widths
+        (grid) => {
+          const tide = grid.querySelector("[data-condition='tide']").getBoundingClientRect();
+          const sunset = grid.querySelector("[data-condition='sunset']").getBoundingClientRect();
+          return Math.abs(tide.top - sunset.top) < 1 && Math.abs(tide.width - sunset.width) < 1 && tide.right < sunset.left;
+        },
+      ), true, `final pair is not adjacent at ${width}px`);
+
+      // fetch the new one-day forecast at farm midnight without a page reload
+      forecastDay = 1;
+      const refreshed = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
+      await page.clock.fastForward(10_100);
+      await refreshed;
+      await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+      assert.equal(forecastReads, 2);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*12:00AM/u);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+
+    const page = await createFixturePage(browser, { viewport: { height: 900, width: 390 } });
+    // remove both model cloud statistics from the response
+    await page.route(/\/api\/v1\/sites\/ballydidean\/(?:current|forecast)/u, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      // exercise unavailable cloud metrics without affecting other readings
+      body.data = body.data.map((record) => ({ ...record, metrics: { ...record.metrics, cloudCoverPercent: null } }));
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const tile = page.locator("[data-condition='clouds']");
+    assert.equal(await tile.locator(".condition-primary").innerText(), "—");
+    assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*—/u);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // display farm-local evening times and their daily change in another browser timezone
 test("sunset tile shows today's sunset and golden hour on desktop and mobile", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -3889,7 +3992,7 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
   try {
     browser = await launchBrowser();
 
-    // cover compact desktop cards and both sides of the full-width breakpoint
+    // cover desktop and narrow paired sunset cards
     for (const width of [1280, 960, 881, 880, 390, 320]) {
       const page = await createFixturePage(browser, {
         timezoneId: "Asia/Tokyo",
@@ -3962,7 +4065,7 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
   }
 });
 
-// roll an open homepage into the next farm day without a reload or API read
+// roll an open homepage into the next farm day and refresh its one-day forecast
 test("sunset refreshes at farm midnight and when a suspended tab resumes", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -3974,28 +4077,46 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const tile = page.locator("[data-condition='sunset']");
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:28PM");
-    const requestCount = fixture.state.requests.length;
+    const forecastPath = "GET /api/v1/sites/ballydidean/forecast";
+    const initialForecastReads = fixture.state.requests.filter(
+      // count complete day forecast reads
+      (entry) => entry === forecastPath,
+    ).length;
+    const midnightRefresh = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
     await page.clock.fastForward(11_000);
+    await midnightRefresh;
+    await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
-    assert.equal(fixture.state.requests.length, requestCount);
+    assert.equal(fixture.state.requests.filter(
+      // fetch today's replacement forecast once
+      (entry) => entry === forecastPath,
+    ).length, initialForecastReads + 1);
 
+    const resumedRefresh = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
     await page.clock.setSystemTime(new Date("2026-09-15T19:00:00Z"));
     await page.evaluate(
       // simulate resuming after background timers were suspended
       () => document.dispatchEvent(new Event("visibilitychange")),
     );
+    await resumedRefresh;
+    await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:22PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:41PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
     assert.equal(fixture.state.requests.filter(
-      // the visibility event may recheck viewer context but not weather
-      (entry) => entry !== "GET /api/v1/viewer-context",
-    ).length, requestCount - fixture.state.requests.slice(0, requestCount).filter(
-      // subtract the initial viewer-context read
-      (entry) => entry === "GET /api/v1/viewer-context",
-    ).length);
+      // refresh once after resuming on a later farm day
+      (entry) => entry === forecastPath,
+    ).length, initialForecastReads + 2);
+    await page.evaluate(
+      // same-day visibility changes must not reread weather
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    assert.equal(fixture.state.requests.filter(
+      // retain the bounded day-refresh count
+      (entry) => entry === forecastPath,
+    ).length, initialForecastReads + 2);
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -4031,7 +4152,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
       );
       await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
       await page.locator(".current-conditions.skeleton-region").waitFor();
-      assert.equal(await page.locator(".skeleton-card").count(), 9);
+      assert.equal(await page.locator(".skeleton-card").count(), 10);
       // abbreviate only the compact homepage label
       const temperatureLabel = page.locator('[data-condition="temperature"] .condition-label > span:last-child');
       const expectedTemperatureLabel = width <= 672 ? "TEMP" : "TEMPERATURE";
@@ -4411,16 +4532,16 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(230, 181, 25)", condition: "wind", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "rain", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "rain", opacity: "0.75" },
-        { color: "rgb(0, 0, 0)", condition: "tide", opacity: "0.75" },
         { color: "rgb(239, 126, 31)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(207, 67, 55)", condition: "uv-index", opacity: "0.75" },
+        { color: "rgb(0, 0, 0)", condition: "tide", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "sunset", opacity: "0.75" },
       ],
     );
-    assert.equal(await page.locator(".condition-card").count(), 9);
+    assert.equal(await page.locator(".condition-card").count(), 10);
     assert.deepEqual(
       await page.locator(".condition-card").evaluateAll(
         // retain the requested dashboard sequence
@@ -4429,7 +4550,7 @@ test("real browser configures and persists every measurement unit preference", {
           (card) => card.getAttribute("data-condition"),
         ),
       ),
-      ["temperature", "wind", "rain", "tide", "humidity", "air-quality", "pressure", "uv-index", "sunset"],
+      ["temperature", "wind", "rain", "clouds", "humidity", "air-quality", "pressure", "uv-index", "tide", "sunset"],
     );
     assert.equal(
       await page.locator(".condition-forecast-reading").evaluateAll(
@@ -4774,8 +4895,8 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
     const page = await createFixturePage(browser, { viewport: { height: 844, width: 390 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     assert.equal(
-      await page.locator(".condition-primary strong").evaluateAll(
-        // retain the shared primary scale on phones
+      await page.locator(".condition-card:not(.sunset-condition) .condition-primary strong").evaluateAll(
+        // retain shared phone scales apart from the compact sunset clock
         (readings) => new Set(readings.map(
           // read one mobile primary scale
           (reading) => getComputedStyle(reading).fontSize,

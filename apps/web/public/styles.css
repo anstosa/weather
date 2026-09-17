@@ -987,6 +987,24 @@ h2 {
   grid-column: span 3;
 }
 
+/* pair rain with clouds and keep tide beside sunset on the final row */
+.compact-condition.clouds-condition,
+.compact-condition.tide-condition,
+.compact-condition.sunset-condition {
+  grid-column: span 6;
+}
+
+/* give cloud cover and its clearest hour the full card width */
+.clouds-condition .condition-body,
+.clouds-condition .condition-secondary {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* omit unused forecast space from the two-stat cloud tile */
+.clouds-condition .condition-forecast {
+  display: none;
+}
+
 /* keep sunset's daily change beside the primary clock reading */
 .sunset-condition .condition-body {
   grid-template-columns: minmax(0, 1fr) max-content;
@@ -4062,8 +4080,8 @@ td small {
   }
 }
 
-/* fit sunset and its comparison before the card becomes full-width */
-@media (55rem < width <= 60rem) {
+/* fit sunset and its comparison in narrow paired cards */
+@media (max-width: 60rem) {
   .sunset-condition .condition-primary strong {
     font-size: clamp(1.6rem, 3vw, 1.8rem);
   }
@@ -4074,11 +4092,6 @@ td small {
   .compact-condition,
   .air-quality-condition {
     grid-column: span 6;
-  }
-
-  /* fill the final row in two-column layouts */
-  .compact-condition.sunset-condition {
-    grid-column: 1 / -1;
   }
 
   .compact-condition .condition-detail {

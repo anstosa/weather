@@ -2959,7 +2959,7 @@ export function mountWeatherDashboard(
         ?.focus({ preventScroll: true });
     }
   });
-  bindSunsetDayRefresh(root, controller);
+  bindConditionDayRefresh(root, controller);
   bindHomeNetworkRefresh(root, controller);
   void controller.initialize();
   return controller;
@@ -2997,11 +2997,12 @@ function bindHomeNetworkRefresh(root: HTMLElement, controller: WeatherDashboardC
   timer = window.setInterval(refresh, 60_000);
 }
 
-// refresh the calendar tile at farm midnight and after a suspended tab resumes
-function bindSunsetDayRefresh(root: HTMLElement, controller: WeatherDashboardController): void {
+// refresh calendar-dependent tiles at farm midnight and after a suspended tab resumes
+function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboardController): void {
   let timer: number | undefined;
+  let previousDay: string | null = null;
 
-  // update only the calculated tile without refetching weather or disturbing controls
+  // update daily summaries and replace the one-day forecast after rollover
   const refresh = (): void => {
     window.clearTimeout(timer);
 
@@ -3018,9 +3019,24 @@ function bindSunsetDayRefresh(root: HTMLElement, controller: WeatherDashboardCon
       tile.outerHTML = renderSunsetCondition(controller.state);
     }
 
+    const clouds = root.querySelector("[data-condition='clouds']:not(.skeleton-card)");
+
+    // roll the clearest forecast into the new farm day
+    if (clouds !== null) {
+      clouds.outerHTML = renderCloudsCondition(controller.state);
+    }
+
     const now = new Date();
     const timezone = controller.state.selectedSite?.timezone ?? PRODUCT_SITE.timezone;
     const day = formatWallClockParts(now, timezone);
+    const today = forecastSiteDateKey(now.toISOString(), timezone);
+
+    // replace yesterday's exhausted forecast only when the homepage crosses a day
+    if (clouds !== null && previousDay !== null && previousDay !== today) {
+      void controller.loadSelectedSite();
+    }
+
+    previousDay = today;
     const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
     const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
     timer = window.setTimeout(refresh, Math.max(1, midnight - now.getTime()));
@@ -3378,7 +3394,7 @@ function renderCurrent(state: DashboardState): string {
             measurement: formatPrecipitationAccumulation(dailyRain, state.units),
           },
         })}
-      ${renderTideCondition(state)}
+      ${renderCloudsCondition(state)}
       ${renderConditionCard({
           band: humidityBand(current.metrics.relativeHumidityPercent),
           className: "compact-condition",
@@ -3420,6 +3436,7 @@ function renderCurrent(state: DashboardState): string {
           measurement: formatFixedMeasurement(uvIndex, ""),
           forecast: forecastMaximumFixed(forecast, "uvIndex", "", 1, uvBand, useForecastAdjustments),
         })}
+      ${renderTideCondition(state)}
       ${renderSunsetCondition(state)}
     </section>
   `;
@@ -3502,11 +3519,12 @@ function renderCurrentSkeleton(): string {
     { className: "temperature-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }, { label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }] }, icon: "device_thermostat", label: "Temperature", secondary: "Feels like" },
     { className: "wind-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "mph", value: "00" } }, { label: "Max", measurement: { unit: "mph", value: "00" } }] }, icon: "air", label: "Wind", secondary: "Gusts" },
     { className: "rain-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "in/h", value: "0.00" } }, { label: "Total", measurement: { unit: "in", value: "0.00" } }] }, icon: "rainy", label: "Rain", secondary: "Accumulation" },
-    { className: "compact-condition tide-condition", detail: null, forecast: { readings: [{ label: "Next low", measurement: { unit: "", value: "00:00 PM" } }] }, icon: "water", label: "Tide", secondary: "Direction" },
+    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [] }, icon: "cloud", label: "Clouds", secondary: "Clearest today" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "0.0" } }] }, icon: "wb_sunny", label: "UV index" },
+    { className: "compact-condition tide-condition", detail: null, forecast: { readings: [{ label: "Next low", measurement: { unit: "", value: "00:00 PM" } }] }, icon: "water", label: "Tide", secondary: "Direction" },
     { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [{ label: "vs yesterday", measurement: { unit: "mins", value: "+0" } }] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
   ];
 
@@ -3532,6 +3550,39 @@ function renderCurrentSkeleton(): string {
       ).join("")}
     </section>
   `;
+}
+
+// show modeled cover and the earliest least-cloudy hour in today's farm forecast
+function renderCloudsCondition(state: DashboardState): string {
+  const site = state.selectedSite ?? PRODUCT_SITE;
+  const current = state.current.filter(
+    // keep model estimates distinct from on-site observations
+    (record) => record.provenance.sourceKind === "model_current",
+  );
+  const cover = findMetric(current, "cloudCoverPercent");
+  const clearest = forecastForSiteDay(state.forecast, new Date().toISOString(), site.timezone)
+    .filter(
+      // do not mistake missing cover for clear skies
+      (record) => record.metrics.cloudCoverPercent !== null,
+    )
+    .toSorted(
+      // break equal-cover ties by local-day chronology without mutating the forecast
+      (left, right) => left.metrics.cloudCoverPercent! - right.metrics.cloudCoverPercent! ||
+        Date.parse(left.validAt) - Date.parse(right.validAt),
+    )[0];
+
+  return renderConditionCard({
+    band: { color: "rgb(105, 133, 155)", detail: "", label: "Modeled" },
+    className: "compact-condition clouds-condition",
+    forecast: { readings: [] },
+    icon: "cloud",
+    label: "Clouds",
+    measurement: formatFixedMeasurement(cover, "%", 0),
+    secondary: {
+      label: "Clearest today",
+      measurement: formatConditionTime(clearest === undefined ? null : new Date(clearest.validAt), site.timezone),
+    },
+  });
 }
 
 // calculate today's evening events and sunset's change from the previous site day
@@ -3637,17 +3688,17 @@ function renderSunsetCondition(state: DashboardState): string {
     },
     icon: "wb_sunny",
     label: "Sunset",
-    measurement: formatSunTime(times.sunset, site.timezone),
+    measurement: formatConditionTime(times.sunset, site.timezone),
     secondary: {
       label: "Golden hour",
-      measurement: formatSunTime(times.goldenHourStart, site.timezone),
+      measurement: formatConditionTime(times.goldenHourStart, site.timezone),
     },
   });
 }
 
-// round calculated events to a local minute with subordinate meridiem
-function formatSunTime(value: Date | null, timezone: string): FormattedMeasurement {
-  // keep absent solar crossings explicit
+// round condition times to a local minute with subordinate meridiem
+function formatConditionTime(value: Date | null, timezone: string): FormattedMeasurement {
+  // keep unavailable event times explicit
   if (value === null) {
     return { unit: "", value: "—" };
   }
