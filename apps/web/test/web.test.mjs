@@ -212,6 +212,29 @@ function cloudForecastRecord(validAt, cloudCoverPercent, id = validAt) {
   };
 }
 
+// build one cloud forecast fixture with explicit daylight inputs
+function classifiedCloudForecastRecord(validAt, cloudCoverPercent, solarRadiationWm2, uvIndex) {
+  const forecast = cloudForecastRecord(validAt, cloudCoverPercent);
+  return {
+    ...forecast,
+    metrics: { ...forecast.metrics, solarRadiationWm2, uvIndex },
+  };
+}
+
+// render one clouds card for focused assertions
+function renderCloudTile(forecast, selectedSite = site) {
+  const state = {
+    ...new WeatherDashboardController({ storage: null }).state,
+    current: [record],
+    forecast,
+    loading: false,
+    selectedSite,
+  };
+  const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(tile);
+  return tile;
+}
+
 const physicalRecord = {
   ...record,
   freshness: {
@@ -1246,22 +1269,80 @@ test("clearest cloud range formats minutes and daylight-saving transitions", () 
   );
 });
 
+// retain full-day extrema while selecting the earliest tied daylight window
+test("clouds tile excludes nighttime extrema from the clearest daylight range", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+  const tile = renderCloudTile([
+    classifiedCloudForecastRecord("2026-09-12T08:00:00Z", 5, 0, 0),
+    classifiedCloudForecastRecord("2026-09-12T15:00:00Z", 20, 100, 2),
+    classifiedCloudForecastRecord("2026-09-12T16:00:00Z", 20, 100, 2),
+    classifiedCloudForecastRecord("2026-09-12T17:00:00Z", 30, 100, 2),
+    classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 20, 100, 2),
+    classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 20, 100, 2),
+    classifiedCloudForecastRecord("2026-09-13T06:00:00Z", 95, 0, 0),
+  ]);
+  assert.match(tile, /Clearest today<\/span>\s*<strong>8–10<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
+});
+
+// preserve nighttime extrema when no daylight forecast is usable
+test("clouds tile leaves the clearest daylight range unavailable for night-only forecasts", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+  const tile = renderCloudTile([
+    classifiedCloudForecastRecord("2026-09-12T08:00:00Z", 5, 0, 0),
+    classifiedCloudForecastRecord("2026-09-13T06:00:00Z", 95, 0, 0),
+  ]);
+  assert.match(tile, /Clearest today<\/span>\s*<strong>—<\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
+});
+
+// enforce radiation authority before the ultraviolet fallback
+test("clouds tile classifies daylight from radiation before ultraviolet", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+  const radiationTile = renderCloudTile([
+    classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 5, 0, 3),
+    classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 25, 100, 0),
+  ]);
+  assert.match(radiationTile, /Clearest today<\/span>\s*<strong>2–3<small>PM<\/small><\/strong>/u);
+
+  const ultravioletTile = renderCloudTile([
+    classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 5, null, 0),
+    classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 25, null, 2),
+  ]);
+  assert.match(ultravioletTile, /Clearest today<\/span>\s*<strong>2–3<small>PM<\/small><\/strong>/u);
+});
+
+// classify missing light metrics by the selected site's local clock
+test("clouds tile uses the site-local daylight fallback", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-11T20:00:00Z") });
+  const foreignSite = { ...site, timezone: "Pacific/Kiritimati" };
+  const tile = renderCloudTile([
+    classifiedCloudForecastRecord("2026-09-11T16:00:00Z", 5, null, null),
+    classifiedCloudForecastRecord("2026-09-11T17:00:00Z", 20, null, null),
+    classifiedCloudForecastRecord("2026-09-11T18:00:00Z", 20, null, null),
+    classifiedCloudForecastRecord("2026-09-12T05:00:00Z", 95, null, null),
+  ], foreignSite);
+  assert.match(tile, /Clearest today<\/span>\s*<strong>7–9<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
+});
+
 // select the earliest minimum range in the farm day regardless of forecast order or stale observations
 test("clouds tile shows model cover and the earliest clearest farm-local range", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-13T05:00:00Z") });
   const forecasts = [
-    ["2026-09-13T07:00:00Z", 0],
-    ["2026-09-12T06:00:00Z", 0],
-    ["2026-09-12T07:00:00Z", null],
-    ["2026-09-12T22:00:00Z", 12],
-    ["2026-09-12T19:00:00Z", 12],
-    ["2026-09-12T18:00:00Z", 30],
+    ["2026-09-13T07:00:00Z", 0, 0],
+    ["2026-09-13T15:00:00Z", 25, 100],
+    ["2026-09-12T06:00:00Z", 0, 0],
+    ["2026-09-12T07:00:00Z", null, 0],
+    ["2026-09-12T22:00:00Z", 12, 100],
+    ["2026-09-12T19:00:00Z", 12, 100],
+    ["2026-09-12T18:00:00Z", 30, 100],
   ].map(
     // build deliberately unsorted hourly model values
-    ([validAt, cloudCoverPercent]) => ({
+    ([validAt, cloudCoverPercent, solarRadiationWm2]) => ({
       ...forecastRecord,
       validAt,
-      metrics: { ...forecastRecord.metrics, cloudCoverPercent },
+      metrics: { ...forecastRecord.metrics, cloudCoverPercent, solarRadiationWm2 },
     }),
   );
   const state = {
@@ -1287,8 +1368,8 @@ test("clouds tile shows model cover and the earliest clearest farm-local range",
   // change the calendar day independently of old current observations
   context.mock.timers.setTime(new Date("2026-09-13T07:00:00Z").getTime());
   const nextDay = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
-  assert.match(nextDay, /Clearest today<\/span>\s*<strong>12–1<small>AM<\/small>/u);
-  assert.match(nextDay, /condition-forecast-label">Max<\/span> <strong>0<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>0<small>%<\/small><\/strong>/u);
+  assert.match(nextDay, /Clearest today<\/span>\s*<strong>8–9<small>AM<\/small>/u);
+  assert.match(nextDay, /condition-forecast-label">Max<\/span> <strong>25<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>0<small>%<\/small><\/strong>/u);
 });
 
 // preserve genuine zero cover and keep absent model values unavailable

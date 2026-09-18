@@ -3552,7 +3552,7 @@ function renderCurrentSkeleton(): string {
   `;
 }
 
-// show modeled cover and the earliest least-cloudy window in today's farm forecast
+// show daylight clarity alongside full-day cloud extrema
 function renderCloudsCondition(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const current = state.current.filter(
@@ -3561,6 +3561,10 @@ function renderCloudsCondition(state: DashboardState): string {
   );
   const cover = findMetric(current, "cloudCoverPercent");
   const forecast = forecastForSiteDay(state.forecast, new Date().toISOString(), site.timezone);
+  const daylight = forecast.filter(
+    // use the forecast's day/night classification without narrowing daily extrema
+    (hour) => forecastDaylightState(hour, site.timezone),
+  );
 
   return renderConditionCard({
     band: cloudBand(cover),
@@ -3576,7 +3580,7 @@ function renderCloudsCondition(state: DashboardState): string {
     measurement: formatFixedMeasurement(cover, "%", 0),
     secondary: {
       label: "Clearest today",
-      measurement: clearestCloudRange(forecast, site.timezone),
+      measurement: clearestCloudRange(daylight, site.timezone),
     },
   });
 }

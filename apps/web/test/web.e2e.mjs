@@ -3881,8 +3881,8 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
-// keep cloud summaries and the final tide/sunset pair usable at every breakpoint
-test("clouds tile shows cover and the clearest farm-local range beside the reordered cards", { timeout: 60_000 }, async () => {
+// keep daylight clarity and all-day cloud extrema usable at every breakpoint
+test("clouds tile shows the clearest daylight range and includes night in daily extrema", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -3918,11 +3918,19 @@ test("clouds tile shows cover and the clearest farm-local range beside the reord
         const response = await route.fetch();
         const body = await response.json();
         forecastReads += 1;
-        // keep a continuous noon minimum separate from a later tied hour
-        body.data = body.data.map((record, index) => ({
-          ...record,
-          metrics: { ...record.metrics, cloudCoverPercent: index === 1 ? null : [11, 12, 15].includes(index) ? 0 : 100 },
-        })).slice(forecastDay * 24, (forecastDay + 1) * 24);
+        // keep the clearest night separate from the earliest tied daylight window
+        body.data = body.data.map((record, index) => {
+          const hour = index % 24;
+          const daylight = hour >= 7 && hour < 19;
+          return {
+            ...record,
+            metrics: {
+              ...record.metrics,
+              cloudCoverPercent: daylight ? [11, 12, 15].includes(index) ? 10 : 50 : hour === 0 ? 0 : 100,
+              solarRadiationWm2: daylight ? 200 : 0,
+            },
+          };
+        }).slice(forecastDay * 24, (forecastDay + 1) * 24);
         await route.fulfill({ response, json: body });
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
@@ -3978,12 +3986,12 @@ test("clouds tile shows cover and the clearest farm-local range beside the reord
       assert.equal(forecastReads, 2);
       assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
       assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
-      assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 100%"]);
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*12 AM–midnight/u);
+      assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*7 AM–7PM/u);
       assert.equal(await tile.locator(".condition-secondary").evaluate(
-        // keep the longest ordinary day range inside its reserved row
+        // keep a full daylight range inside its reserved row
         (secondary) => secondary.scrollWidth <= secondary.clientWidth && secondary.scrollHeight <= secondary.clientHeight,
-      ), true, `all-day cloud range clips at ${width}px`);
+      ), true, `daylight cloud range clips at ${width}px`);
       assert.deepEqual(errors, []);
       await page.close();
     }
@@ -4014,8 +4022,8 @@ test("clouds tile shows cover and the clearest farm-local range beside the reord
   }
 });
 
-// disambiguate the repeated autumn hour without clipping the mobile range
-test("clouds range distinguishes repeated daylight-saving hours on mobile", { timeout: 60_000 }, async () => {
+// exclude repeated nighttime hours while retaining their full-day extrema
+test("clouds range stays unavailable for a night-only daylight-saving forecast", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -4032,9 +4040,10 @@ test("clouds range distinguishes repeated daylight-saving hours on mobile", { ti
     });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const secondary = page.locator("[data-condition='clouds'] .condition-secondary");
-    assert.equal((await secondary.locator("strong").innerText()).replace(/\s+/gu, " "), "1 AM PDT–1 AM PST");
+    assert.equal(await secondary.locator("strong").innerText(), "—");
+    assert.deepEqual(await page.locator("[data-condition='clouds'] .condition-forecast-reading").allTextContents(), ["Max 42%", "Min 42%"]);
     assert.equal(await secondary.evaluate(
-      // retain both zone labels inside the compact secondary row
+      // preserve the compact row for an unavailable daylight range
       (element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight,
     ), true);
   } finally {
