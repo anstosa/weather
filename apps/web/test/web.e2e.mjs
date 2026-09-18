@@ -97,7 +97,7 @@ const site = {
   timezone: "America/Los_Angeles",
 };
 
-const current = makeRecord("101", "2026-08-22T04:50:00.000Z", 16.2);
+const current = { ...makeRecord("101", "2026-08-22T04:50:00.000Z", 16.2), pressureChange3hHpa: -1.2 };
 const older = makeRecord("100", "2026-08-21T04:50:00.000Z", 15.1);
 const physicalCurrent = {
   ...makeRecord("301", "2026-08-22T04:52:00.000Z", 12),
@@ -3881,6 +3881,101 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
+// distinguish observed and forecast pressure movement without implying discomfort
+test("pressure tile colors three-hour speed and keeps later changes separate", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  try {
+    browser = await launchBrowser();
+    // keep long status labels and signed readings readable at every breakpoint
+    for (const width of [1440, 960, 880, 390, 320]) {
+      const page = await createFixturePage(browser, { timezoneId: "Asia/Tokyo", viewport: { height: 900, width } });
+      await page.clock.setFixedTime(new Date("2026-09-18T18:00:00Z"));
+      let change = -6.1;
+      let freshness = "fresh";
+      const errors = [];
+      // record uncaught rendering failures
+      page.on("pageerror", (error) => errors.push(error.message));
+      // preserve each record's pressure while controlling its same-source tendency
+      await page.route("**/api/v1/sites/ballydidean/current", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        // make freshness and tendency travel together through the public contract
+        body.data = body.data.map((record) => ({
+          ...record,
+          pressureChange3hHpa: change,
+          freshness: { ...record.freshness, status: freshness },
+        }));
+        await route.fulfill({ response, json: body });
+      });
+      // provide one complete upcoming rapid-fall window
+      await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        // isolate four same-run hourly points ending at two pm farm time
+        body.data = body.data.slice(0, 4).map((record, hour) => ({
+          ...record,
+          validAt: new Date(Date.parse("2026-09-18T18:00:00Z") + hour * 3_600_000).toISOString(),
+          metrics: { ...record.metrics, pressureHpa: 1014 - hour * 2 },
+        }));
+        await route.fulfill({ response, json: body });
+      });
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      const card = page.locator("[data-condition='pressure']");
+      assert.match(await card.locator(".condition-primary").innerText(), /-6\.1\s*hPa\/3h/u);
+      assert.equal(await card.locator(".condition-status").innerText(), "Very rapid fall");
+      assert.match(await card.locator(".condition-secondary").innerText(), /Barometer\s*1,014\.2hPa/u);
+      assert.match(await card.locator(".condition-forecast").innerText(), /Later\s*-6\.0\s*hPa\/3h\s*By\s*2\s*PM/u);
+      assert.equal(await card.locator(".condition-forecast-reading").first().getAttribute("class"), "condition-forecast-reading condition-forecast-tone-red");
+      assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), "rgb(207, 67, 55)");
+      assert.equal(await card.evaluate(
+        // reject clipped numbers and overlap between current and predicted changes
+        (tile) => {
+          const label = tile.querySelector(".condition-label");
+          const status = tile.querySelector(".condition-status");
+          const primary = tile.querySelector(".condition-primary");
+          const forecast = tile.querySelector(".condition-forecast");
+          const secondary = tile.querySelector(".condition-secondary");
+          return label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
+            primary.getBoundingClientRect().right <= forecast.getBoundingClientRect().left &&
+            forecast.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top &&
+            [tile, label, status, primary, forecast, secondary, ...tile.querySelectorAll("strong")].every(
+              // retain the full contents of every displayed reading
+              (element) => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().bottom <= tile.getBoundingClientRect().bottom,
+            );
+        },
+      ), true, `pressure layout overlaps or clips at ${width}px`);
+      const height = (await card.boundingBox()).height;
+      // verify the same color scale in both directions without shifting card geometry
+      for (const [value, label, color] of [
+        [0.1, "Steady", "rgb(0, 146, 63)"],
+        [0.5, "Slow rise", "rgb(200, 183, 68)"],
+        [-2, "Falling", "rgb(230, 181, 25)"],
+        [3.5, "Rapid rise", "rgb(239, 126, 31)"],
+        [6, "Very rapid rise", "rgb(207, 67, 55)"],
+        [null, "Unavailable", "rgb(136, 136, 130)"],
+      ]) {
+        change = value;
+        await page.reload({ waitUntil: "networkidle" });
+        assert.equal(await card.locator(".condition-status").innerText(), label);
+        assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), color);
+        assert.equal((await card.boundingBox()).height, height, `${label} changes pressure height at ${width}px`);
+      }
+      change = 6;
+      freshness = "delayed";
+      await page.reload({ waitUntil: "networkidle" });
+      assert.equal(await card.locator(".condition-primary").innerText(), "—");
+      assert.equal(await card.locator(".condition-status").innerText(), "Unavailable");
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // keep daylight clarity and all-day cloud extrema usable at every breakpoint
 test("clouds tile shows the clearest daylight range and includes night in daily extrema", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -4526,7 +4621,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*16\s*mph/u);
     assert.equal(
-      await page.locator(".condition-card:not(.sunset-condition) .condition-primary strong").evaluateAll(
+      await page.locator(".condition-card:not(.sunset-condition):not(.pressure-condition) .condition-primary strong").evaluateAll(
         // keep measurement scales shared while the sunset clock reserves comparison space
         (readings) => new Set(readings.map(
           // read one primary scale
@@ -4641,7 +4736,7 @@ test("real browser configures and persists every measurement unit preference", {
     );
     assert.match(
       await page.locator("[data-condition='pressure']").textContent() ?? "",
-      /\+0\.1\s*%/u,
+      /Barometer\s*1,014\.2\s*hPa/u,
     );
     const currentTide = page.locator("[data-condition='tide']");
     assert.match(await currentTide.locator(".condition-status").textContent() ?? "", /High/u);
@@ -4684,7 +4779,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await page.locator("[data-condition='air-quality']").textContent() ?? "", /Max 10/u);
     assert.doesNotMatch(await page.locator("[data-condition='air-quality']").textContent() ?? "", /µg\/m³/u);
     assert.match(await page.locator("[data-condition='uv-index']").textContent() ?? "", /Max 8/u);
-    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*\+0\.4%\s*Min\s*-0\.2%/u);
+    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Later\s*—\s*By\s*—/u);
     assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Max 74%/u);
     assert.match(await currentTide.textContent() ?? "", /Next low\s*5:00 AM/u);
     assert.deepEqual(
@@ -4709,8 +4804,8 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
         { color: "rgb(239, 126, 31)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
-        { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },
-        { color: "rgb(67, 151, 86)", condition: "pressure", opacity: "0.75" },
+        { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
+        { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(207, 67, 55)", condition: "uv-index", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "tide", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "sunset", opacity: "0.75" },
@@ -4842,7 +4937,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentRain.textContent() ?? "", /Max 2\.5 mm\/h/u);
     assert.match(await currentRain.textContent() ?? "", /Accumulation\s*2\.5\s*mm/u);
     assert.match(await currentRain.textContent() ?? "", /Total 4\.8 mm/u);
-    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*1,017\.0 hPa\s*Min\s*1,011\.0 hPa/u);
+    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Later\s*—\s*By\s*—/u);
     assert.deepEqual(
       await page.evaluate(
         // read the persisted browser preference record
@@ -4891,7 +4986,7 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
     const page = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     assert.equal(
-      await page.locator(".condition-card:not(.sunset-condition) .condition-primary strong").evaluateAll(
+      await page.locator(".condition-card:not(.sunset-condition):not(.pressure-condition) .condition-primary strong").evaluateAll(
         // retain tablet measurement scales apart from the compact sunset clock
         (readings) => new Set(readings.map(
           // read one tablet primary scale
@@ -5070,7 +5165,7 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
     const page = await createFixturePage(browser, { viewport: { height: 844, width: 390 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     assert.equal(
-      await page.locator(".condition-card:not(.sunset-condition) .condition-primary strong").evaluateAll(
+      await page.locator(".condition-card:not(.sunset-condition):not(.pressure-condition) .condition-primary strong").evaluateAll(
         // retain shared phone scales apart from the compact sunset clock
         (readings) => new Set(readings.map(
           // read one mobile primary scale

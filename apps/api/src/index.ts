@@ -16,6 +16,7 @@ import {
   verifyMigrationReadiness,
   type ActiveSiteRow,
   type CurrentQuery,
+  type CurrentWeatherRecordRow,
   type DailyPrecipitationRow,
   type EcmwfTemperatureCanarySidecar,
   type EcmwfTemperatureCanaryStatus,
@@ -78,7 +79,7 @@ export interface WeatherReadStore {
   getCurrent(
     siteSlug: string,
     query: CurrentQuery,
-  ): Promise<readonly WeatherRecordRow[]>;
+  ): Promise<readonly CurrentWeatherRecordRow[]>;
   getForecast(
     siteSlug: string,
     asOf: string,
@@ -205,6 +206,11 @@ export interface ApiWeatherRecord {
   readonly receivedAt: string;
   readonly revisionCount: number;
   readonly validAt: string;
+}
+
+// add source-local tendency only to current records
+export interface ApiCurrentWeatherRecord extends ApiWeatherRecord {
+  readonly pressureChange3hHpa: number | null;
 }
 
 // extend only forecast rows with fail-raw adjustment decisions
@@ -1122,7 +1128,7 @@ async function handleReadRoute(
       () => parseCurrentQuery(url.searchParams, site),
     );
     const rows = await store.getCurrent(route.siteSlug, query);
-    const records = mapWeatherRecords(rows, indexSources(site), generatedAt);
+    const records = mapCurrentWeatherRecords(rows, indexSources(site), generatedAt);
     return jsonResponse({ data: records, generatedAt, site });
   }
 
@@ -1628,6 +1634,23 @@ function mapWeatherRecords(
   }
 
   return records;
+}
+
+// add current-only pressure tendency
+function mapCurrentWeatherRecords(
+  rows: readonly CurrentWeatherRecordRow[],
+  sources: ReadonlyMap<string, SourceDetails>,
+  generatedAt: string,
+): readonly ApiCurrentWeatherRecord[] {
+  const records = mapWeatherRecords(rows, sources, generatedAt);
+
+  return records.map(
+    // preserve source-aligned repository order
+    (record, index) => ({
+      ...record,
+      pressureChange3hHpa: rows[index]?.pressureChange3hHpa ?? null,
+    }),
+  );
 }
 
 // append one exact domain decision to every forecast row

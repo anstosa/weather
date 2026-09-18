@@ -481,6 +481,11 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly wetBulbGlobeTemperatureC: number | null;
 }
 
+// retain same-source pressure change with its current row
+export interface CurrentWeatherRecordRow extends WeatherRecordRow {
+  readonly pressureChange3hHpa: number | null;
+}
+
 interface ForecastRuntimeProvenanceRow extends QueryResultRow {
   readonly adapterVersion: string;
   readonly contractEpoch: string;
@@ -1817,11 +1822,26 @@ export async function getCurrentWeather(
   pool: Pool,
   siteSlug: string,
   query: CurrentQuery = {},
-): Promise<readonly WeatherRecordRow[]> {
-  const result = await pool.query<WeatherRecordRow>(
+): Promise<readonly CurrentWeatherRecordRow[]> {
+  const result = await pool.query<CurrentWeatherRecordRow>(
     `
       SELECT
-        ${weatherRecordSelection()}
+        ${weatherRecordSelection()},
+        -- require complete three-hour evidence
+        CASE
+          WHEN wr.pressure_hpa IS NULL
+            OR pressure_before.pressure_hpa IS NULL
+            OR pressure_after.pressure_hpa IS NULL
+          THEN NULL
+          WHEN pressure_before.valid_at = pressure_after.valid_at
+          THEN wr.pressure_hpa - pressure_before.pressure_hpa
+          ELSE wr.pressure_hpa - (
+            pressure_before.pressure_hpa
+            + (pressure_after.pressure_hpa - pressure_before.pressure_hpa)
+              * EXTRACT(EPOCH FROM (wr.valid_at - interval '3 hours' - pressure_before.valid_at))
+              / EXTRACT(EPOCH FROM (pressure_after.valid_at - pressure_before.valid_at))
+          )
+        END AS "pressureChange3hHpa"
       FROM sources s
       JOIN stations st ON st.id = s.station_id
       JOIN sites si ON si.id = st.site_id
@@ -1833,6 +1853,28 @@ export async function getCurrentWeather(
         ORDER BY candidate.valid_at DESC, candidate.id DESC
         LIMIT 1
       ) wr ON true
+      -- find pressure immediately before target
+      LEFT JOIN LATERAL (
+        SELECT candidate.valid_at, candidate.pressure_hpa
+        FROM weather_records candidate
+        WHERE candidate.source_id = wr.source_id
+          AND candidate.pressure_hpa IS NOT NULL
+          AND candidate.valid_at <= wr.valid_at - interval '3 hours'
+          AND candidate.valid_at >= wr.valid_at - interval '3 hours 30 minutes'
+        ORDER BY candidate.valid_at DESC, candidate.id DESC
+        LIMIT 1
+      ) pressure_before ON true
+      -- find pressure immediately after target
+      LEFT JOIN LATERAL (
+        SELECT candidate.valid_at, candidate.pressure_hpa
+        FROM weather_records candidate
+        WHERE candidate.source_id = wr.source_id
+          AND candidate.pressure_hpa IS NOT NULL
+          AND candidate.valid_at >= wr.valid_at - interval '3 hours'
+          AND candidate.valid_at <= wr.valid_at - interval '2 hours 30 minutes'
+        ORDER BY candidate.valid_at ASC, candidate.id ASC
+        LIMIT 1
+      ) pressure_after ON true
       WHERE si.slug = $1
         AND si.active
         AND st.active

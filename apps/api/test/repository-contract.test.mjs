@@ -55,6 +55,27 @@ test("current SQL enforces active joins and parameterized station/source filters
   assert.match(queries[0].text, /wr\.upstream_timezone AS "upstreamTimezone"/u);
   assert.match(queries[0].text, /wr\.quality_metadata AS "qualityMetadata"/u);
   assert.match(queries[0].text, /wr\.provider_metadata AS "providerMetadata"/u);
+  assert.match(queries[0].text, /END AS "pressureChange3hHpa"/u);
+  assert.equal(
+    queries[0].text.match(/candidate\.source_id = wr\.source_id/gu)?.length,
+    2,
+  );
+  assert.equal(
+    queries[0].text.match(/candidate\.pressure_hpa IS NOT NULL/gu)?.length,
+    2,
+  );
+  assert.match(
+    queries[0].text,
+    /candidate\.valid_at >= wr\.valid_at - interval '3 hours 30 minutes'/u,
+  );
+  assert.match(
+    queries[0].text,
+    /candidate\.valid_at <= wr\.valid_at - interval '2 hours 30 minutes'/u,
+  );
+  assert.match(
+    queries[0].text,
+    /pressure_after\.pressure_hpa - pressure_before\.pressure_hpa/u,
+  );
 });
 
 test("site discovery requires active public-capability sources", async () => {

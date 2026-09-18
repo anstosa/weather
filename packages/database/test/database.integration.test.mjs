@@ -1081,6 +1081,135 @@ test(
         }
       });
 
+      // verify source-local three-hour pressure change
+      await context.test("current pressure change brackets and interpolates same-source records", async () => {
+        const target = "2026-08-19T21:00:00.000Z";
+        const currentTimes = [
+          "2026-08-19T20:29:00.000Z",
+          "2026-08-19T20:50:00.000Z",
+          target,
+          "2026-08-19T21:10:00.000Z",
+          "2026-08-19T21:31:00.000Z",
+          "2026-08-20T00:01:00.000Z",
+        ];
+
+        // isolate mutable fixtures
+        try {
+          await Promise.all([
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              pressureHpa: 1008,
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              validAt: currentTimes[1],
+            }),
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              pressureHpa: 1010,
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              validAt: currentTimes[3],
+            }),
+            insertRawRecord(pool, {
+              firstRunId: backfillRunId,
+              lastRunId: backfillRunId,
+              pressureHpa: 900,
+              sourceId: reanalysisSource.id,
+              sourceKind: "reanalysis",
+              validAt: target,
+            }),
+          ]);
+          // read selected current source
+          const readCurrent = async () => {
+            const rows = await getCurrentWeather(pool, configuration.site.key, {
+              sourceId: String(currentSource.id),
+            });
+            assert.equal(rows.length, 1);
+            return rows[0];
+          };
+          assert.equal((await readCurrent()).pressureChange3hHpa, 4);
+
+          await pool.query(
+            "DELETE FROM weather_records WHERE source_id = $1 AND valid_at = ANY($2::timestamptz[])",
+            [currentSource.id, [currentTimes[1], currentTimes[3]]],
+          );
+          await insertRawRecord(pool, {
+            firstRunId: currentFirstRunId,
+            lastRunId: currentFirstRunId,
+            pressureHpa: 1011,
+            sourceId: currentSource.id,
+            sourceKind: "model_current",
+            validAt: target,
+          });
+          assert.equal((await readCurrent()).pressureChange3hHpa, 2);
+
+          await pool.query(
+            "DELETE FROM weather_records WHERE source_id = $1 AND valid_at = $2",
+            [currentSource.id, target],
+          );
+          await insertRawRecord(pool, {
+            firstRunId: currentFirstRunId,
+            lastRunId: currentFirstRunId,
+            pressureHpa: 1008,
+            sourceId: currentSource.id,
+            sourceKind: "model_current",
+            validAt: currentTimes[1],
+          });
+          assert.equal((await readCurrent()).pressureChange3hHpa, null);
+
+          await pool.query(
+            "DELETE FROM weather_records WHERE source_id = $1 AND valid_at = $2",
+            [currentSource.id, currentTimes[1]],
+          );
+          await Promise.all([
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              pressureHpa: 1008,
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              validAt: currentTimes[0],
+            }),
+            insertRawRecord(pool, {
+              firstRunId: currentFirstRunId,
+              lastRunId: currentFirstRunId,
+              pressureHpa: 1010,
+              sourceId: currentSource.id,
+              sourceKind: "model_current",
+              validAt: currentTimes[4],
+            }),
+          ]);
+          assert.equal((await readCurrent()).pressureChange3hHpa, null);
+
+          await insertRawRecord(pool, {
+            firstRunId: currentFirstRunId,
+            lastRunId: currentFirstRunId,
+            pressureHpa: 1009,
+            sourceId: currentSource.id,
+            sourceKind: "model_current",
+            validAt: target,
+          });
+          assert.equal((await readCurrent()).pressureChange3hHpa, 4);
+          await insertRawRecord(pool, {
+            firstRunId: currentFirstRunId,
+            lastRunId: currentFirstRunId,
+            pressureHpa: null,
+            sourceId: currentSource.id,
+            sourceKind: "model_current",
+            validAt: currentTimes[5],
+          });
+          assert.equal((await readCurrent()).pressureChange3hHpa, null);
+        } finally {
+          // restore shared fixtures
+          await pool.query(
+            "DELETE FROM weather_records WHERE (source_id = $1 AND valid_at = ANY($3::timestamptz[])) OR (source_id = $2 AND valid_at = $4)",
+            [currentSource.id, reanalysisSource.id, currentTimes, target],
+          );
+        }
+      });
+
       // verify current/history index availability
       await context.test("I-DB-16 representative current lookup uses the source-time index", async () => {
         await pool.query(
@@ -1787,11 +1916,12 @@ async function insertRawRecord(pool, input) {
         last_received_at,
         upstream_timezone,
         provider_metadata,
+        pressure_hpa,
         soil_moisture_percent,
         uv_index,
         content_hash
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $3, $3, 'UTC', $7::jsonb, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $3, $3, 'UTC', $7::jsonb, $8, $9, $10, $11)
     `,
     [
       input.sourceId,
@@ -1803,6 +1933,7 @@ async function insertRawRecord(pool, input) {
       input.providerMetadata === undefined
         ? null
         : JSON.stringify(input.providerMetadata),
+      input.pressureHpa ?? null,
       input.soilMoisturePercent ?? null,
       input.uvIndex ?? null,
       "c".repeat(64),

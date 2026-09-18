@@ -1050,6 +1050,65 @@ h2 {
   align-self: start;
 }
 
+/* separate observed pressure movement from later modeled movement */
+.pressure-condition .condition-body {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 40%);
+}
+
+.pressure-condition .condition-card-heading {
+  min-height: 2.1rem;
+}
+
+.pressure-condition .condition-status {
+  max-width: 4rem;
+  padding: 0.2rem 0.3rem;
+  font-size: 0.6rem;
+  white-space: normal;
+}
+
+.pressure-condition .condition-primary {
+  min-height: 5.2rem;
+}
+
+.pressure-condition .condition-primary strong {
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+}
+
+.pressure-condition .condition-primary small,
+.pressure-condition .condition-forecast small {
+  display: block;
+  margin-top: 0.25rem;
+  margin-left: 0;
+}
+
+.pressure-condition .condition-primary small {
+  font-size: 0.6rem;
+}
+
+.pressure-condition .condition-forecast {
+  grid-row: 1;
+  align-self: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.pressure-condition .condition-forecast-reading {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.pressure-condition .condition-forecast-reading:last-child {
+  display: flex;
+  margin-top: 0.25rem;
+}
+
+.pressure-condition .condition-forecast-reading:last-child small {
+  display: inline;
+}
+
+.pressure-condition .condition-secondary {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 /* keep sunset's daily change beside the primary clock reading */
 .sunset-condition .condition-body {
   grid-template-columns: minmax(0, 1fr) max-content;
@@ -4363,6 +4422,34 @@ td small {
 
   .condition-primary strong {
     font-size: clamp(1.8rem, 8vw, 2.45rem);
+  }
+
+  /* reserve compact pressure geometry through missing and extreme readings */
+  .pressure-condition .condition-card-heading {
+    min-height: 2.3rem;
+  }
+
+  .pressure-condition .condition-label {
+    font-size: 0.56rem;
+    gap: 0.1rem;
+  }
+
+  .pressure-condition .condition-label .material-symbols-rounded {
+    font-size: 0.85rem;
+  }
+
+  .pressure-condition .condition-status {
+    max-width: 3.1rem;
+    padding: 0.18rem 0.25rem;
+    font-size: 0.52rem;
+  }
+
+  .pressure-condition .condition-primary strong {
+    font-size: clamp(1.65rem, 7vw, 2.25rem);
+  }
+
+  .pressure-condition .condition-primary {
+    min-height: 4rem;
   }
 
   .condition-secondary {

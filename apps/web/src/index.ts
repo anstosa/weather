@@ -49,6 +49,8 @@ export interface WeatherSite {
 }
 
 export interface WeatherRecord {
+  // retain the same-source observed three-hour pressure difference
+  readonly pressureChange3hHpa?: number | null;
   readonly adjustment?: ForecastAdjustmentDecision;
   readonly freshness: {
     readonly ageSeconds: number;
@@ -3411,23 +3413,7 @@ function renderCurrent(state: DashboardState): string {
           measurement: formatFixedMeasurement(airQuality, "", 0),
           forecast: forecastMaximumFixed(forecast, "pm25MicrogramsPerCubicMeter", "", 0, airQualityBand, useForecastAdjustments),
         })}
-      ${renderConditionCard({
-          band: pressureBand(current.metrics.pressureHpa, state.units),
-          className: "compact-condition",
-          icon: "speed",
-          label: "Pressure",
-          measurement: formatMeasurement(current.metrics.pressureHpa, "pressure", state.units, 1),
-          forecast: forecastRange(
-            forecast,
-            "pressureHpa",
-            "pressure",
-            state.units,
-            1,
-            // classify pressure in the active display preference
-            (value) => pressureBand(value, state.units),
-            useForecastAdjustments,
-          ),
-        })}
+      ${renderPressureCondition(state)}
       ${renderConditionCard({
           band: uvBand(uvIndex),
           className: "compact-condition",
@@ -3522,7 +3508,7 @@ function renderCurrentSkeleton(): string {
     { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
-    { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
+    { className: "compact-condition pressure-condition", detail: null, forecast: { readings: [{ label: "Later", measurement: { unit: "hPa/3h", value: "+0.0" } }, { label: "By", measurement: { unit: "", value: "00PM" } }] }, icon: "speed", label: "Pressure", secondary: "Barometer" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "0.0" } }] }, icon: "wb_sunny", label: "UV index" },
     { className: "compact-condition tide-condition", detail: null, forecast: { readings: [{ label: "Next low", measurement: { unit: "", value: "00:00 PM" } }] }, icon: "water", label: "Tide", secondary: "Direction" },
     { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [{ label: "vs yesterday", measurement: { unit: "mins", value: "+0" } }] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
@@ -3550,6 +3536,132 @@ function renderCurrentSkeleton(): string {
       ).join("")}
     </section>
   `;
+}
+
+// show observed pressure movement separately from upcoming modeled changes
+function renderPressureCondition(state: DashboardState): string {
+  const current = preferredCurrentRecords(state.current).find(
+    // keep pressure and its tendency attached to one station
+    (record) => record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
+  );
+  const change = current?.freshness.status === "fresh" ? current.pressureChange3hHpa ?? null : null;
+  const site = state.selectedSite ?? PRODUCT_SITE;
+  const later = strongestPressureChange(state.forecast, new Date(), site.timezone);
+  const laterTime = formatConditionTime(later === null ? null : new Date(later.validAt), site.timezone);
+  // replace the legacy reference percentage only on the actual-pressure reading
+  const units: UnitPreferences = state.units.pressure === "atmosphere_percent"
+    ? { ...state.units, pressure: "hectopascals" }
+    : state.units;
+  return renderConditionCard({
+    band: { ...pressureChangeBand(change), detail: "" },
+    className: "compact-condition pressure-condition",
+    forecast: {
+      readings: [
+        {
+          label: "Later",
+          measurement: formatPressureChange(later?.changeHpa ?? null),
+          tone: forecastToneForBand(later?.changeHpa ?? null, pressureChangeBand(later?.changeHpa ?? null)),
+        },
+        { label: "By", measurement: { ...laterTime, value: laterTime.value.replace(/:00$/u, "") } },
+      ],
+    },
+    icon: "speed",
+    label: "Pressure",
+    measurement: formatPressureChange(change),
+    secondary: {
+      label: "Barometer",
+      measurement: formatMeasurement(current?.metrics.pressureHpa ?? null, "pressure", units),
+    },
+  });
+}
+
+// format signed three-hour movement without implying a health-risk score
+function formatPressureChange(changeHpa: number | null): FormattedMeasurement {
+  // distinguish missing history from genuinely steady pressure
+  if (changeHpa === null || !Number.isFinite(changeHpa)) {
+    return { unit: "", value: "—" };
+  }
+
+  const rounded = Math.round(Math.abs(changeHpa) * 10) / 10 * Math.sign(changeHpa);
+  return {
+    unit: "hPa/3h",
+    value: new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+      signDisplay: "exceptZero",
+    }).format(rounded === 0 ? 0 : rounded),
+  };
+}
+
+// select the earliest strongest complete future window ending today
+export function strongestPressureChange(
+  records: readonly WeatherRecord[],
+  now: Date,
+  timezone: string,
+): Readonly<{ changeHpa: number; validAt: string }> | null {
+  const hours = forecastForSiteDay(records, now.toISOString(), timezone).filter(
+    // retain only future forecast values rather than observed or null pressure
+    (record) => record.provenance.sourceKind === "forecast" && Date.parse(record.validAt) >= now.getTime() &&
+      record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
+  ).sort(
+    // resolve equal-magnitude windows by their earliest ending time
+    (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
+  );
+  const byHour = new Map(hours.map(
+    // prevent joining hours across sources or model runs
+    (record) => [`${record.provenance.sourceId}/${record.productRunAt ?? ""}/${Date.parse(record.validAt)}`, record],
+  ));
+  let strongest: Readonly<{ changeHpa: number; validAt: string }> | null = null;
+  // compare only continuous three-hour forecast windows
+  for (const end of hours) {
+    const prefix = `${end.provenance.sourceId}/${end.productRunAt ?? ""}/`;
+    const endMs = Date.parse(end.validAt);
+    const start = byHour.get(`${prefix}${endMs - 3 * 3_600_000}`);
+    // fail closed when the forecast does not contain a complete window
+    if (start === undefined || !byHour.has(`${prefix}${endMs - 2 * 3_600_000}`) ||
+      !byHour.has(`${prefix}${endMs - 3_600_000}`)) {
+      continue;
+    }
+
+    const changeHpa = end.metrics.pressureHpa! - start.metrics.pressureHpa!;
+    // keep the first window when magnitudes tie
+    if (strongest === null || Math.abs(changeHpa) > Math.abs(strongest.changeHpa)) {
+      strongest = { changeHpa, validAt: end.validAt };
+    }
+  }
+
+  return strongest;
+}
+
+// color magnitude using Met Éireann's three-hour meteorological tendency bands
+// https://www.met.ie/forecasts/marine-inland-lakes/sea-area-forecast-terminology
+export function pressureChangeBand(changeHpa: number | null): ConditionBand {
+  // preserve unavailable observations instead of assigning a calm color
+  if (changeHpa === null || !Number.isFinite(changeHpa)) {
+    return unavailableBand("Three-hour pressure history unavailable");
+  }
+
+  const magnitude = Math.round(Math.abs(changeHpa) * 10) / 10;
+  const direction = changeHpa < 0 ? "fall" : "rise";
+  const detail = "Pressure change over 3 hours; weather tendency, not a discomfort prediction";
+  // distinguish steady pressure from directional movement
+  if (magnitude < 0.5) {
+    return { color: "rgb(0, 146, 63)", detail, label: "Steady" };
+  }
+  // show gradual changes with the mildest directional color
+  if (magnitude < 2) {
+    return { color: "rgb(200, 183, 68)", detail, label: `Slow ${direction}` };
+  }
+  // show ordinary pressure movement without a rapid modifier
+  if (magnitude < 3.5) {
+    return { color: "rgb(230, 181, 25)", detail, label: changeHpa < 0 ? "Falling" : "Rising" };
+  }
+  // reserve orange for rapid change in either direction
+  if (magnitude < 6) {
+    return { color: "rgb(239, 126, 31)", detail, label: `Rapid ${direction}` };
+  }
+
+  return { color: "rgb(207, 67, 55)", detail, label: `Very rapid ${direction}` };
 }
 
 // compare daylight and overall clarity alongside full-day cloud extrema

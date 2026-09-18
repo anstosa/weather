@@ -113,6 +113,7 @@ const siteRows = [
 
 const currentRecord = makeRecord({
   id: "101",
+  pressureChange3hHpa: -2.5,
   sourceId: "10",
   sourceKind: "model_current",
   sourceKey: "open-meteo-current-v1",
@@ -131,6 +132,7 @@ const forecastRecord = makeRecord({
   pm25MicrogramsPerCubicMeter: 5,
   precipitationMm: 0.1,
   precipitationRateMmPerHour: 0.1,
+  pressureChange3hHpa: 3.2,
   pressureHpa: 1018.1,
   productRunAt: "2026-08-22T05:00:00.000Z",
   providerMetadata: {
@@ -594,6 +596,7 @@ test("current accepts station and source and returns bounded public metadata", a
     siteSlug: "ballydidean",
   });
   assert.equal(body.data[0].freshness.status, "fresh");
+  assert.equal(body.data[0].pressureChange3hHpa, -2.5);
   assert.equal(body.data[0].provenance.label, "model-derived current conditions");
   assert.equal(body.data[0].metrics.pm25MicrogramsPerCubicMeter, 7);
   assert.equal(
@@ -810,6 +813,7 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
     },
   };
   assert.equal(JSON.stringify(body.data[0]), JSON.stringify(rawForecast));
+  assert.equal("pressureChange3hHpa" in body.data[0], false);
   assert.deepEqual(body.adjustmentRuntime, inactiveAdjustmentRuntime);
   assert.deepEqual(
     body.temperatureAdjustmentRuntime,
