@@ -3882,7 +3882,7 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
 });
 
 // keep cloud summaries and the final tide/sunset pair usable at every breakpoint
-test("clouds tile shows cover and the clearest farm-local hour beside the reordered cards", { timeout: 60_000 }, async () => {
+test("clouds tile shows cover and the clearest farm-local range beside the reordered cards", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -3918,17 +3918,17 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
         const response = await route.fetch();
         const body = await response.json();
         forecastReads += 1;
-        // give two earlier hours the same minimum and omit an earlier value
+        // keep a continuous noon minimum separate from a later tied hour
         body.data = body.data.map((record, index) => ({
           ...record,
-          metrics: { ...record.metrics, cloudCoverPercent: index === 1 ? null : index === 2 || index === 5 ? 0 : 100 },
+          metrics: { ...record.metrics, cloudCoverPercent: index === 1 ? null : [11, 12, 15].includes(index) ? 0 : 100 },
         })).slice(forecastDay * 24, (forecastDay + 1) * 24);
         await route.fulfill({ response, json: body });
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
       assert.equal(await tile.locator(".condition-primary").innerText(), "100%");
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*2:00AM/u);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*11 AM–1PM/u);
       assert.equal(await tile.locator(".condition-status").innerText(), "Heavy");
       assert.equal(await page.locator("[data-condition='rain'] .condition-status").innerText(), "Dry");
       assert.equal(await tile.locator(".condition-forecast").isVisible(), true);
@@ -3979,7 +3979,11 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
       assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
       assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
       assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 100%"]);
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*12:00AM/u);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*12 AM–midnight/u);
+      assert.equal(await tile.locator(".condition-secondary").evaluate(
+        // keep the longest ordinary day range inside its reserved row
+        (secondary) => secondary.scrollWidth <= secondary.clientWidth && secondary.scrollHeight <= secondary.clientHeight,
+      ), true, `all-day cloud range clips at ${width}px`);
       assert.deepEqual(errors, []);
       await page.close();
     }
@@ -4003,6 +4007,36 @@ test("clouds tile shows cover and the clearest farm-local hour beside the reorde
     assert.equal(await tile.locator(".condition-status").innerText(), "Unavailable");
     assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max —", "Min —"]);
     assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*—/u);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// disambiguate the repeated autumn hour without clipping the mobile range
+test("clouds range distinguishes repeated daylight-saving hours on mobile", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, { timezoneId: "Asia/Tokyo", viewport: { height: 900, width: 320 } });
+    await page.clock.setFixedTime(new Date("2026-11-01T20:00:00Z"));
+    // isolate the first one-am bin on the farm's twenty-five-hour day
+    await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = [{ ...body.data[0], validAt: "2026-11-01T08:00:00Z" }];
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const secondary = page.locator("[data-condition='clouds'] .condition-secondary");
+    assert.equal((await secondary.locator("strong").innerText()).replace(/\s+/gu, " "), "1 AM PDT–1 AM PST");
+    assert.equal(await secondary.evaluate(
+      // retain both zone labels inside the compact secondary row
+      (element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight,
+    ), true);
   } finally {
     await browser?.close();
     fixture.server.close();

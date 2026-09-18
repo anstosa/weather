@@ -4356,6 +4356,13 @@ td small {
     font-size: 1.45rem;
   }
 
+  /* fit clock ranges and allow repeated-hour zone labels to wrap */
+  .clouds-condition .condition-secondary strong {
+    font-size: clamp(1rem, 4.7vw, 1.45rem);
+    line-height: 1.05;
+    white-space: normal;
+  }
+
   .condition-detail {
     display: none;
   }

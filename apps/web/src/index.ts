@@ -3552,7 +3552,7 @@ function renderCurrentSkeleton(): string {
   `;
 }
 
-// show modeled cover and the earliest least-cloudy hour in today's farm forecast
+// show modeled cover and the earliest least-cloudy window in today's farm forecast
 function renderCloudsCondition(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const current = state.current.filter(
@@ -3561,16 +3561,6 @@ function renderCloudsCondition(state: DashboardState): string {
   );
   const cover = findMetric(current, "cloudCoverPercent");
   const forecast = forecastForSiteDay(state.forecast, new Date().toISOString(), site.timezone);
-  const clearest = forecast
-    .filter(
-      // do not mistake missing cover for clear skies
-      (record) => record.metrics.cloudCoverPercent !== null,
-    )
-    .toSorted(
-      // break equal-cover ties by local-day chronology without mutating the forecast
-      (left, right) => left.metrics.cloudCoverPercent! - right.metrics.cloudCoverPercent! ||
-        Date.parse(left.validAt) - Date.parse(right.validAt),
-    )[0];
 
   return renderConditionCard({
     band: cloudBand(cover),
@@ -3586,9 +3576,68 @@ function renderCloudsCondition(state: DashboardState): string {
     measurement: formatFixedMeasurement(cover, "%", 0),
     secondary: {
       label: "Clearest today",
-      measurement: formatConditionTime(clearest === undefined ? null : new Date(clearest.validAt), site.timezone),
+      measurement: clearestCloudRange(forecast, site.timezone),
     },
   });
+}
+
+// format the earliest continuous minimum-cover window within one farm-day forecast
+export function clearestCloudRange(records: readonly WeatherRecord[], timezone: string): FormattedMeasurement {
+  const minimum = minimumMetric(records, "cloudCoverPercent", false);
+
+  // keep missing forecasts distinct from clear skies
+  if (minimum === null) {
+    return { unit: "", value: "—" };
+  }
+
+  const hours = records.toSorted(
+    // preserve caller order while finding adjacent hourly bins
+    (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
+  );
+  const first = hours.findIndex(
+    // retain the earliest tied minimum rather than spanning separate windows
+    (record) => record.metrics.cloudCoverPercent === minimum,
+  );
+  const start = new Date(hours[first]!.validAt);
+  let end = start.getTime() + 3_600_000;
+
+  // include every consecutive minimum-cover hour and its full interval
+  for (const hour of hours.slice(first + 1)) {
+    // stop at higher cover, missing data or a gap in the hourly series
+    if (hour.metrics.cloudCoverPercent !== minimum || Date.parse(hour.validAt) !== end) {
+      break;
+    }
+
+    end += 3_600_000;
+  }
+
+  const day = formatWallClockParts(start, timezone);
+  const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
+  const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
+  const finish = new Date(Math.min(end, midnight));
+  const from = formatConditionTime(start, timezone);
+  const to = formatConditionTime(finish, timezone);
+  const fromClock = from.value.replace(/:00$/u, "");
+  const toClock = to.value.replace(/:00$/u, "");
+
+  // make the end-of-day boundary explicit rather than repeating twelve am
+  if (finish.getTime() === midnight) {
+    return { unit: "", value: `${fromClock} ${from.unit}–midnight` };
+  }
+
+  // disambiguate the repeated clock hour when daylight saving time ends
+  if (from.value === to.value && from.unit === to.unit) {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: timezone,
+      timeZoneName: "short",
+    });
+    return { unit: "", value: `${formatter.format(start).replace(":00", "")}–${formatter.format(finish).replace(":00", "")}` };
+  }
+
+  const startLabel = from.unit === to.unit ? fromClock : `${fromClock} ${from.unit}`;
+  return { unit: to.unit, value: `${startLabel}–${toClock}` };
 }
 
 // calculate today's evening events and sunset's change from the previous site day

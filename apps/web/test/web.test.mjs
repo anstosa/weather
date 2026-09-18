@@ -10,6 +10,7 @@ import {
   buildTidesUrl,
   buildTrendsUrl,
   buildViewerContextUrl,
+  clearestCloudRange,
   cloudBand,
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
@@ -200,6 +201,16 @@ const forecastRecord = {
   },
   validAt: "2026-08-22T06:00:00.000Z",
 };
+
+// build one hourly cloud forecast fixture
+function cloudForecastRecord(validAt, cloudCoverPercent, id = validAt) {
+  return {
+    ...forecastRecord,
+    id,
+    metrics: { ...forecastRecord.metrics, cloudCoverPercent },
+    validAt,
+  };
+}
 
 const physicalRecord = {
   ...record,
@@ -1138,8 +1149,105 @@ test("sunset change stays unavailable for the first sunset after polar day", () 
   assert.equal(today.sunsetChangeMinutes, null);
 });
 
-// select the earliest minimum in the farm day regardless of forecast order or stale observations
-test("clouds tile shows model cover and the earliest clearest farm-local hour", (context) => {
+// preserve the earliest continuous minimum through ordering, gaps and missing values
+test("clearest cloud range selects the earliest continuous minimum without mutation", () => {
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T20:00:00Z", 12),
+      cloudForecastRecord("2026-09-12T21:00:00Z", 12),
+      cloudForecastRecord("2026-09-12T22:00:00Z", 30),
+    ], site.timezone),
+    { unit: "PM", value: "1–3" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T18:00:00Z", 12),
+      cloudForecastRecord("2026-09-12T19:00:00Z", 12),
+    ], site.timezone),
+    { unit: "PM", value: "11 AM–1" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T20:00:00Z", 12),
+      cloudForecastRecord("2026-09-12T21:00:00Z", 30),
+      cloudForecastRecord("2026-09-12T22:00:00Z", 12),
+    ], site.timezone),
+    { unit: "PM", value: "1–2" },
+  );
+
+  const unsorted = [
+    cloudForecastRecord("2026-09-12T21:00:00Z", 12, "later"),
+    cloudForecastRecord("2026-09-12T20:00:00Z", 12, "earlier"),
+  ];
+  assert.deepEqual(clearestCloudRange(unsorted, site.timezone), { unit: "PM", value: "1–3" });
+  assert.deepEqual(
+    unsorted.map(
+      // confirm sorting leaves the caller's order untouched
+      (entry) => entry.id,
+    ),
+    ["later", "earlier"],
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T20:00:00Z", 12),
+      cloudForecastRecord("2026-09-12T22:00:00Z", 12),
+    ], site.timezone),
+    { unit: "PM", value: "1–2" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T20:00:00Z", 12),
+      cloudForecastRecord("2026-09-12T21:00:00Z", null),
+      cloudForecastRecord("2026-09-12T22:00:00Z", 12),
+    ], site.timezone),
+    { unit: "PM", value: "1–2" },
+  );
+});
+
+// cap cloud ranges at the site-day boundary and preserve absent forecasts
+test("clearest cloud range formats midnight and all-day windows", () => {
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-13T06:00:00Z", 12)], site.timezone),
+    { unit: "", value: "11 PM–midnight" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-13T06:30:00Z", 12)], site.timezone),
+    { unit: "", value: "11:30 PM–midnight" },
+  );
+  const allDay = Array.from(
+    { length: 24 },
+    // fill every hourly bin in the farm day
+    (_, hour) => cloudForecastRecord(new Date(Date.parse("2026-09-12T07:00:00Z") + hour * 3_600_000).toISOString(), 12),
+  );
+  assert.deepEqual(clearestCloudRange(allDay, site.timezone), { unit: "", value: "12 AM–midnight" });
+  assert.deepEqual(clearestCloudRange([], site.timezone), { unit: "", value: "—" });
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-12T20:00:00Z", null)], site.timezone),
+    { unit: "", value: "—" },
+  );
+});
+
+// render literal elapsed hours across minute and daylight-saving boundaries
+test("clearest cloud range formats minutes and daylight-saving transitions", () => {
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-12T20:30:00Z", 12)], site.timezone),
+    { unit: "PM", value: "1:30–2:30" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-03-08T09:00:00Z", 12),
+      cloudForecastRecord("2026-03-08T10:00:00Z", 12),
+    ], site.timezone),
+    { unit: "AM", value: "1–4" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-11-01T08:00:00Z", 12)], site.timezone),
+    { unit: "", value: "1 AM PDT–1 AM PST" },
+  );
+});
+
+// select the earliest minimum range in the farm day regardless of forecast order or stale observations
+test("clouds tile shows model cover and the earliest clearest farm-local range", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-13T05:00:00Z") });
   const forecasts = [
     ["2026-09-13T07:00:00Z", 0],
@@ -1168,7 +1276,7 @@ test("clouds tile shows model cover and the earliest clearest farm-local hour", 
   assert.ok(tile);
   assert.match(tile, /class="condition-primary"><strong>42<small>%<\/small><\/strong>/u);
   assert.match(tile, /class="condition-status condition-status-dark">[\s\S]*?<span>Light<\/span>/u);
-  assert.match(tile, /class="condition-secondary-divider">Clearest today<\/span>\s*<strong>12:00<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary-divider">Clearest today<\/span>\s*<strong>12–1<small>PM<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>30<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>12<small>%<\/small><\/strong>/u);
   assert.doesNotMatch(tile, /Modeled|NaN|Invalid/u);
   assert.equal((tile.match(/condition-forecast-reading condition-forecast-tone-neutral/gu) ?? []).length, 2);
@@ -1179,7 +1287,7 @@ test("clouds tile shows model cover and the earliest clearest farm-local hour", 
   // change the calendar day independently of old current observations
   context.mock.timers.setTime(new Date("2026-09-13T07:00:00Z").getTime());
   const nextDay = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
-  assert.match(nextDay, /Clearest today<\/span>\s*<strong>12:00<small>AM<\/small>/u);
+  assert.match(nextDay, /Clearest today<\/span>\s*<strong>12–1<small>AM<\/small>/u);
   assert.match(nextDay, /condition-forecast-label">Max<\/span> <strong>0<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>0<small>%<\/small><\/strong>/u);
 });
 
@@ -1189,10 +1297,10 @@ test("clouds tile handles clear skies and missing current or forecast cover", (c
 
   // exercise independent availability of both cloud statistics
   for (const [cover, forecastCover, expectedStatus, expectedCover, expectedTime, expectedRange] of [
-    [0, 0, /<span>Clear<\/span>/u, /<strong>0<small>%<\/small><\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u, /Max<\/span> <strong>0<small>%<\/small><\/strong>[\s\S]*?Min<\/span> <strong>0<small>%<\/small><\/strong>/u],
+    [0, 0, /<span>Clear<\/span>/u, /<strong>0<small>%<\/small><\/strong>/u, /<strong>1–2<small>PM<\/small><\/strong>/u, /Max<\/span> <strong>0<small>%<\/small><\/strong>[\s\S]*?Min<\/span> <strong>0<small>%<\/small><\/strong>/u],
     [null, null, /<span>Unavailable<\/span>/u, /<strong>—<\/strong>/u, /<strong>—<\/strong>/u, /Max<\/span> <strong>—<\/strong>[\s\S]*?Min<\/span> <strong>—<\/strong>/u],
     [42, null, /<span>Light<\/span>/u, /<strong>42<small>%<\/small><\/strong>/u, /<strong>—<\/strong>/u, /Max<\/span> <strong>—<\/strong>[\s\S]*?Min<\/span> <strong>—<\/strong>/u],
-    [null, 12, /<span>Unavailable<\/span>/u, /<strong>—<\/strong>/u, /<strong>1:00<small>PM<\/small><\/strong>/u, /Max<\/span> <strong>12<small>%<\/small><\/strong>[\s\S]*?Min<\/span> <strong>12<small>%<\/small><\/strong>/u],
+    [null, 12, /<span>Unavailable<\/span>/u, /<strong>—<\/strong>/u, /<strong>1–2<small>PM<\/small><\/strong>/u, /Max<\/span> <strong>12<small>%<\/small><\/strong>[\s\S]*?Min<\/span> <strong>12<small>%<\/small><\/strong>/u],
   ]) {
     const state = {
       ...new WeatherDashboardController({ storage: null }).state,
