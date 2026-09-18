@@ -3936,8 +3936,8 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
       assert.equal(await tile.locator(".condition-primary").innerText(), "100%");
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest daytime\s*11 AM–1PM/u);
-      assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Clearest overall\s*12–1AM/u);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest\s*11 AM–1PM/u);
+      assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Overnight\s*12–1AM/u);
       assert.equal(await tile.locator(".condition-status").innerText(), "Heavy");
       assert.equal(await page.locator("[data-condition='rain'] .condition-status").innerText(), "Dry");
       assert.equal(await tile.locator(".condition-forecast").isVisible(), true);
@@ -3954,10 +3954,19 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
           const extrema = card.querySelector(".condition-forecast");
           const daytime = secondary.querySelector(":scope > strong");
           const overall = secondary.querySelector(".condition-secondary-comparison strong");
+          const divider = secondary.querySelector(".condition-secondary-divider");
+          const overnight = secondary.querySelector(".condition-secondary-comparison > span");
+          const tideLabel = document.querySelector("[data-condition='tide'] .condition-forecast-label");
+          const dividerLine = getComputedStyle(divider, "::after");
           return primary.getBoundingClientRect().right <= extrema.getBoundingClientRect().left &&
             extrema.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top &&
             daytime.getBoundingClientRect().right < overall.getBoundingClientRect().left &&
-            Math.abs(daytime.getBoundingClientRect().top - overall.getBoundingClientRect().top) < 1 &&
+            Math.abs(divider.getBoundingClientRect().width - secondary.getBoundingClientRect().width) < 1 &&
+            dividerLine.content !== "none" && Number.parseFloat(dividerLine.width) > 20 &&
+            divider.getBoundingClientRect().bottom < overnight.getBoundingClientRect().top &&
+            overnight.getBoundingClientRect().bottom <= overall.getBoundingClientRect().top &&
+            getComputedStyle(overnight).fontSize === getComputedStyle(tideLabel).fontSize &&
+            Number.parseFloat(getComputedStyle(overall).fontSize) < Number.parseFloat(getComputedStyle(daytime).fontSize) &&
             label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
             [card, label, primary, secondary, extrema].every(
               // require full content width at narrow breakpoints
@@ -3992,8 +4001,8 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
       assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
       assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest daytime\s*7 AM–7PM/u);
-      assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Clearest overall\s*12–1AM/u);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest\s*7 AM–7PM/u);
+      assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Overnight\s*12–1AM/u);
       assert.equal(await tile.locator(".condition-secondary").evaluate(
         // keep a full daylight range inside its reserved row
         (secondary) => secondary.scrollWidth <= secondary.clientWidth && secondary.scrollHeight <= secondary.clientHeight,
@@ -4020,7 +4029,7 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
     assert.equal(await tile.locator(".condition-primary").innerText(), "—");
     assert.equal(await tile.locator(".condition-status").innerText(), "Unavailable");
     assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max —", "Min —"]);
-    assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest daytime\s*—/u);
+    assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest\s*—/u);
     assert.equal(await tile.locator(".condition-secondary-comparison").count(), 0);
   } finally {
     await browser?.close();

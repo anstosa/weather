@@ -3519,7 +3519,7 @@ function renderCurrentSkeleton(): string {
     { className: "temperature-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }, { label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }] }, icon: "device_thermostat", label: "Temperature", secondary: "Air Temp" },
     { className: "wind-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "mph", value: "00" } }, { label: "Max", measurement: { unit: "mph", value: "00" } }] }, icon: "air", label: "Wind", secondary: "Gusts" },
     { className: "rain-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "in/h", value: "0.00" } }, { label: "Total", measurement: { unit: "in", value: "0.00" } }] }, icon: "rainy", label: "Rain", secondary: "Accumulation" },
-    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest daytime" },
+    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
@@ -3581,9 +3581,9 @@ function renderCloudsCondition(state: DashboardState): string {
     label: "Clouds",
     measurement: formatFixedMeasurement(cover, "%", 0),
     secondary: {
-      label: "Clearest daytime",
+      label: "Clearest",
       measurement: daytime,
-      comparison: differentRange ? { label: "Clearest overall", measurement: overall } : undefined,
+      comparison: differentRange ? { label: "Overnight", measurement: overall } : undefined,
     },
   });
 }

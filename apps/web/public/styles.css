@@ -1010,28 +1010,32 @@ h2 {
   align-content: start;
 }
 
-.clouds-condition .condition-secondary-paired > span {
-  grid-column: 1;
-  grid-row: 1;
-  white-space: normal;
+/* retain the full-width clearest divider above both ranges */
+.clouds-condition .condition-secondary-paired > strong {
+  align-self: end;
 }
 
+/* mirror tide's next-low label and subordinate reading */
 .condition-secondary-comparison {
-  display: contents;
-}
-
-.condition-secondary-comparison > span {
+  display: grid;
   grid-column: 2;
-  grid-row: 1;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: 0.76rem;
-  font-weight: 700;
+  grid-row: 2;
+  align-self: end;
+  gap: 0.05rem;
+  opacity: 0.75;
   text-align: right;
 }
 
-.condition-secondary-comparison > strong {
-  grid-column: 2;
-  grid-row: 2;
+.condition-secondary-comparison > span {
+  font-size: 0.58rem;
+  font-weight: 650;
+}
+
+.clouds-condition .condition-secondary-comparison > strong {
+  font-size: clamp(1rem, 1.8vw, 1.35rem);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
   text-align: right;
 }
 
@@ -4399,7 +4403,7 @@ td small {
     white-space: normal;
   }
 
-  /* reserve equal room for both clock ranges and their wrapped labels */
+  /* reserve room for wrapped ranges beneath the shared divider */
   .clouds-condition .condition-body-secondary {
     --condition-secondary-height: 5.5rem;
   }
@@ -4409,12 +4413,15 @@ td small {
   }
 
   .clouds-condition .condition-secondary-comparison > span {
-    font-size: 0.62rem;
+    font-size: 0.48rem;
   }
 
   .clouds-condition .condition-secondary-paired strong {
-    font-size: clamp(0.85rem, 3.8vw, 1rem);
     overflow-wrap: anywhere;
+  }
+
+  .clouds-condition .condition-secondary-comparison > strong {
+    font-size: 0.92rem;
   }
 
   .clouds-condition .condition-secondary-paired small {
