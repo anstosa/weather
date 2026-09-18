@@ -1083,7 +1083,7 @@ test("extended forecast retains raw values after 168 hours without an infobox", 
 // compare solar events against independent seasonal reference instants
 // https://gml.noaa.gov/grad/solcalc/table.php?lat=47.95043&lon=-122.42797&year=2026
 // https://github.com/mourner/suncalc/blob/0ed9f4981b3e2f7a6bde7b340eb965488128c3c1/index.js
-test("evening solar events match the farm's summer, winter, and autumn reference times", () => {
+test("solar events match the farm's summer, winter, and autumn reference times", () => {
   const references = [
     { day: "2026-09-12", goldenHourStart: "2026-09-13T01:46:59Z", sunset: "2026-09-13T02:27:49Z" },
     { day: "2026-01-15", goldenHourStart: "2026-01-15T23:54:04Z", sunset: "2026-01-16T00:44:36Z" },
@@ -1095,9 +1095,15 @@ test("evening solar events match the farm's summer, winter, and autumn reference
     const actual = eveningSunTimes(site, new Date(`${reference.day}T20:00:00Z`));
     assert.ok(Math.abs(actual.sunset.getTime() - Date.parse(reference.sunset)) < 15_000);
     assert.ok(Math.abs(actual.goldenHourStart.getTime() - Date.parse(reference.goldenHourStart)) < 15_000);
+    assert.ok(actual.sunrise < actual.sunset);
     assert.ok(actual.goldenHourStart < actual.sunset);
     assert.notEqual(actual.sunset.getTime() - actual.goldenHourStart.getTime(), 3_600_000);
   }
+
+  // retain an independent NOAA minute reference for both daylight boundaries
+  const september = eveningSunTimes(site, new Date("2026-09-17T20:00:00Z"));
+  assert.ok(Math.abs(september.sunrise.getTime() - Date.parse("2026-09-17T13:50:00Z")) < 30_000);
+  assert.ok(Math.abs(september.sunset.getTime() - Date.parse("2026-09-18T02:17:00Z")) < 30_000);
 });
 
 // keep the selected day independent of UTC midnight and the last weather sample
@@ -1119,6 +1125,7 @@ test("solar times use the site day across spring and autumn clock changes", () =
   ]) {
     const times = eveningSunTimes(site, new Date(before));
     assert.deepEqual(eveningSunTimes(site, new Date(after)), times);
+    assert.equal(toSiteWallClock(times.sunrise.toISOString(), site.timezone).slice(0, 10), expectedDay);
     assert.equal(toSiteWallClock(times.sunset.toISOString(), site.timezone).slice(0, 10), expectedDay);
   }
 });
@@ -1127,6 +1134,7 @@ test("solar times use the site day across spring and autumn clock changes", () =
 test("solar events keep the requested local day across the international date line", () => {
   const island = { latitude: 1.8721, longitude: -157.4278, timezone: "Pacific/Kiritimati" };
   const times = eveningSunTimes(island, new Date("2026-09-11T22:00:00Z"));
+  assert.equal(toSiteWallClock(times.sunrise.toISOString(), island.timezone).slice(0, 10), "2026-09-12");
   assert.equal(toSiteWallClock(times.sunset.toISOString(), island.timezone).slice(0, 10), "2026-09-12");
   assert.equal(toSiteWallClock(times.goldenHourStart.toISOString(), island.timezone).slice(0, 10), "2026-09-12");
 });
@@ -1139,6 +1147,7 @@ test("solar events return no time when the sun never crosses the requested altit
   for (const day of ["2026-06-21", "2026-12-21"]) {
     assert.deepEqual(eveningSunTimes(polarSite, new Date(`${day}T12:00:00Z`)), {
       goldenHourStart: null,
+      sunrise: null,
       sunset: null,
       sunsetChangeMinutes: null,
     });
@@ -1269,17 +1278,55 @@ test("clearest cloud range formats minutes and daylight-saving transitions", () 
   );
 });
 
-// retain full-day extrema while selecting the earliest tied daylight window
+// clip overlapping hourly bins to the exact astronomical daylight interval
+test("clearest cloud range clips partial sunrise and sunset hours", () => {
+  const daylight = {
+    sunrise: new Date("2026-09-12T14:17:00Z"),
+    sunset: new Date("2026-09-13T02:17:00Z"),
+  };
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T13:00:00Z", 5),
+      cloudForecastRecord("2026-09-12T14:00:00Z", 20),
+      cloudForecastRecord("2026-09-12T15:00:00Z", 20),
+    ], site.timezone, daylight),
+    { unit: "AM", value: "7:17–9" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-13T00:00:00Z", 20),
+      cloudForecastRecord("2026-09-13T01:00:00Z", 20),
+      cloudForecastRecord("2026-09-13T02:00:00Z", 20),
+      cloudForecastRecord("2026-09-13T03:00:00Z", 5),
+    ], site.timezone, daylight),
+    { unit: "PM", value: "5–7:17" },
+  );
+});
+
+// require both astronomical boundaries before publishing a daylight range
+test("clearest cloud range stays unavailable without sunrise or sunset", () => {
+  const forecast = [cloudForecastRecord("2026-09-12T20:00:00Z", 12)];
+
+  // verify each absent boundary independently
+  for (const daylight of [
+    { sunrise: null, sunset: new Date("2026-09-13T02:17:00Z") },
+    { sunrise: new Date("2026-09-12T14:17:00Z"), sunset: null },
+  ]) {
+    assert.deepEqual(clearestCloudRange(forecast, site.timezone, daylight), { unit: "", value: "—" });
+  }
+});
+
+// retain full-day extrema while enforcing astronomical daylight over modeled light
 test("clouds tile excludes nighttime extrema from the clearest daylight range", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
   const tile = renderCloudTile([
-    classifiedCloudForecastRecord("2026-09-12T08:00:00Z", 5, 0, 0),
+    classifiedCloudForecastRecord("2026-09-12T08:00:00Z", 5, 100, 2),
     classifiedCloudForecastRecord("2026-09-12T15:00:00Z", 20, 100, 2),
     classifiedCloudForecastRecord("2026-09-12T16:00:00Z", 20, 100, 2),
     classifiedCloudForecastRecord("2026-09-12T17:00:00Z", 30, 100, 2),
     classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 20, 100, 2),
     classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 20, 100, 2),
-    classifiedCloudForecastRecord("2026-09-13T06:00:00Z", 95, 0, 0),
+    classifiedCloudForecastRecord("2026-09-13T06:00:00Z", 95, 100, 2),
   ]);
   assert.match(tile, /Clearest today<\/span>\s*<strong>8–10<small>AM<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
@@ -1296,31 +1343,27 @@ test("clouds tile leaves the clearest daylight range unavailable for night-only 
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
 });
 
-// enforce radiation authority before the ultraviolet fallback
-test("clouds tile classifies daylight from radiation before ultraviolet", (context) => {
+// keep astronomically sunlit hours regardless of missing model-light signals
+test("clouds tile does not hide sunlit hours with zero or missing modeled light", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
-  const radiationTile = renderCloudTile([
-    classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 5, 0, 3),
-    classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 25, 100, 0),
+  const tile = renderCloudTile([
+    classifiedCloudForecastRecord("2026-09-12T08:00:00Z", 5, 100, 2),
+    classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 20, 0, 0),
+    classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 20, null, null),
   ]);
-  assert.match(radiationTile, /Clearest today<\/span>\s*<strong>2–3<small>PM<\/small><\/strong>/u);
-
-  const ultravioletTile = renderCloudTile([
-    classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 5, null, 0),
-    classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 25, null, 2),
-  ]);
-  assert.match(ultravioletTile, /Clearest today<\/span>\s*<strong>2–3<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /Clearest today<\/span>\s*<strong>1–3<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>20<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
 });
 
-// classify missing light metrics by the selected site's local clock
-test("clouds tile uses the site-local daylight fallback", (context) => {
+// apply astronomical bounds using the selected site's coordinates and timezone
+test("clouds tile uses the selected site's astronomical daylight", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-11T20:00:00Z") });
-  const foreignSite = { ...site, timezone: "Pacific/Kiritimati" };
+  const foreignSite = { ...site, latitude: 1.8721, longitude: -157.4278, timezone: "Pacific/Kiritimati" };
   const tile = renderCloudTile([
-    classifiedCloudForecastRecord("2026-09-11T16:00:00Z", 5, null, null),
+    classifiedCloudForecastRecord("2026-09-11T11:00:00Z", 5, null, null),
     classifiedCloudForecastRecord("2026-09-11T17:00:00Z", 20, null, null),
     classifiedCloudForecastRecord("2026-09-11T18:00:00Z", 20, null, null),
-    classifiedCloudForecastRecord("2026-09-12T05:00:00Z", 95, null, null),
+    classifiedCloudForecastRecord("2026-09-12T09:00:00Z", 95, null, null),
   ], foreignSite);
   assert.match(tile, /Clearest today<\/span>\s*<strong>7–9<small>AM<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);

@@ -4022,6 +4022,47 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
   }
 });
 
+// clip both hourly edges to the farm's sunrise and sunset
+test("clouds range stays within sunrise and sunset on desktop and mobile", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // retain the full daylight range in a foreign browser timezone
+    for (const width of [1440, 320]) {
+      const page = await createFixturePage(browser, { timezoneId: "Asia/Tokyo", viewport: { height: 900, width } });
+      await page.clock.setFixedTime(new Date("2026-09-17T20:00:00Z"));
+      // keep night extrema distinct and modeled light unavailable
+      await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        // include partial dawn and dusk bins in the tied daylight minimum
+        body.data = body.data.slice(0, 24).map((record, hour) => ({
+          ...record,
+          validAt: new Date(Date.parse("2026-09-17T07:00:00Z") + hour * 3_600_000).toISOString(),
+          metrics: { ...record.metrics, cloudCoverPercent: hour === 0 ? 0 : hour === 23 ? 100 : 10, solarRadiationWm2: null, uvIndex: null },
+        }));
+        await route.fulfill({ response, json: body });
+      });
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      const tile = page.locator("[data-condition='clouds']");
+      assert.equal((await tile.locator(".condition-secondary strong").innerText()).replace(/\s+/gu, " "), "6:50 AM–7:17PM");
+      assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
+      assert.equal(await tile.locator(".condition-secondary").evaluate(
+        // retain the minute-precise range without clipping its reserved row
+        (element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight,
+      ), true, `sunrise–sunset range clips at ${width}px`);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // exclude repeated nighttime hours while retaining their full-day extrema
 test("clouds range stays unavailable for a night-only daylight-saving forecast", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();

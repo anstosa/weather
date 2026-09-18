@@ -3560,11 +3560,9 @@ function renderCloudsCondition(state: DashboardState): string {
     (record) => record.provenance.sourceKind === "model_current",
   );
   const cover = findMetric(current, "cloudCoverPercent");
-  const forecast = forecastForSiteDay(state.forecast, new Date().toISOString(), site.timezone);
-  const daylight = forecast.filter(
-    // use the forecast's day/night classification without narrowing daily extrema
-    (hour) => forecastDaylightState(hour, site.timezone),
-  );
+  const now = new Date();
+  const forecast = forecastForSiteDay(state.forecast, now.toISOString(), site.timezone);
+  const sun = eveningSunTimes(site, now);
 
   return renderConditionCard({
     band: cloudBand(cover),
@@ -3580,30 +3578,42 @@ function renderCloudsCondition(state: DashboardState): string {
     measurement: formatFixedMeasurement(cover, "%", 0),
     secondary: {
       label: "Clearest today",
-      measurement: clearestCloudRange(daylight, site.timezone),
+      measurement: clearestCloudRange(forecast, site.timezone, sun),
     },
   });
 }
 
 // format the earliest continuous minimum-cover window within one farm-day forecast
-export function clearestCloudRange(records: readonly WeatherRecord[], timezone: string): FormattedMeasurement {
-  const minimum = minimumMetric(records, "cloudCoverPercent", false);
+export function clearestCloudRange(
+  records: readonly WeatherRecord[],
+  timezone: string,
+  daylight?: Readonly<{ sunrise: Date | null; sunset: Date | null }>,
+): FormattedMeasurement {
+  const hours = records.filter(
+    // reject bins wholly outside daylight before choosing the minimum
+    (hour) => daylight === undefined || (
+      daylight.sunrise !== null && daylight.sunset !== null &&
+      Date.parse(hour.validAt) < daylight.sunset.getTime() &&
+      Date.parse(hour.validAt) + 3_600_000 > daylight.sunrise.getTime()
+    ),
+  ).toSorted(
+    // preserve caller order while finding adjacent hourly bins
+    (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
+  );
+  const minimum = minimumMetric(hours, "cloudCoverPercent", false);
 
   // keep missing forecasts distinct from clear skies
   if (minimum === null) {
     return { unit: "", value: "—" };
   }
 
-  const hours = records.toSorted(
-    // preserve caller order while finding adjacent hourly bins
-    (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
-  );
   const first = hours.findIndex(
     // retain the earliest tied minimum rather than spanning separate windows
     (record) => record.metrics.cloudCoverPercent === minimum,
   );
-  const start = new Date(hours[first]!.validAt);
-  let end = start.getTime() + 3_600_000;
+  const firstHour = Date.parse(hours[first]!.validAt);
+  const start = new Date(Math.max(firstHour, daylight?.sunrise?.getTime() ?? firstHour));
+  let end = firstHour + 3_600_000;
 
   // include every consecutive minimum-cover hour and its full interval
   for (const hour of hours.slice(first + 1)) {
@@ -3618,7 +3628,7 @@ export function clearestCloudRange(records: readonly WeatherRecord[], timezone: 
   const day = formatWallClockParts(start, timezone);
   const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
   const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
-  const finish = new Date(Math.min(end, midnight));
+  const finish = new Date(Math.min(end, midnight, daylight?.sunset?.getTime() ?? midnight));
   const from = formatConditionTime(start, timezone);
   const to = formatConditionTime(finish, timezone);
   const fromClock = from.value.replace(/:00$/u, "");
@@ -3644,11 +3654,11 @@ export function clearestCloudRange(records: readonly WeatherRecord[], timezone: 
   return { unit: to.unit, value: `${startLabel}–${toClock}` };
 }
 
-// calculate today's evening events and sunset's change from the previous site day
+// calculate sunrise, evening events and sunset's change from the previous site day
 export function eveningSunTimes(
   site: Pick<WeatherSite, "latitude" | "longitude" | "timezone">,
   now = new Date(),
-): Readonly<{ goldenHourStart: Date | null; sunset: Date | null; sunsetChangeMinutes: number | null }> {
+): Readonly<{ goldenHourStart: Date | null; sunrise: Date | null; sunset: Date | null; sunsetChangeMinutes: number | null }> {
   const day = formatWallClockParts(now, site.timezone);
   const midnight = Date.UTC(day.year, day.month - 1, day.day);
   const localNoon = Date.parse(fromSiteWallClock(
@@ -3658,8 +3668,8 @@ export function eveningSunTimes(
   const solarNoon = midnight + (720 - 4 * site.longitude) * 60_000;
   // align civil and solar dates across the international date line
   const solarDay = midnight + Math.round((localNoon - solarNoon) / 86_400_000) * 86_400_000;
-  const sunset = eveningSolarEvent(solarDay, site.latitude, site.longitude, -0.833);
-  const previousSunset = eveningSolarEvent(solarDay - 86_400_000, site.latitude, site.longitude, -0.833);
+  const sunset = solarEvent(solarDay, site.latitude, site.longitude, -0.833);
+  const previousSunset = solarEvent(solarDay - 86_400_000, site.latitude, site.longitude, -0.833);
   let sunsetChangeMinutes: number | null = null;
 
   // compare the displayed local minutes including daylight-saving clock changes
@@ -3671,20 +3681,22 @@ export function eveningSunTimes(
 
   return {
     // use the evening +6° crossing rather than a fixed hour before sunset
-    goldenHourStart: eveningSolarEvent(solarDay, site.latitude, site.longitude, 6),
+    goldenHourStart: solarEvent(solarDay, site.latitude, site.longitude, 6),
+    sunrise: solarEvent(solarDay, site.latitude, site.longitude, -0.833, "rising"),
     sunset,
     sunsetChangeMinutes,
   };
 }
 
-// solve NOAA's descending hour angle with event-time declination and refraction
+// solve NOAA's rising or descending hour angle with event-time declination and refraction
 // https://gml.noaa.gov/grad/solcalc/main.js
 // golden-hour convention: https://github.com/mourner/suncalc
-function eveningSolarEvent(
+function solarEvent(
   midnight: number,
   latitude: number,
   longitude: number,
   altitude: number,
+  direction: "rising" | "descending" = "descending",
 ): Date | null {
   const radians = Math.PI / 180;
   const latitudeRadians = latitude * radians;
@@ -3720,7 +3732,7 @@ function eveningSolarEvent(
       return null;
     }
 
-    const hourAngle = Math.acos(cosineHourAngle) / radians;
+    const hourAngle = Math.acos(cosineHourAngle) / radians * (direction === "rising" ? -1 : 1);
     instant = midnight + (720 - 4 * longitude + 4 * hourAngle - equationMinutes) * 60_000;
   }
 
