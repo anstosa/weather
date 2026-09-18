@@ -1825,10 +1825,10 @@ test("dashboard separates current conditions from the historical logs route", ()
     ),
     true,
   );
-  assert.match(html, /Feels like/u);
-  assert.match(nearFeelsHtml, /Feels like/u);
+  assert.match(html, /Air Temp/u);
+  assert.match(nearFeelsHtml, /Air Temp/u);
   assert.match(html, /Gusts/u);
-  assert.match(html, /Comfortable outdoor temperature/u);
+  assert.match(html, /Approaching the comfort range/u);
   assert.match(html, /Peak reading 16 mph/u);
   assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 6);
   assert.match(html, /data-condition="tide"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?<span>High<\/span>[\s\S]*?<div class="condition-primary"><strong>8\.2<small>ft<\/small><\/strong>[\s\S]*?class="condition-secondary-divider">Direction<\/span>[\s\S]*?<strong>Rising<\/strong>/u);
@@ -1840,7 +1840,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((html.match(/condition-forecast-tone-yellow/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 5);
   assert.doesNotMatch(html, /Next 24h/u);
-  assert.match(html, /data-condition="temperature"[\s\S]*?Max[\s\S]*?61<small>°F[\s\S]*?Min[\s\S]*?61<small>°F[\s\S]*?Max[\s\S]*?60<small>°F[\s\S]*?Min[\s\S]*?60<small>°F/u);
+  assert.match(html, /data-condition="temperature"[\s\S]*?Max[\s\S]*?60<small>°F[\s\S]*?Min[\s\S]*?60<small>°F[\s\S]*?Max[\s\S]*?61<small>°F[\s\S]*?Min[\s\S]*?61<small>°F/u);
   assert.match(html, /data-condition="wind"[\s\S]*?Max[\s\S]*?9 <small>mph[\s\S]*?Max[\s\S]*?16 <small>mph/u);
   assert.match(html, /data-condition="rain"[\s\S]*?Rain[\s\S]*?Accumulation[\s\S]*?0\.1<small>in[\s\S]*?Max[\s\S]*?0\.02 <small>in\/h[\s\S]*?Total[\s\S]*?0\.01 <small>in/u);
   assert.match(html, /data-condition="air-quality"[\s\S]*?Max[\s\S]*?<strong>7<\/strong>/u);
@@ -1902,13 +1902,13 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((initialLogsHtml.match(/class="history-card skeleton-history-card"/gu) ?? []).length, 25);
   assert.doesNotMatch(initialLogsHtml, /No records match these filters/u);
   assert.doesNotMatch(html, /skeleton-region|skeleton-history-row|skeleton-history-card/u);
-  assert.match(html, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>61<small>°F<\/small>/u);
-  assert.match(html, /Feels like[\s\S]*?<strong>60<small>°F<\/small>/u);
+  assert.match(html, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>60<small>°F<\/small>/u);
+  assert.match(html, /Air Temp[\s\S]*?<strong>61<small>°F<\/small>/u);
   assert.match(html, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>9<small>mph SW<\/small>/u);
   assert.match(html, /Gusts[\s\S]*?<strong>16<small>mph<\/small>/u);
   assert.match(html, /data-condition="air-quality"[\s\S]*?<div class="condition-primary"><strong>7<\/strong>/u);
   assert.match(html, /data-condition="pressure"[\s\S]*?<div class="condition-primary"><strong>\+0\.1<small>%<\/small>/u);
-  assert.match(firstPartyHtml, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>50<small>°F<\/small>/u);
+  assert.match(firstPartyHtml, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>49<small>°F<\/small>/u);
   assert.match(firstPartyHtml, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>2<small>mph SW<\/small>/u);
   const selectedHtml = renderWeatherDashboard({
     ...state,
@@ -1935,6 +1935,30 @@ test("dashboard separates current conditions from the historical logs route", ()
     logsHtml.indexOf('class="credits"') > logsHtml.indexOf('id="history-heading"'),
     true,
   );
+});
+
+// keep apparent temperature primary without masking unavailable readings
+test("temperature tile leads with feels-like comfort and retains independent air temperature", () => {
+  // cover different comfort bands, genuine zero, and missing measurements
+  for (const [apparentTemperatureC, temperatureC, expectedPrimary, expectedAir, expectedStatus] of [
+    [0, 20, "0", "20", "Freezing"],
+    [null, 20, "—", "20", "Unavailable"],
+    [20, null, "20", "—", "Comfortable"],
+  ]) {
+    const state = {
+      ...forecastState([], null),
+      current: [{ ...record, metrics: { ...record.metrics, apparentTemperatureC, temperatureC } }],
+      units: { ...DEFAULT_UNIT_PREFERENCES, temperature: "celsius" },
+    };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="temperature"[\s\S]*?<\/article>/u)?.[0];
+    const primary = tile.match(/class="condition-primary"><strong>([^<]+)/u)?.[1];
+    const secondary = tile.match(/class="condition-secondary">[\s\S]*?<strong>([^<]+)/u)?.[1];
+    assert.equal(primary, expectedPrimary);
+    assert.equal(secondary, expectedAir);
+    assert.ok(tile.includes(`<span>${expectedStatus}</span>`));
+    assert.match(tile, /class="condition-secondary-divider">Air Temp<\/span>/u);
+    assert.doesNotMatch(tile, /Feels like/u);
+  }
 });
 
 test("measurement formatting uses US consumer defaults and supports every configured alternative", () => {

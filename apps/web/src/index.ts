@@ -3359,15 +3359,15 @@ function renderCurrent(state: DashboardState): string {
   return `
     <section class="current-conditions" aria-label="Current conditions">
       ${renderConditionCard({
-          band: temperatureBand(current.metrics.temperatureC),
+          band: temperatureBand(current.metrics.apparentTemperatureC),
           className: "temperature-condition",
           icon: "device_thermostat",
           label: "Temperature",
-          measurement: formatMeasurement(current.metrics.temperatureC, "temperature", state.units, 0),
+          measurement: formatMeasurement(current.metrics.apparentTemperatureC, "temperature", state.units, 0),
           forecast: forecastTemperature(forecast, state.units, useForecastAdjustments),
           secondary: {
-            label: "Feels like",
-            measurement: formatMeasurement(current.metrics.apparentTemperatureC, "temperature", state.units, 0),
+            label: "Air Temp",
+            measurement: formatMeasurement(current.metrics.temperatureC, "temperature", state.units, 0),
           },
         })}
       ${renderConditionCard({
@@ -3516,7 +3516,7 @@ function renderCurrentSkeleton(): string {
     secondary?: string;
     detail?: string | null;
   }>[] = [
-    { className: "temperature-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }, { label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }] }, icon: "device_thermostat", label: "Temperature", secondary: "Feels like" },
+    { className: "temperature-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }, { label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }] }, icon: "device_thermostat", label: "Temperature", secondary: "Air Temp" },
     { className: "wind-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "mph", value: "00" } }, { label: "Max", measurement: { unit: "mph", value: "00" } }] }, icon: "air", label: "Wind", secondary: "Gusts" },
     { className: "rain-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "in/h", value: "0.00" } }, { label: "Total", measurement: { unit: "in", value: "0.00" } }] }, icon: "rainy", label: "Rain", secondary: "Accumulation" },
     { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest today" },
@@ -11059,7 +11059,7 @@ function forecastRange(
   };
 }
 
-// format air and apparent temperature ranges
+// pair forecast ranges with apparent temperature first
 function forecastTemperature(
   records: readonly WeatherRecord[],
   units: UnitPreferences,
@@ -11083,7 +11083,7 @@ function forecastTemperature(
     temperatureBand,
     useAdjustments,
   );
-  return { readings: [...air.readings, ...apparent.readings] };
+  return { readings: [...apparent.readings, ...air.readings] };
 }
 
 // select one range tone without mixing metric palettes

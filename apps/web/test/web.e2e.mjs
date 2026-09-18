@@ -4217,6 +4217,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
       const temperatureLabel = page.locator('[data-condition="temperature"] .condition-label > span:last-child');
       const expectedTemperatureLabel = width <= 672 ? "TEMP" : "TEMPERATURE";
       assert.equal(await temperatureLabel.innerText(), expectedTemperatureLabel);
+      assert.equal(await page.locator('[data-condition="temperature"] .condition-secondary > span').innerText(), "Air Temp");
       assert.equal(
         await page.locator(".skeleton-card").evaluateAll(
           // animate every reserved condition card
@@ -4246,6 +4247,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
         () => document.querySelector(".skeleton-region") === null,
       );
       assert.equal(await temperatureLabel.innerText(), expectedTemperatureLabel);
+      assert.equal(await page.locator('[data-condition="temperature"] .condition-secondary > span').innerText(), "Air Temp");
       const loadedGeometry = await captureSectionGeometry(page, selectors);
       const loadedCardHeights = await page.locator(".condition-card").evaluateAll(
         // recapture every responsive card track
@@ -4407,8 +4409,8 @@ test("real browser configures and persists every measurement unit preference", {
     const page = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const currentTemperature = page.locator("[data-condition='temperature']");
-    assert.match(await currentTemperature.textContent() ?? "", /61\s*°F/u);
-    assert.match(await currentTemperature.textContent() ?? "", /Feels like\s*60\s*°F/u);
+    assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /60\s*°F/u);
+    assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*61\s*°F/u);
     const currentWind = page.locator("[data-condition='wind']");
     assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*16\s*mph/u);
@@ -4561,7 +4563,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.doesNotMatch(await currentTide.textContent() ?? "", /Forecast/u);
     assert.match(await currentTide.textContent() ?? "", /Rising/u);
     assert.doesNotMatch(await page.locator(".current-conditions").textContent() ?? "", /Next 24h/u);
-    assert.match(await currentTemperature.textContent() ?? "", /Max\s*68°F\s*Min\s*50°F\s*Max\s*67°F\s*Min\s*49°F/u);
+    assert.match(await currentTemperature.textContent() ?? "", /Max\s*67°F\s*Min\s*49°F\s*Max\s*68°F\s*Min\s*50°F/u);
     assert.match(await currentWind.textContent() ?? "", /Max\s*8 mph\s*Max\s*16 mph/u);
     const currentRain = page.locator("[data-condition='rain']");
     assert.match(await currentRain.textContent() ?? "", /Rain/u);
@@ -4585,9 +4587,9 @@ test("real browser configures and persists every measurement unit preference", {
       ),
       [
         { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
-        { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
-        { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "temperature", opacity: "0.75" },
+        { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
+        { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "wind", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "wind", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "rain", opacity: "0.75" },
@@ -4712,8 +4714,8 @@ test("real browser configures and persists every measurement unit preference", {
     await page.getByRole("link", { name: "Home" }).click();
     await page.waitForURL(`${fixture.origin}/`);
 
-    assert.match(await currentTemperature.textContent() ?? "", /16\s*°C/u);
-    assert.match(await currentTemperature.textContent() ?? "", /Feels like\s*16\s*°C/u);
+    assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /16\s*°C/u);
+    assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*16\s*°C/u);
     assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*4\s*m\/s SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*7\s*m\/s/u);
     assert.match(await currentWind.textContent() ?? "", /Peak reading 7 m\/s/u);
@@ -4724,7 +4726,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentTide.locator(".condition-status").textContent() ?? "", /High/u);
     assert.match(await currentTide.locator(".condition-primary").textContent() ?? "", /2\.5\s*m/u);
     assert.match(await currentTide.textContent() ?? "", /Rising/u);
-    assert.match(await currentTemperature.textContent() ?? "", /Max\s*20°C\s*Min\s*10°C\s*Max\s*19°C\s*Min\s*9°C/u);
+    assert.match(await currentTemperature.textContent() ?? "", /Max\s*19°C\s*Min\s*9°C\s*Max\s*20°C\s*Min\s*10°C/u);
     assert.match(await currentWind.textContent() ?? "", /Max\s*4 m\/s\s*Max\s*7 m\/s/u);
     assert.match(await currentRain.textContent() ?? "", /Max 2\.5 mm\/h/u);
     assert.match(await currentRain.textContent() ?? "", /Accumulation\s*2\.5\s*mm/u);
