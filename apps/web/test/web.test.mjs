@@ -1328,7 +1328,10 @@ test("clouds tile excludes nighttime extrema from the clearest daylight range", 
     classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 20, 100, 2),
     classifiedCloudForecastRecord("2026-09-13T06:00:00Z", 95, 100, 2),
   ]);
-  assert.match(tile, /Clearest today<\/span>\s*<strong>8–10<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>8–10<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary condition-secondary-paired"/u);
+  assert.match(tile, /class="condition-secondary-comparison">\s*<span>Clearest overall<\/span>\s*<strong>1–2<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-primary"><strong>42<small>%<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
 });
 
@@ -1339,8 +1342,10 @@ test("clouds tile leaves the clearest daylight range unavailable for night-only 
     classifiedCloudForecastRecord("2026-09-12T08:00:00Z", 5, 0, 0),
     classifiedCloudForecastRecord("2026-09-13T06:00:00Z", 95, 0, 0),
   ]);
-  assert.match(tile, /Clearest today<\/span>\s*<strong>—<\/strong>/u);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>—<\/strong>/u);
+  assert.match(tile, /class="condition-secondary-comparison">\s*<span>Clearest overall<\/span>\s*<strong>1–2<small>AM<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
+  assert.equal((tile.match(/<strong>/gu) ?? []).length, 5);
 });
 
 // keep astronomically sunlit hours regardless of missing model-light signals
@@ -1351,7 +1356,8 @@ test("clouds tile does not hide sunlit hours with zero or missing modeled light"
     classifiedCloudForecastRecord("2026-09-12T20:00:00Z", 20, 0, 0),
     classifiedCloudForecastRecord("2026-09-12T21:00:00Z", 20, null, null),
   ]);
-  assert.match(tile, /Clearest today<\/span>\s*<strong>1–3<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>1–3<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary-comparison">\s*<span>Clearest overall<\/span>\s*<strong>1–2<small>AM<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>20<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
 });
 
@@ -1365,8 +1371,44 @@ test("clouds tile uses the selected site's astronomical daylight", (context) => 
     classifiedCloudForecastRecord("2026-09-11T18:00:00Z", 20, null, null),
     classifiedCloudForecastRecord("2026-09-12T09:00:00Z", 95, null, null),
   ], foreignSite);
-  assert.match(tile, /Clearest today<\/span>\s*<strong>7–9<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>7–9<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary-comparison">\s*<span>Clearest overall<\/span>\s*<strong>1–2<small>AM<\/small><\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>95<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>5<small>%<\/small><\/strong>/u);
+});
+
+// omit the overall comparison when the daytime and full-day ranges match
+test("clouds tile hides an identical overall range", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+  const tile = renderCloudTile([
+    cloudForecastRecord("2026-09-12T20:00:00Z", 20),
+    cloudForecastRecord("2026-09-12T21:00:00Z", 20),
+  ]);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>1–3<small>PM<\/small><\/strong>/u);
+  assert.doesNotMatch(tile, /condition-secondary-paired|condition-secondary-comparison|Clearest overall/u);
+  assert.equal((tile.match(/<strong>/gu) ?? []).length, 4);
+});
+
+// compare tied minima when the earlier full-day window falls at night
+test("clouds tile shows an earlier overall window for equal cloud minima", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+  const tile = renderCloudTile([
+    cloudForecastRecord("2026-09-12T08:00:00Z", 20),
+    cloudForecastRecord("2026-09-12T15:00:00Z", 20),
+    cloudForecastRecord("2026-09-12T16:00:00Z", 20),
+  ]);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>8–10<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary-comparison">\s*<span>Clearest overall<\/span>\s*<strong>1–2<small>AM<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>20<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>20<small>%<\/small><\/strong>/u);
+});
+
+// hide the optional comparison when neither range is available
+test("clouds tile hides the overall range when all forecast cover is missing", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T20:00:00Z") });
+  const tile = renderCloudTile([cloudForecastRecord("2026-09-12T20:00:00Z", null)]);
+  assert.match(tile, /Clearest daytime<\/span>\s*<strong>—<\/strong>/u);
+  assert.doesNotMatch(tile, /condition-secondary-paired|condition-secondary-comparison|Clearest overall/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>—<\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>—<\/strong>/u);
+  assert.equal((tile.match(/<strong>/gu) ?? []).length, 4);
 });
 
 // select the earliest minimum range in the farm day regardless of forecast order or stale observations
@@ -1400,7 +1442,8 @@ test("clouds tile shows model cover and the earliest clearest farm-local range",
   assert.ok(tile);
   assert.match(tile, /class="condition-primary"><strong>42<small>%<\/small><\/strong>/u);
   assert.match(tile, /class="condition-status condition-status-dark">[\s\S]*?<span>Light<\/span>/u);
-  assert.match(tile, /class="condition-secondary-divider">Clearest today<\/span>\s*<strong>12–1<small>PM<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-secondary-divider">Clearest daytime<\/span>\s*<strong>12–1<small>PM<\/small><\/strong>/u);
+  assert.doesNotMatch(tile, /condition-secondary-paired|condition-secondary-comparison|Clearest overall/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>30<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>12<small>%<\/small><\/strong>/u);
   assert.doesNotMatch(tile, /Modeled|NaN|Invalid/u);
   assert.equal((tile.match(/condition-forecast-reading condition-forecast-tone-neutral/gu) ?? []).length, 2);
@@ -1411,7 +1454,8 @@ test("clouds tile shows model cover and the earliest clearest farm-local range",
   // change the calendar day independently of old current observations
   context.mock.timers.setTime(new Date("2026-09-13T07:00:00Z").getTime());
   const nextDay = renderWeatherDashboard(state).match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
-  assert.match(nextDay, /Clearest today<\/span>\s*<strong>8–9<small>AM<\/small>/u);
+  assert.match(nextDay, /Clearest daytime<\/span>\s*<strong>8–9<small>AM<\/small>/u);
+  assert.match(nextDay, /class="condition-secondary-comparison">\s*<span>Clearest overall<\/span>\s*<strong>12–1<small>AM<\/small>/u);
   assert.match(nextDay, /condition-forecast-label">Max<\/span> <strong>25<small>%<\/small><\/strong>[\s\S]*?condition-forecast-label">Min<\/span> <strong>0<small>%<\/small><\/strong>/u);
 });
 
@@ -1445,6 +1489,7 @@ test("clouds tile handles clear skies and missing current or forecast cover", (c
     const noModel = renderWeatherDashboard({ ...state, current: [physicalRecord], forecast: [] })
       .match(/<article[^>]*data-condition="clouds"[\s\S]*?<\/article>/u)?.[0];
     assert.equal((noModel.match(/<strong>—<\/strong>/gu) ?? []).length, 4);
+    assert.doesNotMatch(noModel, /condition-secondary-paired|condition-secondary-comparison|Clearest overall/u);
   }
 });
 
@@ -2003,6 +2048,8 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((initialHomeHtml.match(/class="condition-card [^"]*skeleton-card"/gu) ?? []).length, 10);
   assert.match(initialHomeHtml, /data-condition="sunset"[\s\S]*?Golden hour/u);
   assert.match(initialHomeHtml, /data-condition="rain"[\s\S]*?Accumulation[\s\S]*?Max[\s\S]*?Total/u);
+  assert.match(initialHomeHtml, /data-condition="clouds"[\s\S]*?Clearest daytime/u);
+  assert.doesNotMatch(initialHomeHtml, /condition-secondary-comparison|Clearest overall/u);
   assert.equal((initialHomeHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 0);
   assert.equal((initialHomeHtml.match(/class="trend-chart skeleton-trend-chart"/gu) ?? []).length, 0);
   assert.equal((initialForecastHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 8);

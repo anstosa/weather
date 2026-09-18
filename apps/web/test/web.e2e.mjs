@@ -3936,7 +3936,8 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
       assert.equal(await tile.locator(".condition-primary").innerText(), "100%");
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*11 AM–1PM/u);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest daytime\s*11 AM–1PM/u);
+      assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Clearest overall\s*12–1AM/u);
       assert.equal(await tile.locator(".condition-status").innerText(), "Heavy");
       assert.equal(await page.locator("[data-condition='rain'] .condition-status").innerText(), "Dry");
       assert.equal(await tile.locator(".condition-forecast").isVisible(), true);
@@ -3951,8 +3952,12 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
           const primary = card.querySelector(".condition-primary");
           const secondary = card.querySelector(".condition-secondary");
           const extrema = card.querySelector(".condition-forecast");
+          const daytime = secondary.querySelector(":scope > strong");
+          const overall = secondary.querySelector(".condition-secondary-comparison strong");
           return primary.getBoundingClientRect().right <= extrema.getBoundingClientRect().left &&
             extrema.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top &&
+            daytime.getBoundingClientRect().right < overall.getBoundingClientRect().left &&
+            Math.abs(daytime.getBoundingClientRect().top - overall.getBoundingClientRect().top) < 1 &&
             label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
             [card, label, primary, secondary, extrema].every(
               // require full content width at narrow breakpoints
@@ -3987,7 +3992,8 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
       assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
       assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
-      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*7 AM–7PM/u);
+      assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest daytime\s*7 AM–7PM/u);
+      assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Clearest overall\s*12–1AM/u);
       assert.equal(await tile.locator(".condition-secondary").evaluate(
         // keep a full daylight range inside its reserved row
         (secondary) => secondary.scrollWidth <= secondary.clientWidth && secondary.scrollHeight <= secondary.clientHeight,
@@ -4014,7 +4020,51 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
     assert.equal(await tile.locator(".condition-primary").innerText(), "—");
     assert.equal(await tile.locator(".condition-status").innerText(), "Unavailable");
     assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max —", "Min —"]);
-    assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest today\s*—/u);
+    assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest daytime\s*—/u);
+    assert.equal(await tile.locator(".condition-secondary-comparison").count(), 0);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// hide redundant overall windows without changing the daytime range or card height
+test("clouds secondary shows overall only when its clearest time range differs", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, { viewport: { height: 900, width: 320 } });
+    await page.clock.setFixedTime(new Date("2026-08-21T20:00:00Z"));
+    let nightTied = false;
+    // choose an identical daytime minimum or an earlier tied night window
+    await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      // keep equal cloud percentages while changing only the earliest overall window
+      body.data = body.data.slice(0, 24).map((record, hour) => ({
+        ...record,
+        metrics: { ...record.metrics, cloudCoverPercent: [11, 12].includes(hour) || (nightTied && hour === 0) ? 10 : 80 },
+      }));
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const tile = page.locator("[data-condition='clouds']");
+    const daytime = tile.locator(".condition-secondary > strong");
+    assert.equal(await daytime.innerText(), "11 AM–1PM");
+    assert.equal(await tile.locator(".condition-secondary-comparison").count(), 0);
+    const initialHeight = (await tile.boundingBox()).height;
+    nightTied = true;
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await daytime.innerText(), "11 AM–1PM");
+    assert.equal(await tile.locator(".condition-secondary-comparison strong").innerText(), "12–1AM");
+    assert.equal((await tile.boundingBox()).height, initialHeight);
+    nightTied = false;
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await tile.locator(".condition-secondary-comparison").count(), 0);
+    assert.equal((await tile.boundingBox()).height, initialHeight);
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -4048,7 +4098,8 @@ test("clouds range stays within sunrise and sunset on desktop and mobile", { tim
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
-      assert.equal((await tile.locator(".condition-secondary strong").innerText()).replace(/\s+/gu, " "), "6:50 AM–7:17PM");
+      assert.equal((await tile.locator(".condition-secondary > strong").innerText()).replace(/\s+/gu, " "), "6:50 AM–7:17PM");
+      assert.equal(await tile.locator(".condition-secondary-comparison strong").innerText(), "12–1AM");
       assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
       assert.equal(await tile.locator(".condition-secondary").evaluate(
         // retain the minute-precise range without clipping its reserved row
@@ -4081,7 +4132,8 @@ test("clouds range stays unavailable for a night-only daylight-saving forecast",
     });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const secondary = page.locator("[data-condition='clouds'] .condition-secondary");
-    assert.equal(await secondary.locator("strong").innerText(), "—");
+    assert.equal(await secondary.locator(":scope > strong").innerText(), "—");
+    assert.equal(await secondary.locator(".condition-secondary-comparison strong").innerText(), "1 AM PDT–1 AM PST");
     assert.deepEqual(await page.locator("[data-condition='clouds'] .condition-forecast-reading").allTextContents(), ["Max 42%", "Min 42%"]);
     assert.equal(await secondary.evaluate(
       // preserve the compact row for an unavailable daylight range

@@ -999,9 +999,45 @@ h2 {
   grid-template-columns: minmax(0, 1fr) max-content;
 }
 
-/* preserve the full-width clearest-hour row */
+/* preserve the full-width row when both clearest ranges match */
 .clouds-condition .condition-secondary {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/* compare different time windows without moving the primary percentages */
+.clouds-condition .condition-secondary-paired {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+}
+
+.clouds-condition .condition-secondary-paired > span {
+  grid-column: 1;
+  grid-row: 1;
+  white-space: normal;
+}
+
+.condition-secondary-comparison {
+  display: contents;
+}
+
+.condition-secondary-comparison > span {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.condition-secondary-comparison > strong {
+  grid-column: 2;
+  grid-row: 2;
+  text-align: right;
+}
+
+.clouds-condition .condition-secondary-paired strong {
+  line-height: 1.1;
+  white-space: normal;
 }
 
 /* keep both percentages above the secondary divider */
@@ -4361,6 +4397,28 @@ td small {
     font-size: clamp(1rem, 4.7vw, 1.45rem);
     line-height: 1.05;
     white-space: normal;
+  }
+
+  /* reserve equal room for both clock ranges and their wrapped labels */
+  .clouds-condition .condition-body-secondary {
+    --condition-secondary-height: 5.5rem;
+  }
+
+  .clouds-condition .condition-secondary-paired {
+    column-gap: 0.4rem;
+  }
+
+  .clouds-condition .condition-secondary-comparison > span {
+    font-size: 0.62rem;
+  }
+
+  .clouds-condition .condition-secondary-paired strong {
+    font-size: clamp(0.85rem, 3.8vw, 1rem);
+    overflow-wrap: anywhere;
+  }
+
+  .clouds-condition .condition-secondary-paired small {
+    font-size: 0.6em;
   }
 
   .condition-detail {

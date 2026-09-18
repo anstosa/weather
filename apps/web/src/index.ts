@@ -3519,7 +3519,7 @@ function renderCurrentSkeleton(): string {
     { className: "temperature-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }, { label: "Max", measurement: { unit: "°F", value: "00" } }, { label: "Min", measurement: { unit: "°F", value: "00" } }] }, icon: "device_thermostat", label: "Temperature", secondary: "Air Temp" },
     { className: "wind-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "mph", value: "00" } }, { label: "Max", measurement: { unit: "mph", value: "00" } }] }, icon: "air", label: "Wind", secondary: "Gusts" },
     { className: "rain-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "in/h", value: "0.00" } }, { label: "Total", measurement: { unit: "in", value: "0.00" } }] }, icon: "rainy", label: "Rain", secondary: "Accumulation" },
-    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest today" },
+    { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest daytime" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "+0.0" } }, { label: "Min", measurement: { unit: "%", value: "-0.0" } }] }, icon: "speed", label: "Pressure" },
@@ -3552,7 +3552,7 @@ function renderCurrentSkeleton(): string {
   `;
 }
 
-// show daylight clarity alongside full-day cloud extrema
+// compare daylight and overall clarity alongside full-day cloud extrema
 function renderCloudsCondition(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const current = state.current.filter(
@@ -3563,6 +3563,10 @@ function renderCloudsCondition(state: DashboardState): string {
   const now = new Date();
   const forecast = forecastForSiteDay(state.forecast, now.toISOString(), site.timezone);
   const sun = eveningSunTimes(site, now);
+  const daytime = clearestCloudRange(forecast, site.timezone, sun);
+  const overall = clearestCloudRange(forecast, site.timezone);
+  const differentRange = overall.value !== "—" &&
+    (overall.value !== daytime.value || overall.unit !== daytime.unit);
 
   return renderConditionCard({
     band: cloudBand(cover),
@@ -3577,8 +3581,9 @@ function renderCloudsCondition(state: DashboardState): string {
     label: "Clouds",
     measurement: formatFixedMeasurement(cover, "%", 0),
     secondary: {
-      label: "Clearest today",
-      measurement: clearestCloudRange(forecast, site.timezone, sun),
+      label: "Clearest daytime",
+      measurement: daytime,
+      comparison: differentRange ? { label: "Clearest overall", measurement: overall } : undefined,
     },
   });
 }
@@ -3937,6 +3942,10 @@ interface ConditionCardOptions {
   readonly secondary?: Readonly<{
     label: string;
     measurement: FormattedMeasurement;
+    comparison?: Readonly<{
+      label: string;
+      measurement: FormattedMeasurement;
+    }> | undefined;
   }>;
 }
 
@@ -7858,13 +7867,18 @@ function renderConditionLabel(label: string): string {
 
 // render one friendly current-condition card
 function renderConditionCard(options: ConditionCardOptions): string {
+  // show a distinct secondary comparison only when supplied
+  const comparison = options.secondary?.comparison === undefined
+    ? ""
+    : `<div class="condition-secondary-comparison"><span>${escapeHtml(options.secondary.comparison.label)}</span>${renderConditionMeasurement(options.secondary.comparison.measurement)}</div>`;
   // keep related readings inside one visual card
   const secondary = options.secondary === undefined
     ? ""
     : `
-      <div class="condition-secondary">
+      <div class="condition-secondary${comparison.length === 0 ? "" : " condition-secondary-paired"}">
         <span class="condition-secondary-divider">${escapeHtml(options.secondary.label)}</span>
         ${renderConditionMeasurement(options.secondary.measurement)}
+        ${comparison}
       </div>
     `;
   // omit details promoted into a secondary statistic
