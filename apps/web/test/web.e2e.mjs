@@ -4282,7 +4282,7 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
     browser = await launchBrowser();
 
     // cover desktop and narrow paired sunset cards
-    for (const width of [1280, 960, 881, 880, 390, 320]) {
+    for (const width of [1280, 960, 881, 880, 390, 360, 320]) {
       const page = await createFixturePage(browser, {
         timezoneId: "Asia/Tokyo",
         viewport: { height: 900, width },
@@ -4295,6 +4295,11 @@ test("sunset tile shows today's sunset and golden hour on desktop and mobile", {
       const tile = page.locator("[data-condition='sunset']");
       await tile.waitFor();
       assert.equal(await tile.locator(".condition-primary").innerText(), "7:28PM");
+      assert.equal(await tile.locator(".condition-primary strong").evaluate(
+        // use the shared primary size rather than a smaller sunset-only scale
+        (reading) => getComputedStyle(reading).fontSize ===
+          getComputedStyle(document.querySelector("[data-condition='temperature'] .condition-primary strong")).fontSize,
+      ), true, `sunset primary size differs at ${width}px`);
       assert.match(await tile.locator(".condition-secondary").innerText(), /Golden hour\s*6:47PM/u);
       assert.match(await tile.locator(".condition-status").innerText(), /Today/u);
       assert.equal(await tile.locator(".condition-forecast-label").innerText(), "vs yesterday");
@@ -4644,8 +4649,8 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph SW/u);
     assert.match(await currentWind.textContent() ?? "", /Gusts\s*16\s*mph/u);
     assert.equal(
-      await page.locator(".condition-card:not(.sunset-condition):not(.pressure-condition) .condition-primary strong").evaluateAll(
-        // keep measurement scales shared while the sunset clock reserves comparison space
+      await page.locator(".condition-card:not(.pressure-condition) .condition-primary strong").evaluateAll(
+        // keep sunset and the other measurements on the shared primary scale
         (readings) => new Set(readings.map(
           // read one primary scale
           (reading) => getComputedStyle(reading).fontSize,
@@ -4999,7 +5004,7 @@ test("real browser configures and persists every measurement unit preference", {
   }
 });
 
-// preserve tablet geometry while the sunset clock reserves room for its comparison
+// preserve tablet geometry with shared primary measurement sizes
 test("real browser keeps the tablet masthead and compact navigation in separate rows", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -5009,8 +5014,8 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
     const page = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     assert.equal(
-      await page.locator(".condition-card:not(.sunset-condition):not(.pressure-condition) .condition-primary strong").evaluateAll(
-        // retain tablet measurement scales apart from the compact sunset clock
+      await page.locator(".condition-card:not(.pressure-condition) .condition-primary strong").evaluateAll(
+        // retain shared tablet scales including the sunset clock
         (readings) => new Set(readings.map(
           // read one tablet primary scale
           (reading) => getComputedStyle(reading).fontSize,
@@ -5188,8 +5193,8 @@ test("real browser keeps the dashboard within a mobile viewport", { timeout: 60_
     const page = await createFixturePage(browser, { viewport: { height: 844, width: 390 } });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     assert.equal(
-      await page.locator(".condition-card:not(.sunset-condition):not(.pressure-condition) .condition-primary strong").evaluateAll(
-        // retain shared phone scales apart from the compact sunset clock
+      await page.locator(".condition-card:not(.pressure-condition) .condition-primary strong").evaluateAll(
+        // retain shared phone scales including the sunset clock
         (readings) => new Set(readings.map(
           // read one mobile primary scale
           (reading) => getComputedStyle(reading).fontSize,

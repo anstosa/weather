@@ -4162,13 +4162,6 @@ td small {
   }
 }
 
-/* fit sunset and its comparison in narrow paired cards */
-@media (max-width: 60rem) {
-  .sunset-condition .condition-primary strong {
-    font-size: clamp(1.6rem, 3vw, 1.8rem);
-  }
-}
-
 /* retain useful tablet columns */
 @media (max-width: 55rem) {
   .compact-condition,
