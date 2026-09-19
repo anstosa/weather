@@ -3070,6 +3070,8 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
 });
 
 test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }, async () => {
+  // prevent the production edge from injecting a hidden radar preload
+  assert.doesNotMatch(readFileSync(join(publicRoot, "index.html"), "utf8"), /__WEATHER_ROUTE_PRELOAD__|\/maps\/xweather\//u);
   const fixture = await startFixtureServer();
   let browser;
 
