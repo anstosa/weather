@@ -1922,8 +1922,21 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(farmChartsHtml.temperatureRangeC, /data-trend-crosshair-value="2026">15 °F<\/output>/u);
   assert.match(farmChartsHtml.drySpellDays, /Rain below 0\.01 in/u);
   assert.match(farmChartsHtml.drySpellDays, /data-trend-crosshair-value="2026">2 days<\/output>/u);
-  assert.match(farmChartsHtml.growingDegreeDaysC, /Base 50 °F/u);
-  assert.match(farmChartsHtml.growingDegreeDaysC, /data-trend-crosshair-value="2026">22 °F·days<\/output>/u);
+  // retain both temperature scales while labeling accumulated heat consistently
+  for (const [temperature, base, value] of [["fahrenheit", "50 °F", 22], ["celsius", "10 °C", 12]]) {
+    const growingHeatHtml = renderWeatherDashboard({
+      ...state,
+      selectedTrendMetric: "growingDegreeDaysC",
+      units: { ...state.units, temperature },
+    }, "trends");
+    assert.match(growingHeatHtml, /<span>Accumulated growing heat<\/span>/u);
+    assert.match(growingHeatHtml, /role="img" aria-label="Accumulated growing heat annual progression/u);
+    assert.match(growingHeatHtml, /class="trend-y-axis" aria-hidden="true">(?:\s*<span>[\d,]+ GDD<\/span>){5}/u);
+    assert.match(growingHeatHtml, /class="trend-chart-range">[\d,]+–[\d,]+ GDD<\/span>/u);
+    assert.ok(growingHeatHtml.includes(`Base ${base}`));
+    assert.ok(growingHeatHtml.includes(`data-trend-crosshair-value="2026">${value} GDD</output>`));
+    assert.doesNotMatch(growingHeatHtml, /°[FC]·days|Growing degree days/u);
+  }
   assert.match(farmChartsHtml.frostDayCount, /Daily low ≤ 32 °F/u);
   assert.match(farmChartsHtml.frostDayCount, /data-trend-crosshair-value="2026">0 days<\/output>/u);
   assert.match(farmChartsHtml.extremeDayCount, /data-trend-extreme-kind[\s\S]*?<option value="heat" selected>Heat<\/option>[\s\S]*?data-trend-extreme-threshold[^>]*value="86\.0"/u);

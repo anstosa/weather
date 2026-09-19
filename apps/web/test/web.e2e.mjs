@@ -2218,7 +2218,7 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       ["temperatureAnomalyC", "Temperature anomaly"],
       ["temperatureRangeC", "Daily temperature range"],
       ["drySpellDays", "Dry spell length"],
-      ["growingDegreeDaysC", "Growing degree days"],
+      ["growingDegreeDaysC", "Accumulated growing heat"],
       ["frostDayCount", "Frost days"],
       ["extremeDayCount", "Extreme day counts"],
       ["windDirectionRose", "Wind direction rose"],
@@ -2230,6 +2230,17 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       await page.locator(`[data-trend-metric-option="${metric}"]`).click();
       await page.locator(`[data-trend-chart="${metric}"]`).waitFor();
       assert.equal(await page.getByRole("heading", { name: label }).count(), 1);
+
+      // distinguish accumulated heat from a count of calendar days
+      if (metric === "growingDegreeDaysC") {
+        assert.match(await page.locator(".trend-chart-range").innerText(), / GDD$/u);
+        assert.match(await page.locator(".trend-insight-note").innerText(), /Base 50 °F/u);
+        // retain the heat-unit label on every vertical tick
+        for (const label of await page.locator(".trend-y-axis span").allTextContents()) {
+          assert.match(label, /^[\d,]+ GDD$/u);
+        }
+        assert.match(await page.locator('[data-trend-crosshair-value="2026"]').innerText(), / GDD$/u);
+      }
 
       // verify the polar chart's distinct accessible surface
       if (metric === "windDirectionRose") {

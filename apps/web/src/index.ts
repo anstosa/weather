@@ -5354,7 +5354,7 @@ const TREND_CHART_OPTIONS: readonly TrendChartOption[] = [
   { format: "temperatureDelta", group: "Farm insights", includeZero: true, label: "Temperature anomaly", metric: "temperatureAnomalyC" },
   { format: "temperatureDelta", group: "Farm insights", label: "Daily temperature range", metric: "temperatureRangeC", minimum: 0 },
   { format: "count", group: "Farm insights", label: "Dry spell length", metric: "drySpellDays", minimum: 0, supportsDetail: false },
-  { format: "degreeDays", group: "Farm insights", label: "Growing degree days", metric: "growingDegreeDaysC", minimum: 0, supportsDetail: false },
+  { format: "degreeDays", group: "Farm insights", label: "Accumulated growing heat", metric: "growingDegreeDaysC", minimum: 0, supportsDetail: false },
   { format: "count", group: "Farm insights", label: "Frost days", metric: "frostDayCount", minimum: 0, supportsDetail: false },
   { format: "count", group: "Farm insights", label: "Extreme day counts", metric: "extremeDayCount", minimum: 0, supportsDetail: false },
   { format: "count", group: "Farm insights", kind: "windRose", label: "Wind direction rose", metric: "windDirectionRose", supportsDetail: false },
@@ -6491,16 +6491,12 @@ function formatTrendMeasurement(
     return formatFixedMeasurement(value, "days", 0);
   }
 
-  // format accumulated seasonal heat without an absolute-temperature offset
+  // label accumulated heat as gdd rather than a calendar-day count
   if (format === "degreeDays") {
     const displayValue = value === null
       ? null
       : trendDisplayValue(value, format, units);
-    return formatFixedMeasurement(
-      displayValue,
-      units.temperature === "fahrenheit" ? "°F·days" : "°C·days",
-      0,
-    );
+    return formatFixedMeasurement(displayValue, "GDD", 0);
   }
 
   // format temperature differences without an absolute-temperature offset
