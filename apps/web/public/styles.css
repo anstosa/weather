@@ -982,6 +982,24 @@ h2 {
   grid-column: span 6;
 }
 
+/* reserve the same primary row for rain and the two cloud extrema */
+.rain-condition .condition-primary,
+.clouds-condition .condition-primary {
+  min-height: clamp(2.5rem, 4vw, 3.6rem);
+}
+
+/* use the body gap without stretching secondary labels or adding another margin */
+.rain-condition .condition-secondary,
+.clouds-condition .condition-secondary {
+  margin-top: 0;
+  align-content: start;
+}
+
+/* align the rain total with its content-sized accumulation label */
+.rain-condition .condition-forecast-reading:last-child {
+  padding-top: 1.45rem;
+}
+
 .compact-condition,
 .air-quality-condition {
   grid-column: span 3;
@@ -994,25 +1012,23 @@ h2 {
   grid-column: span 6;
 }
 
-/* keep daily cloud extrema beside the current cover */
+/* reserve enough room for rain units and daily cloud extrema */
+.rain-condition .condition-body,
 .clouds-condition .condition-body {
   grid-template-columns: minmax(0, 1fr) max-content;
 }
 
-/* preserve the full-width row when both clearest ranges match */
+/* preserve the full-width row and grow only when cloud ranges need another line */
 .clouds-condition .condition-secondary {
   grid-template-columns: minmax(0, 1fr);
+  height: auto;
+  min-height: var(--condition-secondary-height);
 }
 
 /* compare different time windows without moving the primary percentages */
 .clouds-condition .condition-secondary-paired {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
-}
-
-/* retain the full-width clearest divider above both ranges */
-.clouds-condition .condition-secondary-paired > strong {
-  align-self: end;
 }
 
 /* mirror tide's next-low label and subordinate reading */
@@ -4395,6 +4411,12 @@ td small {
     font-size: clamp(1.8rem, 8vw, 2.45rem);
   }
 
+  /* keep both secondary dividers below the taller of the primary and cloud extrema */
+  .rain-condition .condition-primary,
+  .clouds-condition .condition-primary {
+    min-height: max(2.1rem, clamp(1.8rem, 8vw, 2.45rem));
+  }
+
   /* align pressure readings with neighboring compact cards */
   .pressure-condition .condition-card-heading {
     min-height: 1.02rem;
@@ -4455,11 +4477,6 @@ td small {
     font-size: clamp(1rem, 4.7vw, 1.45rem);
     line-height: 1.05;
     white-space: normal;
-  }
-
-  /* reserve room for wrapped ranges beneath the shared divider */
-  .clouds-condition .condition-body-secondary {
-    --condition-secondary-height: 5.5rem;
   }
 
   .clouds-condition .condition-secondary-paired {

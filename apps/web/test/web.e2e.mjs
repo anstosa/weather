@@ -3999,6 +3999,44 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
   }
 });
 
+// keep rain and cloud secondary rows aligned without permanent empty space
+async function assertRainCloudRowGeometry(page, width) {
+  const geometry = await page.locator("[data-condition='rain'], [data-condition='clouds']").evaluateAll(
+    // measure the actual divider and value rows in each adjacent card
+    (cards) => cards.map(
+      // capture one card's secondary row and forecast boundaries
+      (card) => {
+        const divider = card.querySelector(".condition-secondary-divider").getBoundingClientRect();
+        const value = card.querySelector(".condition-secondary > strong").getBoundingClientRect();
+        const body = card.querySelector(".condition-body").getBoundingClientRect();
+        return {
+          card: card.dataset.condition,
+          dividerTop: divider.top,
+          valueTop: value.top,
+          valueGap: value.top - divider.bottom,
+          height: card.getBoundingClientRect().height,
+          forecastFits: [...card.querySelectorAll(".condition-forecast-reading")].every(
+            // keep forecast units inside the card's normal padding
+            (reading) => reading.getBoundingClientRect().right <= body.right + 1,
+          ),
+        };
+      },
+    ),
+  );
+  assert.equal(geometry.length, 2);
+  assert.ok(Math.abs(geometry[0].dividerTop - geometry[1].dividerTop) < 1, `secondary dividers differ at ${width}px: ${JSON.stringify(geometry)}`);
+  assert.ok(Math.abs(geometry[0].valueTop - geometry[1].valueTop) < 1, `secondary values differ at ${width}px: ${JSON.stringify(geometry)}`);
+  // reject stretched gaps between each label and its value
+  for (const card of geometry) {
+    assert.ok(card.valueGap <= 6, `secondary row is stretched at ${width}px: ${JSON.stringify(card)}`);
+    assert.ok(card.forecastFits, `forecast clips at ${width}px: ${JSON.stringify(card)}`);
+    // keep ordinary phone ranges compact while separate tests cover longer wrapped ranges
+    if (width <= 390) {
+      assert.ok(card.height <= 155, `unused vertical space at ${width}px: ${JSON.stringify(card)}`);
+    }
+  }
+}
+
 // keep daylight clarity and all-day cloud extrema usable at every breakpoint
 test("clouds tile shows the clearest daylight range and includes night in daily extrema", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -4053,6 +4091,7 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
+      await assertRainCloudRowGeometry(page, width);
       assert.equal(await tile.locator(".condition-primary").innerText(), "100%");
       assert.match(await tile.locator(".condition-secondary").innerText(), /Clearest\s*11 AM–1PM/u);
       assert.match(await tile.locator(".condition-secondary-comparison").innerText(), /Overnight\s*12–1AM/u);
@@ -4156,7 +4195,7 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
   }
 });
 
-// hide redundant overall windows without changing the daytime range or card height
+// hide redundant overall windows and reserve extra height only for wrapped content
 test("clouds secondary shows overall only when its clearest time range differs", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
@@ -4183,11 +4222,13 @@ test("clouds secondary shows overall only when its clearest time range differs",
     assert.equal(await daytime.innerText(), "11 AM–1PM");
     assert.equal(await tile.locator(".condition-secondary-comparison").count(), 0);
     const initialHeight = (await tile.boundingBox()).height;
+    await assertRainCloudRowGeometry(page, 320);
     nightTied = true;
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await daytime.innerText(), "11 AM–1PM");
     assert.equal(await tile.locator(".condition-secondary-comparison strong").innerText(), "12–1AM");
-    assert.equal((await tile.boundingBox()).height, initialHeight);
+    await assertRainCloudRowGeometry(page, 320);
+    assert.ok((await tile.boundingBox()).height <= initialHeight + 12);
     nightTied = false;
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await tile.locator(".condition-secondary-comparison").count(), 0);
