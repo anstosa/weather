@@ -16,12 +16,14 @@ import {
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   eveningSunTimes,
   forecastMetricValue,
+  forecastPressureChanges,
   forecastForSiteDay,
   forecastForSiteDays,
   formatMeasurement,
   fromSiteWallClock,
   humidityBand,
   interpolateForecastInstant,
+  interpolateForecastValue,
   loadUnitPreferences,
   parseForecastRecordsResponse,
   pressureBand,
@@ -257,6 +259,26 @@ function pressureForecastRecord(
     },
     validAt,
   };
+}
+
+// isolate one rendered forecast chart
+function forecastChartHtml(html, key) {
+  const marker = `data-forecast-chart="${key}"`;
+  const markerIndex = html.indexOf(marker);
+  assert.notEqual(markerIndex, -1);
+  const start = html.lastIndexOf("<article", markerIndex);
+  const end = html.indexOf("</article>", markerIndex);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return html.slice(start, end + "</article>".length);
+}
+
+// decode the serialized chart lines
+function forecastChartSeries(html, key) {
+  const chart = forecastChartHtml(html, key);
+  const encoded = chart.match(/data-forecast-series="([^"]+)"/u)?.[1];
+  assert.ok(encoded);
+  return JSON.parse(encoded.replaceAll("&quot;", '"').replaceAll("&amp;", "&"));
 }
 
 // render one pressure card for focused assertions
@@ -1823,23 +1845,24 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(forecastHtml, /data-forecast-days="1" aria-pressed="true"/u);
   assert.match(forecastHtml, /data-forecast-days="5" aria-pressed="false"/u);
   assert.match(forecastHtml, /data-forecast-days="10" aria-pressed="false"/u);
-  assert.equal((forecastHtml.match(/forecast-chart-heading-top/gu) ?? []).length, 8);
+  assert.equal((forecastHtml.match(/forecast-chart-heading-top/gu) ?? []).length, 9);
   assert.doesNotMatch(forecastHtml, /forecast-chart-heading-bottom/u);
-  assert.equal((forecastHtml.match(/class="forecast-chart"/gu) ?? []).length, 8);
+  assert.equal((forecastHtml.match(/class="forecast-chart"/gu) ?? []).length, 9);
   assert.match(forecastHtml, /data-forecast-charts[\s\S]*data-forecast-times=/u);
   assert.match(forecastHtml, /class="forecast-current-time-line"/u);
   assert.match(forecastHtml, /class="forecast-shared-crosshair"/u);
   assert.doesNotMatch(forecastHtml, /forecast-chart-days|forecast-chart-day-start/u);
-  assert.equal((fiveDayForecastHtml.match(/class="forecast-chart-days"/gu) ?? []).length, 8);
-  assert.equal((fiveDayForecastHtml.match(/class="forecast-chart-day-start"/gu) ?? []).length, 40);
+  assert.equal((fiveDayForecastHtml.match(/class="forecast-chart-days"/gu) ?? []).length, 9);
+  assert.equal((fiveDayForecastHtml.match(/class="forecast-chart-day-start"/gu) ?? []).length, 45);
   assert.match(fiveDayForecastHtml, /data-forecast-day="2026-08-21"><b>Fri 21<\/b>/u);
   assert.match(fiveDayForecastHtml, /data-forecast-day="2026-08-25"><b>Tue 25<\/b>/u);
-  assert.equal((forecastHtml.match(/class="forecast-chart-daylight"/gu) ?? []).length, 8);
+  assert.equal((forecastHtml.match(/class="forecast-chart-daylight"/gu) ?? []).length, 9);
   assert.equal((forecastHtml.match(/<linearGradient id="forecast-line-/gu) ?? []).length, 10);
   assert.match(forecastHtml, /data-forecast-light="day"/u);
   assert.match(forecastHtml, /data-forecast-chart="temperature"[\s\S]*?data-forecast-min="-1\.1111111111"[\s\S]*?data-forecast-max="26\.6666666667"/u);
   assert.match(forecastHtml, /data-forecast-chart="wind"[\s\S]*?data-forecast-min="0"[\s\S]*?data-forecast-max="22\.3519999995"/u);
   assert.match(forecastHtml, /data-forecast-chart="rain-rate"[\s\S]*?data-forecast-min="0"[\s\S]*?data-forecast-max="25\.4"/u);
+  assert.match(forecastHtml, /data-forecast-chart="clouds"[\s\S]*?data-forecast-format="cloudCover"[\s\S]*?data-forecast-min="0"[\s\S]*?data-forecast-max="100"/u);
   assert.match(forecastHtml, /data-forecast-chart="uv-index"[\s\S]*?data-forecast-min="0"[\s\S]*?data-forecast-max="4"/u);
   assert.match(forecastHtml, /data-forecast-chart="tide"[\s\S]*?data-forecast-min="-0\.3048"[\s\S]*?data-forecast-max="3\.6576"/u);
   assert.match(forecastHtml, /data-forecast-chart="uv-index"[\s\S]*?forecast-chart-scale-maximum">4<[\s\S]*?forecast-chart-scale-minimum">0</u);
@@ -1847,29 +1870,23 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(forecastHtml, /forecast-chart-guide/u);
   assert.match(forecastHtml, /forecast-chart-scale-maximum">80 °F<[\s\S]*forecast-chart-scale-minimum">30 °F</u);
   assert.match(forecastHtml, /forecast-line-air-quality-0[\s\S]*stop-color="rgb\(0, 146, 63\)"/u);
-  assert.match(forecastHtml, /data-forecast-chart="temperature"[\s\S]*data-forecast-chart="wind"[\s\S]*data-forecast-chart="rain-rate"[\s\S]*data-forecast-chart="humidity"[\s\S]*data-forecast-chart="air-quality"[\s\S]*data-forecast-chart="uv-index"[\s\S]*data-forecast-chart="pressure"[\s\S]*data-forecast-chart="tide"/u);
+  assert.deepEqual(forecastChartSeries(forecastHtml, "temperature"), [
+    { label: "Feels like", values: [forecastRecord.metrics.apparentTemperatureC] },
+  ]);
+  assert.deepEqual(forecastChartSeries(forecastHtml, "clouds"), [
+    { label: "Cover", values: [forecastRecord.metrics.cloudCoverPercent] },
+  ]);
+  assert.deepEqual(forecastChartSeries(forecastHtml, "pressure"), [
+    { label: "3h change", values: [null] },
+  ]);
+  assert.doesNotMatch(forecastChartHtml(forecastHtml, "air-quality"), /µg\/m³/u);
+  assert.doesNotMatch(forecastChartHtml(forecastHtml, "pressure"), /hPa/u);
+  assert.match(forecastHtml, /data-forecast-chart="temperature"[\s\S]*data-forecast-chart="wind"[\s\S]*data-forecast-chart="rain-rate"[\s\S]*data-forecast-chart="clouds"[\s\S]*data-forecast-chart="humidity"[\s\S]*data-forecast-chart="air-quality"[\s\S]*data-forecast-chart="uv-index"[\s\S]*data-forecast-chart="pressure"[\s\S]*data-forecast-chart="tide"/u);
   assert.doesNotMatch(forecastHtml, /Drag left or right to scrub time|Swipe vertically to scroll the page/u);
   assert.match(forecastHtml, /class="forecast-x-axis"/u);
   assert.equal((forecastHtml.match(/class="forecast-x-tick"/gu) ?? []).length, 1);
-  assert.match(forecastHtml, /data-forecast-weather-map/u);
-  assert.match(forecastHtml, /data-forecast-map-scrubber/u);
-  assert.match(forecastHtml, /data-forecast-map-layer="radar" aria-pressed="true"/u);
-  assert.match(forecastHtml, /data-forecast-map-layer="clouds" aria-pressed="false"/u);
-  assert.match(forecastHtml, /data-forecast-map-layer="precipitation" aria-pressed="false"/u);
-  assert.match(forecastHtml, /data-forecast-map-layer="wind" aria-pressed="false"/u);
-  assert.doesNotMatch(forecastHtml, /data-forecast-map-refresh|forecast-map-refresh-icon/u);
-  assert.match(forecastHtml, /data-forecast-map-selection-phase="history"[\s\S]*data-forecast-map-selection-phase-label>Historical</u);
-  assert.match(forecastHtml, /data-forecast-map-legend-layer="radar"[\s\S]*data-forecast-map-legend-phase="history"[\s\S]*Radar intensity[\s\S]*dBZ[\s\S]*10[\s\S]*30[\s\S]*50[\s\S]*70\+/u);
-  assert.match(forecastHtml, /data-forecast-map-cache-progress[\s\S]*Map cache progress[\s\S]*Caching Radar[\s\S]*data-forecast-map-cache-bar max="7" value="0"[\s\S]*0 of 7 nearby frames ready/u);
-  assert.match(forecastHtml, /data-map-tile-url="\/maps\/xweather\/history\/radar\/\d{14}\/10\/256x168\/47\.950430,-122\.427970\.png"/u);
-  assert.match(forecastHtml, /Weather maps by Xweather/u);
-  assert.doesNotMatch(forecastHtml, /class="forecast-map-heading|class="forecast-map-time"|data-forecast-map-slider|class="forecast-map-phase"|class="forecast-map-attribution"/u);
-  assert.ok(
-    forecastHtml.indexOf("data-forecast-weather-map") > forecastHtml.indexOf('data-forecast-chart="tide"') &&
-      forecastHtml.indexOf("data-forecast-weather-map") < forecastHtml.indexOf("forecast-x-axis"),
-  );
-  assert.ok(forecastHtml.indexOf("Weather maps by Xweather") > forecastHtml.indexOf('<footer class="credits"'));
-  assert.doesNotMatch(fiveDayForecastHtml, /data-forecast-weather-map/u);
+  assert.doesNotMatch(forecastHtml, /forecast-weather-map|data-forecast-map|\/maps\/xweather|Weather maps by Xweather/u);
+  assert.doesNotMatch(fiveDayForecastHtml, /forecast-weather-map|data-forecast-map|\/maps\/xweather|Weather maps by Xweather/u);
   assert.doesNotMatch(forecastHtml, /forecast-hour|forecast-timeline/u);
   assert.doesNotMatch(forecastHtml, /class="current-conditions"|Yearly trends|Nearby station map|<table/u);
   assert.match(trendsHtml, /href="\/trends" data-weather-route aria-current="page"/u);
@@ -2095,11 +2112,10 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(initialHomeHtml, /condition-secondary-comparison|Overnight/u);
   assert.equal((initialHomeHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 0);
   assert.equal((initialHomeHtml.match(/class="trend-chart skeleton-trend-chart"/gu) ?? []).length, 0);
-  assert.equal((initialForecastHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 8);
-  assert.equal((initialForecastHtml.match(/forecast-chart-heading forecast-chart-heading-top/gu) ?? []).length, 8);
-  assert.match(initialForecastHtml, /Temperature[\s\S]*Wind[\s\S]*Rain rate[\s\S]*Humidity[\s\S]*Air quality[\s\S]*UV index[\s\S]*Pressure[\s\S]*Tide/u);
-  assert.match(initialForecastHtml, /class="forecast-weather-map skeleton-forecast-map"/u);
-  assert.match(initialForecastHtml, /href="\/maps\/xweather\/history\/radar\/\d{14}\/10\/256x168\/47\.950430,-122\.427970\.png" fetchpriority="high"/u);
+  assert.equal((initialForecastHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 9);
+  assert.equal((initialForecastHtml.match(/forecast-chart-heading forecast-chart-heading-top/gu) ?? []).length, 9);
+  assert.match(initialForecastHtml, /Temperature[\s\S]*Wind[\s\S]*Rain rate[\s\S]*Clouds[\s\S]*Humidity[\s\S]*Air quality[\s\S]*UV index[\s\S]*Pressure[\s\S]*Tide/u);
+  assert.doesNotMatch(initialForecastHtml, /forecast-weather-map|skeleton-forecast-map|\/maps\/xweather|Weather maps by Xweather/u);
   assert.equal((initialForecastHtml.match(/class="forecast-x-tick"/gu) ?? []).length, 24);
   assert.match(initialForecastHtml, /data-forecast-light="night"/u);
   assert.match(initialForecastHtml, /data-forecast-light="day"/u);
@@ -2261,6 +2277,15 @@ test("forecast selector timestamps interpolate continuously between hourly sampl
   assert.equal(interpolateForecastInstant(times, 0.75), "2026-08-21T07:45:00.000Z");
 });
 
+// control whether sparse chart endpoints may extend into gaps
+test("forecast chart interpolation preserves strict pressure gaps", () => {
+  assert.equal(interpolateForecastValue([1, null], 0.5), 1);
+  assert.equal(interpolateForecastValue([1, null], 0.5, false), null);
+  assert.equal(interpolateForecastValue([null, -2], 0.5, false), null);
+  assert.equal(interpolateForecastValue([1, 3], 0.5, false), 2);
+  assert.equal(interpolateForecastValue([1, null], 0, false), 1);
+});
+
 test("daily forecasts use the site calendar", () => {
   const records = [
     { ...forecastRecord, id: "before", validAt: "2026-08-21T06:59:59.000Z" },
@@ -2289,6 +2314,104 @@ test("daily forecasts use the site calendar", () => {
     ).map((entry) => entry.id),
     ["start", "end", "after", "day-five"],
   );
+});
+
+// align rolling pressure changes to complete forecast windows
+test("forecast pressure changes require exact same-source hourly windows", () => {
+  const records = [
+    pressureForecastRecord("2026-09-12T15:00:00Z", 1_000),
+    pressureForecastRecord("2026-09-12T16:00:00Z", 1_001),
+    pressureForecastRecord("2026-09-12T17:00:00Z", 1_002),
+    pressureForecastRecord("2026-09-12T18:00:00Z", 1_004),
+    pressureForecastRecord("2026-09-12T19:00:00Z", 1_005),
+  ];
+  assert.deepEqual(forecastPressureChanges(records), [null, null, null, 4, 4]);
+  assert.deepEqual(forecastPressureChanges(records, records.slice(3)), [4, 4]);
+
+  const withGap = records.map(
+    // move one required sample off the hourly boundary
+    (entry, index) => index === 2
+      ? { ...entry, validAt: "2026-09-12T17:30:00Z" }
+      : entry,
+  );
+  assert.deepEqual(forecastPressureChanges(withGap), [null, null, null, null, null]);
+
+  const mixedSource = records.map(
+    // replace one required sample with another provider
+    (entry, index) => index === 2
+      ? pressureForecastRecord(entry.validAt, entry.metrics.pressureHpa, { source: "other-source" })
+      : entry,
+  );
+  assert.deepEqual(forecastPressureChanges(mixedSource), [null, null, null, null, null]);
+
+  const mixedRun = records.map(
+    // replace one required sample with another model run
+    (entry, index) => index === 2
+      ? { ...entry, productRunAt: "2026-09-12T14:30:00Z" }
+      : entry,
+  );
+  assert.deepEqual(forecastPressureChanges(mixedRun), [null, null, null, null, null]);
+
+  const nonfinite = records.map(
+    // invalidate one required numeric pressure sample
+    (entry, index) => index === 2
+      ? { ...entry, metrics: { ...entry.metrics, pressureHpa: Number.NaN } }
+      : entry,
+  );
+  assert.deepEqual(forecastPressureChanges(nonfinite), [null, null, null, null, null]);
+
+  const observed = records.map(
+    // replace the entire forecast run with observations
+    (entry) => ({
+      ...entry,
+      productRunAt: null,
+      provenance: { ...entry.provenance, sourceKind: "model_current" },
+    }),
+  );
+  assert.deepEqual(forecastPressureChanges(observed), [null, null, null, null, null]);
+});
+
+// use elapsed epoch hours across repeated daylight-saving wall clocks
+test("forecast pressure changes remain hourly across daylight-saving transitions", () => {
+  const fallback = [
+    pressureForecastRecord("2026-11-01T07:00:00Z", 1_000),
+    pressureForecastRecord("2026-11-01T08:00:00Z", 1_001),
+    pressureForecastRecord("2026-11-01T09:00:00Z", 1_003),
+    pressureForecastRecord("2026-11-01T10:00:00Z", 1_006),
+  ];
+  assert.deepEqual(forecastPressureChanges(fallback), [null, null, null, 6]);
+});
+
+// keep unavailable rolling windows as visible breaks in the pressure chart
+test("pressure forecast chart separates gaps and keeps gradient colors time-aligned", () => {
+  const pressureValues = [1_000, 1_001, 1_002, 1_003, 1_004, null, 1_006, 1_007, 1_008, 1_014, 1_016];
+  const forecast = pressureValues.map(
+    // create one hourly run with a missing pressure sample between valid windows
+    (pressureHpa, index) => pressureForecastRecord(
+      new Date(Date.parse("2026-09-12T15:00:00Z") + index * 3_600_000).toISOString(),
+      pressureHpa,
+    ),
+  );
+  const html = renderWeatherDashboard({
+    ...new WeatherDashboardController({ storage: null }).state,
+    current: [{ ...record, validAt: forecast[0].validAt }],
+    forecast,
+    loading: false,
+    selectedSite: site,
+  }, "forecast");
+  const pressure = forecastChartHtml(html, "pressure");
+  assert.deepEqual(forecastChartSeries(html, "pressure"), [{
+    label: "3h change",
+    values: [null, null, null, 3, 3, null, null, null, null, 8, 9],
+  }]);
+  assert.match(pressure, /data-forecast-min="-9"[\s\S]*data-forecast-max="9"/u);
+  const segments = [...pressure.matchAll(/<polyline points="([^"]*)" class="forecast-chart-line forecast-chart-line-0"/gu)];
+  assert.equal(segments.length, 2);
+  assert.match(segments[0]?.[1] ?? "", /^196\.36,[\d.]+ 261\.82,[\d.]+$/u);
+  assert.match(segments[1]?.[1] ?? "", /^589\.09,[\d.]+ 654\.55,[\d.]+ 720\.00,[\d.]+$/u);
+  assert.match(pressure, /<linearGradient id="forecast-line-pressure-0" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="720" y2="0">/u);
+  assert.match(pressure, /offset="27\.273%" stop-color="rgb\(230, 181, 25\)"/u);
+  assert.match(pressure, /offset="81\.818%" stop-color="rgb\(207, 67, 55\)"/u);
 });
 
 // select the earliest strongest complete same-run pressure window

@@ -1145,7 +1145,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       // prove the inactive registry preserves the raw presentation
       fixture.state.adjustmentMode = "inactive";
       await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
-      assert.equal(await page.locator(".forecast-chart").count(), 8);
+      assert.equal(await page.locator(".forecast-chart").count(), 9);
       assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
       assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
       const inactiveToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
@@ -1154,6 +1154,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       assert.equal(await inactiveToggle.isEnabled(), true);
       assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
       const inactiveTemperature = await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent();
+      const inactiveWind = await page.locator('[data-forecast-chart="wind"] [data-forecast-value="0"]').textContent();
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "false");
       assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
@@ -1177,7 +1178,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       );
       assert.equal(
         (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim(),
-        "58 °F",
+        "53 °F",
       );
       const activeScreen = await page.locator("[data-forecast-charts]").screenshot();
       assert.ok(activeScreen.byteLength > 1_000);
@@ -1195,6 +1196,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       const selectedForecastPosition = await forecastScrubber.getAttribute("data-forecast-selected-position");
       assert.equal(Number.isInteger(Number(selectedForecastPosition)), false);
       const adjustedTemperature = (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim();
+      const adjustedWind = (await page.locator('[data-forecast-chart="wind"] [data-forecast-value="0"]').textContent())?.trim();
       await adjustmentToggle.click();
       const regionalToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await regionalToggle.getAttribute("aria-checked"), "false");
@@ -1207,9 +1209,13 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
         await forecastScrubber.getAttribute("data-forecast-selected-position"),
         selectedForecastPosition,
       );
-      assert.notEqual(
+      assert.equal(
         (await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent())?.trim(),
         adjustedTemperature,
+      );
+      assert.notEqual(
+        (await page.locator('[data-forecast-chart="wind"] [data-forecast-value="0"]').textContent())?.trim(),
+        adjustedWind,
       );
       assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
 
@@ -1257,8 +1263,12 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
         await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent(),
         inactiveTemperature,
       );
+      assert.equal(
+        await page.locator('[data-forecast-chart="wind"] [data-forecast-value="0"]').textContent(),
+        inactiveWind,
+      );
       assert.equal(await page.getByText("Locally adjusted", { exact: true }).count(), 0);
-      assert.equal(await page.locator(".forecast-chart").count(), 8);
+      assert.equal(await page.locator(".forecast-chart").count(), 9);
       assert.equal(
         await page.locator("body").evaluate(
           // reject forecast horizontal overflow
@@ -3061,7 +3071,6 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
 
 test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
-  fixture.state.tileDelayMs = 250;
   let browser;
 
   try {
@@ -3090,7 +3099,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       await page.waitForTimeout(40);
     };
 
-    assert.equal(await page.locator(".forecast-chart").count(), 8);
+    assert.equal(await page.locator(".forecast-chart").count(), 9);
     assert.equal(await page.locator(".forecast-chart-line").count(), 10);
     assert.deepEqual(
       await page.locator(".forecast-chart-line").evaluateAll(
@@ -3101,126 +3110,18 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     );
     assert.equal(await page.locator(".forecast-chart-guide").count(), 0);
     assert.equal(await page.locator(".forecast-chart linearGradient").count(), 10);
-    assert.equal(await page.locator(".forecast-chart-scale").count(), 16);
+    assert.equal(await page.locator(".forecast-chart-scale").count(), 18);
     assert.equal(await page.locator(".forecast-x-tick").count(), 24);
     assert.equal(await page.locator(".forecast-x-axis time").count(), 5);
     assert.equal(await page.locator("button[data-forecast-days]").count(), 3);
-    const weatherMap = page.locator("[data-forecast-weather-map]");
-    const weatherTiles = page.locator("[data-forecast-map-tile]");
-    const weatherLegend = page.locator("[data-forecast-map-legend]");
-    const mapSelectionPhase = page.locator("[data-forecast-map-selection-phase]");
-    const cacheProgress = page.locator("[data-forecast-map-cache-progress]");
-    const cacheProgressBar = page.locator("[data-forecast-map-cache-bar]");
-    assert.equal(await weatherMap.count(), 1);
-    assert.equal(await weatherTiles.count(), 1);
+    assert.equal(await page.locator("[data-forecast-weather-map]").count(), 0);
     assert.equal(
-      await page.locator(".forecast-map-layer-controls button").evaluateAll(
-        // retain only the four weather overlays
-        (buttons) => buttons.length,
-      ),
-      4,
-    );
-    assert.equal(await cacheProgress.count(), 1);
-    await cacheProgress.waitFor({ state: "visible", timeout: 5_000 });
-    assert.match(await cacheProgress.textContent() ?? "", /Caching Radar[\s\S]*\d+%[\s\S]*\d+ of 7 nearby frames ready/u);
-    assert.equal(Number(await cacheProgressBar.getAttribute("value")) < 7, true);
-    assert.deepEqual(
-      await weatherMap.evaluate(
-        // place the bare map between the final chart and shared axis
-        (map) => ({
-          followsCharts: map.previousElementSibling?.classList.contains("forecast-chart-grid") === true,
-          precedesAxis: map.nextElementSibling?.classList.contains("forecast-x-axis") === true,
-        }),
-      ),
-      { followsCharts: true, precedesAxis: true },
-    );
-    assert.equal(await page.getByRole("button", { name: "Radar" }).getAttribute("aria-pressed"), "true");
-    assert.equal(await weatherLegend.getAttribute("data-forecast-map-legend-layer"), "radar");
-    assert.equal(await weatherLegend.getAttribute("data-forecast-map-legend-phase"), "history");
-    assert.equal(await mapSelectionPhase.getAttribute("data-forecast-map-selection-phase"), "history");
-    assert.equal((await mapSelectionPhase.textContent() ?? "").trim(), "Historical");
-    assert.match(await weatherLegend.textContent() ?? "", /Radar intensity[\s\S]*dBZ[\s\S]*10[\s\S]*30[\s\S]*50[\s\S]*70\+/u);
-    const radarLegendGradient = await weatherLegend.locator(".forecast-map-legend-bar").evaluate(
-      // require one rendered radar gradient
-      (bar) => getComputedStyle(bar).backgroundImage,
-    );
-    assert.match(radarLegendGradient, /linear-gradient/u);
-    assert.match(await weatherTiles.first().getAttribute("data-map-tile-url") ?? "", /\/maps\/xweather\/history\/radar\/\d{14}\/10\/256x168\/47\.950430,-122\.427970\.png$/u);
-    await page.waitForFunction(
-      // wait for the selected frame decode
-      () => document.querySelector("[data-forecast-map-tile]")?.getAttribute("href")?.startsWith("blob:") === true,
-    );
-    assert.match(await weatherTiles.first().getAttribute("href") ?? "", /^blob:/u);
-    assert.equal(await weatherMap.getAttribute("data-forecast-map-phase"), "history");
-    assert.equal(await page.locator("[data-forecast-map-slider]").count(), 0);
-    assert.equal(await page.locator(".forecast-map-heading, .forecast-map-time, .forecast-map-phase").count(), 0);
-    assert.equal(await page.getByRole("link", { name: "Weather maps by Xweather" }).isVisible(), false);
-    const credits = page.locator(".credits details");
-    await credits.getByText("Data sources & credits", { exact: true }).click();
-    assert.equal(await page.getByRole("link", { name: "Weather maps by Xweather" }).isVisible(), true);
-    assert.equal(await page.getByRole("link", { name: "OpenStreetMap contributors" }).isVisible(), true);
-    await credits.getByText("Data sources & credits", { exact: true }).click();
-    await page.waitForFunction(
-      // wait for every nearby radar frame
-      () => document.querySelector("[data-forecast-weather-map]")?.getAttribute("data-forecast-map-cache-state") === "complete",
-      undefined,
-      { timeout: 45_000 },
-    );
-    assert.equal(await weatherMap.getAttribute("data-forecast-map-cache-ready"), "7");
-    assert.equal(await weatherMap.getAttribute("data-forecast-map-cache-total"), "7");
-    assert.equal(await cacheProgress.isHidden(), true);
-    assert.equal(await cacheProgressBar.getAttribute("value"), "7");
-    const tileRequestsBeforeReload = fixture.state.requests.filter(
-      // count only same-origin weather tile reads
-      (entry) => /^GET \/maps\/xweather\/(?:history|forecast)\//u.test(entry),
-    ).length;
-    await page.reload({ waitUntil: "networkidle" });
-    await page.waitForFunction(
-      // restore the complete radar day from persistent browser storage
-      () => document.querySelector("[data-forecast-weather-map]")?.getAttribute("data-forecast-map-cache-state") === "complete",
-      undefined,
-      { timeout: 10_000 },
-    );
-    assert.equal(
-      fixture.state.requests.filter(
-        // count only same-origin weather tile reads
+      fixture.state.requests.some(
+        // do not load hidden forecast map tiles
         (entry) => /^GET \/maps\/xweather\/(?:history|forecast)\//u.test(entry),
-      ).length,
-      tileRequestsBeforeReload + 1,
+      ),
+      false,
     );
-    assert.match(await weatherTiles.first().getAttribute("href") ?? "", /^blob:/u);
-    const mapScrubber = page.locator("[data-forecast-map-scrubber]");
-    await mapScrubber.scrollIntoViewIfNeeded();
-    const mapBounds = await mapScrubber.boundingBox();
-
-    // require one measurable map scrub surface
-    if (mapBounds === null) {
-      throw new Error("forecast map scrub surface is unavailable");
-    }
-
-    const mapTileBefore = await weatherTiles.first().getAttribute("data-map-tile-url");
-    const mapClockBefore = await page.locator("[data-forecast-crosshair-time]").getAttribute("datetime");
-    const mapTouchY = mapBounds.y + mapBounds.height * 0.72;
-    await session.send("Input.dispatchTouchEvent", {
-      touchPoints: [{ x: mapBounds.x + mapBounds.width * 0.25, y: mapTouchY }],
-      type: "touchStart",
-    });
-    await session.send("Input.dispatchTouchEvent", {
-      touchPoints: [{ x: mapBounds.x + mapBounds.width * 0.75, y: mapTouchY }],
-      type: "touchMove",
-    });
-    const mapTileDuringSwipe = await weatherTiles.first().getAttribute("data-map-tile-url");
-    const mapClockDuringSwipe = await page.locator("[data-forecast-crosshair-time]").getAttribute("datetime");
-    const mapSelectedDuringSwipe = Number(await weatherMap.getAttribute("data-forecast-map-selected"));
-    await session.send("Input.dispatchTouchEvent", { touchPoints: [], type: "touchEnd" });
-    await page.waitForFunction(
-      // wait for one uncached distant frame after the gesture settles
-      (prior) => document.querySelector("[data-forecast-map-tile]")?.getAttribute("data-map-tile-url") !== prior,
-      mapTileBefore,
-    );
-    assert.equal(mapTileDuringSwipe, mapTileBefore);
-    assert.notEqual(mapClockDuringSwipe, mapClockBefore);
-    assert.equal(Math.abs(mapSelectedDuringSwipe - Date.parse(mapClockDuringSwipe ?? "")) < 10 * 60 * 1_000, true);
     assert.equal(await grid.getAttribute("data-forecast-days"), "1");
     assert.equal(await page.locator(".forecast-chart-days").count(), 0);
     assert.equal(await page.getByRole("button", { name: "Today" }).getAttribute("aria-pressed"), "true");
@@ -3248,13 +3149,13 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       },
     );
     assert.match(await page.locator("[data-forecast-crosshair-time]").textContent() ?? "", /\d{1,2}:\d{2}\s[AP]M/u);
-    assert.equal(await page.locator(".forecast-chart-heading-top").count(), 8);
+    assert.equal(await page.locator(".forecast-chart-heading-top").count(), 9);
     assert.equal(await page.locator(".forecast-chart-heading-bottom").count(), 0);
     assert.equal(await page.locator('.forecast-x-tick[data-forecast-light="day"]').count(), 15);
     assert.equal(await page.locator('.forecast-x-tick[data-forecast-light="night"]').count(), 9);
-    assert.equal(await page.locator(".forecast-chart-daylight").count(), 8);
-    assert.equal(await page.locator('.forecast-chart-daylight [data-forecast-light="day"]').count(), 120);
-    assert.equal(await page.locator('.forecast-chart-daylight [data-forecast-light="night"]').count(), 72);
+    assert.equal(await page.locator(".forecast-chart-daylight").count(), 9);
+    assert.equal(await page.locator('.forecast-chart-daylight [data-forecast-light="day"]').count(), 135);
+    assert.equal(await page.locator('.forecast-chart-daylight [data-forecast-light="night"]').count(), 81);
     assert.deepEqual(
       await page.locator(".forecast-x-axis time").allTextContents(),
       ["12 AM", "6 AM", "12 PM", "6 PM", "11 PM"],
@@ -3287,7 +3188,75 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
         // preserve one chart per current-condition stat
         (charts) => charts.map((chart) => chart.getAttribute("data-forecast-chart")),
       ),
-      ["temperature", "wind", "rain-rate", "humidity", "air-quality", "uv-index", "pressure", "tide"],
+      ["temperature", "wind", "rain-rate", "clouds", "humidity", "air-quality", "uv-index", "pressure", "tide"],
+    );
+    assert.deepEqual(
+      await page.locator('[data-forecast-chart="temperature"]').evaluate(
+        // retain only the solid feels-like series
+        (chart) => ({
+          labels: [...chart.querySelectorAll(".forecast-chart-value small")].map((label) => label.textContent),
+          lineClasses: [...chart.querySelectorAll(".forecast-chart-line")].map((line) => line.getAttribute("class")),
+          series: JSON.parse(chart.getAttribute("data-forecast-series") ?? "[]"),
+        }),
+      ),
+      {
+        labels: ["Feels like"],
+        lineClasses: ["forecast-chart-line forecast-chart-line-0"],
+        series: [{ label: "Feels like", values: forecast.slice(0, 24).map((record) => record.metrics.apparentTemperatureC) }],
+      },
+    );
+    assert.deepEqual(
+      await page.locator('[data-forecast-chart="clouds"]').evaluate(
+        // preserve percentage cover after rain with the shared cloud palette
+        (chart) => ({
+          domain: [Number(chart.getAttribute("data-forecast-min")), Number(chart.getAttribute("data-forecast-max"))],
+          format: chart.getAttribute("data-forecast-format"),
+          series: JSON.parse(chart.getAttribute("data-forecast-series") ?? "[]"),
+          stopColors: [...new Set([...chart.querySelectorAll("stop")].map((stop) => stop.getAttribute("stop-color")))],
+        }),
+      ),
+      {
+        domain: [0, 100],
+        format: "cloudCover",
+        series: [{ label: "Cover", values: Array.from({ length: 24 }, () => 42) }],
+        stopColors: ["rgb(105, 133, 155)"],
+      },
+    );
+    const expectedPressureChanges = forecast.slice(0, 24).map(
+      // compare each complete same-run endpoint to three hours earlier
+      (record, index) => index < 3
+        ? null
+        : record.metrics.pressureHpa - forecast[index - 3].metrics.pressureHpa,
+    );
+    assert.deepEqual(
+      await page.locator('[data-forecast-chart="pressure"]').evaluate(
+        // retain signed unitless rolling changes on a symmetric scale
+        (chart) => ({
+          domain: [Number(chart.getAttribute("data-forecast-min")), Number(chart.getAttribute("data-forecast-max"))],
+          format: chart.getAttribute("data-forecast-format"),
+          series: JSON.parse(chart.getAttribute("data-forecast-series") ?? "[]"),
+          stopColors: [...new Set([...chart.querySelectorAll("stop")].map((stop) => stop.getAttribute("stop-color")))],
+        }),
+      ),
+      {
+        domain: [-6, 6],
+        format: "pressureChange",
+        series: [{ label: "3h change", values: expectedPressureChanges }],
+        stopColors: [
+          "rgb(136, 136, 130)",
+          "rgb(230, 181, 25)",
+          "rgb(200, 183, 68)",
+          "rgb(0, 146, 63)",
+        ],
+      },
+    );
+    assert.doesNotMatch(
+      await page.locator('[data-forecast-chart="pressure"]').textContent() ?? "",
+      /(?:hPa|inHg)/u,
+    );
+    assert.doesNotMatch(
+      await page.locator('[data-forecast-chart="air-quality"]').textContent() ?? "",
+      /(?:µg\/m³|ug\/m3)/u,
     );
     assert.equal(
       await page.locator(".forecast-chart").evaluateAll(
@@ -3325,75 +3294,14 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     );
     await assertForecastTitleClearance(page);
     await grid.press("End");
-    await page.waitForFunction(
-      // follow the shared selector into forecast tiles
-      () => [...document.querySelectorAll("[data-forecast-map-tile]")].every(
-        (tile) => tile.getAttribute("data-map-tile-url")?.includes("/maps/xweather/forecast/radar/") === true,
-      ),
-    );
-    assert.equal(await weatherMap.getAttribute("data-forecast-map-phase"), "forecast");
-    assert.equal(await weatherLegend.getAttribute("data-forecast-map-legend-phase"), "forecast");
-    assert.equal(await mapSelectionPhase.getAttribute("data-forecast-map-selection-phase"), "forecast");
-    assert.equal((await mapSelectionPhase.textContent() ?? "").trim(), "Forecast");
+    assert.equal(await page.locator("[data-forecast-weather-map]").count(), 0);
     assert.equal(
-      await mapSelectionPhase.evaluate(
-        // keep the end-position phase chip inside the map
-        (phase) => {
-          const phaseBounds = phase.querySelector("span")?.getBoundingClientRect();
-          const mapBounds = phase.closest(".forecast-map-canvas")?.getBoundingClientRect();
-          return phaseBounds !== undefined && mapBounds !== undefined &&
-            phaseBounds.left >= mapBounds.left && phaseBounds.right <= mapBounds.right;
-        },
+      fixture.state.requests.some(
+        // keep every hidden forecast map layer network-idle
+        (entry) => /^GET \/maps\/xweather\/(?:history|forecast)\//u.test(entry),
       ),
-      true,
+      false,
     );
-    await page.getByRole("button", { name: "Clouds" }).click();
-    await page.waitForFunction(
-      // wait for the selected cloud layer
-      () => [...document.querySelectorAll("[data-forecast-map-tile]")].every(
-        (tile) => tile.getAttribute("data-map-tile-url")?.includes("/maps/xweather/forecast/clouds/") === true,
-      ),
-    );
-    assert.equal(await page.getByRole("button", { name: "Clouds" }).getAttribute("aria-pressed"), "true");
-    assert.equal(await weatherMap.getAttribute("data-forecast-map-layer"), "clouds");
-    assert.equal(await weatherLegend.getAttribute("data-forecast-map-legend-layer"), "clouds");
-    assert.match(await weatherLegend.textContent() ?? "", /Forecast clouds[\s\S]*Clear[\s\S]*Dense/u);
-    const cloudLegendGradient = await weatherLegend.locator(".forecast-map-legend-bar").evaluate(
-      // retain the active cloud gradient
-      (bar) => getComputedStyle(bar).backgroundImage,
-    );
-    assert.notEqual(cloudLegendGradient, radarLegendGradient);
-
-    await page.getByRole("button", { name: "Rain" }).click();
-    await page.waitForFunction(
-      // wait for the selected precipitation layer
-      () => [...document.querySelectorAll("[data-forecast-map-tile]")].every(
-        (tile) => tile.getAttribute("data-map-tile-url")?.includes("/maps/xweather/forecast/precipitation/") === true,
-      ),
-    );
-    assert.equal(await weatherLegend.getAttribute("data-forecast-map-legend-layer"), "precipitation");
-    assert.match(await weatherLegend.textContent() ?? "", /Forecast 1-hour rain[\s\S]*in[\s\S]*0[\s\S]*2[\s\S]*6[\s\S]*10\+/u);
-    const rainLegendGradient = await weatherLegend.locator(".forecast-map-legend-bar").evaluate(
-      // retain the active rain gradient
-      (bar) => getComputedStyle(bar).backgroundImage,
-    );
-    assert.notEqual(rainLegendGradient, cloudLegendGradient);
-
-    await page.getByRole("button", { name: "Wind" }).click();
-    await page.waitForFunction(
-      // wait for the selected wind layer
-      () => [...document.querySelectorAll("[data-forecast-map-tile]")].every(
-        (tile) => tile.getAttribute("data-map-tile-url")?.includes("/maps/xweather/forecast/wind/") === true,
-      ),
-    );
-    assert.equal(await weatherLegend.getAttribute("data-forecast-map-legend-layer"), "wind");
-    assert.match(await weatherLegend.textContent() ?? "", /Wind speed[\s\S]*mph[\s\S]*0[\s\S]*20[\s\S]*50[\s\S]*100/u);
-    const windLegendGradient = await weatherLegend.locator(".forecast-map-legend-bar").evaluate(
-      // retain the active wind gradient
-      (bar) => getComputedStyle(bar).backgroundImage,
-    );
-    assert.notEqual(windLegendGradient, rainLegendGradient);
-    assert.equal(await page.locator("[data-forecast-map-refresh]").count(), 0);
     await page.getByRole("button", { name: "5 days" }).click();
     await page.waitForFunction(
       // wait for the five-day forecast render
@@ -3410,8 +3318,8 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       ["1.5px", "2px"],
     );
     assert.match(await page.locator("[data-forecast-crosshair-time]").textContent() ?? "", /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat),[\s\S]*\d{1,2}:\d{2}\s[AP]M/u);
-    assert.equal(await page.locator(".forecast-chart-days").count(), 8);
-    assert.equal(await page.locator(".forecast-chart-day-start").count(), 40);
+    assert.equal(await page.locator(".forecast-chart-days").count(), 9);
+    assert.equal(await page.locator(".forecast-chart-day-start").count(), 45);
     assert.deepEqual(
       await page.locator(".forecast-chart-days").first().locator("b").allTextContents(),
       ["Fri 21", "Sat 22", "Sun 23", "Mon 24", "Tue 25"],
@@ -3452,7 +3360,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       ["1.5px", "2px"],
     );
     assert.match(await page.locator("[data-forecast-crosshair-time]").textContent() ?? "", /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat),[\s\S]*\d{1,2}:\d{2}\s[AP]M/u);
-    assert.equal(await page.locator(".forecast-chart-day-start").count(), 80);
+    assert.equal(await page.locator(".forecast-chart-day-start").count(), 90);
     await assertForecastTitleClearance(page);
     assert.equal(
       fixture.state.requests.some(
@@ -3489,7 +3397,8 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       ),
       {
         "air-quality": [0, 14.4882614724],
-        pressure: [1006.7957915632, 1020.9043383205],
+        clouds: [0, 100],
+        pressure: [-6, 6],
         "rain-rate": [0, 25.4],
         temperature: [-1.1111111111, 26.6666666667],
         tide: [-0.3048, 3.6576],
@@ -3506,7 +3415,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     );
     assert.deepEqual(
       await page.locator(".forecast-chart-shell").evaluate(
-        // keep both lines spanning charts, map, and axis
+        // keep both lines spanning the complete chart stack and axis
         (chartShell) => {
           const sharedLineElement = chartShell.querySelector(".forecast-shared-crosshair");
           const currentLineElement = chartShell.querySelector(".forecast-current-time-line");
@@ -3515,18 +3424,15 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
           const charts = [...chartShell.querySelectorAll(".forecast-chart")];
           const first = charts[0]?.getBoundingClientRect();
           const last = charts.at(-1)?.getBoundingClientRect();
-          const map = chartShell.querySelector(".forecast-map-canvas")?.getBoundingClientRect();
           const axis = chartShell.querySelector(".forecast-x-axis")?.getBoundingClientRect();
           return {
             currentReachesAxis: currentLine !== undefined && axis !== undefined && currentLine.bottom >= axis.bottom,
             currentReachesBottom: currentLine !== undefined && last !== undefined && currentLine.bottom >= last.bottom,
-            currentReachesMap: currentLine !== undefined && map !== undefined && currentLine.bottom >= map.bottom,
             currentReachesTop: currentLine !== undefined && first !== undefined && currentLine.top <= first.top,
             currentUnderScrubber: currentLineElement !== null && sharedLineElement !== null &&
               (currentLineElement.compareDocumentPosition(sharedLineElement) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
             reachesAxis: sharedLine !== undefined && axis !== undefined && sharedLine.bottom >= axis.bottom,
             reachesBottom: sharedLine !== undefined && last !== undefined && sharedLine.bottom >= last.bottom,
-            reachesMap: sharedLine !== undefined && map !== undefined && sharedLine.bottom >= map.bottom,
             reachesTop: sharedLine !== undefined && first !== undefined && sharedLine.top <= first.top,
           };
         },
@@ -3534,12 +3440,10 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       {
         currentReachesAxis: true,
         currentReachesBottom: true,
-        currentReachesMap: true,
         currentReachesTop: true,
         currentUnderScrubber: true,
         reachesAxis: true,
         reachesBottom: true,
-        reachesMap: true,
         reachesTop: true,
       },
     );
@@ -3629,7 +3533,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     assert.equal(Math.abs(scrolledLine.x - centerLine.x) < 1, true);
     assert.equal(scrolledAirQuality, centerAirQuality);
     assert.equal(scrollAfter > scrollBefore, true);
-    assert.equal(await page.locator(".forecast-chart-value").count(), 8);
+    assert.equal(await page.locator(".forecast-chart-value").count(), 9);
     await swipe(bounds.x + 8, touchY, bounds.x + 8, touchY);
     assert.deepEqual(
       await page.locator('[data-forecast-chart="uv-index"]').evaluate(
@@ -3764,7 +3668,7 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
     await page.locator(".forecast-panel.skeleton-region").waitFor();
     assert.deepEqual(
       await page.locator(".skeleton-forecast-chart h3").allTextContents(),
-      ["device_thermostatTemperature", "airWind", "rainyRain rate", "humidity_percentageHumidity", "masksAir quality", "wb_sunnyUV index", "speedPressure", "waterTide"],
+      ["device_thermostatTemperature", "airWind", "rainyRain rate", "cloudClouds", "humidity_percentageHumidity", "masksAir quality", "wb_sunnyUV index", "speedPressure", "waterTide"],
     );
     assert.equal(
       await page.locator(".skeleton-forecast-chart").evaluateAll(
@@ -3789,13 +3693,13 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
       ),
       true,
     );
-    assert.equal(await page.locator(".skeleton-forecast-map").count(), 1);
+    assert.equal(await page.locator(".skeleton-forecast-map").count(), 0);
     assert.equal(
-      await page.locator(".skeleton-forecast-map").evaluate(
-        // animate the reserved weather map surface
-        (map) => getComputedStyle(map, "::after").animationName,
+      fixture.state.requests.some(
+        // avoid tile work while the hidden map skeleton is loading
+        (entry) => /^GET \/maps\/xweather\/(?:history|forecast)\//u.test(entry),
       ),
-      "skeleton-shimmer",
+      false,
     );
     releaseForecastReads();
     await page.locator(".forecast-panel:not(.skeleton-region)").waitFor();

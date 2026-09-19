@@ -3279,8 +3279,8 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
     ? `<span>Open-Meteo data licensed under <a href="https://creativecommons.org/licenses/by/4.0/" rel="license noreferrer">CC BY 4.0</a></span><span aria-hidden="true">·</span>`
     : "";
 
-  // keep forecast map credits collapsed
-  const forecastMapCredits = view === "forecast"
+  // show map credits only while the embedded forecast map is enabled
+  const forecastMapCredits = SHOW_FORECAST_WEATHER_MAP && view === "forecast"
     ? `<span>Map © <a href="https://www.openstreetmap.org/copyright" rel="noreferrer">OpenStreetMap contributors</a></span><span aria-hidden="true">·</span><a href="https://www.xweather.com/" rel="noreferrer">Weather maps by Xweather</a><span aria-hidden="true">·</span>`
     : "";
   const temperatureCanaryCredit =
@@ -3588,39 +3588,56 @@ function formatPressureChange(changeHpa: number | null): FormattedMeasurement {
   };
 }
 
+// derive aligned rolling changes from complete same-source forecast windows
+export function forecastPressureChanges(
+  records: readonly WeatherRecord[],
+  hours: readonly WeatherRecord[] = records,
+): readonly (number | null)[] {
+  const available = records.filter(
+    // exclude observations and incomplete pressure samples
+    (record) => record.provenance.sourceKind === "forecast" &&
+      record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
+  );
+  const byHour = new Map(available.map(
+    // keep each forecast source and model run isolated
+    (record) => [`${record.provenance.sourceId}/${record.productRunAt ?? ""}/${Date.parse(record.validAt)}`, record],
+  ));
+  return hours.map(
+    // retain unavailable windows at their exact timeline positions
+    (end) => {
+      const prefix = `${end.provenance.sourceId}/${end.productRunAt ?? ""}/`;
+      const endMs = Date.parse(end.validAt);
+      const start = byHour.get(`${prefix}${endMs - 3 * 3_600_000}`);
+      // require all four finite forecast samples without crossing a source or run gap
+      if (end.provenance.sourceKind !== "forecast" || end.metrics.pressureHpa === null ||
+        !Number.isFinite(end.metrics.pressureHpa) || start === undefined ||
+        !byHour.has(`${prefix}${endMs - 2 * 3_600_000}`) || !byHour.has(`${prefix}${endMs - 3_600_000}`)) {
+        return null;
+      }
+
+      return end.metrics.pressureHpa - start.metrics.pressureHpa!;
+    },
+  );
+}
+
 // select the earliest strongest complete three-hour window across the whole day
 export function strongestPressureChange(
   records: readonly WeatherRecord[],
   now: Date,
   timezone: string,
 ): Readonly<{ changeHpa: number; validAt: string }> | null {
-  const hours = forecastForSiteDay(records, now.toISOString(), timezone).filter(
-    // include earlier hours today without mixing observed or null pressure
-    (record) => record.provenance.sourceKind === "forecast" &&
-      record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
-  ).sort(
+  const hours = forecastForSiteDay(records, now.toISOString(), timezone).toSorted(
     // resolve equal-magnitude windows by their earliest ending time
     (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
   );
-  const byHour = new Map(hours.map(
-    // prevent joining hours across sources or model runs
-    (record) => [`${record.provenance.sourceId}/${record.productRunAt ?? ""}/${Date.parse(record.validAt)}`, record],
-  ));
+  const changes = forecastPressureChanges(hours);
   let strongest: Readonly<{ changeHpa: number; validAt: string }> | null = null;
   // compare only continuous three-hour forecast windows
-  for (const end of hours) {
-    const prefix = `${end.provenance.sourceId}/${end.productRunAt ?? ""}/`;
-    const endMs = Date.parse(end.validAt);
-    const start = byHour.get(`${prefix}${endMs - 3 * 3_600_000}`);
-    // fail closed when the forecast does not contain a complete window
-    if (start === undefined || !byHour.has(`${prefix}${endMs - 2 * 3_600_000}`) ||
-      !byHour.has(`${prefix}${endMs - 3_600_000}`)) {
-      continue;
-    }
-
-    const changeHpa = end.metrics.pressureHpa! - start.metrics.pressureHpa!;
+  for (const [index, end] of hours.entries()) {
+    const changeHpa = changes[index];
     // keep the first window when magnitudes tie
-    if (strongest === null || Math.abs(changeHpa) > Math.abs(strongest.changeHpa)) {
+    if (changeHpa !== null && changeHpa !== undefined &&
+      (strongest === null || Math.abs(changeHpa) > Math.abs(strongest.changeHpa))) {
       strongest = { changeHpa, validAt: end.validAt };
     }
   }
@@ -4104,9 +4121,10 @@ interface ForecastChartSeries {
 
 type ForecastChartFormat =
   | "airQuality"
+  | "cloudCover"
   | "humidity"
   | "precipitationRate"
-  | "pressure"
+  | "pressureChange"
   | "temperature"
   | "uvIndex"
   | "waterLevel"
@@ -4265,7 +4283,7 @@ function renderForecast(state: DashboardState): string {
   }
 
   const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
-  const charts = buildForecastCharts(hours, state.tides, useForecastAdjustments);
+  const charts = buildForecastCharts(hours, state.tides, useForecastAdjustments, state.forecast);
   const hourlyTimes = hours.map(
     // retain one shared continuous clock
     (record) => record.validAt,
@@ -4314,13 +4332,15 @@ function renderForecast(state: DashboardState): string {
             (chart) => renderForecastChart(chart, selectedIndex, state.units, daylightBands, dayMarkers, days),
           ).join("")}
         </div>
-        ${days === 1 ? renderForecastWeatherMap(state, hours, reference ?? hours[0]?.validAt) : ""}
+        ${SHOW_FORECAST_WEATHER_MAP && days === 1 ? renderForecastWeatherMap(state, hours, reference ?? hours[0]?.validAt) : ""}
         ${renderForecastXAxis(hours, state.selectedSite?.timezone, days)}
       </div>
     </section>
   `;
 }
 
+// temporarily hide the embedded forecast map without loading tiles or reserving space
+const SHOW_FORECAST_WEATHER_MAP = false;
 const FORECAST_MAP_HEIGHT = 168;
 const FORECAST_MAP_WIDTH = 256;
 const FORECAST_MAP_ZOOM = 10;
@@ -4576,6 +4596,7 @@ function renderForecastSkeleton(state: DashboardState): string {
     { icon: "device_thermostat", label: "Temperature" },
     { icon: "air", label: "Wind" },
     { icon: "rainy", label: "Rain rate" },
+    { icon: "cloud", label: "Clouds" },
     { icon: "humidity_percentage", label: "Humidity" },
     { icon: "masks", label: "Air quality" },
     { icon: "wb_sunny", label: "UV index" },
@@ -4610,7 +4631,7 @@ function renderForecastSkeleton(state: DashboardState): string {
             `,
           ).join("")}
         </div>
-        <div class="forecast-weather-map skeleton-forecast-map" aria-busy="true">
+        ${SHOW_FORECAST_WEATHER_MAP ? `<div class="forecast-weather-map skeleton-forecast-map" aria-busy="true">
           <div class="forecast-map-canvas" role="img" aria-label="Loading radar near ${escapeHtml(site.name)}">
             <svg class="forecast-map-svg" viewBox="0 0 ${FORECAST_MAP_WIDTH} ${FORECAST_MAP_HEIGHT}" focusable="false" aria-hidden="true">
               <g class="map-tile-layer">
@@ -4635,7 +4656,7 @@ function renderForecastSkeleton(state: DashboardState): string {
               ${renderForecastMapLegendContent(previewLegend)}
             </div>
           </div>
-        </div>
+        </div>` : ""}
         <div class="forecast-x-axis" aria-hidden="true">
           ${Array.from({ length: 24 },
             // preserve every final hourly tick
@@ -4647,16 +4668,24 @@ function renderForecastSkeleton(state: DashboardState): string {
   `;
 }
 
-// build the eight current-condition forecast series
+// build the current-condition forecast series
 function buildForecastCharts(
   hours: readonly WeatherRecord[],
   tides: readonly TideRecord[],
   useAdjustments: boolean,
+  records: readonly WeatherRecord[],
 ): readonly ForecastChartDefinition[] {
+  // apply the selected adjustment mode to each displayed metric
   const metric = (key: WeatherMetricKey): readonly (number | null)[] => hours.map(
     // align every weather metric to the shared hourly index
     (record) => forecastMetricValue(record, key, useAdjustments),
   );
+
+  const pressureChanges = forecastPressureChanges(records, hours);
+  const pressureExtent = Math.max(6, ...pressureChanges.map(
+    // center the signed scale on steady pressure without clipping rapid changes
+    (value) => Math.ceil(Math.abs(value ?? 0)),
+  ));
 
   return [
     {
@@ -4666,8 +4695,7 @@ function buildForecastCharts(
       key: "temperature",
       label: "Temperature",
       series: [
-        { label: "Air", values: metric("temperatureC") },
-        { label: "Feels", values: metric("apparentTemperatureC") },
+        { label: "Feels like", values: metric("apparentTemperatureC") },
       ],
     },
     {
@@ -4697,6 +4725,14 @@ function buildForecastCharts(
       }],
     },
     {
+      domain: { maximum: 100, minimum: 0 },
+      format: "cloudCover",
+      icon: "cloud",
+      key: "clouds",
+      label: "Clouds",
+      series: [{ label: "Cover", values: metric("cloudCoverPercent") }],
+    },
+    {
       format: "humidity",
       icon: "humidity_percentage",
       key: "humidity",
@@ -4720,12 +4756,12 @@ function buildForecastCharts(
       series: [{ label: "Index", values: metric("uvIndex") }],
     },
     {
-      domain: HISTORICAL_FORECAST_DOMAINS.pressure,
-      format: "pressure",
+      domain: { maximum: pressureExtent, minimum: -pressureExtent },
+      format: "pressureChange",
       icon: "speed",
       key: "pressure",
       label: "Pressure",
-      series: [{ label: "Pressure", values: metric("pressureHpa") }],
+      series: [{ label: "3h change", values: pressureChanges }],
     },
     {
       domain: FIXED_FORECAST_DOMAINS.tide,
@@ -4784,7 +4820,7 @@ function renderForecastChart(
           <defs>
             ${chart.series.map(
               // color every line with the matching condition scale
-              (series, seriesIndex) => renderForecastLineGradient(chart, series, seriesIndex),
+              (series, seriesIndex) => renderForecastLineGradient(chart, series, seriesIndex, width),
             ).join("")}
           </defs>
           ${chart.series.map(
@@ -4793,13 +4829,24 @@ function renderForecastChart(
               const boundaryValues = series.values.length === 0
                 ? []
                 : [...series.values, series.values.at(-1) ?? null];
-              const points = boundaryValues.flatMap(
-                // omit missing values from the line
-                (value, index) => value === null || !Number.isFinite(value)
-                  ? []
-                  : [`${((index / Math.max(1, boundaryValues.length - 1)) * width).toFixed(2)},${forecastChartY(value, domain.minimum, domain.maximum, height, paddingTop, paddingBottom).toFixed(2)}`],
-              ).join(" ");
-              return `<polyline points="${points}" class="forecast-chart-line forecast-chart-line-${String(seriesIndex)}" stroke="url(#${forecastLineGradientId(chart.key, seriesIndex)})"/>`;
+              const segments: string[][] = [[]];
+              // preserve pressure gaps instead of joining unrelated complete windows
+              for (const [index, value] of boundaryValues.entries()) {
+                // retain the existing sparse display for other forecast metrics
+                if (value === null || !Number.isFinite(value)) {
+                  // start the next complete pressure window on a separate line
+                  if (chart.format === "pressureChange" && segments.at(-1)!.length > 0) {
+                    segments.push([]);
+                  }
+                  continue;
+                }
+
+                segments.at(-1)!.push(`${((index / Math.max(1, boundaryValues.length - 1)) * width).toFixed(2)},${forecastChartY(value, domain.minimum, domain.maximum, height, paddingTop, paddingBottom).toFixed(2)}`);
+              }
+              return segments.map(
+                // render each uninterrupted forecast segment
+                (points) => `<polyline points="${points.join(" ")}" class="forecast-chart-line forecast-chart-line-${String(seriesIndex)}" stroke="url(#${forecastLineGradientId(chart.key, seriesIndex)})"/>`,
+              ).join("");
             },
           ).join("")}
         </svg>
@@ -4843,7 +4890,6 @@ function forecastValueLabelEdge(
 // use one population deviation from the normalized local archives
 const HISTORICAL_FORECAST_DOMAINS = {
   airQuality: { maximum: 14.488_261_472_4, minimum: 0 },
-  pressure: { maximum: 1_020.904_338_320_5, minimum: 1_006.795_791_563_2 },
 } as const;
 
 // retain the requested consumer chart scales in canonical units
@@ -4857,13 +4903,14 @@ function renderForecastLineGradient(
   chart: ForecastChartDefinition,
   series: ForecastChartSeries,
   seriesIndex: number,
+  width: number,
 ): string {
   const boundaryValues = series.values.length === 0
     ? []
     : [...series.values, series.values.at(-1) ?? null];
   const denominator = Math.max(1, boundaryValues.length - 1);
   return `
-    <linearGradient id="${forecastLineGradientId(chart.key, seriesIndex)}" x1="0%" y1="0%" x2="100%" y2="0%">
+    <linearGradient id="${forecastLineGradientId(chart.key, seriesIndex)}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${String(width)}" y2="0">
       ${boundaryValues.map(
         // align every color stop with its forecast hour
         (value, index) => `<stop offset="${((index / denominator) * 100).toFixed(3)}%" stop-color="${escapeHtml(forecastLineColor(chart.format, value, index, boundaryValues))}"/>`,
@@ -4895,8 +4942,10 @@ function forecastLineColor(
       return airQualityBand(value).color;
     case "uvIndex":
       return uvBand(value).color;
-    case "pressure":
-      return pressureBand(value).color;
+    case "pressureChange":
+      return pressureChangeBand(value).color;
+    case "cloudCover":
+      return cloudBand(value).color;
     case "humidity":
       return humidityBand(value).color;
     case "waterLevel": {
@@ -5117,11 +5166,12 @@ function formatForecastChartValue(
     case "precipitationRate":
       return formatPrecipitationRate(value, units);
     case "airQuality":
-      return formatFixedMeasurement(value, "µg/m³", 0);
+      return formatFixedMeasurement(value, "", 0);
     case "uvIndex":
       return formatFixedMeasurement(value, "", 1);
-    case "pressure":
-      return formatMeasurement(value, "pressure", units, 1);
+    case "pressureChange":
+      return formatPressureChange(value);
+    case "cloudCover":
     case "humidity":
       return formatFixedMeasurement(value, "%", 0);
     case "waterLevel":
@@ -9227,6 +9277,7 @@ function bindForecastCharts(
         (series) => interpolateForecastValue(
           series.values,
           Math.min(Math.max(0, series.values.length - 1), position),
+          chart.format !== "pressureChange",
         ),
       );
       const chartSummary: string[] = [];
@@ -10209,6 +10260,7 @@ function bindForecastRangeControls(
 export function interpolateForecastValue(
   values: readonly (number | null)[],
   position: number,
+  allowPartial = true,
 ): number | null {
   // preserve an empty line honestly
   if (values.length === 0) {
@@ -10221,9 +10273,9 @@ export function interpolateForecastValue(
   const lower = values[lowerIndex] ?? null;
   const upper = values[upperIndex] ?? null;
 
-  // use the available endpoint through a sparse gap
+  // avoid implying a complete pressure window beside an unavailable endpoint
   if (lower === null || upper === null) {
-    return lower ?? upper;
+    return allowPartial ? lower ?? upper : null;
   }
 
   // return the exact stored value
