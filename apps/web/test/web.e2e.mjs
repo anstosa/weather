@@ -3881,8 +3881,8 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
-// distinguish observed and forecast pressure movement without implying discomfort
-test("pressure tile colors three-hour speed and keeps later changes separate", { timeout: 60_000 }, async () => {
+// distinguish current pressure movement from the strongest change across today
+test("pressure tile colors three-hour speed and shows the whole-day maximum", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
   try {
@@ -3908,15 +3908,15 @@ test("pressure tile colors three-hour speed and keeps later changes separate", {
         }));
         await route.fulfill({ response, json: body });
       });
-      // provide one complete upcoming rapid-fall window
+      // keep a stronger morning change ahead of the smaller afternoon window
       await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
         const response = await route.fetch();
         const body = await response.json();
-        // isolate four same-run hourly points ending at two pm farm time
-        body.data = body.data.slice(0, 4).map((record, hour) => ({
+        // include an earlier window ending at five am and a future one ending at two pm
+        body.data = body.data.slice(0, 8).map((record, index) => ({
           ...record,
-          validAt: new Date(Date.parse("2026-09-18T18:00:00Z") + hour * 3_600_000).toISOString(),
-          metrics: { ...record.metrics, pressureHpa: 1014 - hour * 2 },
+          validAt: new Date(Date.parse(index < 4 ? "2026-09-18T09:00:00Z" : "2026-09-18T18:00:00Z") + index % 4 * 3_600_000).toISOString(),
+          metrics: { ...record.metrics, pressureHpa: 1014 - index % 4 * (index < 4 ? 3 : 2) },
         }));
         await route.fulfill({ response, json: body });
       });
@@ -3924,8 +3924,10 @@ test("pressure tile colors three-hour speed and keeps later changes separate", {
       const card = page.locator("[data-condition='pressure']");
       assert.match(await card.locator(".condition-primary").innerText(), /-6\.1\s*hPa\/3h/u);
       assert.equal(await card.locator(".condition-status").innerText(), "Very rapid fall");
-      assert.match(await card.locator(".condition-secondary").innerText(), /Barometer\s*1,014\.2hPa/u);
-      assert.match(await card.locator(".condition-forecast").innerText(), /Later\s*-6\.0\s*hPa\/3h\s*By\s*2\s*PM/u);
+      assert.equal(await card.locator(".condition-secondary").count(), 0);
+      assert.equal(await card.locator(".condition-forecast-reading").count(), 1);
+      assert.doesNotMatch(await card.innerText(), /Barometer|Later|By/u);
+      assert.match(await card.locator(".condition-forecast").innerText(), /^Max\s*-9\.0\s*hPa\/3h$/u);
       assert.equal(await card.locator(".condition-forecast-reading").first().getAttribute("class"), "condition-forecast-reading condition-forecast-tone-red");
       assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), "rgb(207, 67, 55)");
       assert.equal(await card.evaluate(
@@ -3935,11 +3937,9 @@ test("pressure tile colors three-hour speed and keeps later changes separate", {
           const status = tile.querySelector(".condition-status");
           const primary = tile.querySelector(".condition-primary");
           const forecast = tile.querySelector(".condition-forecast");
-          const secondary = tile.querySelector(".condition-secondary");
           return label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
             primary.getBoundingClientRect().right <= forecast.getBoundingClientRect().left &&
-            forecast.getBoundingClientRect().bottom <= secondary.getBoundingClientRect().top &&
-            [tile, label, status, primary, forecast, secondary, ...tile.querySelectorAll("strong")].every(
+            [tile, label, status, primary, forecast, ...tile.querySelectorAll("strong")].every(
               // retain the full contents of every displayed reading
               (element) => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().bottom <= tile.getBoundingClientRect().bottom,
             );
@@ -4740,7 +4740,7 @@ test("real browser configures and persists every measurement unit preference", {
     );
     assert.match(
       await page.locator("[data-condition='pressure']").textContent() ?? "",
-      /Barometer\s*1,014\.2\s*hPa/u,
+      /-1\.2\s*hPa\/3h/u,
     );
     const currentTide = page.locator("[data-condition='tide']");
     assert.match(await currentTide.locator(".condition-status").textContent() ?? "", /High/u);
@@ -4783,7 +4783,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await page.locator("[data-condition='air-quality']").textContent() ?? "", /Max 10/u);
     assert.doesNotMatch(await page.locator("[data-condition='air-quality']").textContent() ?? "", /µg\/m³/u);
     assert.match(await page.locator("[data-condition='uv-index']").textContent() ?? "", /Max 8/u);
-    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Later\s*—\s*By\s*—/u);
+    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*—/u);
     assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Max 74%/u);
     assert.match(await currentTide.textContent() ?? "", /Next low\s*5:00 AM/u);
     assert.deepEqual(
@@ -4808,7 +4808,6 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
         { color: "rgb(239, 126, 31)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
-        { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(207, 67, 55)", condition: "uv-index", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "tide", opacity: "0.75" },
@@ -4838,8 +4837,8 @@ test("real browser configures and persists every measurement unit preference", {
             return false;
           }
 
-          // scope the requested inline treatment to extrema
-          if (!["Max", "Min"].includes(label.textContent ?? "")) {
+          // keep the compact pressure rate stacked and other extrema inline
+          if (reading.closest(".pressure-condition") !== null || !["Max", "Min"].includes(label.textContent ?? "")) {
             return true;
           }
 
@@ -4931,7 +4930,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentWind.textContent() ?? "", /Peak reading 7 m\/s/u);
     assert.match(
       await page.locator("[data-condition='pressure']").textContent() ?? "",
-      /1,014\.2\s*hPa/u,
+      /-1\.2\s*hPa\/3h/u,
     );
     assert.match(await currentTide.locator(".condition-status").textContent() ?? "", /High/u);
     assert.match(await currentTide.locator(".condition-primary").textContent() ?? "", /2\.5\s*m/u);
@@ -4941,7 +4940,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentRain.textContent() ?? "", /Max 2\.5 mm\/h/u);
     assert.match(await currentRain.textContent() ?? "", /Accumulation\s*2\.5\s*mm/u);
     assert.match(await currentRain.textContent() ?? "", /Total 4\.8 mm/u);
-    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Later\s*—\s*By\s*—/u);
+    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*—/u);
     assert.deepEqual(
       await page.evaluate(
         // read the persisted browser preference record

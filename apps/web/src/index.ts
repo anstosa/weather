@@ -3508,7 +3508,7 @@ function renderCurrentSkeleton(): string {
     { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
-    { className: "compact-condition pressure-condition", detail: null, forecast: { readings: [{ label: "Later", measurement: { unit: "hPa/3h", value: "+0.0" } }, { label: "By", measurement: { unit: "", value: "00PM" } }] }, icon: "speed", label: "Pressure", secondary: "Barometer" },
+    { className: "compact-condition pressure-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "hPa/3h", value: "+0.0" } }] }, icon: "speed", label: "Pressure" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "0.0" } }] }, icon: "wb_sunny", label: "UV index" },
     { className: "compact-condition tide-condition", detail: null, forecast: { readings: [{ label: "Next low", measurement: { unit: "", value: "00:00 PM" } }] }, icon: "water", label: "Tide", secondary: "Direction" },
     { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [{ label: "vs yesterday", measurement: { unit: "mins", value: "+0" } }] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
@@ -3538,7 +3538,7 @@ function renderCurrentSkeleton(): string {
   `;
 }
 
-// show observed pressure movement separately from upcoming modeled changes
+// show observed pressure movement beside the day's strongest modeled change
 function renderPressureCondition(state: DashboardState): string {
   const current = preferredCurrentRecords(state.current).find(
     // keep pressure and its tendency attached to one station
@@ -3546,32 +3546,22 @@ function renderPressureCondition(state: DashboardState): string {
   );
   const change = current?.freshness.status === "fresh" ? current.pressureChange3hHpa ?? null : null;
   const site = state.selectedSite ?? PRODUCT_SITE;
-  const later = strongestPressureChange(state.forecast, new Date(), site.timezone);
-  const laterTime = formatConditionTime(later === null ? null : new Date(later.validAt), site.timezone);
-  // replace the legacy reference percentage only on the actual-pressure reading
-  const units: UnitPreferences = state.units.pressure === "atmosphere_percent"
-    ? { ...state.units, pressure: "hectopascals" }
-    : state.units;
+  const maximum = strongestPressureChange(state.forecast, new Date(), site.timezone);
   return renderConditionCard({
     band: { ...pressureChangeBand(change), detail: "" },
     className: "compact-condition pressure-condition",
     forecast: {
       readings: [
         {
-          label: "Later",
-          measurement: formatPressureChange(later?.changeHpa ?? null),
-          tone: forecastToneForBand(later?.changeHpa ?? null, pressureChangeBand(later?.changeHpa ?? null)),
+          label: "Max",
+          measurement: formatPressureChange(maximum?.changeHpa ?? null),
+          tone: forecastToneForBand(maximum?.changeHpa ?? null, pressureChangeBand(maximum?.changeHpa ?? null)),
         },
-        { label: "By", measurement: { ...laterTime, value: laterTime.value.replace(/:00$/u, "") } },
       ],
     },
     icon: "speed",
     label: "Pressure",
     measurement: formatPressureChange(change),
-    secondary: {
-      label: "Barometer",
-      measurement: formatMeasurement(current?.metrics.pressureHpa ?? null, "pressure", units),
-    },
   });
 }
 
@@ -3593,15 +3583,15 @@ function formatPressureChange(changeHpa: number | null): FormattedMeasurement {
   };
 }
 
-// select the earliest strongest complete future window ending today
+// select the earliest strongest complete three-hour window across the whole day
 export function strongestPressureChange(
   records: readonly WeatherRecord[],
   now: Date,
   timezone: string,
 ): Readonly<{ changeHpa: number; validAt: string }> | null {
   const hours = forecastForSiteDay(records, now.toISOString(), timezone).filter(
-    // retain only future forecast values rather than observed or null pressure
-    (record) => record.provenance.sourceKind === "forecast" && Date.parse(record.validAt) >= now.getTime() &&
+    // include earlier hours today without mixing observed or null pressure
+    (record) => record.provenance.sourceKind === "forecast" &&
       record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
   ).sort(
     // resolve equal-magnitude windows by their earliest ending time

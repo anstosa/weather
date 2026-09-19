@@ -260,14 +260,13 @@ function pressureForecastRecord(
 }
 
 // render one pressure card for focused assertions
-function renderPressureTile(current, forecast = [], units = DEFAULT_UNIT_PREFERENCES) {
+function renderPressureTile(current, forecast = []) {
   const state = {
     ...new WeatherDashboardController({ storage: null }).state,
     current,
     forecast,
     loading: false,
     selectedSite: site,
-    units,
   };
   const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
   assert.ok(tile);
@@ -2038,7 +2037,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /Gusts/u);
   assert.match(html, /Approaching the comfort range/u);
   assert.match(html, /Peak reading 16 mph/u);
-  assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 7);
+  assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 6);
   assert.match(html, /data-condition="tide"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?<span>High<\/span>[\s\S]*?<div class="condition-primary"><strong>8\.2<small>ft<\/small><\/strong>[\s\S]*?class="condition-secondary-divider">Direction<\/span>[\s\S]*?<strong>Rising<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="tide"[\s\S]*?class="condition-detail">Rising<\/p>/u);
   assert.doesNotMatch(html, /condition-forecast-heading/u);
@@ -2046,7 +2045,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((html.match(/condition-forecast-tone-blue/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-orange/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-yellow/gu) ?? []).length, 1);
-  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 7);
+  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 6);
   assert.doesNotMatch(html, /Next 24h/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?Max[\s\S]*?60<small>°F[\s\S]*?Min[\s\S]*?60<small>°F[\s\S]*?Max[\s\S]*?61<small>°F[\s\S]*?Min[\s\S]*?61<small>°F/u);
   assert.match(html, /data-condition="wind"[\s\S]*?Max[\s\S]*?9 <small>mph[\s\S]*?Max[\s\S]*?16 <small>mph/u);
@@ -2054,7 +2053,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /data-condition="air-quality"[\s\S]*?Max[\s\S]*?<strong>7<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="air-quality"[\s\S]*?µg\/m³/u);
   assert.match(html, /data-condition="uv-index"[\s\S]*?Max[\s\S]*?2/u);
-  assert.match(html, /data-condition="pressure"[\s\S]*?Later[\s\S]*?<strong>—<\/strong>[\s\S]*?By[\s\S]*?<strong>—<\/strong>/u);
+  assert.match(html, /data-condition="pressure"[\s\S]*?Max[\s\S]*?<strong>—<\/strong>/u);
   assert.match(html, /data-condition="humidity"[\s\S]*?Max[\s\S]*?78<small>%/u);
   assert.match(html, /data-condition="tide"[\s\S]*?Next low[\s\S]*?5:00 AM/u);
   assert.match(html, /PM2\.5 health range/u);
@@ -2088,7 +2087,10 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(initialHomeHtml, /data-condition="sunset"[\s\S]*?Golden hour/u);
   assert.match(initialHomeHtml, /data-condition="rain"[\s\S]*?Accumulation[\s\S]*?Max[\s\S]*?Total/u);
   assert.match(initialHomeHtml, /data-condition="clouds"[\s\S]*?Clearest/u);
-  assert.match(initialHomeHtml, /data-condition="pressure"[\s\S]*?Barometer[\s\S]*?Later[\s\S]*?By/u);
+  const initialPressure = initialHomeHtml.match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(initialPressure);
+  assert.match(initialPressure, /Max/u);
+  assert.doesNotMatch(initialPressure, /Barometer|Later|>By</u);
   assert.doesNotMatch(initialHomeHtml, /condition-secondary-comparison|Overnight/u);
   assert.equal((initialHomeHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 0);
   assert.equal((initialHomeHtml.match(/class="trend-chart skeleton-trend-chart"/gu) ?? []).length, 0);
@@ -2118,7 +2120,10 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>9<small>mph SW<\/small>/u);
   assert.match(html, /Gusts[\s\S]*?<strong>16<small>mph<\/small>/u);
   assert.match(html, /data-condition="air-quality"[\s\S]*?<div class="condition-primary"><strong>7<\/strong>/u);
-  assert.match(html, /data-condition="pressure"[\s\S]*?<div class="condition-primary"><strong>\+1\.2<small>hPa\/3h<\/small>[\s\S]*?Barometer[\s\S]*?<strong>1,014\.2<small>hPa<\/small>/u);
+  const pressure = html.match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
+  assert.ok(pressure);
+  assert.match(pressure, /<div class="condition-primary"><strong>\+1\.2<small>hPa\/3h<\/small>/u);
+  assert.doesNotMatch(pressure, /condition-secondary|Barometer/u);
   assert.match(firstPartyHtml, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>49<small>°F<\/small>/u);
   assert.match(firstPartyHtml, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>2<small>mph SW<\/small>/u);
   const selectedHtml = renderWeatherDashboard({
@@ -2337,15 +2342,18 @@ test("strongest pressure change requires every hourly value from one source and 
   assert.equal(strongestPressureChange(mixedRun, new Date("2026-09-12T15:30:00Z"), site.timezone), null);
 });
 
-// keep pressure windows upcoming and inside the current farm day
-test("strongest pressure change excludes past and next-day windows", () => {
+// search the full current farm day while excluding next-day windows
+test("strongest pressure change includes past windows but excludes next-day windows", () => {
   const past = [
     pressureForecastRecord("2026-09-12T15:00:00Z", 1_000),
     pressureForecastRecord("2026-09-12T16:00:00Z", 1_001),
     pressureForecastRecord("2026-09-12T17:00:00Z", 1_002),
     pressureForecastRecord("2026-09-12T18:00:00Z", 1_006),
   ];
-  assert.equal(strongestPressureChange(past, new Date("2026-09-12T15:00:00.001Z"), site.timezone), null);
+  assert.deepEqual(
+    strongestPressureChange(past, new Date("2026-09-12T20:00:00Z"), site.timezone),
+    { changeHpa: 6, validAt: "2026-09-12T18:00:00Z" },
+  );
 
   const endingAtMidnight = [
     pressureForecastRecord("2026-09-13T04:00:00Z", 1_000),
@@ -2417,8 +2425,8 @@ test("pressure change bands follow meteorological speed thresholds", () => {
   }
 });
 
-// render observed movement separately from the strongest later forecast
-test("pressure tile shows signed tendency, barometer, later change and ending time", (context) => {
+// render observed movement separately from the strongest daily forecast
+test("pressure tile shows signed tendency and the strongest daily change", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T15:30:00Z") });
   const current = {
     ...record,
@@ -2434,16 +2442,8 @@ test("pressure tile shows signed tendency, barometer, later change and ending ti
   const tile = renderPressureTile([current], forecast);
   assert.match(tile, /class="condition-status condition-status-dark">[\s\S]*?<span>Falling<\/span>/u);
   assert.match(tile, /class="condition-primary"><strong>-2\.3<small>hPa\/3h<\/small><\/strong>/u);
-  assert.match(tile, /class="condition-secondary-divider">Barometer<\/span>\s*<strong>1,014\.2<small>hPa<\/small><\/strong>/u);
-  assert.match(tile, /condition-forecast-reading condition-forecast-tone-orange"><span class="condition-forecast-label">Later<\/span> <strong>\+4\.0 <small>hPa\/3h<\/small><\/strong>/u);
-  assert.match(tile, /condition-forecast-label">By<\/span> <strong>12 <small>PM<\/small><\/strong>/u);
-
-  const inchesTile = renderPressureTile([current], forecast, {
-    ...DEFAULT_UNIT_PREFERENCES,
-    pressure: "inches_of_mercury",
-  });
-  assert.match(inchesTile, /class="condition-primary"><strong>-2\.3<small>hPa\/3h<\/small><\/strong>/u);
-  assert.match(inchesTile, /class="condition-secondary-divider">Barometer<\/span>\s*<strong>29\.9<small>inHg<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-reading condition-forecast-tone-orange"><span class="condition-forecast-label">Max<\/span> <strong>\+4\.0 <small>hPa\/3h<\/small><\/strong>/u);
+  assert.doesNotMatch(tile, /condition-secondary|Barometer|Later|>By</u);
 });
 
 // keep the observed tendency attached to the selected pressure source
@@ -2459,8 +2459,8 @@ test("pressure tile does not mix rates across preferred current records", () => 
   };
   const tile = renderPressureTile([fallback, preferred]);
   assert.match(tile, /class="condition-primary"><strong>—<\/strong>/u);
-  assert.match(tile, /class="condition-secondary-divider">Barometer<\/span>\s*<strong>1,008\.4<small>hPa<\/small><\/strong>/u);
   assert.doesNotMatch(tile, /class="condition-primary">[\s\S]*?\+4\.0/u);
+  assert.doesNotMatch(tile, /condition-secondary|Barometer/u);
 
   const withoutPressure = {
     ...preferred,
@@ -2469,7 +2469,7 @@ test("pressure tile does not mix rates across preferred current records", () => 
   };
   const modelTile = renderPressureTile([fallback, withoutPressure]);
   assert.match(modelTile, /class="condition-primary"><strong>\+4\.0<small>hPa\/3h<\/small><\/strong>/u);
-  assert.match(modelTile, /class="condition-secondary-divider">Barometer<\/span>\s*<strong>1,014\.2<small>hPa<\/small><\/strong>/u);
+  assert.doesNotMatch(modelTile, /condition-secondary|Barometer/u);
 });
 
 // suppress unavailable freshness states without converting them to zero
@@ -2499,7 +2499,7 @@ test("pressure tile renders negative zero as steady zero", () => {
   assert.doesNotMatch(tile, /-0\.0/u);
 });
 
-// keep modeled future change on the right without backfilling the observation
+// keep modeled daily change on the right without backfilling the observation
 test("pressure tile never derives the observed rate from the forecast", (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T15:30:00Z") });
   const forecast = [
@@ -2510,7 +2510,7 @@ test("pressure tile never derives the observed rate from the forecast", (context
   ];
   const tile = renderPressureTile([{ ...record, pressureChange3hHpa: null }], forecast);
   assert.match(tile, /class="condition-primary"><strong>—<\/strong>/u);
-  assert.match(tile, /condition-forecast-label">Later<\/span> <strong>\+4\.0 <small>hPa\/3h<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>\+4\.0 <small>hPa\/3h<\/small><\/strong>/u);
 });
 
 // verify the published current-condition threshold boundaries

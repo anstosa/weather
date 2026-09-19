@@ -1050,7 +1050,7 @@ h2 {
   align-self: start;
 }
 
-/* separate observed pressure movement from later modeled movement */
+/* separate observed pressure movement from the daily maximum */
 .pressure-condition .condition-body {
   grid-template-columns: minmax(0, 1fr) minmax(0, 40%);
 }
@@ -1069,7 +1069,7 @@ h2 {
 }
 
 .pressure-condition .condition-primary {
-  min-height: 5.2rem;
+  min-height: 4rem;
 }
 
 .pressure-condition .condition-primary strong {
@@ -1088,7 +1088,6 @@ h2 {
 }
 
 .pressure-condition .condition-forecast {
-  grid-row: 1;
   align-self: start;
   grid-template-columns: minmax(0, 1fr);
 }
@@ -1096,19 +1095,6 @@ h2 {
 .pressure-condition .condition-forecast-reading {
   display: grid;
   gap: 0.1rem;
-}
-
-.pressure-condition .condition-forecast-reading:last-child {
-  display: flex;
-  margin-top: 0.25rem;
-}
-
-.pressure-condition .condition-forecast-reading:last-child small {
-  display: inline;
-}
-
-.pressure-condition .condition-secondary {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 /* keep sunset's daily change beside the primary clock reading */
@@ -4451,7 +4437,7 @@ td small {
   }
 
   .pressure-condition .condition-primary {
-    min-height: 4rem;
+    min-height: 3.3rem;
   }
 
   .condition-secondary {
