@@ -285,6 +285,18 @@ a {
   gap: 0.5rem;
 }
 
+/* keep the forecast range beside the adjustment control */
+.forecast-masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.forecast-masthead h1 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .forecast-adjustment-toggle {
   display: inline-flex;
   align-items: center;
@@ -1321,16 +1333,11 @@ h2 {
   line-height: 1.45;
 }
 
-.forecast-controls {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.65rem;
-}
-
+/* keep each forecast range label on one line */
 .forecast-range-selector {
   display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 0.25rem;
   padding: 0.25rem;
   border: 1px solid var(--md-sys-color-outline-variant);
@@ -1339,7 +1346,7 @@ h2 {
 }
 
 .forecast-range-selector button {
-  flex: 1 1 0;
+  flex: 1 0 auto;
   min-width: 4rem;
   min-height: 2.35rem;
   padding: 0.45rem 0.85rem;
@@ -1347,6 +1354,7 @@ h2 {
   color: var(--md-sys-color-on-surface-variant);
   background: transparent;
   box-shadow: none;
+  white-space: nowrap;
 }
 
 .forecast-range-selector button:hover:not(:disabled) {
@@ -4282,14 +4290,19 @@ td small {
     gap: 0.45rem 0.75rem;
   }
 
-  .forecast-controls {
-    width: 100%;
-    align-items: stretch;
-    flex-direction: column;
-    gap: 0.35rem;
+  /* retain a full-width mobile range below the original header controls */
+  .forecast-masthead {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .forecast-masthead .masthead-actions {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .forecast-range-selector {
+    grid-column: 1 / -1;
+    grid-row: 2;
     width: 100%;
   }
 

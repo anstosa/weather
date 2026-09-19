@@ -1287,6 +1287,198 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
   }
 });
 
+// keep one responsive forecast range in the masthead
+test("forecast masthead keeps its range controls on one responsive row", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "active";
+    const loadingPage = await createFixturePage(browser, {
+      viewport: { height: 900, width: 390 },
+    });
+    let releaseForecastRead;
+    const forecastReadReleased = new Promise(
+      // expose one deterministic header loading state
+      (resolveRelease) => {
+        releaseForecastRead = resolveRelease;
+      },
+    );
+    await loadingPage.route(
+      /\/api\/v1\/sites\/ballydidean\/forecast(?:\?|$)/u,
+      // hold only the forecast response behind its masthead control
+      async (route) => {
+        await forecastReadReleased;
+        await route.continue();
+      },
+    );
+    await loadingPage.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
+    const loadingRange = loadingPage.getByRole("group", { name: "Forecast range" });
+    await loadingRange.waitFor();
+    assert.equal(await loadingPage.locator(".forecast-range-selector").count(), 1);
+    assert.equal(
+      await loadingRange.locator("button").evaluateAll(
+        // disable each range during the initial read
+        (buttons) => buttons.length === 3 && buttons.every(
+          // reject one prematurely enabled range
+          (button) => button.disabled,
+        ),
+      ),
+      true,
+    );
+    releaseForecastRead();
+    await loadingPage.locator('[data-forecast-charts][data-forecast-days="1"]').waitFor();
+    assert.equal(await loadingRange.locator("button:disabled").count(), 0);
+    await loadingPage.close();
+
+    const viewports = [
+      { height: 1_050, width: 1_440 },
+      { height: 900, width: 960 },
+      { height: 900, width: 768 },
+      { height: 900, width: 673 },
+      { height: 900, width: 672 },
+      { height: 844, width: 390 },
+      { height: 844, width: 320 },
+    ];
+
+    // verify both sides of the exact mobile breakpoint
+    for (const viewport of viewports) {
+      const page = await createFixturePage(browser, {
+        hasTouch: viewport.width <= 672,
+        viewport,
+      });
+      const pageErrors = [];
+      // capture unexpected browser failures
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+      const range = page.getByRole("group", { name: "Forecast range" });
+      const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+      assert.equal(await page.locator(".forecast-range-selector").count(), 1);
+      assert.equal(await page.locator(".forecast-controls").count(), 0);
+      assert.deepEqual(await range.locator("button").allTextContents(), ["Today", "5 days", "10 days"]);
+      const layout = await page.locator(".masthead").evaluate(
+        // measure the rendered masthead without relying on css declarations alone
+        (masthead) => {
+          const heading = masthead.querySelector("h1");
+          const selector = masthead.querySelector(".forecast-range-selector");
+          const actions = masthead.querySelector(".masthead-actions");
+          const adjustment = masthead.querySelector("[data-forecast-adjustment-toggle]");
+
+          // require every forecast header control
+          if (
+            !(heading instanceof HTMLElement) ||
+            !(selector instanceof HTMLElement) ||
+            !(actions instanceof HTMLElement) ||
+            !(adjustment instanceof HTMLElement)
+          ) {
+            throw new Error("forecast masthead controls are incomplete");
+          }
+
+          const mastheadBounds = masthead.getBoundingClientRect();
+          const headingBounds = heading.getBoundingClientRect();
+          const selectorBounds = selector.getBoundingClientRect();
+          const actionsBounds = actions.getBoundingClientRect();
+          const adjustmentBounds = adjustment.getBoundingClientRect();
+          const buttons = [...selector.querySelectorAll("button")];
+          const buttonBounds = buttons.map(
+            // measure each range button row
+            (button) => button.getBoundingClientRect(),
+          );
+          const buttonTops = buttonBounds.map(
+            // project one range button row
+            (bounds) => bounds.top,
+          );
+          const textLineCounts = buttons.map(
+            // count the rendered lines in each label
+            (button) => {
+              const text = document.createRange();
+              text.selectNodeContents(button);
+              return text.getClientRects().length;
+            },
+          );
+          return {
+            actionCenter: actionsBounds.top + actionsBounds.height / 2,
+            actionContained: actionsBounds.right <= mastheadBounds.right + 1 &&
+              actionsBounds.top >= mastheadBounds.top - 1 &&
+              actionsBounds.bottom <= mastheadBounds.bottom + 1,
+            buttonRowSpread: Math.max(...buttonTops) - Math.min(...buttonTops),
+            buttonTextLines: textLineCounts,
+            directChild: selector.parentElement === masthead,
+            flexWrap: getComputedStyle(selector).flexWrap,
+            forecastClass: masthead.classList.contains("forecast-masthead"),
+            headingCenter: headingBounds.top + headingBounds.height / 2,
+            headingRight: headingBounds.right,
+            headerOverflow: masthead.scrollWidth - masthead.clientWidth,
+            mobileRangeBelow: selectorBounds.top >= Math.max(headingBounds.bottom, actionsBounds.bottom),
+            mobileRangeWidthDifference: Math.abs(selectorBounds.width - mastheadBounds.width),
+            nextSiblingIsActions: selector.nextElementSibling === actions,
+            pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            rangeCenter: selectorBounds.top + selectorBounds.height / 2,
+            rangeContained: selectorBounds.left >= mastheadBounds.left - 1 &&
+              selectorBounds.right <= mastheadBounds.right + 1 &&
+              selectorBounds.top >= mastheadBounds.top - 1 &&
+              selectorBounds.bottom <= mastheadBounds.bottom + 1,
+            rangeLeft: selectorBounds.left,
+            rangeRight: selectorBounds.right,
+            toggleCenter: adjustmentBounds.top + adjustmentBounds.height / 2,
+            toggleLeft: adjustmentBounds.left,
+            topRowSeparated: headingBounds.right <= actionsBounds.left,
+          };
+        },
+      );
+      assert.equal(layout.directChild, true);
+      assert.equal(layout.nextSiblingIsActions, true);
+      assert.equal(layout.forecastClass, true);
+      assert.equal(layout.flexWrap, "nowrap");
+      assert.equal(layout.buttonRowSpread < 1, true);
+      assert.deepEqual(layout.buttonTextLines, [1, 1, 1]);
+      assert.equal(layout.rangeContained, true);
+      assert.equal(layout.actionContained, true);
+      assert.equal(layout.headerOverflow, 0);
+      assert.equal(layout.pageOverflow, 0);
+
+      // keep desktop controls in one nonoverlapping row
+      if (viewport.width > 672) {
+        assert.equal(Math.abs(layout.headingCenter - layout.rangeCenter) < 1, true);
+        assert.equal(Math.abs(layout.toggleCenter - layout.rangeCenter) < 1, true);
+        assert.equal(layout.headingRight <= layout.rangeLeft, true);
+        assert.equal(layout.rangeRight <= layout.toggleLeft, true);
+        assert.equal(layout.mobileRangeBelow, false);
+      } else {
+        // stack only the full-width range on mobile
+        assert.equal(layout.topRowSeparated, true);
+        assert.equal(Math.abs(layout.headingCenter - layout.actionCenter) < 1, true);
+        assert.equal(layout.mobileRangeBelow, true);
+        assert.equal(layout.mobileRangeWidthDifference < 1, true);
+      }
+
+      // retain every range and adjustment interaction after masthead rerenders
+      for (const days of [5, 10, 1]) {
+        const label = days === 1 ? "Today" : `${String(days)} days`;
+        await page.getByRole("button", { name: label, exact: true }).click();
+        await page.locator(`[data-forecast-charts][data-forecast-days="${String(days)}"]`).waitFor();
+        assert.equal(await page.locator(".forecast-range-selector").count(), 1);
+        assert.equal(
+          await page.getByRole("button", { name: label, exact: true }).getAttribute("aria-pressed"),
+          "true",
+        );
+      }
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      await toggle.click();
+      assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      await toggle.click();
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assert.deepEqual(pageErrors, []);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // preserve explicit raw selection with a stable label
 test("wind adjustment keeps an Adjusted label and persists the raw choice", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();

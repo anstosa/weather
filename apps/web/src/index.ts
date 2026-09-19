@@ -3093,8 +3093,9 @@ export function renderWeatherDashboard(
 ): string {
   return `
     <main class="shell">
-      <header class="masthead">
+      <header class="masthead${view === "forecast" ? " forecast-masthead" : ""}">
         <h1>Ballydídean Weather</h1>
+        ${view === "forecast" ? renderForecastRangeSelector(state.forecastDays ?? 1, state.loading) : ""}
         <div class="masthead-actions">
           ${renderLoadingIndicator(state)}
           ${renderForecastAdjustmentToggle(state, view)}
@@ -4313,7 +4314,6 @@ function renderForecast(state: DashboardState): string {
 
     return `
       <section class="panel forecast-panel" aria-label="Weather forecast">
-        <div class="forecast-controls">${renderForecastRangeSelector(days, state.loading)}</div>
         <p class="empty-panel">The first normalized forecast product is being collected.</p>
       </section>
     `;
@@ -4342,7 +4342,6 @@ function renderForecast(state: DashboardState): string {
   const selectedTime = interpolateForecastInstant(forecastTimes, currentPosition);
   return `
     <section class="panel forecast-panel" aria-label="Weather forecast">
-      <div class="forecast-controls">${renderForecastRangeSelector(days, state.loading)}</div>
       <div class="forecast-chart-shell">
         <div class="forecast-current-time-line" aria-hidden="true"></div>
         <div class="forecast-shared-crosshair" aria-hidden="true"></div>
@@ -4655,7 +4654,6 @@ function renderForecastSkeleton(state: DashboardState): string {
 
   return `
     <section class="panel forecast-panel skeleton-region" aria-label="Loading weather forecast" aria-busy="true">
-      <div class="forecast-controls">${renderForecastRangeSelector(1, true)}</div>
       <div class="forecast-chart-shell" aria-label="Loading weather forecast charts for today">
         <div class="forecast-chart-grid">
           ${charts.map(

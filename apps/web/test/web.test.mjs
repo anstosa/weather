@@ -1840,8 +1840,13 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(html, /Forecast timeline|Yearly trends|Nearby station map|station-map-panel|data-station-select/u);
   assert.match(forecastHtml, /href="\/forecast" data-weather-route aria-current="page"/u);
   assert.doesNotMatch(forecastHtml, /Forecast timeline|forecast-model|forecast-scrub-help/u);
-  assert.match(forecastHtml, /<section class="panel forecast-panel" aria-label="Weather forecast">\s*<div class="forecast-controls">/u);
-  assert.match(forecastHtml, /class="forecast-controls">[\s\S]*?class="range-selector forecast-range-selector"[\s\S]*?<\/div>[\s\S]*?<\/div>\s*<div class="forecast-chart-shell">/u);
+  assert.match(forecastHtml, /<header class="masthead forecast-masthead">[\s\S]*?class="range-selector forecast-range-selector"[\s\S]*?class="masthead-actions">[\s\S]*?data-forecast-adjustment-toggle[\s\S]*?<\/header>/u);
+  assert.match(forecastHtml, /<section class="panel forecast-panel" aria-label="Weather forecast">\s*<div class="forecast-chart-shell">/u);
+  assert.equal((forecastHtml.match(/aria-label="Forecast range"/gu) ?? []).length, 1);
+  assert.match(initialForecastHtml, /<header class="masthead forecast-masthead">[\s\S]*?data-forecast-days="1" aria-pressed="true" disabled[\s\S]*?<\/header>/u);
+  assert.equal((initialForecastHtml.match(/aria-label="Forecast range"/gu) ?? []).length, 1);
+  assert.doesNotMatch(html, /aria-label="Forecast range"/u);
+  assert.doesNotMatch(forecastHtml, /forecast-controls/u);
   assert.match(forecastHtml, /data-forecast-days="1" aria-pressed="true"/u);
   assert.match(forecastHtml, /data-forecast-days="5" aria-pressed="false"/u);
   assert.match(forecastHtml, /data-forecast-days="10" aria-pressed="false"/u);
