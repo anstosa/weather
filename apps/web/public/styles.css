@@ -1050,17 +1050,32 @@ h2 {
   align-self: start;
 }
 
-/* separate observed pressure movement from the daily maximum */
+/* respond to the pressure card's width without changing the surrounding grid */
+.pressure-condition .condition-card-content {
+  container-type: inline-size;
+}
+
+/* preserve readable inline pairs even when signed rates need more digits */
 .pressure-condition .condition-body {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 40%);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.pressure-condition .condition-live {
+  min-width: max-content;
 }
 
 .pressure-condition .condition-card-heading {
-  min-height: 2.1rem;
+  position: relative;
+  min-height: 1.31rem;
 }
 
-/* wrap long fallback labels rather than clipping missing-data states */
+/* wrap long labels without pushing readings below neighboring cards */
 .pressure-condition .condition-status {
+  position: absolute;
+  top: 0;
+  right: 0;
   max-width: 4rem;
   padding: 0.2rem 0.3rem;
   font-size: 0.6rem;
@@ -1068,33 +1083,25 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.pressure-condition .condition-primary {
-  min-height: 4rem;
-}
-
 .pressure-condition .condition-primary strong {
   font-size: clamp(1.8rem, 3vw, 2.5rem);
 }
 
-.pressure-condition .condition-primary small,
-.pressure-condition .condition-forecast small {
-  display: block;
-  margin-top: 0.25rem;
-  margin-left: 0;
-}
-
-.pressure-condition .condition-primary small {
-  font-size: 0.6rem;
-}
-
 .pressure-condition .condition-forecast {
   align-self: start;
-  grid-template-columns: minmax(0, 1fr);
+  margin-left: auto;
 }
 
-.pressure-condition .condition-forecast-reading {
-  display: grid;
-  gap: 0.1rem;
+/* keep both number-unit pairs readable when the card cannot fit one row */
+@container (max-width: 14rem) {
+  .pressure-condition .condition-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pressure-condition .condition-forecast {
+    justify-self: end;
+  }
 }
 
 /* keep sunset's daily change beside the primary clock reading */
@@ -4412,9 +4419,9 @@ td small {
     font-size: clamp(1.8rem, 8vw, 2.45rem);
   }
 
-  /* reserve compact pressure geometry through missing and extreme readings */
+  /* align pressure readings with neighboring compact cards */
   .pressure-condition .condition-card-heading {
-    min-height: 2.3rem;
+    min-height: 1.02rem;
   }
 
   .pressure-condition .condition-label {
@@ -4434,10 +4441,6 @@ td small {
 
   .pressure-condition .condition-primary strong {
     font-size: clamp(1.65rem, 7vw, 2.25rem);
-  }
-
-  .pressure-condition .condition-primary {
-    min-height: 3.3rem;
   }
 
   .condition-secondary {

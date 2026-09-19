@@ -3888,7 +3888,7 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
   try {
     browser = await launchBrowser();
     // keep long status labels and signed readings readable at every breakpoint
-    for (const width of [1440, 960, 880, 390, 320]) {
+    for (const width of [1440, 1280, 1100, 960, 880, 420, 390, 320]) {
       const page = await createFixturePage(browser, { timezoneId: "Asia/Tokyo", viewport: { height: 900, width } });
       await page.clock.setFixedTime(new Date("2026-09-18T18:00:00Z"));
       let change = -6.1;
@@ -3916,7 +3916,7 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
         body.data = body.data.slice(0, 8).map((record, index) => ({
           ...record,
           validAt: new Date(Date.parse(index < 4 ? "2026-09-18T09:00:00Z" : "2026-09-18T18:00:00Z") + index % 4 * 3_600_000).toISOString(),
-          metrics: { ...record.metrics, pressureHpa: 1014 - index % 4 * (index < 4 ? 3 : 2) },
+          metrics: { ...record.metrics, pressureHpa: 1014 - index % 4 * (index < 4 ? 4 : 2) },
         }));
         await route.fulfill({ response, json: body });
       });
@@ -3927,7 +3927,7 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
       assert.equal(await card.locator(".condition-secondary").count(), 0);
       assert.equal(await card.locator(".condition-forecast-reading").count(), 1);
       assert.doesNotMatch(await card.innerText(), /Barometer|Later|By/u);
-      assert.match(await card.locator(".condition-forecast").innerText(), /^Max\s*-9\.0\s*hPa\/3h$/u);
+      assert.match(await card.locator(".condition-forecast").innerText(), /^Max\s*-12\.0\s*hPa\/3h$/u);
       assert.equal(await card.locator(".condition-forecast-reading").first().getAttribute("class"), "condition-forecast-reading condition-forecast-tone-red");
       assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), "rgb(207, 67, 55)");
       assert.equal(await card.evaluate(
@@ -3937,8 +3937,26 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
           const status = tile.querySelector(".condition-status");
           const primary = tile.querySelector(".condition-primary");
           const forecast = tile.querySelector(".condition-forecast");
+          const maximumLabel = forecast.querySelector(".condition-forecast-label").getBoundingClientRect();
+          const maximumValue = forecast.querySelector("strong").getBoundingClientRect();
+          const primaryBounds = primary.getBoundingClientRect();
+          const forecastBounds = forecast.getBoundingClientRect();
+          const neighboringPrimary = document.querySelector("[data-condition='uv-index'] .condition-primary").getBoundingClientRect();
           return label.getBoundingClientRect().right <= status.getBoundingClientRect().left &&
-            primary.getBoundingClientRect().right <= forecast.getBoundingClientRect().left &&
+            Math.abs(primaryBounds.top - neighboringPrimary.top) < 1 &&
+            (primaryBounds.right <= forecastBounds.left || primaryBounds.bottom <= forecastBounds.top) &&
+            maximumLabel.right <= maximumValue.left && maximumLabel.bottom > maximumValue.top &&
+            [...tile.querySelectorAll("strong")].every(
+              // keep each pressure unit on the same line as its signed number
+              (reading) => {
+                const number = document.createRange();
+                number.selectNodeContents(reading.firstChild);
+                const numberBounds = number.getBoundingClientRect();
+                const unitBounds = reading.querySelector("small").getBoundingClientRect();
+                return numberBounds.right <= unitBounds.left && numberBounds.top < unitBounds.bottom &&
+                  unitBounds.top < numberBounds.bottom;
+              },
+            ) &&
             [tile, label, status, primary, forecast, ...tile.querySelectorAll("strong")].every(
               // retain the full contents of every displayed reading
               (element) => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().bottom <= tile.getBoundingClientRect().bottom,
@@ -3953,6 +3971,7 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
         [-2, "Falling", "rgb(230, 181, 25)"],
         [3.5, "Rapid rise", "rgb(239, 126, 31)"],
         [6, "Very rapid rise", "rgb(207, 67, 55)"],
+        [12.3, "Very rapid rise", "rgb(207, 67, 55)"],
         [null, "Unavailable", "rgb(136, 136, 130)"],
       ]) {
         change = value;
@@ -3963,6 +3982,10 @@ test("pressure tile colors three-hour speed and shows the whole-day maximum", { 
           // retain every character in long fallback and directional labels
           (element) => element.scrollWidth <= element.clientWidth + 1,
         ), true, `${label} clips at ${width}px`);
+        assert.equal(await card.locator("strong").evaluateAll(
+          // retain inline readings when an extreme signed rate needs another digit
+          (readings) => readings.every((reading) => reading.scrollWidth <= reading.clientWidth + 1),
+        ), true, `${value} clips at ${width}px`);
         assert.equal((await card.boundingBox()).height, height, `${label} changes pressure height at ${width}px`);
       }
       change = 6;
@@ -4837,8 +4860,8 @@ test("real browser configures and persists every measurement unit preference", {
             return false;
           }
 
-          // keep the compact pressure rate stacked and other extrema inline
-          if (reading.closest(".pressure-condition") !== null || !["Max", "Min"].includes(label.textContent ?? "")) {
+          // keep every maximum and minimum beside its label
+          if (!["Max", "Min"].includes(label.textContent ?? "")) {
             return true;
           }
 
