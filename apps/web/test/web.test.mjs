@@ -260,13 +260,13 @@ function pressureForecastRecord(
 }
 
 // render one pressure card for focused assertions
-function renderPressureTile(current, forecast = []) {
+function renderPressureTile(current, forecast = [], selectedSite = site) {
   const state = {
     ...new WeatherDashboardController({ storage: null }).state,
     current,
     forecast,
     loading: false,
-    selectedSite: site,
+    selectedSite,
   };
   const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
   assert.ok(tile);
@@ -2045,7 +2045,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((html.match(/condition-forecast-tone-blue/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-orange/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-yellow/gu) ?? []).length, 1);
-  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 6);
+  assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 7);
   assert.doesNotMatch(html, /Next 24h/u);
   assert.match(html, /data-condition="temperature"[\s\S]*?Max[\s\S]*?60<small>°F[\s\S]*?Min[\s\S]*?60<small>°F[\s\S]*?Max[\s\S]*?61<small>°F[\s\S]*?Min[\s\S]*?61<small>°F/u);
   assert.match(html, /data-condition="wind"[\s\S]*?Max[\s\S]*?9 <small>mph[\s\S]*?Max[\s\S]*?16 <small>mph/u);
@@ -2053,7 +2053,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /data-condition="air-quality"[\s\S]*?Max[\s\S]*?<strong>7<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="air-quality"[\s\S]*?µg\/m³/u);
   assert.match(html, /data-condition="uv-index"[\s\S]*?Max[\s\S]*?2/u);
-  assert.match(html, /data-condition="pressure"[\s\S]*?Max[\s\S]*?<strong>—<\/strong>/u);
+  assert.match(html, /data-condition="pressure"[\s\S]*?Max[\s\S]*?<strong>—<\/strong>[\s\S]*?condition-forecast-label"><\/span> <strong>—<\/strong>/u);
   assert.match(html, /data-condition="humidity"[\s\S]*?Max[\s\S]*?78<small>%/u);
   assert.match(html, /data-condition="tide"[\s\S]*?Next low[\s\S]*?5:00 AM/u);
   assert.match(html, /PM2\.5 health range/u);
@@ -2089,7 +2089,8 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(initialHomeHtml, /data-condition="clouds"[\s\S]*?Clearest/u);
   const initialPressure = initialHomeHtml.match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
   assert.ok(initialPressure);
-  assert.match(initialPressure, /Max/u);
+  assert.match(initialPressure, /Max[\s\S]*?<strong>\+0\.0<\/strong>[\s\S]*?condition-forecast-label"><\/span> <strong>00:00 <small>PM<\/small><\/strong>/u);
+  assert.doesNotMatch(initialPressure, /hPa\/3h/u);
   assert.doesNotMatch(initialPressure, /Barometer|Later|>By</u);
   assert.doesNotMatch(initialHomeHtml, /condition-secondary-comparison|Overnight/u);
   assert.equal((initialHomeHtml.match(/class="forecast-chart skeleton-forecast-chart"/gu) ?? []).length, 0);
@@ -2122,7 +2123,8 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /data-condition="air-quality"[\s\S]*?<div class="condition-primary"><strong>7<\/strong>/u);
   const pressure = html.match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
   assert.ok(pressure);
-  assert.match(pressure, /<div class="condition-primary"><strong>\+1\.2<small>hPa\/3h<\/small>/u);
+  assert.match(pressure, /<div class="condition-primary"><strong>\+1\.2<\/strong>/u);
+  assert.doesNotMatch(pressure, /hPa\/3h/u);
   assert.doesNotMatch(pressure, /condition-secondary|Barometer/u);
   assert.match(firstPartyHtml, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>49<small>°F<\/small>/u);
   assert.match(firstPartyHtml, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>2<small>mph SW<\/small>/u);
@@ -2441,9 +2443,24 @@ test("pressure tile shows signed tendency and the strongest daily change", (cont
   ];
   const tile = renderPressureTile([current], forecast);
   assert.match(tile, /class="condition-status condition-status-dark">[\s\S]*?<span>Falling<\/span>/u);
-  assert.match(tile, /class="condition-primary"><strong>-2\.3<small>hPa\/3h<\/small><\/strong>/u);
-  assert.match(tile, /condition-forecast-reading condition-forecast-tone-orange"><span class="condition-forecast-label">Max<\/span> <strong>\+4\.0 <small>hPa\/3h<\/small><\/strong>/u);
-  assert.doesNotMatch(tile, /condition-secondary|Barometer|Later|>By</u);
+  assert.match(tile, /class="condition-primary"><strong>-2\.3<\/strong>/u);
+  assert.match(tile, /condition-forecast-reading condition-forecast-tone-orange"><span class="condition-forecast-label">Max<\/span> <strong>\+4\.0<\/strong>/u);
+  assert.match(tile, /condition-forecast-reading condition-forecast-tone-neutral"><span class="condition-forecast-label"><\/span> <strong>12:00 <small>PM<\/small><\/strong>/u);
+  assert.doesNotMatch(tile, /hPa\/3h|condition-secondary|Barometer|Later|>By</u);
+});
+
+// format the strongest window end in the selected site's local time
+test("pressure tile formats the maximum ending time in the site timezone", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-12T15:30:00Z") });
+  const foreignSite = { ...site, latitude: 1.8721, longitude: -157.4278, timezone: "Pacific/Kiritimati" };
+  const forecast = [
+    pressureForecastRecord("2026-09-12T16:00:00Z", 1_000),
+    pressureForecastRecord("2026-09-12T17:00:00Z", 1_001),
+    pressureForecastRecord("2026-09-12T18:00:00Z", 1_002),
+    pressureForecastRecord("2026-09-12T19:00:00Z", 1_004),
+  ];
+  const tile = renderPressureTile([{ ...record, pressureChange3hHpa: 1 }], forecast, foreignSite);
+  assert.match(tile, /condition-forecast-label"><\/span> <strong>9:00 <small>AM<\/small><\/strong>/u);
 });
 
 // keep the observed tendency attached to the selected pressure source
@@ -2468,7 +2485,7 @@ test("pressure tile does not mix rates across preferred current records", () => 
     pressureChange3hHpa: 9,
   };
   const modelTile = renderPressureTile([fallback, withoutPressure]);
-  assert.match(modelTile, /class="condition-primary"><strong>\+4\.0<small>hPa\/3h<\/small><\/strong>/u);
+  assert.match(modelTile, /class="condition-primary"><strong>\+4\.0<\/strong>/u);
   assert.doesNotMatch(modelTile, /condition-secondary|Barometer/u);
 });
 
@@ -2488,6 +2505,7 @@ test("pressure tile hides delayed, stale and missing observed rates", () => {
 
   const missing = renderPressureTile([{ ...record, pressureChange3hHpa: null }]);
   assert.match(missing, /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(missing, /condition-forecast-label">Max<\/span> <strong>—<\/strong>[\s\S]*?condition-forecast-label"><\/span> <strong>—<\/strong>/u);
   assert.doesNotMatch(missing, /class="condition-primary">[\s\S]*?0\.0/u);
 });
 
@@ -2495,7 +2513,7 @@ test("pressure tile hides delayed, stale and missing observed rates", () => {
 test("pressure tile renders negative zero as steady zero", () => {
   const tile = renderPressureTile([{ ...record, pressureChange3hHpa: -0 }]);
   assert.match(tile, /class="condition-status condition-status-dark">[\s\S]*?<span>Steady<\/span>/u);
-  assert.match(tile, /class="condition-primary"><strong>0\.0<small>hPa\/3h<\/small><\/strong>/u);
+  assert.match(tile, /class="condition-primary"><strong>0\.0<\/strong>/u);
   assert.doesNotMatch(tile, /-0\.0/u);
 });
 
@@ -2510,7 +2528,8 @@ test("pressure tile never derives the observed rate from the forecast", (context
   ];
   const tile = renderPressureTile([{ ...record, pressureChange3hHpa: null }], forecast);
   assert.match(tile, /class="condition-primary"><strong>—<\/strong>/u);
-  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>\+4\.0 <small>hPa\/3h<\/small><\/strong>/u);
+  assert.match(tile, /condition-forecast-label">Max<\/span> <strong>\+4\.0<\/strong>/u);
+  assert.match(tile, /condition-forecast-label"><\/span> <strong>12:00 <small>PM<\/small><\/strong>/u);
 });
 
 // verify the published current-condition threshold boundaries

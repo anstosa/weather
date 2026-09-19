@@ -3499,6 +3499,7 @@ function renderCurrentSkeleton(): string {
     forecast: ForecastCardValue;
     icon: MaterialIconName;
     label: string;
+    measurement?: FormattedMeasurement;
     secondary?: string;
     detail?: string | null;
   }>[] = [
@@ -3508,7 +3509,7 @@ function renderCurrentSkeleton(): string {
     { className: "compact-condition clouds-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }, { label: "Min", measurement: { unit: "%", value: "00" } }] }, icon: "cloud", label: "Clouds", secondary: "Clearest" },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "%", value: "00" } }] }, icon: "humidity_percentage", label: "Humidity" },
     { className: "air-quality-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "00" } }] }, icon: "masks", label: "Air quality" },
-    { className: "compact-condition pressure-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "hPa/3h", value: "+0.0" } }] }, icon: "speed", label: "Pressure" },
+    { className: "compact-condition pressure-condition", detail: null, forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "+0.0" } }, { label: "", measurement: { unit: "PM", value: "00:00" } }] }, icon: "speed", label: "Pressure", measurement: { unit: "", value: "+0.0" } },
     { className: "compact-condition", forecast: { readings: [{ label: "Max", measurement: { unit: "", value: "0.0" } }] }, icon: "wb_sunny", label: "UV index" },
     { className: "compact-condition tide-condition", detail: null, forecast: { readings: [{ label: "Next low", measurement: { unit: "", value: "00:00 PM" } }] }, icon: "water", label: "Tide", secondary: "Direction" },
     { className: "compact-condition sunset-condition", detail: null, forecast: { readings: [{ label: "vs yesterday", measurement: { unit: "mins", value: "+0" } }] }, icon: "wb_sunny", label: "Sunset", secondary: "Golden hour" },
@@ -3524,7 +3525,7 @@ function renderCurrentSkeleton(): string {
               <div class="condition-card-heading"><span class="condition-label">${renderMaterialIcon(card.icon)}<span>${renderConditionLabel(card.label)}</span></span><span class="condition-status">Loading</span></div>
               <div class="condition-body${card.secondary === undefined ? "" : " condition-body-secondary"}">
                 <div class="condition-live">
-                  <div class="condition-primary"><strong>00<small>unit</small></strong></div>
+                  <div class="condition-primary">${renderConditionMeasurement(card.measurement ?? { unit: "unit", value: "00" })}</div>
                   ${card.secondary === undefined ? "" : `<div class="condition-secondary"><span>${card.secondary}</span><strong>00<small>unit</small></strong></div>`}
                 </div>
                 ${renderConditionForecast(card.forecast)}
@@ -3538,7 +3539,7 @@ function renderCurrentSkeleton(): string {
   `;
 }
 
-// show observed pressure movement beside the day's strongest modeled change
+// show observed pressure movement beside the day's strongest change and its time
 function renderPressureCondition(state: DashboardState): string {
   const current = preferredCurrentRecords(state.current).find(
     // keep pressure and its tendency attached to one station
@@ -3557,6 +3558,10 @@ function renderPressureCondition(state: DashboardState): string {
           measurement: formatPressureChange(maximum?.changeHpa ?? null),
           tone: forecastToneForBand(maximum?.changeHpa ?? null, pressureChangeBand(maximum?.changeHpa ?? null)),
         },
+        {
+          label: "",
+          measurement: formatConditionTime(maximum === null ? null : new Date(maximum.validAt), site.timezone),
+        },
       ],
     },
     icon: "speed",
@@ -3565,7 +3570,7 @@ function renderPressureCondition(state: DashboardState): string {
   });
 }
 
-// format signed three-hour movement without implying a health-risk score
+// format unitless signed three-hour movement without implying a health-risk score
 function formatPressureChange(changeHpa: number | null): FormattedMeasurement {
   // distinguish missing history from genuinely steady pressure
   if (changeHpa === null || !Number.isFinite(changeHpa)) {
@@ -3574,7 +3579,7 @@ function formatPressureChange(changeHpa: number | null): FormattedMeasurement {
 
   const rounded = Math.round(Math.abs(changeHpa) * 10) / 10 * Math.sign(changeHpa);
   return {
-    unit: "hPa/3h",
+    unit: "",
     value: new Intl.NumberFormat("en-US", {
       minimumFractionDigits: 1,
       maximumFractionDigits: 1,

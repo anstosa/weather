@@ -1050,20 +1050,9 @@ h2 {
   align-self: start;
 }
 
-/* respond to the pressure card's width without changing the surrounding grid */
-.pressure-condition .condition-card-content {
-  container-type: inline-size;
-}
-
-/* preserve readable inline pairs even when signed rates need more digits */
+/* keep the unitless daily maximum and its time beside the current change */
 .pressure-condition .condition-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-}
-
-.pressure-condition .condition-live {
-  min-width: max-content;
+  grid-template-columns: minmax(0, 1fr) max-content;
 }
 
 .pressure-condition .condition-card-heading {
@@ -1092,16 +1081,10 @@ h2 {
   margin-left: auto;
 }
 
-/* keep both number-unit pairs readable when the card cannot fit one row */
-@container (max-width: 14rem) {
-  .pressure-condition .condition-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .pressure-condition .condition-forecast {
-    justify-self: end;
-  }
+/* subordinate the expected time beneath the daily maximum */
+.pressure-condition .condition-forecast-reading:last-child strong {
+  font-size: clamp(0.7rem, 1.2vw, 0.85rem);
+  font-weight: 600;
 }
 
 /* keep sunset's daily change beside the primary clock reading */
@@ -4434,9 +4417,9 @@ td small {
   }
 
   .pressure-condition .condition-status {
-    max-width: 3.1rem;
+    max-width: 3.4rem;
     padding: 0.18rem 0.25rem;
-    font-size: 0.52rem;
+    font-size: 0.5rem;
   }
 
   .pressure-condition .condition-primary strong {
