@@ -65,6 +65,11 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     assert.ok(forecastSource);
     const currentRun = await insertSucceededRun(admin, currentSource, "scheduled");
     const historyRun = await insertSucceededRun(admin, historySource, "backfill");
+    const forecastContextRun = await insertSucceededRun(
+      admin,
+      forecastSource,
+      "scheduled",
+    );
     const forecastRun = await insertSucceededRun(admin, forecastSource, "scheduled");
     await insertRecord(admin, currentSource, currentRun, {
       idSuffix: "current-new",
@@ -82,6 +87,18 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       validAt: "2026-08-22T04:50:00.000Z",
       windDirectionDegrees: 225,
     });
+    // store one complete pre-midnight forecast vintage
+    for (let index = 0; index < 6; index += 1) {
+      await insertRecord(admin, forecastSource, forecastContextRun, {
+        idSuffix: `forecast-context-${String(index)}`,
+        pressureHpa: 1008 + index,
+        productRunAt: "2026-08-21T06:00:00.000Z",
+        temperatureC: 15 + index / 10,
+        validAt: new Date(
+          Date.parse("2026-08-21T04:00:00.000Z") + index * 3_600_000,
+        ).toISOString(),
+      });
+    }
     await insertRecord(admin, forecastSource, forecastRun, {
       idSuffix: "forecast-first",
       productRunAt: "2026-08-22T05:00:00.000Z",
@@ -230,6 +247,27 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.deepEqual(
         forecast.data.map((entry) => entry.metrics.temperatureC),
         [16.8, 17.1],
+      );
+      assert.deepEqual(
+        forecast.pressureContext.map(
+          // project the retained context identity and pressure
+          (entry) => ({
+            pressureHpa: entry.metrics.pressureHpa,
+            productRunAt: entry.productRunAt,
+            validAt: entry.validAt,
+          }),
+        ),
+        Array.from(
+          { length: 6 },
+          // retain one complete prior-vintage context window
+          (_unused, index) => ({
+            pressureHpa: 1008 + index,
+            productRunAt: "2026-08-21T06:00:00.000Z",
+            validAt: new Date(
+              Date.parse("2026-08-21T04:00:00.000Z") + index * 3_600_000,
+            ).toISOString(),
+          }),
+        ),
       );
       assert.equal(
         forecast.data.every(
@@ -486,6 +524,7 @@ async function insertRecord(pool, source, runId, input) {
         quality_metadata,
         provider_metadata,
         temperature_c,
+        pressure_hpa,
         wind_direction_degrees,
         content_hash
       )
@@ -509,6 +548,7 @@ async function insertRecord(pool, source, runId, input) {
           'request_id', 'private'
         ),
         $5,
+        $10,
         $8,
         $6
       )
@@ -523,6 +563,7 @@ async function insertRecord(pool, source, runId, input) {
       input.productRunAt ?? null,
       input.windDirectionDegrees ?? null,
       dataset,
+      input.pressureHpa ?? null,
     ],
   );
 }

@@ -182,6 +182,12 @@ export interface ForecastQuery {
   readonly siteSlug: string;
 }
 
+// bound one local-midnight pressure context read
+export interface ForecastPressureContextQuery {
+  readonly asOf: string;
+  readonly siteSlug: string;
+}
+
 export interface ForecastTrainingQuery {
   readonly from: string;
   readonly siteSlug: string;
@@ -2025,6 +2031,79 @@ export async function getWeatherForecast(
   } catch {
     return rawResult.rows;
   }
+}
+
+// read one complete retained vintage around local midnight
+export async function getForecastPressureContext(
+  pool: Pool,
+  query: ForecastPressureContextQuery,
+): Promise<readonly WeatherRecordRow[]> {
+  const asOf = validateUtcInstant(query.asOf, "asOf");
+  const contextStart = new Date(
+    Date.parse(asOf) - 3 * HOUR_MILLISECONDS,
+  ).toISOString();
+  const contextEnd = new Date(
+    Date.parse(asOf) + 3 * HOUR_MILLISECONDS,
+  ).toISOString();
+  const oldestRun = new Date(
+    Date.parse(asOf) - 48 * HOUR_MILLISECONDS,
+  ).toISOString();
+  const result = await pool.query<WeatherRecordRow>(
+    `
+      SELECT
+        ${weatherRecordSelection()}
+      FROM sources s
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      JOIN LATERAL (
+        SELECT candidate.product_run_at
+        FROM weather_records candidate
+        WHERE candidate.source_id = s.id
+          AND candidate.source_kind = 'forecast'
+          AND candidate.product_run_at >= $4
+          AND candidate.product_run_at <= $5
+          AND candidate.valid_at >= $2
+          AND candidate.valid_at < $3
+          AND candidate.pressure_hpa > '-Infinity'::double precision
+          AND candidate.pressure_hpa < 'Infinity'::double precision
+        GROUP BY candidate.product_run_at
+        HAVING COUNT(*) = 6
+          AND MIN(candidate.valid_at) = $2
+          AND MAX(candidate.valid_at) = $3::timestamptz - interval '1 hour'
+          AND BOOL_AND(candidate.valid_at = date_trunc('hour', candidate.valid_at))
+        ORDER BY candidate.product_run_at DESC
+        LIMIT 1
+      ) context_run ON true
+      JOIN LATERAL (
+        SELECT candidate.*
+        FROM weather_records candidate
+        WHERE candidate.source_id = s.id
+          AND candidate.source_kind = 'forecast'
+          AND candidate.product_run_at = context_run.product_run_at
+          AND candidate.valid_at >= $2
+          AND candidate.valid_at < $3
+          AND candidate.pressure_hpa > '-Infinity'::double precision
+          AND candidate.pressure_hpa < 'Infinity'::double precision
+        ORDER BY candidate.valid_at ASC, candidate.id ASC
+        LIMIT 6
+      ) wr ON true
+      WHERE si.slug = $1
+        AND si.active
+        AND st.active
+        AND s.active
+        AND p.active
+        AND s.source_kind = 'forecast'
+        AND s.source_key = 'open-meteo-forecast-v4'
+        AND s.capabilities @> '["forecast"]'::jsonb
+        AND ${CURRENT_SOURCE_PREDICATE}
+      ORDER BY wr.valid_at ASC, wr.id ASC
+      LIMIT 6
+    `,
+    [query.siteSlug, contextStart, contextEnd, oldestRun, asOf],
+  );
+
+  return result.rows;
 }
 
 // read provenance-separated forecast training cohorts

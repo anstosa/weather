@@ -220,6 +220,7 @@ function createFixture(overrides = {}, options = {}) {
   const currentQueries = [];
   const dailyPrecipitationQueries = [];
   const forecastQueries = [];
+  const pressureContextQueries = [];
   const historyQueries = [];
   const trendQueries = [];
   const historyRows = [
@@ -247,6 +248,11 @@ function createFixture(overrides = {}, options = {}) {
     async getForecast(siteSlug, asOf, hours) {
       forecastQueries.push({ asOf, hours, siteSlug });
       return [forecastRecord];
+    },
+    // return no optional retained pressure vintage by default
+    async getForecastPressureContext(siteSlug, asOf) {
+      pressureContextQueries.push({ asOf, siteSlug });
+      return [];
     },
     // return safe health state
     async getHealth() {
@@ -311,6 +317,7 @@ function createFixture(overrides = {}, options = {}) {
     forecastQueries,
     handler,
     historyQueries,
+    pressureContextQueries,
     trendQueries,
   };
 }
@@ -715,7 +722,7 @@ test("history uses frozen filter names, defaults, maximum, and opaque cursor", a
 
 // lock the public raw v4 response before adjustment metadata exists
 test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata", async () => {
-  const { forecastQueries, handler } = createFixture();
+  const { forecastQueries, handler, pressureContextQueries } = createFixture();
   const response = await handler(
     new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
   );
@@ -725,6 +732,10 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
   assert.deepEqual(forecastQueries, [{
     asOf: "2026-08-21T07:00:00.000Z",
     hours: 24,
+    siteSlug: "ballydidean",
+  }]);
+  assert.deepEqual(pressureContextQueries, [{
+    asOf: "2026-08-21T07:00:00.000Z",
     siteSlug: "ballydidean",
   }]);
   // retain exact serialized field order and public values
@@ -820,6 +831,7 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
     inactiveTemperatureAdjustmentRuntime,
   );
   assert.equal(body.days, 1);
+  assert.deepEqual(body.pressureContext, []);
 
   const extendedResponse = await handler(
     new Request("http://weather.test/api/v1/sites/ballydidean/forecast?days=10"),
@@ -832,6 +844,74 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
     hours: 240,
     siteSlug: "ballydidean",
   });
+});
+
+// expose an unadjusted complete retained pressure vintage separately
+test("forecast pressure context remains raw and isolated from forecast data", async () => {
+  // build one complete prior-vintage pressure window
+  const contextRows = Array.from({ length: 6 }, (_value, index) =>
+    matchingForecastRecord({
+      id: String(300 + index),
+      pressureHpa: 1010 + index,
+      productRunAt: "2026-08-21T06:00:00.000Z",
+      validAt: new Date(
+        Date.parse("2026-08-21T04:00:00.000Z") + index * 3_600_000,
+      ).toISOString(),
+    })
+  );
+  const { handler } = createFixture({
+    // return one complete prior vintage
+    async getForecastPressureContext() {
+      return contextRows;
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data.length, 1);
+  assert.deepEqual(
+    body.pressureContext.map(
+      // project the public raw context fields
+      (record) => ({
+        pressureHpa: record.metrics.pressureHpa,
+        productRunAt: record.productRunAt,
+        validAt: record.validAt,
+      }),
+    ),
+    contextRows.map(
+      // project the matching storage fields
+      (record) => ({
+        pressureHpa: record.pressureHpa,
+        productRunAt: record.productRunAt,
+        validAt: record.validAt,
+      }),
+    ),
+  );
+  assert.equal("adjustment" in body.pressureContext[0], false);
+  assert.equal("temperatureAdjustment" in body.pressureContext[0], false);
+  assert.equal("rainAdjustment" in body.pressureContext[0], false);
+});
+
+// keep optional context failures from changing forecast availability
+test("forecast pressure context read failure falls back to an empty array", async () => {
+  const { handler } = createFixture({
+    // fail only the optional context read
+    async getForecastPressureContext() {
+      throw new Error("private pressure context failure");
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.data.length, 1);
+  assert.deepEqual(body.pressureContext, []);
+  assert.doesNotMatch(JSON.stringify(body), /private pressure context failure/u);
 });
 
 test("I-API-02 active runtime adjusts only its enabled metric-band pairs", async () => {
@@ -1557,6 +1637,11 @@ test("I-API-05 provenance permission failures preserve raw API metrics", async (
         throw Object.assign(new Error("permission denied"), { code: "42501" });
       }
 
+      // return no optional complete pressure vintage
+      if (text.includes("HAVING COUNT(*) = 6")) {
+        return { rows: [] };
+      }
+
       // serve public discovery
       if (text.includes("FROM sites si")) {
         return { rows: siteRows };
@@ -1590,10 +1675,11 @@ test("I-API-05 provenance permission failures preserve raw API metrics", async (
   const body = await response.json();
 
   assert.equal(response.status, 200);
-  assert.equal(queries.length, 4);
+  assert.equal(queries.length, 5);
   assert.doesNotMatch(queries[1].text, /forecast_runtime_provenance_v1/u);
   assert.match(queries[2].text, /FROM forecast_runtime_provenance_v1/u);
-  assert.match(queries[3].text, /FROM rain_adjustment_runs/u);
+  assert.match(queries[3].text, /HAVING COUNT\(\*\) = 6/u);
+  assert.match(queries[4].text, /FROM rain_adjustment_runs/u);
   assert.equal(JSON.stringify(body.data[0].metrics), JSON.stringify({
     apparentTemperatureC: rawRow.apparentTemperatureC,
     blackGlobeTemperatureC: rawRow.blackGlobeTemperatureC,

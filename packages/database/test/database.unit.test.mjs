@@ -12,6 +12,7 @@ import {
   loadDatabaseConfiguration,
   loadSiteConfiguration,
   loadTempestConfiguration,
+  getForecastPressureContext,
   getWeatherForecast,
   getEcmwfTemperatureCanarySidecar,
   listCausalForecastObservationHourlyStations,
@@ -407,6 +408,44 @@ test("forecast repository keeps historical-only sources out of the live route", 
     "ballydidean",
     "2026-09-01T00:00:00.000Z",
     "2026-09-02T00:00:00.000Z",
+  ]);
+});
+
+// lock the bounded retained-vintage pressure context query
+test("forecast pressure context requires one complete recent v4 vintage", async () => {
+  const captured = [];
+  const pool = {
+    // capture the generated query contract
+    async query(text, values) {
+      captured.push({ text, values });
+      return { rows: [] };
+    },
+  };
+
+  assert.deepEqual(
+    await getForecastPressureContext(pool, {
+      asOf: "2026-09-01T07:00:00.000Z",
+      siteSlug: "ballydidean",
+    }),
+    [],
+  );
+  assert.equal(captured.length, 1);
+  assert.match(captured[0].text, /candidate\.product_run_at >= \$4/u);
+  assert.match(captured[0].text, /candidate\.product_run_at <= \$5/u);
+  assert.match(captured[0].text, /HAVING COUNT\(\*\) = 6/u);
+  assert.match(captured[0].text, /MIN\(candidate\.valid_at\) = \$2/u);
+  assert.match(
+    captured[0].text,
+    /MAX\(candidate\.valid_at\) = \$3::timestamptz - interval '1 hour'/u,
+  );
+  assert.match(captured[0].text, /s\.source_key = 'open-meteo-forecast-v4'/u);
+  assert.match(captured[0].text, /weather_source_is_current\(s\.id\)/u);
+  assert.deepEqual(captured[0].values, [
+    "ballydidean",
+    "2026-09-01T04:00:00.000Z",
+    "2026-09-01T10:00:00.000Z",
+    "2026-08-30T07:00:00.000Z",
+    "2026-09-01T07:00:00.000Z",
   ]);
 });
 

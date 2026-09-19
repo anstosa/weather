@@ -428,6 +428,7 @@ export interface DashboardState {
   readonly adminAdjustmentSettingsSaving: boolean;
   readonly adminAdjustmentSettingsMessage: string | null;
   readonly forecast: readonly WeatherRecord[];
+  readonly forecastPressureContext: readonly WeatherRecord[];
   readonly forecastDays: ForecastDays;
   readonly history: readonly WeatherRecord[];
   readonly loading: boolean;
@@ -536,6 +537,7 @@ interface RecordsResponse {
 
 // describe the adjusted forecast boundary
 interface ForecastRecordsResponse extends RecordsResponse {
+  readonly pressureContext: readonly WeatherRecord[];
   readonly adjustmentSettings: ForecastAdjustmentSettings | null;
   readonly adjustmentRuntime: ForecastAdjustmentRuntimeStatus;
   readonly rainAdjustmentRuntime: ForecastRainAdjustmentRuntimeStatus;
@@ -580,6 +582,7 @@ const EMPTY_STATE: DashboardState = {
   adminAdjustmentSettingsSaving: false,
   adminAdjustmentSettingsMessage: null,
   forecast: [],
+  forecastPressureContext: [],
   forecastDays: 1,
   history: [],
   loading: false,
@@ -1981,6 +1984,37 @@ function rawForecastRecord(value: unknown): WeatherRecord | null {
   return raw as unknown as WeatherRecord;
 }
 
+// accept one complete retained pressure window without mixing forecast vintages
+function parseForecastPressureContext(value: unknown): readonly WeatherRecord[] {
+  // keep older responses and incomplete context harmless
+  if (!Array.isArray(value) || value.length !== 6) {
+    return [];
+  }
+
+  const records = value.map(rawForecastRecord);
+  // reject malformed or non-forecast context independently of the visible forecast
+  if (records.some(
+    // require finite pressure at every hourly endpoint
+    (record) => record === null || record.provenance.sourceKind !== "forecast" ||
+      record.productRunAt === null || record.metrics.pressureHpa === null ||
+      !Number.isFinite(record.metrics.pressureHpa),
+  )) {
+    return [];
+  }
+
+  const hours = (records as WeatherRecord[]).toSorted(
+    // normalize the six-hour context order
+    (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
+  );
+  const first = hours[0]!;
+  return hours.every(
+    // retain one exact contiguous run from one source
+    (record, index) => record.provenance.sourceId === first.provenance.sourceId &&
+      record.productRunAt === first.productRunAt &&
+      Date.parse(record.validAt) === Date.parse(first.validAt) + index * 3_600_000,
+  ) ? hours : [];
+}
+
 // parse one forecast response with a global fail-raw boundary
 export function parseForecastRecordsResponse(value: unknown): ForecastRecordsResponse {
   const response = forecastAdjustmentObject(value);
@@ -2099,6 +2133,7 @@ export function parseForecastRecordsResponse(value: unknown): ForecastRecordsRes
     adjustmentSettings: settings,
     adjustmentRuntime: effectiveRuntime,
     data: safeRecords,
+    pressureContext: parseForecastPressureContext(response.pressureContext),
     rainAdjustmentRuntime: effectiveRainRuntime,
     temperatureAdjustmentRuntime: effectiveTemperatureRuntime,
   };
@@ -2352,6 +2387,7 @@ export class WeatherDashboardController {
       this.patch({
         error: null,
         forecast: response.data,
+        forecastPressureContext: response.pressureContext,
         forecastAdjustmentMode: this.#state.forecastAdjustmentMode,
         forecastAdjustmentSettings: response.adjustmentSettings,
         forecastAdjustmentRuntime: response.adjustmentRuntime,
@@ -2705,6 +2741,7 @@ export class WeatherDashboardController {
           : dailyPrecipitation.data,
         error: null,
         forecast: forecast?.data ?? this.#state.forecast,
+        forecastPressureContext: forecast?.pressureContext ?? this.#state.forecastPressureContext,
         forecastAdjustmentMode: this.#state.forecastAdjustmentMode,
         forecastAdjustmentSettings: adminSettings ?? forecast?.adjustmentSettings ?? this.#state.forecastAdjustmentSettings,
         forecastAdjustmentRuntime: forecast?.adjustmentRuntime ?? this.#state.forecastAdjustmentRuntime,
@@ -4283,7 +4320,7 @@ function renderForecast(state: DashboardState): string {
   }
 
   const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
-  const charts = buildForecastCharts(hours, state.tides, useForecastAdjustments, state.forecast);
+  const charts = buildForecastCharts(hours, state.tides, useForecastAdjustments, state.forecast, state.forecastPressureContext ?? []);
   const hourlyTimes = hours.map(
     // retain one shared continuous clock
     (record) => record.validAt,
@@ -4674,6 +4711,7 @@ function buildForecastCharts(
   tides: readonly TideRecord[],
   useAdjustments: boolean,
   records: readonly WeatherRecord[],
+  pressureContext: readonly WeatherRecord[],
 ): readonly ForecastChartDefinition[] {
   // apply the selected adjustment mode to each displayed metric
   const metric = (key: WeatherMetricKey): readonly (number | null)[] => hours.map(
@@ -4681,7 +4719,17 @@ function buildForecastCharts(
     (record) => forecastMetricValue(record, key, useAdjustments),
   );
 
-  const pressureChanges = forecastPressureChanges(records, hours);
+  const contextChanges = forecastPressureChanges(pressureContext);
+  const contextByHour = new Map(pressureContext.map(
+    // index completed prior-vintage differences rather than mixing their raw pressures
+    (record, index) => [`${record.provenance.sourceId}/${Date.parse(record.validAt)}`, contextChanges[index] ?? null],
+  ));
+  const pressureChanges = forecastPressureChanges(records, hours).map(
+    // fill only the opening three missing windows from the retained same-source context
+    (change, index) => change ?? (index < 3
+      ? contextByHour.get(`${hours[index]!.provenance.sourceId}/${Date.parse(hours[index]!.validAt)}`) ?? null
+      : null),
+  );
   const pressureExtent = Math.max(6, ...pressureChanges.map(
     // center the signed scale on steady pressure without clipping rapid changes
     (value) => Math.ceil(Math.abs(value ?? 0)),

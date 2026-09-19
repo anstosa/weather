@@ -5,6 +5,7 @@ import {
   getCurrentWeather,
   getEcmwfTemperatureCanarySidecar,
   getEcmwfTemperatureCanaryStatus,
+  getForecastPressureContext as readForecastPressureContext,
   getWeatherForecast,
   getLatestWorkerHeartbeat,
   listActiveSites,
@@ -84,6 +85,11 @@ export interface WeatherReadStore {
     siteSlug: string,
     asOf: string,
     hours: number,
+  ): Promise<readonly WeatherRecordRow[]>;
+  // read optional retained pressure context
+  getForecastPressureContext?(
+    siteSlug: string,
+    asOf: string,
   ): Promise<readonly WeatherRecordRow[]>;
   getTemperatureCanarySidecar?(
     siteSlug: string,
@@ -463,6 +469,10 @@ export function createDatabaseWeatherReadStore(
     // read the newest forecast product
     async getForecast(siteSlug, asOf, hours) {
       return await getWeatherForecast(pool, { asOf, hours, siteSlug });
+    },
+    // read one complete retained pressure vintage
+    async getForecastPressureContext(siteSlug, asOf) {
+      return await readForecastPressureContext(pool, { asOf, siteSlug });
     },
     // read one isolated current ECMWF canary run
     async getTemperatureCanarySidecar(siteSlug, asOf, from, to) {
@@ -1167,6 +1177,11 @@ async function handleReadRoute(
       window.asOf,
       window.hours,
     );
+    const pressureContextRows = await readForecastPressureContextSafely(
+      store,
+      route.siteSlug,
+      window.asOf,
+    );
     const to = new Date(
       Date.parse(window.asOf) + window.hours * 3_600_000,
     ).toISOString();
@@ -1208,6 +1223,11 @@ async function handleReadRoute(
       data: records,
       days,
       generatedAt,
+      pressureContext: mapForecastPressureContextSafely(
+        pressureContextRows,
+        indexSources(site),
+        generatedAt,
+      ),
       site,
       temperatureAdjustmentRuntime: projectForecastTemperatureAdjustmentRuntime(
         temperatureAdjustmentRuntime,
@@ -1700,6 +1720,37 @@ function mapForecastWeatherRecords(
       reportTemperatureFailure,
     ),
   }));
+}
+
+// contain malformed optional context projections
+function mapForecastPressureContextSafely(
+  rows: readonly WeatherRecordRow[],
+  sources: ReadonlyMap<string, SourceDetails>,
+  generatedAt: string,
+): readonly ApiWeatherRecord[] {
+  try {
+    return mapWeatherRecords(rows, sources, generatedAt);
+  } catch {
+    return [];
+  }
+}
+
+// keep optional pressure context from affecting forecast availability
+async function readForecastPressureContextSafely(
+  store: WeatherReadStore,
+  siteSlug: string,
+  asOf: string,
+): Promise<readonly WeatherRecordRow[]> {
+  // preserve compatibility with stores without context support
+  if (store.getForecastPressureContext === undefined) {
+    return [];
+  }
+
+  try {
+    return await store.getForecastPressureContext(siteSlug, asOf);
+  } catch {
+    return [];
+  }
 }
 
 // isolate rain storage failure from every ordinary forecast and other adjustment

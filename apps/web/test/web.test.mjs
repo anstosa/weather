@@ -2382,6 +2382,56 @@ test("forecast pressure changes remain hourly across daylight-saving transitions
   assert.deepEqual(forecastPressureChanges(fallback), [null, null, null, 6]);
 });
 
+// fill midnight pressure changes without joining different model vintages
+test("forecast pressure context fills only the opening windows from one retained run", () => {
+  // exercise ordinary days and both daylight-saving transitions
+  for (const midnight of ["2026-08-21T07:00:00Z", "2026-03-08T08:00:00Z", "2026-11-01T07:00:00Z"]) {
+    const base = Date.parse(midnight);
+    const pressureContext = [1_000, 1_001, 1_002, 1_004, 1_007, 1_009].map(
+      // retain yesterday and the first three target hours in the same older run
+      (value, index) => pressureForecastRecord(new Date(base + (index - 3) * 3_600_000).toISOString(), value, {
+        productRunAt: new Date(base - 3_600_000).toISOString(),
+      }),
+    );
+    const forecast = [1_100, 1_101, 1_102, 1_105, 1_107, 1_110].map(
+      // make cross-vintage subtraction observably incorrect
+      (value, index) => pressureForecastRecord(new Date(base + index * 3_600_000).toISOString(), value, {
+        productRunAt: new Date(base + 4 * 3_600_000).toISOString(),
+      }),
+    );
+    const parsed = parseForecastRecordsResponse({ data: forecast, pressureContext, site });
+    assert.deepEqual(parsed.data, forecast);
+    assert.deepEqual(parsed.pressureContext, pressureContext);
+    const state = {
+      ...forecastState(parsed.data, null),
+      current: [{ ...record, validAt: midnight }],
+      forecastPressureContext: parsed.pressureContext,
+    };
+    const html = renderWeatherDashboard(state, "forecast");
+    assert.deepEqual(forecastChartSeries(html, "pressure")[0].values, [4, 6, 7, 5, 6, 8]);
+    assert.equal(forecastChartSeries(html, "temperature")[0].values.length, 6);
+    assert.equal((html.match(/class="forecast-x-tick"/gu) ?? []).length, 6);
+
+    const foreignContext = pressureContext.map(
+      // reject another station even when its times line up
+      (hour) => ({ ...hour, provenance: { ...hour.provenance, sourceId: "other-source" } }),
+    );
+    const foreignHtml = renderWeatherDashboard({ ...state, forecastPressureContext: foreignContext }, "forecast");
+    assert.deepEqual(forecastChartSeries(foreignHtml, "pressure")[0].values, [null, null, null, 5, 6, 8]);
+
+    // discard malformed optional context without losing normal forecast data
+    for (const invalid of [undefined, [], pressureContext.slice(1), [
+      ...pressureContext.slice(0, 5), { ...pressureContext[5], productRunAt: forecast[0].productRunAt },
+    ], [
+      ...pressureContext.slice(0, 5), { ...pressureContext[5], metrics: { ...pressureContext[5].metrics, pressureHpa: null } },
+    ]]) {
+      const fallback = parseForecastRecordsResponse({ data: forecast, pressureContext: invalid, site });
+      assert.deepEqual(fallback.pressureContext, []);
+      assert.deepEqual(fallback.data, forecast);
+    }
+  }
+});
+
 // keep unavailable rolling windows as visible breaks in the pressure chart
 test("pressure forecast chart separates gaps and keeps gradient colors time-aligned", () => {
   const pressureValues = [1_000, 1_001, 1_002, 1_003, 1_004, null, 1_006, 1_007, 1_008, 1_014, 1_016];

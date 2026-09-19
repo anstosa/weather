@@ -21,6 +21,7 @@ import {
   failIngestionRun,
   getCurrentWeather,
   getDailyPrecipitation,
+  getForecastPressureContext,
   getScheduledCheckpoint,
   getWeatherForecast,
   hasSuccessfulBackfillChunk,
@@ -786,21 +787,26 @@ test(
           await completeScheduledIngestion(forecastSession, {
             attempts: 1,
             expectedCheckpointVersion: null,
-            lastValidAt: "2026-08-22T07:00:00.000Z",
+            lastValidAt: "2026-08-22T09:00:00.000Z",
             providerCursor: { product_run_at: "2026-08-22T04:00:00.000Z" },
-            records: [
-              makeRecord(
+            records: Array.from(
+              { length: 6 },
+              // create one exact complete midnight pressure window
+              (_unused, index) => makeRecord(
                 forecastSource.id,
                 "forecast",
-                "2026-08-22T07:00:00.000Z",
-              {
-                productRunAt: "2026-08-22T04:00:00.000Z",
-                providerDataset: "forecast",
-                temperatureC: -10,
-                upstreamModel: "best_match",
-              },
+                new Date(
+                  Date.parse("2026-08-22T04:00:00.000Z") + index * 3_600_000,
+                ).toISOString(),
+                {
+                  pressureHpa: 1000 + index,
+                  productRunAt: "2026-08-22T04:00:00.000Z",
+                  providerDataset: "forecast",
+                  temperatureC: -10,
+                  upstreamModel: "best_match",
+                },
               ),
-            ],
+            ),
             runId: olderRun.id,
             windowEndExclusive: "2026-08-22T07:00:00.000Z",
             windowStart: "2026-08-22T06:00:00.000Z",
@@ -847,6 +853,37 @@ test(
             siteSlug: configuration.site.key,
           });
           assert.equal(horizon.length, 180);
+          const pressureContext = await getForecastPressureContext(pool, {
+            asOf: "2026-08-22T07:00:00.000Z",
+            siteSlug: configuration.site.key,
+          });
+          assert.deepEqual(
+            pressureContext.map(
+              // retain one complete prior-vintage pressure window
+              (record) => ({
+                pressureHpa: record.pressureHpa,
+                productRunAt: record.productRunAt?.toISOString(),
+                validAt: record.validAt.toISOString(),
+              }),
+            ),
+            Array.from(
+              { length: 6 },
+              // build the exact expected hourly context
+              (_unused, index) => ({
+                pressureHpa: 1000 + index,
+                productRunAt: "2026-08-22T04:00:00.000Z",
+                validAt: new Date(
+                  Date.parse("2026-08-22T04:00:00.000Z") + index * 3_600_000,
+                ).toISOString(),
+              }),
+            ),
+          );
+          // return no context without a complete retained window
+          const missingPressureContext = await getForecastPressureContext(pool, {
+            asOf: "2026-08-23T07:00:00.000Z",
+            siteSlug: configuration.site.key,
+          });
+          assert.deepEqual(missingPressureContext, []);
           assert.equal(
             horizon[0].adapterVersion,
             "open-meteo-forecast-daily/v4",
@@ -1857,7 +1894,7 @@ function makeRecord(sourceId, sourceKind, validAt, overrides = {}) {
       pm25MicrogramsPerCubicMeter: 7,
       precipitationMm: overrides.precipitationMm ?? 0,
       precipitationRateMmPerHour: 0,
-      pressureHpa: 1013,
+      pressureHpa: overrides.pressureHpa ?? 1013,
       relativeHumidityPercent: 70,
       soilElectricalConductivityMicrosiemensPerCm: 420,
       soilMoisturePercent: overrides.soilMoisturePercent ?? 34,

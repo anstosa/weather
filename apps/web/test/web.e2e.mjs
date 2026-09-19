@@ -3643,6 +3643,72 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
   }
 });
 
+// retain complete rolling windows at midnight without showing yesterday on the axis
+test("forecast pressure starts at midnight using retained prior-day context", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  try {
+    browser = await launchBrowser();
+    // check the populated line at desktop and narrow phone widths
+    for (const width of [1440, 390, 320]) {
+      const page = await createFixturePage(browser, { viewport: { height: 900, width } });
+      let includeContext = true;
+      await page.route(/\/api\/v1\/sites\/ballydidean\/forecast(?:\?|$)/u,
+        // return an older complete run separately from today's newest forecast
+        async (route) => {
+          const response = await route.fetch();
+          const body = await response.json();
+          const first = body.data[0];
+          const base = Date.parse(first.validAt);
+          body.pressureContext = includeContext ? [1_000, 1_001, 1_002, 1_004, 1_007, 1_009].map(
+            // preserve one consistent prior vintage across the midnight boundary
+            (pressureHpa, index) => ({
+              ...first,
+              id: `pressure-context-${index}`,
+              metrics: { ...first.metrics, pressureHpa },
+              productRunAt: new Date(base - 3_600_000).toISOString(),
+              validAt: new Date(base + (index - 3) * 3_600_000).toISOString(),
+            }),
+          ) : [];
+          await route.fulfill({ response, json: body });
+        },
+      );
+      await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+      const grid = page.locator("[data-forecast-charts]");
+      const pressure = page.locator('[data-forecast-chart="pressure"]');
+      assert.deepEqual(JSON.parse(await pressure.getAttribute("data-forecast-series"))[0].values.slice(0, 3), [4, 6, 7]);
+      assert.equal((await pressure.locator("polyline").first().getAttribute("points")).split(",")[0], "0.00");
+      assert.equal(JSON.parse(await grid.getAttribute("data-forecast-times"))[0], forecast[0].validAt);
+      assert.equal(await page.locator(".forecast-x-tick").count(), 24);
+      await grid.press("Home");
+      assert.equal(await pressure.locator("[data-forecast-value]").innerText(), "+4.0");
+      await grid.press("ArrowRight");
+      assert.equal(await pressure.locator("[data-forecast-value]").innerText(), "+6.0");
+      await grid.press("ArrowRight");
+      assert.equal(await pressure.locator("[data-forecast-value]").innerText(), "+7.0");
+      // carry the same prior-day context through both horizon reload paths
+      for (const days of [5, 10]) {
+        await page.getByRole("button", { name: `${days} days`, exact: true }).click();
+        await page.waitForFunction(
+          // wait for the selected forecast range to finish rendering
+          (days) => document.querySelectorAll(".forecast-x-tick").length === days * 24,
+          days,
+        );
+        assert.deepEqual(JSON.parse(await pressure.getAttribute("data-forecast-series"))[0].values.slice(0, 3), [4, 6, 7]);
+      }
+      includeContext = false;
+      await page.reload({ waitUntil: "networkidle" });
+      assert.deepEqual(JSON.parse(await pressure.getAttribute("data-forecast-series"))[0].values.slice(0, 3), [null, null, null]);
+      assert.equal(await page.locator("[data-forecast-chart]").count(), 9);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // verify labeled forecast placeholders
 test("forecast skeletons expose every chart label on the reserved cards", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
