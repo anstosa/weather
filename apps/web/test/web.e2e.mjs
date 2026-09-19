@@ -3959,6 +3959,10 @@ test("pressure tile colors three-hour speed and keeps later changes separate", {
         await page.reload({ waitUntil: "networkidle" });
         assert.equal(await card.locator(".condition-status").innerText(), label);
         assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), color);
+        assert.equal(await card.locator(".condition-status").evaluate(
+          // retain every character in long fallback and directional labels
+          (element) => element.scrollWidth <= element.clientWidth + 1,
+        ), true, `${label} clips at ${width}px`);
         assert.equal((await card.boundingBox()).height, height, `${label} changes pressure height at ${width}px`);
       }
       change = 6;

@@ -1059,11 +1059,13 @@ h2 {
   min-height: 2.1rem;
 }
 
+/* wrap long fallback labels rather than clipping missing-data states */
 .pressure-condition .condition-status {
   max-width: 4rem;
   padding: 0.2rem 0.3rem;
   font-size: 0.6rem;
   white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .pressure-condition .condition-primary {
