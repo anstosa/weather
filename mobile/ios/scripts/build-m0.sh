@@ -14,7 +14,7 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Dev
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
 rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE" "$TEST_ATTACHMENTS"
-rm -f "$RESULTS/debug-build-passed.txt"
+rm -f "$RESULTS/debug-build-passed.txt" "$RESULTS/release-validation-passed.txt"
 mkdir -p "$RESULTS"
 
 # record actual project targets and shared schemes
@@ -97,8 +97,11 @@ xcodebuild \
   -derivedDataPath "$DERIVED_DATA" \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
-  build analyze | tee "$RESULTS/release-build-analyze.log"
+  build analyze 2>&1 | tee "$RESULTS/release-build-analyze.log"
 
 "$SCRIPT_DIR/verify-release-artifacts.sh" "$DERIVED_DATA" "$RESULTS/release-receipts"
+printf 'source_commit=%s\nrelease_build_analyze=passed\nrelease_artifact_isolation=passed\n' \
+  "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)" \
+  > "$RESULTS/release-validation-passed.txt"
 
 echo "iOS M0 build/test/scan passed; actual Home Screen evidence remains a separate gate"

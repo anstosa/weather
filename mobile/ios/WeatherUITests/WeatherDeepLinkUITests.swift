@@ -539,7 +539,7 @@ final class WidgetHostUITests: XCTestCase {
             stage: "matrix-\(targetScenario.rawValue)-fixture-option"
         )
         fixtureOption.tap()
-        _ = try requireHittable(
+        let selectedFixture = try requireHittable(
             in: springboard.buttons.matching(
                 NSPredicate(
                     format: "label ==[c] %@ OR identifier == %@",
@@ -551,8 +551,19 @@ final class WidgetHostUITests: XCTestCase {
             stage: "matrix-\(targetScenario.rawValue)-fixture-selected"
         )
         attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-selected")
-        XCUIDevice.shared.press(.home)
-        _ = springboard.wait(for: .runningForeground, timeout: 10)
+
+        // commit by dismissing above the captured configuration card
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
+        // require the configuration surface to close
+        guard selectedFixture.waitForNonExistence(timeout: 10) else {
+            attachState(springboard, name: "failure-matrix-\(targetScenario.rawValue)-configuration-dismiss")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 7,
+                userInfo: [NSLocalizedDescriptionKey: "widget configuration did not dismiss"]
+            )
+        }
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configuration-dismissed")
 
         let configuredWidget = try findWidget(
             on: springboard,

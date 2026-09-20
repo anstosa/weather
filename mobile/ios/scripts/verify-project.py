@@ -201,6 +201,17 @@ def verify_release_reachable_sources() -> None:
         or '@Parameter(title: "M0 fixture"' not in intent_source
     ):
         fail("debug AppIntent fixture configuration is not compilation-gated")
+    # keep matrix-only assertions out of Release test compilation
+    fixture_assertion = "XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario"
+    fixture_assertion_index = test_source.find(fixture_assertion)
+    debug_guard_index = test_source.rfind("#if DEBUG", 0, fixture_assertion_index)
+    debug_end_index = test_source.find("#endif", fixture_assertion_index)
+    if (
+        fixture_assertion_index < 0
+        or debug_guard_index < 0
+        or debug_end_index < fixture_assertion_index
+    ):
+        fail("debug AppIntent fixture assertions are not compilation-gated")
     # keep the matrix reload request out of Release compilation
     if (
         "#if DEBUG" not in app_source
@@ -266,6 +277,9 @@ def verify_host_probe() -> None:
         "fixtureValueButtons",
         'stage: "matrix-\\(targetScenario.rawValue)-fixture-value"',
         'stage: "matrix-\\(targetScenario.rawValue)-fixture-selected"',
+        "coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()",
+        "selectedFixture.waitForNonExistence",
+        'name: "matrix-\\(targetScenario.rawValue)-configuration-dismissed"',
         '"Maximum density M0"',
         '"Near cutoff M0"',
         '"Bedtime M0"',
@@ -325,6 +339,8 @@ def verify_build_evidence() -> None:
     build = (ROOT / "scripts/build-m0.sh").read_text()
     required_fragments = (
         "debug-build-passed.txt",
+        "release-validation-passed.txt",
+        "release_artifact_isolation=passed",
         "test-attachments",
         "xcresulttool export attachments",
         'if [[ "$TEST_STATUS" -ne 0 ]]',

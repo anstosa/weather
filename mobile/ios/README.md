@@ -80,10 +80,13 @@ Expected output paths beneath `$RESULTS`:
 - `test-attachments-export-status.txt`
 - `test.log`
 - `release-build-analyze.log`
+- `release-validation-passed.txt`
 - `DerivedData/Build/Products/Release-iphonesimulator/Weather.app`
 - `release-receipts/release-strings.txt`
 - `release-receipts/release-plists.txt`
 - `release-receipts/release-sha256.txt`
+
+`release-validation-passed.txt` appears only after unsigned Release build, analysis, and artifact isolation all succeed.
 
 These are unsigned build artifacts, not store-submittable binaries.
 

@@ -86,11 +86,13 @@ final class WeatherWidgetFixtureTests: XCTestCase {
     // prove default and alternate units
     func testIntentDefaultsToFahrenheit() {
         XCTAssertEqual(WeatherWidgetConfigurationIntent().temperatureUnit, .fahrenheit)
-        XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario, .maximumDensity)
         XCTAssertEqual(
             WeatherWidgetConfigurationIntent(temperatureUnit: .celsius).temperatureUnit,
             .celsius
         )
+        #if DEBUG
+        // test only compiled matrix controls
+        XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario, .maximumDensity)
         XCTAssertEqual(
             WeatherWidgetConfigurationIntent(
                 temperatureUnit: .fahrenheit,
@@ -98,6 +100,7 @@ final class WeatherWidgetFixtureTests: XCTestCase {
             ).fixtureScenario,
             .nearCutoff
         )
+        #endif
     }
 
     // prove the exact bedtime message
