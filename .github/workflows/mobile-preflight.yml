@@ -87,6 +87,8 @@ jobs:
             ${{ runner.temp }}/weather-ios/test-status.txt
             ${{ runner.temp }}/weather-ios/test-attachments-export.log
             ${{ runner.temp }}/weather-ios/test-attachments-export-status.txt
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle.log
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle-status.txt
             ${{ runner.temp }}/weather-ios/test-attachments/**
             ${{ runner.temp }}/weather-ios/Weather.xcresult
             ${{ runner.temp }}/weather-ios/release-build-analyze.log

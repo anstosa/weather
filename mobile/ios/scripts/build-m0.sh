@@ -77,9 +77,17 @@ xcrun xcresulttool export attachments \
   --output-path "$TEST_ATTACHMENTS" \
   > "$RESULTS/test-attachments-export.log" 2>&1
 TEST_ATTACHMENTS_STATUS=$?
+# capture bounded app and WebKit lifecycle receipts
+xcrun simctl spawn "$SIMULATOR_UDID" log show \
+  --last 10m \
+  --style compact \
+  --predicate 'subsystem == "farm.ballydidean.weather"' \
+  > "$RESULTS/test-app-lifecycle.log" 2>&1
+TEST_APP_LIFECYCLE_STATUS=$?
 set -e
 printf '%s\n' "$TEST_STATUS" > "$RESULTS/test-status.txt"
 printf '%s\n' "$TEST_ATTACHMENTS_STATUS" > "$RESULTS/test-attachments-export-status.txt"
+printf '%s\n' "$TEST_APP_LIFECYCLE_STATUS" > "$RESULTS/test-app-lifecycle-status.txt"
 
 # stop after preserving a failed test result
 if [[ "$TEST_STATUS" -ne 0 ]]; then

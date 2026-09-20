@@ -189,6 +189,7 @@ def verify_release_reachable_sources() -> None:
     intent_source = (ROOT / "WeatherWidget/WeatherWidgetIntent.swift").read_text()
     widget_source = (ROOT / "WeatherWidget/WeatherWidget.swift").read_text()
     app_source = (ROOT / "WeatherApp/App/WeatherApp.swift").read_text()
+    web_view_source = (ROOT / "WeatherApp/Web/SecureWeatherWebView.swift").read_text()
     model_source = (ROOT / "WeatherWidget/WeatherWidgetModel.swift").read_text()
     view_source = (ROOT / "WeatherWidget/WeatherWidgetView.swift").read_text()
     test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
@@ -196,13 +197,23 @@ def verify_release_reachable_sources() -> None:
     # keep scenario overrides out of Release compilation
     if "#if DEBUG" not in fixture_source or "WEATHER_WIDGET_FIXTURE" not in fixture_source:
         fail("debug fixture selector is not compilation-gated")
-    # keep the matrix intent out of Release compilation
+    scenario_conformance = "extension WeatherWidgetScenario: AppEnum"
+    scenario_conformance_index = model_source.find(scenario_conformance)
+    scenario_guard_index = model_source.rfind("#if DEBUG", 0, scenario_conformance_index)
+    scenario_end_index = model_source.find("#endif", scenario_conformance_index)
+    # keep the matrix intent out of Release and its conformance beside the enum
     if (
         "#if DEBUG" not in intent_source
-        or 'TypeDisplayRepresentation(name: "M0 fixture")' not in intent_source
         or '@Parameter(title: "M0 fixture"' not in intent_source
+        or scenario_conformance_index < 0
+        or scenario_guard_index < 0
+        or scenario_end_index < scenario_conformance_index
+        or 'TypeDisplayRepresentation(name: "M0 fixture")' not in model_source
     ):
         fail("debug AppIntent fixture configuration is not compilation-gated")
+    # preserve wrapper-owned decoding defaults
+    if "init() {}" not in intent_source:
+        fail("widget configuration intent does not use the empty system initializer")
     # keep matrix-only assertions out of Release test compilation
     fixture_assertion = "XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario"
     fixture_assertion_index = test_source.find(fixture_assertion)
@@ -240,6 +251,26 @@ def verify_release_reachable_sources() -> None:
         # reject incomplete fixture-resolution evidence
         if fragment not in widget_source:
             fail(f"debug fixture resolution receipt lacks {fragment}")
+    web_diagnostic_marker = "m0-webview-lifecycle"
+    web_diagnostic_fragments = (
+        "inline-load-request",
+        "did-finish",
+        "did-fail",
+        "provisional-fail",
+        "content-process-terminated",
+    )
+    # keep WebKit lifecycle diagnostics out of Release artifacts
+    if (
+        web_diagnostic_marker not in app_source
+        or web_diagnostic_marker not in web_view_source
+        or web_diagnostic_marker not in release_scan
+    ):
+        fail("debug WebKit lifecycle receipt is not Release-isolated")
+    # preserve each documented WebKit lifecycle boundary
+    for fragment in web_diagnostic_fragments:
+        # reject incomplete blank-document evidence
+        if fragment not in web_view_source:
+            fail(f"debug WebKit lifecycle receipt lacks {fragment}")
     # keep the matrix reload request out of Release compilation
     if (
         "#if DEBUG" not in app_source
@@ -374,6 +405,10 @@ def verify_build_evidence() -> None:
         "release_artifact_isolation=passed",
         "test-attachments",
         "xcresulttool export attachments",
+        "test-app-lifecycle.log",
+        "test-app-lifecycle-status.txt",
+        "log show",
+        'subsystem == "farm.ballydidean.weather"',
         'if [[ "$TEST_STATUS" -ne 0 ]]',
     )
     for fragment in required_fragments:

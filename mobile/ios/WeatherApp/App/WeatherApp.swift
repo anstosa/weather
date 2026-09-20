@@ -18,6 +18,10 @@ struct WeatherApp: App {
     // request only a Debug timeline refresh for host evidence
     init() {
         #if DEBUG
+        // record process-level test mode
+        Logger(subsystem: "farm.ballydidean.weather", category: "webview").notice(
+            "m0-webview-lifecycle app-init deterministic=\(usesDeterministicTestDocument, privacy: .public)"
+        )
         // keep the hook out of production bytes
         if ProcessInfo.processInfo.arguments.contains("-weather-m0-reload-widget") {
             WidgetCenter.shared.reloadTimelines(ofKind: "farm.ballydidean.weather.forecast")
@@ -52,6 +56,11 @@ struct WeatherApp: App {
                 // route only the fixed forecast link
                 if let requestedRoute = WeatherRoute(deepLink: url) {
                     logger.notice("route=forecast source=deep-link")
+                    #if DEBUG
+                    logger.notice(
+                        "m0-webview-lifecycle deep-link-accepted deterministic=\(usesDeterministicTestDocument, privacy: .public)"
+                    )
+                    #endif
                     route = requestedRoute
                 }
             }

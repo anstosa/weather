@@ -11,19 +11,6 @@ enum TemperatureUnit: String, AppEnum, CaseIterable {
     ]
 }
 
-#if DEBUG
-extension WeatherWidgetScenario: AppEnum {
-    // identify the internal matrix control
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "M0 fixture")
-    // expose only compiled fixture cases
-    static var caseDisplayRepresentations: [WeatherWidgetScenario: DisplayRepresentation] = [
-        .maximumDensity: "Maximum density M0",
-        .nearCutoff: "Near cutoff M0",
-        .bedtime: "Bedtime M0"
-    ]
-}
-#endif
-
 struct WeatherWidgetConfigurationIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Weather widget"
     static var description = IntentDescription("Choose the widget temperature unit.")
@@ -36,13 +23,8 @@ struct WeatherWidgetConfigurationIntent: WidgetConfigurationIntent {
     var fixtureScenario: WeatherWidgetScenario
     #endif
 
-    // supply the system default
-    init() {
-        temperatureUnit = .fahrenheit
-        #if DEBUG
-        fixtureScenario = .maximumDensity
-        #endif
-    }
+    // let parameter wrappers supply system defaults
+    init() {}
 
     // support deterministic fixtures
     init(temperatureUnit: TemperatureUnit) {

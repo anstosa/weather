@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import AppIntents
+#endif
 
 enum WeatherCondition: Int, CaseIterable, Comparable {
     case dry = 0
@@ -78,6 +81,19 @@ enum WeatherWidgetScenario: String, CaseIterable {
     case nearCutoff
     case bedtime
 }
+
+#if DEBUG
+extension WeatherWidgetScenario: AppEnum {
+    // identify the internal matrix control
+    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "M0 fixture")
+    // expose only compiled fixture cases
+    static var caseDisplayRepresentations: [WeatherWidgetScenario: DisplayRepresentation] = [
+        .maximumDensity: "Maximum density M0",
+        .nearCutoff: "Near cutoff M0",
+        .bedtime: "Bedtime M0"
+    ]
+}
+#endif
 
 struct WeatherWidgetFixture: Equatable {
     static let slotCapacity = 7
