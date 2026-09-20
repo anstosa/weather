@@ -1,0 +1,43 @@
+name: Mobile M0 Preflight
+
+on:
+  push:
+    branches:
+      - feat/mobile-weather-prep
+    paths:
+      - .github/workflows/mobile-preflight.yml
+      - mobile/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apple-platform-probe:
+    name: Apple platform capability probe (not host acceptance)
+    runs-on: macos-26
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      MOBILE_M0_EVIDENCE_DIR: ${{ runner.temp }}/mobile-m0/apple-platform
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - id: apple-probe
+        name: Capture pinned Apple platform capabilities
+        continue-on-error: true
+        run: mobile/scripts/collect-apple-platform-preflight.sh
+      - name: Upload Apple platform receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: apple-platform-preflight-${{ github.sha }}
+          path: ${{ env.MOBILE_M0_EVIDENCE_DIR }}
+          retention-days: 7
+      - name: Enforce Apple platform probe
+        if: steps.apple-probe.outcome != 'success'
+        run: |
+          # preserve the receipt before failing the job
+          printf 'Apple platform probe failed; inspect the uploaded receipt.\n' >&2
+          exit 1
