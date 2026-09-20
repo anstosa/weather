@@ -199,8 +199,9 @@ final class WidgetHostUITests: XCTestCase {
         resolvedSearchField.typeText("Weather")
         attachState(springboard, name: "weather-widget-search")
 
+        // tap the hittable gallery result row observed in hosted evidence
         let weatherResult = try requireHittable(
-            in: springboard.staticTexts.matching(
+            in: springboard.cells.matching(
                 NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Weather", "Weather")
             ),
             springboard: springboard,

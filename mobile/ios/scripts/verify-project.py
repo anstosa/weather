@@ -206,6 +206,7 @@ def verify_host_probe() -> None:
         'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
         'labeled: ["Edit"]',
         'labeled: ["Add Widget"]',
+        "springboard.cells.matching",
         'typeText("Weather")',
     )
     combined = probe + ui_test
