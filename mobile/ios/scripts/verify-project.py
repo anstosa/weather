@@ -187,10 +187,12 @@ def verify_release_reachable_sources() -> None:
 
     fixture_source = (ROOT / "WeatherWidget/WeatherWidgetFixtures.swift").read_text()
     intent_source = (ROOT / "WeatherWidget/WeatherWidgetIntent.swift").read_text()
+    widget_source = (ROOT / "WeatherWidget/WeatherWidget.swift").read_text()
     app_source = (ROOT / "WeatherApp/App/WeatherApp.swift").read_text()
     model_source = (ROOT / "WeatherWidget/WeatherWidgetModel.swift").read_text()
     view_source = (ROOT / "WeatherWidget/WeatherWidgetView.swift").read_text()
     test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
+    release_scan = (ROOT / "scripts/verify-release-artifacts.sh").read_text()
     # keep scenario overrides out of Release compilation
     if "#if DEBUG" not in fixture_source or "WEATHER_WIDGET_FIXTURE" not in fixture_source:
         fail("debug fixture selector is not compilation-gated")
@@ -212,6 +214,32 @@ def verify_release_reachable_sources() -> None:
         or debug_end_index < fixture_assertion_index
     ):
         fail("debug AppIntent fixture assertions are not compilation-gated")
+    diagnostic_marker = "m0-fixture-resolution"
+    diagnostic_index = widget_source.find(diagnostic_marker)
+    diagnostic_guard_index = widget_source.rfind("#if DEBUG", 0, diagnostic_index)
+    diagnostic_end_index = widget_source.find("#else", diagnostic_index)
+    diagnostic_fragments = (
+        'ProcessInfo.processInfo.environment["WEATHER_WIDGET_FIXTURE"]',
+        'overrideReceipt = "absent"',
+        'overrideReceipt = "invalid"',
+        "overrideReceipt = scenario.rawValue",
+        "input=\\(configuration.fixtureScenario.rawValue",
+        "override=\\(overrideReceipt",
+        "resolved=\\(fixture.scenario.rawValue",
+    )
+    # keep resolution diagnostics out of Release compilation and artifacts
+    if (
+        diagnostic_index < 0
+        or diagnostic_guard_index < 0
+        or diagnostic_end_index < diagnostic_index
+        or diagnostic_marker not in release_scan
+    ):
+        fail("debug fixture resolution receipt is not Release-isolated")
+    # preserve all three diagnostic boundaries
+    for fragment in diagnostic_fragments:
+        # reject incomplete fixture-resolution evidence
+        if fragment not in widget_source:
+            fail(f"debug fixture resolution receipt lacks {fragment}")
     # keep the matrix reload request out of Release compilation
     if (
         "#if DEBUG" not in app_source
@@ -277,6 +305,9 @@ def verify_host_probe() -> None:
         "fixtureValueButtons",
         'stage: "matrix-\\(targetScenario.rawValue)-fixture-value"',
         'stage: "matrix-\\(targetScenario.rawValue)-fixture-selected"',
+        'stage: "matrix-\\(targetScenario.rawValue)-fixture-persisted"',
+        'name: "matrix-\\(targetScenario.rawValue)-fixture-persisted"',
+        "persistedFixture.waitForNonExistence",
         "coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()",
         "selectedFixture.waitForNonExistence",
         'name: "matrix-\\(targetScenario.rawValue)-configuration-dismissed"',

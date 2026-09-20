@@ -565,6 +565,41 @@ final class WidgetHostUITests: XCTestCase {
         }
         attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configuration-dismissed")
 
+        let persistedHostWidget = try widgetHostElement(on: springboard)
+        persistedHostWidget.press(forDuration: 1.5)
+        let persistedEditWidget = try requireHittable(
+            in: springboard.buttons.matching(
+                NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Edit Widget", "Edit Widget")
+            ),
+            springboard: springboard,
+            stage: "matrix-\(targetScenario.rawValue)-persisted-edit-widget"
+        )
+        persistedEditWidget.tap()
+        let persistedFixture = try requireHittable(
+            in: springboard.buttons.matching(
+                NSPredicate(
+                    format: "label ==[c] %@ OR identifier == %@",
+                    targetScenario.optionLabel,
+                    targetScenario.optionLabel
+                )
+            ),
+            springboard: springboard,
+            stage: "matrix-\(targetScenario.rawValue)-fixture-persisted"
+        )
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-persisted")
+
+        // close the read-only persisted-value receipt
+        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
+        // require the reopened surface to close
+        guard persistedFixture.waitForNonExistence(timeout: 10) else {
+            attachState(springboard, name: "failure-matrix-\(targetScenario.rawValue)-persisted-dismiss")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 8,
+                userInfo: [NSLocalizedDescriptionKey: "persisted widget configuration did not dismiss"]
+            )
+        }
+
         let configuredWidget = try findWidget(
             on: springboard,
             scenario: targetScenario,

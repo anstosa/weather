@@ -1,4 +1,5 @@
 import AppIntents
+import Foundation
 import os
 import SwiftUI
 import WidgetKit
@@ -37,7 +38,23 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
     // bind configuration to fixture content
     private func entry(configuration: WeatherWidgetConfigurationIntent) -> WeatherWidgetEntry {
         #if DEBUG
+        let overrideValue = ProcessInfo.processInfo.environment["WEATHER_WIDGET_FIXTURE"]
+        // parse only known fixture cases
+        let overrideScenario = overrideValue.flatMap { WeatherWidgetScenario(rawValue: $0) }
+        let overrideReceipt: String
+        // classify only the dedicated fixture override
+        switch (overrideValue, overrideScenario) {
+        case (nil, _):
+            overrideReceipt = "absent"
+        case (_, nil):
+            overrideReceipt = "invalid"
+        case (_, let scenario?):
+            overrideReceipt = scenario.rawValue
+        }
         let fixture = WeatherWidgetFixtures.configured(configuration.fixtureScenario)
+        logger.notice(
+            "m0-fixture-resolution input=\(configuration.fixtureScenario.rawValue, privacy: .public) override=\(overrideReceipt, privacy: .public) resolved=\(fixture.scenario.rawValue, privacy: .public)"
+        )
         #else
         let fixture = WeatherWidgetFixtures.active
         #endif
