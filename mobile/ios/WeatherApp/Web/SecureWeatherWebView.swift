@@ -40,7 +40,7 @@ struct SecureWeatherWebView: UIViewRepresentable {
 
     // install the navigation delegate
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(allowsDeterministicTestDocument: usesDeterministicTestDocument)
     }
 
     #if DEBUG
@@ -50,13 +50,19 @@ struct SecureWeatherWebView: UIViewRepresentable {
         return """
         <!doctype html>
         <html lang="en"><head><meta name="viewport" content="width=device-width"></head>
-        <body><main aria-label="Weather route \(marker)">\(marker)</main></body></html>
+        <body><main>Weather route \(marker)</main></body></html>
         """
     }
     #endif
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var lastRequestedRoute: WeatherRoute?
+        private let allowsDeterministicTestDocument: Bool
+
+        // retain the debug-only document decision
+        init(allowsDeterministicTestDocument: Bool) {
+            self.allowsDeterministicTestDocument = allowsDeterministicTestDocument
+        }
 
         // enforce the compiled navigation policy
         func webView(
@@ -68,6 +74,14 @@ struct SecureWeatherWebView: UIViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
+
+            #if DEBUG
+            // allow only the inline UI-test document
+            if allowsDeterministicTestDocument && url.absoluteString == "about:blank" {
+                decisionHandler(.allow)
+                return
+            }
+            #endif
 
             switch WeatherNavigationPolicy.decision(for: url) {
             case .hosted:

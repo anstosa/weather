@@ -49,9 +49,16 @@ enum WeatherNavigationPolicy {
             return .rejected
         }
 
+        let trustedHost = WeatherRoute.productionOrigin.host!
+
         // keep Weather inside its trusted origin
-        if host == WeatherRoute.productionOrigin.host {
+        if host == trustedHost {
             return .hosted
+        }
+
+        // reject deceptive parent and child hostnames
+        if host.hasPrefix("\(trustedHost).") || host.hasSuffix(".\(trustedHost)") {
+            return .rejected
         }
 
         // hand safe external web links to the system

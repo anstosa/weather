@@ -10,13 +10,13 @@ final class WeatherDeepLinkUITests: XCTestCase {
 
         let webView = app.webViews["weather.webview"]
         XCTAssertTrue(webView.waitForExistence(timeout: 15))
-        XCTAssertTrue(webView.staticTexts["/"].waitForExistence(timeout: 5))
+        XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
 
         let forecastURL = try XCTUnwrap(URL(string: "ballydidean-weather://forecast"))
         app.open(forecastURL)
 
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertTrue(webView.staticTexts["/forecast"].waitForExistence(timeout: 5))
+        XCTAssertTrue(webView.staticTexts["Weather route /forecast"].waitForExistence(timeout: 5))
     }
 }
 
@@ -64,7 +64,7 @@ final class WidgetHostUITests: XCTestCase {
 
         widget.tap()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
-        XCTAssertTrue(app.webViews["weather.webview"].staticTexts["/forecast"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews["weather.webview"].staticTexts["Weather route /forecast"].waitForExistence(timeout: 10))
 
         let tapAttachment = XCTAttachment(screenshot: app.screenshot())
         tapAttachment.name = "widget-tap-forecast-route"

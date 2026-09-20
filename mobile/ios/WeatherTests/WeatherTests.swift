@@ -24,6 +24,7 @@ final class WeatherNavigationPolicyTests: XCTestCase {
         let rejectedValues = [
             "http://weather.ballydidean.farm/",
             "https://weather.ballydidean.farm.evil.example/",
+            "https://evil.weather.ballydidean.farm/",
             "https://user@weather.ballydidean.farm/",
             "https://weather.ballydidean.farm:444/",
             "file:///tmp/weather.html",

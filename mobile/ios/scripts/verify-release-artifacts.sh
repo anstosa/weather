@@ -11,7 +11,7 @@ RECEIPTS="$2"
 PRODUCTS="$DERIVED_DATA/Build/Products/Release-iphonesimulator"
 APP="$PRODUCTS/Weather.app"
 EXTENSION="$APP/PlugIns/WeatherWidgetExtension.appex"
-BANNED_PATTERN='localhost|127[.]0[.]0[.]1|0[.]0[.]0[.]0|NSAllowsArbitraryLoads|NSExceptionDomains|WKScriptMessageHandler|addScriptMessageHandler|serverTrust|trustAll|api[_-]?key|client[_-]?secret|BEGIN PRIVATE KEY|WEATHER_WIDGET_FIXTURE|weather-ui-test|Weather route /forecast'
+BANNED_PATTERN='localhost|127[.]0[.]0[.]1|0[.]0[.]0[.]0|NSAllowsArbitraryLoads|NSExceptionDomains|WKScriptMessageHandler|addScriptMessageHandler|serverTrust|trustAll|api[_-]?key|client[_-]?secret|BEGIN PRIVATE KEY|WEATHER_WIDGET_FIXTURE|weather-ui-test|Weather route /forecast|about:blank'
 
 mkdir -p "$RECEIPTS"
 
