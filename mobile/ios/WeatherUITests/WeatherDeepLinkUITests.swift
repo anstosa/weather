@@ -153,6 +153,22 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
+    // query only the interactive fixture value buttons
+    private func fixtureValueButtons(in springboard: XCUIApplication) -> XCUIElementQuery {
+        let labels = [
+            MatrixScenario.maximumDensity.optionLabel,
+            MatrixScenario.nearCutoff.optionLabel,
+            MatrixScenario.bedtime.optionLabel
+        ]
+        // match every supported current value
+        let predicates = labels.map { label in
+            NSPredicate(format: "label ==[c] %@ OR identifier == %@", label, label)
+        }
+        return springboard.buttons.matching(
+            NSCompoundPredicate(orPredicateWithSubpredicates: predicates)
+        )
+    }
+
     // fail with visual selector evidence
     private func requireHittable(
         in query: XCUIElementQuery,
@@ -503,26 +519,38 @@ final class WidgetHostUITests: XCTestCase {
         editWidget.tap()
         attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configuration")
 
-        let fixtureRow = try requireHittable(
-            in: springboard.descendants(matching: .any).matching(
-                NSPredicate(
-                    format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@",
-                    "M0 fixture",
-                    "M0 fixture"
-                )
-            ),
+        let fixtureValue = try requireHittable(
+            in: fixtureValueButtons(in: springboard),
             springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-fixture-row"
+            stage: "matrix-\(targetScenario.rawValue)-fixture-value"
         )
-        fixtureRow.tap()
+        fixtureValue.tap()
         attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-options")
 
         let fixtureOption = try requireHittable(
-            in: elements(in: springboard, labeled: [targetScenario.optionLabel]),
+            in: springboard.buttons.matching(
+                NSPredicate(
+                    format: "label ==[c] %@ OR identifier == %@",
+                    targetScenario.optionLabel,
+                    targetScenario.optionLabel
+                )
+            ),
             springboard: springboard,
             stage: "matrix-\(targetScenario.rawValue)-fixture-option"
         )
         fixtureOption.tap()
+        _ = try requireHittable(
+            in: springboard.buttons.matching(
+                NSPredicate(
+                    format: "label ==[c] %@ OR identifier == %@",
+                    targetScenario.optionLabel,
+                    targetScenario.optionLabel
+                )
+            ),
+            springboard: springboard,
+            stage: "matrix-\(targetScenario.rawValue)-fixture-selected"
+        )
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-selected")
         XCUIDevice.shared.press(.home)
         _ = springboard.wait(for: .runningForeground, timeout: 10)
 
