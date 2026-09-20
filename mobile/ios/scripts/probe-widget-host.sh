@@ -28,6 +28,47 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# capture the visible macOS launch state
+capture_desktop() {
+  local label="$1"
+  set +e
+  /usr/sbin/screencapture -x "$RESULTS/macos-$label.png" \
+    > "$RESULTS/macos-$label-screencapture.log" 2>&1
+  local status=$?
+  set -e
+  printf '%s\n' "$status" > "$RESULTS/macos-$label-screencapture-status.txt"
+}
+
+# capture relevant process state
+capture_processes() {
+  local label="$1"
+  ps -axo pid=,ppid=,state=,etime=,command= \
+    | grep -E '(^|/)(Xcode|xcdebug|Simulator|Weather|SpringBoard|Widget)' \
+    > "$RESULTS/processes-$label.txt" || true
+}
+
+# preserve bounded Xcode and Simulator failure diagnostics
+capture_failure_diagnostics() {
+  mkdir -p "$RESULTS/xcode-activity-logs"
+  set +e
+  /usr/bin/log show --last 10m --style compact \
+    --predicate 'process == "Xcode" OR process == "xcdebug"' \
+    > "$RESULTS/macos-xcode-diagnostics.log" 2>&1
+  xcrun simctl spawn "$SIMULATOR_UDID" log show --last 10m --style compact \
+    --predicate 'process == "SpringBoard" OR process == "WeatherWidgetExtension" OR subsystem == "farm.ballydidean.weather.widget"' \
+    > "$RESULTS/simulator-widget-diagnostics.log" 2>&1
+  find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.xcactivitylog' -type f -print \
+    > "$RESULTS/xcode-activity-log-inventory.txt" 2>&1
+  # copy each opaque Xcode activity receipt
+  while IFS= read -r activity_log; do
+    # copy only existing activity logs
+    if [[ -f "$activity_log" ]]; then
+      cp "$activity_log" "$RESULTS/xcode-activity-logs/$(basename "$activity_log")"
+    fi
+  done < "$RESULTS/xcode-activity-log-inventory.txt"
+  set -e
+}
+
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
 
@@ -95,6 +136,8 @@ if [[ "$OPEN_STATUS" -ne 0 ]]; then
   exit 78
 fi
 sleep 20
+capture_desktop before-xcdebug
+capture_processes before-xcdebug
 
 # perform Xcode's documented scheme Run action
 set +e
@@ -115,7 +158,13 @@ printf '%s\n' "$XCDEBUG_PID" > "$RESULTS/xcdebug-run-pid.txt"
 
 # wait for the actual timeline provider
 PROVIDER_READY=0
-for _ in $(seq 1 90); do
+# wait a bounded time for provider execution
+for attempt in $(seq 1 90); do
+  # capture the Xcode window after launch settles
+  if [[ "$attempt" -eq 15 ]]; then
+    capture_desktop after-xcdebug
+    capture_processes after-xcdebug
+  fi
   if grep -q 'fixture=maximumDensity groups=7 intervals=21' "$RESULTS/provider-and-route.log"; then
     PROVIDER_READY=1
     break
@@ -139,10 +188,17 @@ printf '%s\n' "$PROVIDER_READY" > "$RESULTS/provider-ready.txt"
 
 # fail closed when the extension never runs
 if [[ "$PROVIDER_READY" -ne 1 ]]; then
+  capture_desktop provider-timeout
+  capture_processes provider-timeout
+  capture_failure_diagnostics
   printf '%s\n' "xcdebug did not produce maximum-density WidgetKit provider evidence" > "$RESULTS/blocker.txt"
   echo "M0-IOS-HOST-ACCESS: widget provider did not run; see $RESULTS" >&2
   exit 78
 fi
+
+# capture successful provider state
+capture_desktop provider-ready
+capture_processes provider-ready
 
 # capture SpringBoard before the tap test
 xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/springboard-before-tap.png"

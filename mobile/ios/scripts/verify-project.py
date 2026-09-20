@@ -92,10 +92,38 @@ def verify_schemes() -> None:
         "WeatherWidget-Bedtime.xcscheme": "bedtime",
     }
     for filename, scenario in expected_scenarios.items():
-        text = (SCHEMES / filename).read_text()
+        path = SCHEMES / filename
+        text = path.read_text()
+        root = ElementTree.parse(path).getroot()
+        launch = root.find("LaunchAction")
+        remote = launch.find("RemoteRunnable") if launch is not None else None
+        macro = launch.find("MacroExpansion/BuildableReference") if launch is not None else None
+
         # bind each run scheme to one fixed fixture
         if f'value="{scenario}"' not in text or 'value="medium"' not in text:
             fail(f"scheme {filename} lacks fixed medium/{scenario} settings")
+        # require app-extension metadata
+        if root.get("wasCreatedForAppExtension") != "YES" or root.get("version") != "2.0":
+            fail(f"scheme {filename} is not marked as an app-extension scheme")
+        # require the extension launcher
+        if launch is None or launch.get("selectedLauncherIdentifier") != "Xcode.IDEFoundation.Launcher.PosixSpawn":
+            fail(f"scheme {filename} lacks the extension launcher")
+        # require automatic placement
+        if launch.get("launchAutomaticallySubstyle") != "2":
+            fail(f"scheme {filename} lacks automatic widget launch")
+        # require the SpringBoard host
+        if (
+            remote is None
+            or remote.get("runnableDebuggingMode") != "2"
+            or remote.get("BundleIdentifier") != "com.apple.springboard"
+        ):
+            fail(f"scheme {filename} lacks the SpringBoard remote runnable")
+        # require containing-app expansion
+        if macro is None or macro.get("BuildableName") != "Weather.app":
+            fail(f"scheme {filename} lacks containing-app macro expansion")
+        # reject direct extension launches
+        if launch.find("BuildableProductRunnable") is not None:
+            fail(f"scheme {filename} tries to run the extension directly")
 
 
 def verify_project_graph() -> None:

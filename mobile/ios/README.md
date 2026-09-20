@@ -41,7 +41,9 @@ Shared schemes:
 - `WeatherWidget-Bedtime` — all post-cutoff space reads `go to bed`
 - `WeatherWidgetHostTests` — bounded public-XCUI inspection/tap after real scheme placement
 
-Every widget scheme pins `_XCWidgetFamily=medium`. Its third fixed environment value selects a compiled debug fixture. `#if DEBUG` removes that selector from Release; the Release widget retains only the deterministic maximum fixture until M4 replaces fixtures with the public snapshot contract.
+Every widget scheme pins `_XCWidgetFamily=medium`. Its fourth fixed environment value selects a compiled debug fixture. `#if DEBUG` removes that selector from Release; the Release widget retains only the deterministic maximum fixture until M4 replaces fixtures with the public snapshot contract.
+
+The widget launch actions match Apple's checked-in [Building Widgets Using WidgetKit and SwiftUI](https://developer.apple.com/documentation/widgetkit/building-widgets-using-widgetkit-and-swiftui) sample: the scheme is marked as an app-extension scheme, uses the extension PosixSpawn launcher, runs the extension as a mode-2 SpringBoard `RemoteRunnable`, expands build settings from the containing app, and requests automatic widget launch. This is Xcode scheme metadata for Apple's documented Product > Run behavior, not a production SpringBoard API or a runtime security exception.
 
 ## Automated build and test
 
@@ -95,6 +97,8 @@ RESULTS="$RUNNER_TEMP/weather-ios/widget-host-probe" \
 ```
 
 The probe records `xcdebug --help`, opens the checked-in project, runs `WeatherWidget-Maximum` with `-s`, the pinned Simulator `-d`, full Run `-B`, and fixed `-e` values, waits for the actual provider log, captures SpringBoard, and runs `WeatherWidgetHostTests` to inspect/tap the placed widget through public XCUIAutomation. Stable outputs include `xcdebug-run.log`, `provider-and-route.log`, `springboard-before-tap.png`, `WeatherWidgetHost.xcresult`, `widget-host-test.log`, `after-widget-tap.png`, and `capture-manifest.txt`.
+
+If provider execution times out, the probe additionally captures the macOS desktop before/after launch and at timeout, relevant process tables, bounded Xcode/Simulator unified logs, and available opaque Xcode activity logs. These diagnostics expose launch dialogs and destination/workspace failures without disabling TCC, changing trust settings, or using a private widget-placement command.
 
 The probe exits 78 if launch, placement, provider, XCUI inspection, or tap evidence fails. Even after a successful maximum-density capture it exits 78 until the screenshot is reviewed for clipping and the full appearance/scenario matrix has immutable receipts. A preview never satisfies that gate.
 
