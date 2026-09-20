@@ -38,7 +38,12 @@ def require_file(base: Path, relative: str, expected_hash: str) -> None:
 def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
     """validate one host capture receipt"""
     payload = json.loads(path.read_text())
-    allowed_methods = {"xcode-product-run", "xcdebug-widget-scheme-run", "xcui-widget-gallery"}
+    allowed_methods = {
+        "xcode-product-run",
+        "xcdebug-widget-scheme-run",
+        "xcui-home-screen-conversion",
+        "xcui-widget-gallery",
+    }
     # reject preview or custom-host evidence
     if payload.get("method") not in allowed_methods:
         fail(f"{path.name} has unsupported method={payload.get('method')!r}")

@@ -171,7 +171,7 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // add the real WidgetKit surface through the public gallery UI
+    // add the real WidgetKit surface through public SpringBoard controls
     private func addMaximumWidget(on springboard: XCUIApplication) throws -> XCUIElement {
         let widgetPredicate = NSPredicate(
             format: "label CONTAINS[c] %@ AND label CONTAINS[c] %@",
@@ -200,6 +200,44 @@ final class WidgetHostUITests: XCTestCase {
             stage: "weather-icon"
         )
         weatherIcon.press(forDuration: 1.5)
+
+        let mediumConversion = springboard.buttons.matching(
+            NSPredicate(format: "label ==[c] %@", "Medium-sized widget")
+        )
+        // prefer the evidenced direct medium conversion
+        if let directConversion = firstHittable(in: mediumConversion, timeout: 3) {
+            attachState(springboard, name: "home-screen-medium-conversion-before")
+            directConversion.tap()
+
+            // accept only the actual hosted widget postcondition
+            if let convertedWidget = firstHittable(in: widgets, timeout: 45) {
+                attachState(springboard, name: "home-screen-medium-conversion-after")
+                return convertedWidget
+            }
+
+            // retry only when the exact action proves the first tap was ignored
+            if let retryConversion = firstHittable(in: mediumConversion, timeout: 2) {
+                attachState(springboard, name: "home-screen-medium-conversion-retry")
+                retryConversion.tap()
+                let convertedWidget = try requireHittable(
+                    in: widgets,
+                    springboard: springboard,
+                    stage: "converted-medium-widget",
+                    timeout: 45
+                )
+                attachState(springboard, name: "home-screen-medium-conversion-after")
+                return convertedWidget
+            }
+
+            attachState(springboard, name: "failure-home-screen-medium-conversion")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "direct medium conversion did not host the widget"]
+            )
+        }
+
+        // retain the public gallery as a supported fallback
         try enterHomeScreenEditing(on: springboard)
 
         let addControls = elements(in: springboard, labeled: ["Add Widget", "Add"])

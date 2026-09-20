@@ -130,6 +130,14 @@ XCRESULT_EXPORT_STATUS=$?
 set -e
 printf '%s\n' "$XCRESULT_EXPORT_STATUS" > "$RESULTS/xcresulttool-export-attachments-status.txt"
 
+# identify the public placement route from its immutable attachments
+HOST_PATH="xcui-widget-gallery"
+if [[ -f "$ATTACHMENTS/manifest.json" ]] \
+  && grep -Fq 'home-screen-medium-conversion-before' "$ATTACHMENTS/manifest.json"; then
+  HOST_PATH="xcui-home-screen-conversion"
+fi
+printf '%s\n' "$HOST_PATH" > "$RESULTS/host-path.txt"
+
 # flush the bounded provider trace
 if [[ -n "$LOG_PID" ]] && kill -0 "$LOG_PID" 2>/dev/null; then
   kill "$LOG_PID" 2>/dev/null || true
@@ -153,11 +161,11 @@ if [[ "$HOST_TEST_EXECUTED" -ne 1 || "$HOST_TEST_SKIPPED" -ne 0 ]]; then
   exit 78
 fi
 
-# require the public gallery/host/tap test
+# require the public placement/host/tap test
 if [[ "$HOST_TEST_STATUS" -ne 0 ]]; then
   capture_failure_diagnostics
-  printf '%s\n' "public XCUI widget gallery/host/tap test failed" > "$RESULTS/blocker.txt"
-  echo "M0-IOS-HOST-ACCESS: public widget gallery path failed; see $RESULTS" >&2
+  printf '%s\n' "public XCUI widget placement/host/tap test failed" > "$RESULTS/blocker.txt"
+  echo "M0-IOS-HOST-ACCESS: public widget placement path failed; see $RESULTS" >&2
   exit 78
 fi
 # require exported XCTest receipts
@@ -193,7 +201,7 @@ fi
 # hash the successful real-host receipts
 {
   printf 'source_commit=%s\n' "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)"
-  printf 'host_path=%s\n' 'public-xcui-widget-gallery'
+  printf 'host_path=%s\n' "$HOST_PATH"
   printf 'fixture=%s\n' 'maximumDensity'
   printf 'simulator_udid=%s\n' "$SIMULATOR_UDID"
   printf 'provider_ready=%s\n' "$PROVIDER_READY"

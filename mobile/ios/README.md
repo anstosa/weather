@@ -91,7 +91,7 @@ These are unsigned build artifacts, not store-submittable binaries.
 
 Apple documents one supported placement path: select a widget-extension scheme in Xcode and choose **Product > Run**. On iPhone Simulator, Xcode displays the widget on the Home Screen. The checked-in widget schemes preserve that manual path. Apple does not document a `simctl add-widget` command or stable widget-gallery selectors. A SwiftUI preview, a custom host app, coordinate-only gallery automation, or private SpringBoard defaults do not satisfy M0.
 
-The no-cost runner probe avoids GUI Xcode and AppleEvents. It installs the Debug app through `xcodebuild`, then uses public XCUIAutomation and accessible SpringBoard controls to long-press the Weather icon, enter Home Screen editing, open the widget gallery, search for Weather, and add the only supported medium widget:
+The no-cost runner probe avoids GUI Xcode and AppleEvents. It installs the Debug app through `xcodebuild`, then uses public XCUIAutomation and accessible SpringBoard controls to long-press the Weather icon and select its enabled medium-widget conversion. The widget gallery remains a fallback when that direct control is unavailable:
 
 ```bash
 export DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer
@@ -99,9 +99,9 @@ RESULTS="$RUNNER_TEMP/weather-ios/widget-host-probe" \
   bash mobile/ios/scripts/probe-widget-host.sh
 ```
 
-The extension defaults to the maximum-density Debug fixture when no scheme environment is present. `WeatherWidgetHostTests` requires the real hosted widget's accessibility content and medium geometry, captures SpringBoard and selector hierarchies as XCTest attachments, taps the widget, and asserts the fixed forecast route in the containing app. The script separately requires the test to execute without skipping, plus the real timeline-provider and route logs. Stable outputs include `provider-and-route.log`, `WeatherWidgetHost.xcresult`, exported `attachments/`, `widget-host-test.log`, `widget-host-test-executed.txt`, `widget-host-test-skipped.txt`, `after-widget-tap.png`, and `capture-manifest.txt`. Non-gating `simctl-ui-help.txt` and `xcresulttool-export-attachments-help.txt` receipts record the pinned runner's installed visual-control and attachment-export contracts before the host attempt.
+The extension defaults to the maximum-density Debug fixture when no scheme environment is present. `WeatherWidgetHostTests` requires the real hosted widget's accessibility content and medium geometry, captures SpringBoard and selector hierarchies as XCTest attachments, taps the widget, and asserts the fixed forecast route in the containing app. The script separately requires the test to execute without skipping, plus the real timeline-provider and route logs. Stable outputs include `provider-and-route.log`, `WeatherWidgetHost.xcresult`, exported `attachments/`, `widget-host-test.log`, `widget-host-test-executed.txt`, `widget-host-test-skipped.txt`, `host-path.txt`, `after-widget-tap.png`, and `capture-manifest.txt`. `host-path.txt` records `xcui-home-screen-conversion` or the `xcui-widget-gallery` fallback without relabeling the evidence. Non-gating `simctl-ui-help.txt` and `xcresulttool-export-attachments-help.txt` receipts record the pinned runner's installed visual-control and attachment-export contracts before the host attempt.
 
-If public gallery discovery, placement, rendering, or tap fails, the probe preserves the test result bundle, stage-specific screenshots and accessibility hierarchies, a final Simulator screenshot, and bounded SpringBoard/WidgetKit logs. It fails honestly when selectors change; it does not disable TCC, change trust settings, automate privacy prompts, or use a private widget-placement command.
+If public control discovery, placement, rendering, or tap fails, the probe preserves the test result bundle, stage-specific screenshots and accessibility hierarchies, a final Simulator screenshot, and bounded SpringBoard/WidgetKit logs. It fails honestly when selectors change; it does not disable TCC, change trust settings, automate privacy prompts, or use a private widget-placement command.
 
 The probe exits 78 if launch, placement, provider, XCUI inspection, or tap evidence fails. Even after a successful maximum-density capture it exits 78 until the screenshot is reviewed for clipping and the full appearance/scenario matrix has immutable receipts. A preview never satisfies that gate.
 
@@ -135,7 +135,7 @@ Place receipts under `<evidence>/receipts/` and referenced files under the same 
 python3 mobile/ios/scripts/verify-widget-host-evidence.py <evidence-directory>
 ```
 
-The verifier requires `xcode-product-run`, provider execution identity, measured bounds, all intervals exactly once, complete visible text and accessibility assertions, visible licensed attribution whenever weather appears, exact bedtime copy, artifact hashes, and a widget tap opening the fixed forecast route.
+The verifier requires an allowed real-host method, provider execution identity, measured bounds, all intervals exactly once, complete visible text and accessibility assertions, visible licensed attribution whenever weather appears, exact bedtime copy, artifact hashes, and a widget tap opening the fixed forecast route.
 
 ## Security boundaries
 
