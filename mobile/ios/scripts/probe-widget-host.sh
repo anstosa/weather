@@ -7,99 +7,44 @@ PROJECT="$IOS_ROOT/Weather.xcodeproj"
 RESULTS="${RESULTS:-$IOS_ROOT/.artifacts/widget-host-probe}"
 DERIVED_DATA="$RESULTS/DerivedData"
 RESULT_BUNDLE="$RESULTS/WeatherWidgetHost.xcresult"
-XCODE_APP="/Applications/Xcode_26.6.app"
-XCDEBUG="$XCODE_APP/Contents/Developer/usr/bin/xcdebug"
+ATTACHMENTS="$RESULTS/attachments"
 LOG_PID=""
-XCDEBUG_PID=""
 
-export DEVELOPER_DIR="${DEVELOPER_DIR:-$XCODE_APP/Contents/Developer}"
+export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
 mkdir -p "$RESULTS"
 
-# stop only capture processes started here
+# stop only the log capture started here
 cleanup() {
   # stop the Simulator log stream
   if [[ -n "$LOG_PID" ]] && kill -0 "$LOG_PID" 2>/dev/null; then
     kill "$LOG_PID" 2>/dev/null || true
   fi
-  # stop the requested debugging session
-  if [[ -n "$XCDEBUG_PID" ]] && kill -0 "$XCDEBUG_PID" 2>/dev/null; then
-    kill "$XCDEBUG_PID" 2>/dev/null || true
-  fi
 }
 trap cleanup EXIT
 
-# capture the visible macOS launch state
-capture_desktop() {
-  local label="$1"
-  set +e
-  /usr/sbin/screencapture -x "$RESULTS/macos-$label.png" \
-    > "$RESULTS/macos-$label-screencapture.log" 2>&1
-  local status=$?
-  set -e
-  printf '%s\n' "$status" > "$RESULTS/macos-$label-screencapture-status.txt"
-}
-
-# capture relevant process state
-capture_processes() {
-  local label="$1"
-  ps -axo pid=,ppid=,state=,etime=,command= \
-    | grep -E '(^|/)(Xcode|xcdebug|Simulator|Weather|SpringBoard|Widget)' \
-    > "$RESULTS/processes-$label.txt" || true
-}
-
-# preserve bounded Xcode and Simulator failure diagnostics
+# preserve bounded Simulator failure diagnostics
 capture_failure_diagnostics() {
-  mkdir -p "$RESULTS/xcode-activity-logs"
-  set +e
-  /usr/bin/log show --last 10m --style compact \
-    --predicate 'process == "Xcode" OR process == "xcdebug"' \
-    > "$RESULTS/macos-xcode-diagnostics.log" 2>&1
+  xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/springboard-failure.png" \
+    > "$RESULTS/springboard-failure-screenshot.log" 2>&1 || true
   xcrun simctl spawn "$SIMULATOR_UDID" log show --last 10m --style compact \
     --predicate 'process == "SpringBoard" OR process == "WeatherWidgetExtension" OR subsystem == "farm.ballydidean.weather.widget"' \
-    > "$RESULTS/simulator-widget-diagnostics.log" 2>&1
-  find "$HOME/Library/Developer/Xcode/DerivedData" -name '*.xcactivitylog' -type f -print \
-    > "$RESULTS/xcode-activity-log-inventory.txt" 2>&1
-  # copy each opaque Xcode activity receipt
-  while IFS= read -r activity_log; do
-    # copy only existing activity logs
-    if [[ -f "$activity_log" ]]; then
-      cp "$activity_log" "$RESULTS/xcode-activity-logs/$(basename "$activity_log")"
-    fi
-  done < "$RESULTS/xcode-activity-log-inventory.txt"
-  set -e
+    > "$RESULTS/simulator-widget-diagnostics.log" 2>&1 || true
 }
 
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
 
-# capture the installed command contract
-if [[ ! -x "$XCDEBUG" ]]; then
-  printf '%s\n' "xcdebug is not installed at $XCDEBUG" > "$RESULTS/blocker.txt"
-  echo "M0-IOS-HOST-ACCESS: xcdebug is unavailable" >&2
-  exit 78
-fi
-set +e
-"$XCDEBUG" --help > "$RESULTS/xcdebug-help.txt" 2>&1
-HELP_STATUS=$?
-set -e
-printf '%s\n' "$HELP_STATUS" > "$RESULTS/xcdebug-help-status.txt"
-
-# require the documented scheme run controls
-for contract in '--scheme' '--destination' '--build' '--environment'; do
-  if ! grep -q -- "$contract" "$RESULTS/xcdebug-help.txt"; then
-    printf '%s\n' "xcdebug help lacks $contract" > "$RESULTS/blocker.txt"
-    echo "M0-IOS-HOST-ACCESS: installed xcdebug cannot run the widget scheme" >&2
-    exit 78
-  fi
-done
-
 # select one available iOS 26.5 iPhone 17
 SIMULATOR_UDID="$(xcrun simctl list devices available --json | python3 -c '
 import json, sys
 payload = json.load(sys.stdin)
+# inspect installed runtimes
 for runtime, devices in payload["devices"].items():
+    # select the pinned runtime
     if runtime.endswith("iOS-26-5"):
+        # inspect available devices
         for device in devices:
+            # select the pinned phone
             if device["name"] == "iPhone 17" and device.get("isAvailable", False):
                 print(device["udid"])
                 raise SystemExit(0)
@@ -117,6 +62,12 @@ if ! xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; th
 fi
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
+# reject reused result bundles
+if [[ -e "$RESULT_BUNDLE" ]]; then
+  printf '%s\n' "result bundle already exists: $RESULT_BUNDLE" > "$RESULTS/blocker.txt"
+  exit 78
+fi
+
 # record real provider and tap execution
 xcrun simctl spawn "$SIMULATOR_UDID" log stream \
   --style compact \
@@ -125,92 +76,7 @@ xcrun simctl spawn "$SIMULATOR_UDID" log stream \
   > "$RESULTS/provider-and-route.log" 2>&1 &
 LOG_PID=$!
 
-# open the checked-in project for xcdebug
-set +e
-open -a "$XCODE_APP" "$PROJECT" > "$RESULTS/xcode-open.log" 2>&1
-OPEN_STATUS=$?
-set -e
-printf '%s\n' "$OPEN_STATUS" > "$RESULTS/xcode-open-status.txt"
-if [[ "$OPEN_STATUS" -ne 0 ]]; then
-  printf '%s\n' "Xcode could not open the checked-in project" > "$RESULTS/blocker.txt"
-  exit 78
-fi
-sleep 20
-capture_desktop before-xcdebug
-capture_processes before-xcdebug
-
-# perform Xcode's documented scheme Run action
-set +e
-"$XCDEBUG" \
-  -s WeatherWidget-Maximum \
-  -x "$XCODE_APP" \
-  -w Weather \
-  -d "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-  -B \
-  -b \
-  -e '_XCWidgetKind=farm.ballydidean.weather.forecast' \
-  -e '_XCWidgetFamily=medium' \
-  -e 'WEATHER_WIDGET_FIXTURE=maximumDensity' \
-  > "$RESULTS/xcdebug-run.log" 2>&1 &
-XCDEBUG_PID=$!
-set -e
-printf '%s\n' "$XCDEBUG_PID" > "$RESULTS/xcdebug-run-pid.txt"
-
-# wait for the actual timeline provider
-PROVIDER_READY=0
-# wait a bounded time for provider execution
-for attempt in $(seq 1 90); do
-  # capture the Xcode window after launch settles
-  if [[ "$attempt" -eq 15 ]]; then
-    capture_desktop after-xcdebug
-    capture_processes after-xcdebug
-  fi
-  if grep -q 'fixture=maximumDensity groups=7 intervals=21' "$RESULTS/provider-and-route.log"; then
-    PROVIDER_READY=1
-    break
-  fi
-  # record an early command exit without racing provider startup
-  if [[ -n "$XCDEBUG_PID" ]] && ! kill -0 "$XCDEBUG_PID" 2>/dev/null; then
-    set +e
-    wait "$XCDEBUG_PID"
-    XCDEBUG_STATUS=$?
-    set -e
-    printf '%s\n' "$XCDEBUG_STATUS" > "$RESULTS/xcdebug-run-status.txt"
-    XCDEBUG_PID=""
-    # stop only on an actual launch error
-    if [[ "$XCDEBUG_STATUS" -ne 0 ]]; then
-      break
-    fi
-  fi
-  sleep 1
-done
-printf '%s\n' "$PROVIDER_READY" > "$RESULTS/provider-ready.txt"
-
-# fail closed when the extension never runs
-if [[ "$PROVIDER_READY" -ne 1 ]]; then
-  capture_desktop provider-timeout
-  capture_processes provider-timeout
-  capture_failure_diagnostics
-  printf '%s\n' "xcdebug did not produce maximum-density WidgetKit provider evidence" > "$RESULTS/blocker.txt"
-  echo "M0-IOS-HOST-ACCESS: widget provider did not run; see $RESULTS" >&2
-  exit 78
-fi
-
-# capture successful provider state
-capture_desktop provider-ready
-capture_processes provider-ready
-
-# capture SpringBoard before the tap test
-xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/springboard-before-tap.png"
-
-# inspect and tap the placed widget through public XCUIAutomation
-python3 - <<'PY' "$RESULT_BUNDLE"
-from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-if path.exists():
-    raise SystemExit(f"result bundle already exists: {path}")
-PY
+# add, inspect, and tap the real widget through public XCUIAutomation
 set +e
 xcodebuild \
   -project "$PROJECT" \
@@ -225,30 +91,86 @@ HOST_TEST_STATUS=${PIPESTATUS[0]}
 set -e
 printf '%s\n' "$HOST_TEST_STATUS" > "$RESULTS/widget-host-test-status.txt"
 
-# capture the containing app after the widget tap
-xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/after-widget-tap.png"
-sleep 3
+# preserve the final hosted state
+xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/after-widget-tap.png" \
+  > "$RESULTS/after-widget-tap-screenshot.log" 2>&1 || true
 
-# require the actual host/tap test and route trace
+# export all XCTest screenshots and hierarchy receipts
+set +e
+xcrun xcresulttool help export attachments \
+  > "$RESULTS/xcresulttool-export-attachments-help.txt" 2>&1
+XCRESULT_HELP_STATUS=$?
+xcrun xcresulttool export attachments \
+  --path "$RESULT_BUNDLE" \
+  --output-path "$ATTACHMENTS" \
+  > "$RESULTS/xcresulttool-export-attachments.log" 2>&1
+XCRESULT_EXPORT_STATUS=$?
+set -e
+printf '%s\n' "$XCRESULT_HELP_STATUS" > "$RESULTS/xcresulttool-export-attachments-help-status.txt"
+printf '%s\n' "$XCRESULT_EXPORT_STATUS" > "$RESULTS/xcresulttool-export-attachments-status.txt"
+
+# flush the bounded provider trace
+if [[ -n "$LOG_PID" ]] && kill -0 "$LOG_PID" 2>/dev/null; then
+  kill "$LOG_PID" 2>/dev/null || true
+  wait "$LOG_PID" 2>/dev/null || true
+  LOG_PID=""
+fi
+
+# record provider execution independently of the UI verdict
+PROVIDER_READY=0
+# require the exact fixture trace
+if grep -q 'fixture=maximumDensity groups=7 intervals=21' "$RESULTS/provider-and-route.log"; then
+  PROVIDER_READY=1
+fi
+printf '%s\n' "$PROVIDER_READY" > "$RESULTS/provider-ready.txt"
+
+# require the public gallery/host/tap test
 if [[ "$HOST_TEST_STATUS" -ne 0 ]]; then
-  printf '%s\n' "public XCUI host/tap test failed" > "$RESULTS/blocker.txt"
-  echo "M0-IOS-HOST-ACCESS: placed widget could not be inspected/tapped; see $RESULTS" >&2
+  capture_failure_diagnostics
+  printf '%s\n' "public XCUI widget gallery/host/tap test failed" > "$RESULTS/blocker.txt"
+  echo "M0-IOS-HOST-ACCESS: public widget gallery path failed; see $RESULTS" >&2
   exit 78
 fi
+# require exported XCTest receipts
+if [[ "$XCRESULT_EXPORT_STATUS" -ne 0 ]]; then
+  capture_failure_diagnostics
+  printf '%s\n' "XCTest host receipts could not be exported" > "$RESULTS/blocker.txt"
+  echo "M0-IOS-HOST-ACCESS: XCTest receipt export failed; see $RESULTS" >&2
+  exit 78
+fi
+# require real provider execution
+if [[ "$PROVIDER_READY" -ne 1 ]]; then
+  capture_failure_diagnostics
+  printf '%s\n' "hosted widget did not emit maximum-density provider evidence" > "$RESULTS/blocker.txt"
+  echo "M0-IOS-HOST-ACCESS: widget provider evidence is missing; see $RESULTS" >&2
+  exit 78
+fi
+# require the fixed widget route
 if ! grep -q 'route=forecast source=deep-link' "$RESULTS/provider-and-route.log"; then
+  capture_failure_diagnostics
   printf '%s\n' "widget tap did not emit the fixed forecast route" > "$RESULTS/blocker.txt"
   echo "M0-IOS-HOST-ACCESS: widget tap route trace is missing; see $RESULTS" >&2
   exit 78
 fi
+ATTACHMENT_SCREENSHOTS="$(find "$ATTACHMENTS" -type f -iname '*.png' | wc -l | tr -d ' ')"
+# require both hosted and tapped visual receipts
+if [[ "$ATTACHMENT_SCREENSHOTS" -lt 2 ]]; then
+  capture_failure_diagnostics
+  printf '%s\n' "exported XCTest receipts lack hosted/tapped screenshots" > "$RESULTS/blocker.txt"
+  echo "M0-IOS-HOST-ACCESS: hosted/tapped attachments are missing; see $RESULTS" >&2
+  exit 78
+fi
 
+# hash the successful real-host receipts
 {
   printf 'source_commit=%s\n' "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)"
-  printf 'scheme=%s\n' 'WeatherWidget-Maximum'
+  printf 'host_path=%s\n' 'public-xcui-widget-gallery'
   printf 'fixture=%s\n' 'maximumDensity'
   printf 'simulator_udid=%s\n' "$SIMULATOR_UDID"
   printf 'provider_ready=%s\n' "$PROVIDER_READY"
   printf 'host_test_status=%s\n' "$HOST_TEST_STATUS"
-  shasum -a 256 "$RESULTS/springboard-before-tap.png" "$RESULTS/after-widget-tap.png" "$RESULTS/provider-and-route.log"
+  find "$ATTACHMENTS" -type f -print0 | sort -z | xargs -0 shasum -a 256
+  shasum -a 256 "$RESULTS/after-widget-tap.png" "$RESULTS/provider-and-route.log"
 } > "$RESULTS/capture-manifest.txt"
 
 # require reviewed visual receipts before declaring M0

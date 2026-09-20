@@ -29,6 +29,7 @@ EXPECTED_FILES = (
     "WeatherWidget/Info.plist",
     "WeatherTests/WeatherTests.swift",
     "WeatherUITests/WeatherDeepLinkUITests.swift",
+    "scripts/probe-widget-host.sh",
 )
 EXPECTED_SCHEMES = (
     "Weather.xcscheme",
@@ -169,6 +170,39 @@ def verify_release_reachable_sources() -> None:
         fail("debug fixture selector is not compilation-gated")
 
 
+def verify_host_probe() -> None:
+    """keep the automated host path public and fail-closed"""
+    probe = (ROOT / "scripts/probe-widget-host.sh").read_text()
+    ui_test = (ROOT / "WeatherUITests/WeatherDeepLinkUITests.swift").read_text()
+
+    required_fragments = (
+        "WeatherWidgetHostTests",
+        "xcresulttool export attachments",
+        "provider-ready.txt",
+        "public-xcui-widget-gallery",
+        'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
+        'labeled: ["Add Widget"]',
+        'typeText("Weather")',
+    )
+    combined = probe + ui_test
+    for fragment in required_fragments:
+        # require the real public host path
+        if fragment not in combined:
+            fail(f"host probe lacks {fragment}")
+
+    forbidden_fragments = (
+        "xcdebug",
+        "tccutil",
+        "osascript",
+        "CGEvent",
+        "simctl add-widget",
+    )
+    for fragment in forbidden_fragments:
+        # reject consent bypasses and private placement
+        if fragment in probe:
+            fail(f"host probe contains forbidden mechanism {fragment}")
+
+
 def main() -> None:
     """run deterministic structural checks"""
     verify_files()
@@ -176,6 +210,7 @@ def main() -> None:
     verify_schemes()
     verify_project_graph()
     verify_release_reachable_sources()
+    verify_host_probe()
     print("iOS project structure verified")
 
 
