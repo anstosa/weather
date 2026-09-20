@@ -127,6 +127,26 @@ def verify_schemes() -> None:
         if launch.find("BuildableProductRunnable") is not None:
             fail(f"scheme {filename} tries to run the extension directly")
 
+    host_root = ElementTree.parse(SCHEMES / "WeatherWidgetHostTests.xcscheme").getroot()
+    host_test = host_root.find("TestAction")
+    host_launch = host_root.find("LaunchAction")
+    host_environment = (
+        host_launch.find("EnvironmentVariables/EnvironmentVariable")
+        if host_launch is not None
+        else None
+    )
+    # require supported launch-environment inheritance
+    if host_test is None or host_test.get("shouldUseLaunchSchemeArgsEnv") != "YES":
+        fail("host test scheme does not inherit its launch environment")
+    # require the explicit host-test gate
+    if (
+        host_environment is None
+        or host_environment.get("key") != "WEATHER_RUN_WIDGET_HOST_TEST"
+        or host_environment.get("value") != "1"
+        or host_environment.get("isEnabled") != "YES"
+    ):
+        fail("host test scheme lacks the enabled launch gate")
+
 
 def verify_project_graph() -> None:
     """check referenced object identifiers and target settings"""
@@ -180,6 +200,8 @@ def verify_host_probe() -> None:
         "WeatherWidgetHostTests",
         "xcresulttool export attachments",
         "provider-ready.txt",
+        "widget-host-test-executed.txt",
+        "widget-host-test-skipped.txt",
         "public-xcui-widget-gallery",
         'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
         'labeled: ["Add Widget"]',

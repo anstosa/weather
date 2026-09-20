@@ -102,6 +102,20 @@ HOST_TEST_STATUS=${PIPESTATUS[0]}
 set -e
 printf '%s\n' "$HOST_TEST_STATUS" > "$RESULTS/widget-host-test-status.txt"
 
+# distinguish execution from XCTest's successful skip status
+HOST_TEST_EXECUTED=0
+if grep -Eq "Test Case '-\\[WeatherUITests\\.WidgetHostUITests testPlacedWidgetOpensForecast\\]' (passed|failed)" \
+  "$RESULTS/widget-host-test.log"; then
+  HOST_TEST_EXECUTED=1
+fi
+HOST_TEST_SKIPPED=0
+if grep -Fq "Test Case '-[WeatherUITests.WidgetHostUITests testPlacedWidgetOpensForecast]' skipped" \
+  "$RESULTS/widget-host-test.log"; then
+  HOST_TEST_SKIPPED=1
+fi
+printf '%s\n' "$HOST_TEST_EXECUTED" > "$RESULTS/widget-host-test-executed.txt"
+printf '%s\n' "$HOST_TEST_SKIPPED" > "$RESULTS/widget-host-test-skipped.txt"
+
 # preserve the final hosted state
 xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/after-widget-tap.png" \
   > "$RESULTS/after-widget-tap-screenshot.log" 2>&1 || true
@@ -130,6 +144,14 @@ if grep -q 'fixture=maximumDensity groups=7 intervals=21' "$RESULTS/provider-and
   PROVIDER_READY=1
 fi
 printf '%s\n' "$PROVIDER_READY" > "$RESULTS/provider-ready.txt"
+
+# reject XCTest's status-zero skip path
+if [[ "$HOST_TEST_EXECUTED" -ne 1 || "$HOST_TEST_SKIPPED" -ne 0 ]]; then
+  capture_failure_diagnostics
+  printf '%s\n' "widget host test was skipped or never executed" > "$RESULTS/blocker.txt"
+  echo "M0-IOS-HOST-ACCESS: widget host test did not execute; see $RESULTS" >&2
+  exit 78
+fi
 
 # require the public gallery/host/tap test
 if [[ "$HOST_TEST_STATUS" -ne 0 ]]; then
@@ -175,6 +197,8 @@ fi
   printf 'fixture=%s\n' 'maximumDensity'
   printf 'simulator_udid=%s\n' "$SIMULATOR_UDID"
   printf 'provider_ready=%s\n' "$PROVIDER_READY"
+  printf 'host_test_executed=%s\n' "$HOST_TEST_EXECUTED"
+  printf 'host_test_skipped=%s\n' "$HOST_TEST_SKIPPED"
   printf 'host_test_status=%s\n' "$HOST_TEST_STATUS"
   find "$ATTACHMENTS" -type f -print0 | sort -z | xargs -0 shasum -a 256
   shasum -a 256 "$RESULTS/after-widget-tap.png" "$RESULTS/provider-and-route.log"

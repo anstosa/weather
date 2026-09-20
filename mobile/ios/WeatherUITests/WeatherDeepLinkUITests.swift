@@ -48,14 +48,14 @@ final class WeatherDeepLinkUITests: XCTestCase {
 
 @MainActor
 final class WidgetHostUITests: XCTestCase {
-    // capture one bounded SpringBoard state
-    private func attachState(_ springboard: XCUIApplication, name: String) {
-        let screenshot = XCTAttachment(screenshot: springboard.screenshot())
+    // capture one bounded application state
+    private func attachState(_ application: XCUIApplication, name: String) {
+        let screenshot = XCTAttachment(screenshot: application.screenshot())
         screenshot.name = "\(name)-screenshot"
         screenshot.lifetime = .keepAlways
         add(screenshot)
 
-        let hierarchy = XCTAttachment(string: springboard.debugDescription)
+        let hierarchy = XCTAttachment(string: application.debugDescription)
         hierarchy.name = "\(name)-hierarchy"
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
@@ -227,11 +227,21 @@ final class WidgetHostUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["-weather-ui-test"]
         app.launch()
-        XCTAssertTrue(app.webViews["weather.webview"].waitForExistence(timeout: 15))
+        // require the containing app before host interaction
+        guard app.webViews["weather.webview"].waitForExistence(timeout: 15) else {
+            attachState(app, name: "failure-containing-app-launch")
+            XCTFail("containing app did not expose its WebKit surface")
+            return
+        }
 
         XCUIDevice.shared.press(.home)
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        XCTAssertTrue(springboard.wait(for: .runningForeground, timeout: 10))
+        // require SpringBoard before gallery interaction
+        guard springboard.wait(for: .runningForeground, timeout: 10) else {
+            attachState(springboard, name: "failure-springboard-launch")
+            XCTFail("SpringBoard did not become foreground")
+            return
+        }
 
         let widget = try addMaximumWidget(on: springboard)
         attachState(springboard, name: "actual-widgetkit-home-screen")
