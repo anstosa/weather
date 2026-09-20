@@ -29,6 +29,7 @@ EXPECTED_FILES = (
     "WeatherWidget/Info.plist",
     "WeatherTests/WeatherTests.swift",
     "WeatherUITests/WeatherDeepLinkUITests.swift",
+    "scripts/build-m0.sh",
     "scripts/probe-widget-host.sh",
 )
 EXPECTED_SCHEMES = (
@@ -203,6 +204,21 @@ def verify_host_probe() -> None:
             fail(f"host probe contains forbidden mechanism {fragment}")
 
 
+def verify_build_evidence() -> None:
+    """preserve compile and failed-test receipts"""
+    build = (ROOT / "scripts/build-m0.sh").read_text()
+    required_fragments = (
+        "debug-build-passed.txt",
+        "test-attachments",
+        "xcresulttool export attachments",
+        'if [[ "$TEST_STATUS" -ne 0 ]]',
+    )
+    for fragment in required_fragments:
+        # require durable stage evidence
+        if fragment not in build:
+            fail(f"build script lacks {fragment}")
+
+
 def main() -> None:
     """run deterministic structural checks"""
     verify_files()
@@ -211,6 +227,7 @@ def main() -> None:
     verify_project_graph()
     verify_release_reachable_sources()
     verify_host_probe()
+    verify_build_evidence()
     print("iOS project structure verified")
 
 

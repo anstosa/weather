@@ -12,6 +12,17 @@ struct WeatherApp: App {
     private let usesDeterministicTestDocument = false
     #endif
 
+    // isolate only deterministic route documents
+    private var webViewIdentity: String {
+        #if DEBUG
+        // recreate WebKit after test-route transitions
+        if usesDeterministicTestDocument {
+            return route == .forecast ? "test-forecast" : "test-home"
+        }
+        #endif
+        return "hosted"
+    }
+
     // present the hosted Weather experience
     var body: some Scene {
         WindowGroup {
@@ -19,6 +30,7 @@ struct WeatherApp: App {
                 route: route,
                 usesDeterministicTestDocument: usesDeterministicTestDocument
             )
+            .id(webViewIdentity)
             .ignoresSafeArea(.container, edges: .bottom)
             .onOpenURL { url in
                 // route only the fixed forecast link

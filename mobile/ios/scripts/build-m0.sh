@@ -7,12 +7,14 @@ PROJECT="$IOS_ROOT/Weather.xcodeproj"
 RESULTS="${RESULTS:-$IOS_ROOT/.artifacts}"
 DERIVED_DATA="$RESULTS/DerivedData"
 RESULT_BUNDLE="$RESULTS/Weather.xcresult"
+TEST_ATTACHMENTS="$RESULTS/test-attachments"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
 
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
-rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE"
+rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE" "$TEST_ATTACHMENTS"
+rm -f "$RESULTS/debug-build-passed.txt"
 mkdir -p "$RESULTS"
 
 # record actual project targets and shared schemes
@@ -53,8 +55,12 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \
   build | tee "$RESULTS/debug-build.log"
+printf 'source_commit=%s\ndebug_build=passed\n' \
+  "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)" \
+  > "$RESULTS/debug-build-passed.txt"
 
 # run credential-free Simulator tests with normal local signing
+set +e
 xcodebuild \
   -project "$PROJECT" \
   -scheme Weather \
@@ -63,6 +69,23 @@ xcodebuild \
   -derivedDataPath "$DERIVED_DATA" \
   -resultBundlePath "$RESULT_BUNDLE" \
   test | tee "$RESULTS/test.log"
+TEST_STATUS=${PIPESTATUS[0]}
+
+# export success and failure attachments without replacing the test verdict
+xcrun xcresulttool export attachments \
+  --path "$RESULT_BUNDLE" \
+  --output-path "$TEST_ATTACHMENTS" \
+  > "$RESULTS/test-attachments-export.log" 2>&1
+TEST_ATTACHMENTS_STATUS=$?
+set -e
+printf '%s\n' "$TEST_STATUS" > "$RESULTS/test-status.txt"
+printf '%s\n' "$TEST_ATTACHMENTS_STATUS" > "$RESULTS/test-attachments-export-status.txt"
+
+# stop after preserving a failed test result
+if [[ "$TEST_STATUS" -ne 0 ]]; then
+  echo "iOS Simulator tests failed; see $RESULTS/test.log and $RESULT_BUNDLE" >&2
+  exit "$TEST_STATUS"
+fi
 
 # compile and analyze the unsigned Release configuration
 xcodebuild \

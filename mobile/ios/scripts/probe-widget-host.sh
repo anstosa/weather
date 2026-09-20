@@ -62,6 +62,17 @@ if ! xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; th
 fi
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
+# capture installed visual-control contracts without gating the host attempt
+set +e
+xcrun simctl help ui > "$RESULTS/simctl-ui-help.txt" 2>&1
+SIMCTL_UI_HELP_STATUS=$?
+xcrun xcresulttool export attachments --help \
+  > "$RESULTS/xcresulttool-export-attachments-help.txt" 2>&1
+XCRESULT_HELP_STATUS=$?
+set -e
+printf '%s\n' "$SIMCTL_UI_HELP_STATUS" > "$RESULTS/simctl-ui-help-status.txt"
+printf '%s\n' "$XCRESULT_HELP_STATUS" > "$RESULTS/xcresulttool-export-attachments-help-status.txt"
+
 # reject reused result bundles
 if [[ -e "$RESULT_BUNDLE" ]]; then
   printf '%s\n' "result bundle already exists: $RESULT_BUNDLE" > "$RESULTS/blocker.txt"
@@ -97,16 +108,12 @@ xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/after-widget-tap.png" \
 
 # export all XCTest screenshots and hierarchy receipts
 set +e
-xcrun xcresulttool help export attachments \
-  > "$RESULTS/xcresulttool-export-attachments-help.txt" 2>&1
-XCRESULT_HELP_STATUS=$?
 xcrun xcresulttool export attachments \
   --path "$RESULT_BUNDLE" \
   --output-path "$ATTACHMENTS" \
   > "$RESULTS/xcresulttool-export-attachments.log" 2>&1
 XCRESULT_EXPORT_STATUS=$?
 set -e
-printf '%s\n' "$XCRESULT_HELP_STATUS" > "$RESULTS/xcresulttool-export-attachments-help-status.txt"
 printf '%s\n' "$XCRESULT_EXPORT_STATUS" > "$RESULTS/xcresulttool-export-attachments-status.txt"
 
 # flush the bounded provider trace

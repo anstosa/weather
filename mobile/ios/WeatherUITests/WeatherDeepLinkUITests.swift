@@ -2,6 +2,24 @@ import XCTest
 
 @MainActor
 final class WeatherDeepLinkUITests: XCTestCase {
+    // preserve an actual loaded WebKit failure state
+    private func attachFailureState(_ app: XCUIApplication, webView: XCUIElement) {
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "deep-link-loaded-document-failure"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "deep-link-app-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+
+        let webViewState = XCTAttachment(string: webView.debugDescription)
+        webViewState.name = "deep-link-webview-hierarchy"
+        webViewState.lifetime = .keepAlways
+        add(webViewState)
+    }
+
     // open the same fixed route used by the widget
     func testForecastDeepLinkOpensContainingApp() throws {
         let app = XCUIApplication()
@@ -13,10 +31,18 @@ final class WeatherDeepLinkUITests: XCTestCase {
         XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
 
         let forecastURL = try XCTUnwrap(URL(string: "ballydidean-weather://forecast"))
+        XCUIDevice.shared.press(.home)
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        XCTAssertTrue(springboard.wait(for: .runningForeground, timeout: 10))
         app.open(forecastURL)
 
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertTrue(webView.staticTexts["Weather route /forecast"].waitForExistence(timeout: 5))
+        let loadedForecast = webView.staticTexts["Weather route /forecast"]
+        // require the rendered fixture document
+        if !loadedForecast.waitForExistence(timeout: 5) {
+            attachFailureState(app, webView: webView)
+            XCTFail("forecast deep link did not render the deterministic WebKit document")
+        }
     }
 }
 
