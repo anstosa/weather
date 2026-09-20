@@ -12,7 +12,14 @@
     "width": 0,
     "height": 0
   },
-  "semanticContentBoundsPoints": {
+  "semanticContentRawBoundsPoints": {
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0
+  },
+  "semanticContentCoordinateSpace": "screen",
+  "semanticContentNormalizedBoundsPoints": {
     "x": 0,
     "y": 0,
     "width": 0,

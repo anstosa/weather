@@ -110,16 +110,58 @@ def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
         fail(f"{path.name} reports visual text outside 12 points")
 
     outer_bounds = payload.get("systemMediumOuterBoundsPoints", {})
-    content_bounds = payload.get("semanticContentBoundsPoints", {})
-    # require measured outer and inner geometry
-    for name, bounds in (("outer", outer_bounds), ("content", content_bounds)):
+    raw_content_bounds = payload.get("semanticContentRawBoundsPoints", {})
+    content_bounds = payload.get("semanticContentNormalizedBoundsPoints", {})
+    coordinate_space = payload.get("semanticContentCoordinateSpace")
+    # require a documented semantic coordinate space
+    if coordinate_space not in {"screen", "extension-local"}:
+        fail(f"{path.name} lacks a supported semantic coordinate space")
+    # require measured outer, raw, and normalized geometry
+    for name, bounds in (
+        ("outer", outer_bounds),
+        ("raw content", raw_content_bounds),
+        ("normalized content", content_bounds),
+    ):
         # reject missing geometry
         if float(bounds.get("width", 0)) <= 0 or float(bounds.get("height", 0)) <= 0:
             fail(f"{path.name} lacks measured {name} bounds")
+    tolerance = 1.0
+    raw_x = float(raw_content_bounds.get("x", 0))
+    raw_y = float(raw_content_bounds.get("y", 0))
+    normalized_x = float(content_bounds.get("x", 0))
+    normalized_y = float(content_bounds.get("y", 0))
+    raw_width = float(raw_content_bounds.get("width", 0))
+    raw_height = float(raw_content_bounds.get("height", 0))
+    normalized_width = float(content_bounds.get("width", 0))
+    normalized_height = float(content_bounds.get("height", 0))
+    outer_x = float(outer_bounds.get("x", 0))
+    outer_y = float(outer_bounds.get("y", 0))
+    # bind extension-local receipts to the evidenced zero origin
+    if coordinate_space == "extension-local" and (
+        abs(raw_x) > tolerance or abs(raw_y) > tolerance
+    ):
+        fail(f"{path.name} has nonlocal extension coordinates")
+    # bind local normalization to the actual host origin
+    if coordinate_space == "extension-local" and (
+        abs(normalized_x - outer_x) > tolerance
+        or abs(normalized_y - outer_y) > tolerance
+    ):
+        fail(f"{path.name} did not translate local semantics to the host origin")
+    # bind screen receipts to their unmodified coordinates
+    if coordinate_space == "screen" and (
+        abs(raw_x - normalized_x) > tolerance
+        or abs(raw_y - normalized_y) > tolerance
+    ):
+        fail(f"{path.name} changed screen coordinates during normalization")
+    # preserve semantic size during coordinate normalization
+    if (
+        abs(raw_width - normalized_width) > tolerance
+        or abs(raw_height - normalized_height) > tolerance
+    ):
+        fail(f"{path.name} changed semantic size during normalization")
     # reject semantic content that escaped the fixed host
     if payload.get("semanticContentWithinOuterBounds") is not True:
         fail(f"{path.name} reports semantic content outside the host")
-    tolerance = 1.0
     outer_min_x = float(outer_bounds.get("x", 0)) - tolerance
     outer_min_y = float(outer_bounds.get("y", 0)) - tolerance
     outer_max_x = (

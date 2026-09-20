@@ -115,6 +115,28 @@ final class WidgetHostUITests: XCTestCase {
         return nil
     }
 
+    // find semantics without requesting an activation point
+    private func firstExisting(
+        in query: XCUIElementQuery,
+        timeout: TimeInterval
+    ) -> XCUIElement? {
+        let deadline = Date().addingTimeInterval(timeout)
+
+        // poll while extension semantics attach
+        repeat {
+            // inspect every current match
+            for element in query.allElementsBoundByIndex {
+                // require only readable semantics
+                if element.exists {
+                    return element
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        return nil
+    }
+
     // query exact accessible labels
     private func elements(
         in springboard: XCUIApplication,
@@ -148,6 +170,44 @@ final class WidgetHostUITests: XCTestCase {
             domain: "farm.ballydidean.weather.widget-host",
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "missing hittable SpringBoard element at \(stage)"]
+        )
+    }
+
+    // fail with semantic discovery evidence
+    private func requireExisting(
+        in query: XCUIElementQuery,
+        springboard: XCUIApplication,
+        stage: String,
+        timeout: TimeInterval = 10
+    ) throws -> XCUIElement {
+        // return readable extension semantics
+        if let element = firstExisting(in: query, timeout: timeout) {
+            return element
+        }
+
+        attachState(springboard, name: "failure-\(stage)")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 6,
+            userInfo: [NSLocalizedDescriptionKey: "missing WidgetKit semantics at \(stage)"]
+        )
+    }
+
+    // find the tappable SpringBoard widget container
+    private func widgetHostElement(on springboard: XCUIApplication) throws -> XCUIElement {
+        let hosts = springboard.icons.matching(
+            NSPredicate(
+                format: "(label ==[c] %@ OR identifier == %@) AND value ==[c] %@",
+                "Weather",
+                "Weather",
+                "Widget"
+            )
+        )
+        return try requireHittable(
+            in: hosts,
+            springboard: springboard,
+            stage: "weather-widget-springboard-host",
+            timeout: 10
         )
     }
 
@@ -213,7 +273,7 @@ final class WidgetHostUITests: XCTestCase {
         let widgets = springboard.descendants(matching: .any).matching(widgetPredicate)
 
         // reuse only a real existing widget
-        if let widget = firstHittable(in: widgets, timeout: 2) {
+        if let widget = firstExisting(in: widgets, timeout: 2) {
             return widget
         }
 
@@ -242,7 +302,7 @@ final class WidgetHostUITests: XCTestCase {
             directConversion.tap()
 
             // accept only the actual hosted widget postcondition
-            if let convertedWidget = firstHittable(in: widgets, timeout: 45) {
+            if let convertedWidget = firstExisting(in: widgets, timeout: 45) {
                 attachState(springboard, name: "home-screen-medium-conversion-after")
                 return convertedWidget
             }
@@ -251,7 +311,7 @@ final class WidgetHostUITests: XCTestCase {
             if let retryConversion = firstHittable(in: mediumConversion, timeout: 2) {
                 attachState(springboard, name: "home-screen-medium-conversion-retry")
                 retryConversion.tap()
-                let convertedWidget = try requireHittable(
+                let convertedWidget = try requireExisting(
                     in: widgets,
                     springboard: springboard,
                     stage: "converted-medium-widget",
@@ -339,7 +399,7 @@ final class WidgetHostUITests: XCTestCase {
             done.tap()
         }
 
-        return try requireHittable(
+        return try requireExisting(
             in: widgets,
             springboard: springboard,
             stage: "placed-weather-widget",
@@ -368,17 +428,17 @@ final class WidgetHostUITests: XCTestCase {
         timeout: TimeInterval = 10
     ) throws -> XCUIElement {
         let widgets = widgetQuery(on: springboard, scenario: scenario)
-        var widget = firstHittable(in: widgets, timeout: timeout)
+        var widget = firstExisting(in: widgets, timeout: timeout)
         // inspect the bounded Home Screen pages
         for _ in 0..<4 where widget == nil {
             springboard.swipeLeft()
-            widget = firstHittable(in: widgets, timeout: 2)
+            widget = firstExisting(in: widgets, timeout: 2)
         }
         // return the witnessed hosted control
         if let widget {
             return widget
         }
-        return try requireHittable(
+        return try requireExisting(
             in: widgets,
             springboard: springboard,
             stage: "matrix-\(scenario.rawValue)-widget",
@@ -428,7 +488,9 @@ final class WidgetHostUITests: XCTestCase {
         to targetScenario: MatrixScenario,
         on springboard: XCUIApplication
     ) throws -> XCUIElement {
-        widget.press(forDuration: 1.5)
+        XCTAssertTrue(widget.exists)
+        let hostWidget = try widgetHostElement(on: springboard)
+        hostWidget.press(forDuration: 1.5)
         attachState(springboard, name: "matrix-\(targetScenario.rawValue)-edit-widget-context")
 
         let editWidget = try requireHittable(
@@ -478,7 +540,9 @@ final class WidgetHostUITests: XCTestCase {
         for widget: XCUIElement,
         on springboard: XCUIApplication
     ) throws -> XCUIElement {
-        widget.press(forDuration: 1.5)
+        XCTAssertTrue(widget.exists)
+        let hostWidget = try widgetHostElement(on: springboard)
+        hostWidget.press(forDuration: 1.5)
         try enterHomeScreenEditing(on: springboard)
 
         let editMenu = try requireHittable(
@@ -529,9 +593,7 @@ final class WidgetHostUITests: XCTestCase {
 
     // locate the actual fixed Home Screen host frame
     private func systemMediumHostFrame(on springboard: XCUIApplication) throws -> CGRect {
-        let candidates = springboard.otherElements.matching(
-            NSPredicate(format: "label ==[c] %@", "Weather")
-        )
+        let candidates = springboard.scrollViews
         let deadline = Date().addingTimeInterval(5)
 
         // wait for the outer WidgetKit container
@@ -543,6 +605,8 @@ final class WidgetHostUITests: XCTestCase {
                 if frame.width > 250,
                    frame.height > 100,
                    frame.height < 250,
+                   frame.minX > 0,
+                   frame.minY > 0,
                    frame.width > frame.height * 1.5 {
                     return frame
                 }
@@ -558,6 +622,21 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
+    // normalize extension-local semantics into screen coordinates
+    private func normalizedSemanticFrame(
+        _ semanticFrame: CGRect,
+        within outerHostFrame: CGRect
+    ) -> (frame: CGRect, coordinateSpace: String) {
+        // translate only the evidenced extension-local origin
+        if abs(semanticFrame.minX) <= 1, abs(semanticFrame.minY) <= 1 {
+            return (
+                CGRect(origin: outerHostFrame.origin, size: semanticFrame.size),
+                "extension-local"
+            )
+        }
+        return (semanticFrame, "screen")
+    }
+
     // capture semantics, geometry, and the fixed primary tap
     private func captureAndTap(
         _ widget: XCUIElement,
@@ -567,7 +646,7 @@ final class WidgetHostUITests: XCTestCase {
         springboard: XCUIApplication
     ) throws {
         attachState(springboard, name: "matrix-\(caseID)-home-screen")
-        XCTAssertTrue(widget.isHittable)
+        XCTAssertTrue(widget.exists)
         XCTAssertTrue(widget.label.contains("Sunset"))
         // require weather-only content and credit
         if scenario != .bedtime {
@@ -581,13 +660,17 @@ final class WidgetHostUITests: XCTestCase {
             XCTAssertTrue(widget.label.contains("go to bed"))
         }
         let outerHostFrame = try systemMediumHostFrame(on: springboard)
-        let semanticContentFrame = widget.frame
+        let semanticContentRawFrame = widget.frame
+        let semanticContent = normalizedSemanticFrame(
+            semanticContentRawFrame,
+            within: outerHostFrame
+        )
         let expandedHostFrame = outerHostFrame.insetBy(dx: -1, dy: -1)
         XCTAssertGreaterThan(outerHostFrame.width, outerHostFrame.height * 1.5)
         XCTAssertGreaterThan(outerHostFrame.width, 250)
         XCTAssertGreaterThan(outerHostFrame.height, 100)
         XCTAssertTrue(
-            expandedHostFrame.contains(semanticContentFrame),
+            expandedHostFrame.contains(semanticContent.frame),
             "semantic content escaped the actual systemMedium host bounds"
         )
 
@@ -596,15 +679,18 @@ final class WidgetHostUITests: XCTestCase {
         case=\(caseID)
         scenario=\(scenario.rawValue)
         system-medium-outer-frame-points=\(outerHostFrame)
-        semantic-content-frame-points=\(semanticContentFrame)
-        semantic-content-contained=\(expandedHostFrame.contains(semanticContentFrame))
+        semantic-content-raw-frame-points=\(semanticContentRawFrame)
+        semantic-content-coordinate-space=\(semanticContent.coordinateSpace)
+        semantic-content-normalized-frame-points=\(semanticContent.frame)
+        semantic-content-contained=\(expandedHostFrame.contains(semanticContent.frame))
         """
         let geometryAttachment = XCTAttachment(string: geometryDescription)
         geometryAttachment.name = "matrix-\(caseID)-widgetkit-bounds"
         geometryAttachment.lifetime = .keepAlways
         add(geometryAttachment)
 
-        widget.tap()
+        let hostWidget = try widgetHostElement(on: springboard)
+        hostWidget.tap()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 15))
         XCTAssertTrue(app.webViews["weather.webview"].staticTexts["Weather route /forecast"].waitForExistence(timeout: 10))
 

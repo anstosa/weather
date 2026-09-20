@@ -252,6 +252,11 @@ def verify_host_probe() -> None:
         "xcui-widget-gallery",
         "accessibility-extra-extra-extra-large",
         'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
+        'value ==[c] %@',
+        '"Widget"',
+        "springboard.scrollViews",
+        "firstExisting",
+        "hostWidget.tap()",
         "com.apple.springboardhome.application-shortcut-item.rearrange-icons",
         "Medium-sized widget",
         'labeled: ["Edit"]',
@@ -266,7 +271,9 @@ def verify_host_probe() -> None:
         'labeled: ["Tinted"]',
         "selectedTint.isSelected",
         "system-medium-outer-frame-points",
-        "semantic-content-frame-points",
+        "semantic-content-raw-frame-points",
+        "semantic-content-coordinate-space",
+        "semantic-content-normalized-frame-points",
         "semantic content escaped the actual systemMedium host bounds",
         "test01MaximumLightLarge",
         "test02MaximumDarkLarge",
@@ -280,6 +287,12 @@ def verify_host_probe() -> None:
         # require the real public host path
         if fragment not in combined:
             fail(f"host probe lacks {fragment}")
+
+    semantic_interactions = ("widget.isHittable", "widget.tap()", "widget.press(")
+    for fragment in semantic_interactions:
+        # keep extension semantics inspection-only
+        if fragment in ui_test:
+            fail(f"host test directly interacts with extension semantics via {fragment}")
 
     forbidden_fragments = (
         "xcdebug",
