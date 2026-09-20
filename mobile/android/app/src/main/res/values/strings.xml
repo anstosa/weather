@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Weather</string>
+    <string name="canonical_weather_origin" translatable="false">https://weather.ballydidean.farm</string>
+    <string name="widget_description">Forward weather through 8 PM</string>
+    <string name="widget_name">Ballydidean Weather</string>
+    <string name="widget_bedtime">go to bed</string>
+    <string name="widget_credit_provider">Open-Meteo</string>
+    <string name="widget_credit_separator" translatable="false"> · </string>
+    <string name="widget_credit_license">CC BY 4.0</string>
+</resources>

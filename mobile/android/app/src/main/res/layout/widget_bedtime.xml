@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/bedtime_root"
+    android:layout_width="0dp"
+    android:layout_height="match_parent"
+    android:layout_marginHorizontal="1dp"
+    android:layout_weight="1"
+    android:background="@drawable/widget_tile_background"
+    android:gravity="center"
+    android:includeFontPadding="false"
+    android:maxLines="1"
+    android:text="@string/widget_bedtime"
+    android:textColor="@color/widget_foreground"
+    android:textSize="12sp"
+    android:textStyle="bold" />

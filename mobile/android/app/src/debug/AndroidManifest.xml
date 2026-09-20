@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.BIND_APPWIDGET" />
+
+    <application>
+        <activity
+            android:name=".debug.FixtureHostActivity"
+            android:exported="true" />
+        <activity
+            android:name=".debug.PinWidgetActivity"
+            android:exported="true" />
+        <receiver
+            android:name=".debug.FixtureControlReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="farm.ballydidean.weather.debug.SET_FIXTURE" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
