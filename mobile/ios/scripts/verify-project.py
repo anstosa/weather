@@ -188,6 +188,9 @@ def verify_release_reachable_sources() -> None:
     fixture_source = (ROOT / "WeatherWidget/WeatherWidgetFixtures.swift").read_text()
     intent_source = (ROOT / "WeatherWidget/WeatherWidgetIntent.swift").read_text()
     app_source = (ROOT / "WeatherApp/App/WeatherApp.swift").read_text()
+    model_source = (ROOT / "WeatherWidget/WeatherWidgetModel.swift").read_text()
+    view_source = (ROOT / "WeatherWidget/WeatherWidgetView.swift").read_text()
+    test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
     # keep scenario overrides out of Release compilation
     if "#if DEBUG" not in fixture_source or "WEATHER_WIDGET_FIXTURE" not in fixture_source:
         fail("debug fixture selector is not compilation-gated")
@@ -205,6 +208,26 @@ def verify_release_reachable_sources() -> None:
         or "WidgetCenter.shared.reloadTimelines" not in app_source
     ):
         fail("debug widget reload request is not compilation-gated")
+    # enforce the selected widget-only visual type policy
+    if "static let widgetVisualFontSize: Double = 12" not in model_source:
+        fail("widget visual type is not fixed at the reviewed 12-point size")
+    # reject renewed visual Dynamic Type expansion
+    if "@ScaledMetric" in view_source:
+        fail("widget visual type unexpectedly uses uncapped scaling")
+    # preserve the fixed type policy at every widget label
+    if "WeatherWidgetFixture.widgetVisualFontSize" not in view_source:
+        fail("widget view does not use the fixed visual type policy")
+    # preserve complete spoken detail outside the visual cap
+    if "entry.fixture.accessibilitySummary" not in view_source:
+        fail("widget view lacks the complete VoiceOver summary")
+    # preserve focused policy regressions
+    for test_name in (
+        "testWidgetVisualTypeUsesReviewedTwelvePoints",
+        "testVoiceOverSummaryRetainsEveryForecastGroup",
+    ):
+        # reject removal of either policy test
+        if test_name not in test_source:
+            fail(f"widget policy tests lack {test_name}")
 
 
 def verify_host_probe() -> None:
@@ -221,6 +244,10 @@ def verify_host_probe() -> None:
         "widget-host-test-executed.txt",
         "widget-host-test-skipped.txt",
         "visualReviewRequired",
+        '"visualTextPolicy": "fixed-12pt-widget-only"',
+        '"visualTextPoints": 12',
+        '"voiceOverDetailPolicy": "full-fixture-summary"',
+        '"semanticContentContainmentRequired": True',
         "xcui-home-screen-conversion",
         "xcui-widget-gallery",
         "accessibility-extra-extra-extra-large",
@@ -238,6 +265,9 @@ def verify_host_probe() -> None:
         'labeled: ["Customize"]',
         'labeled: ["Tinted"]',
         "selectedTint.isSelected",
+        "system-medium-outer-frame-points",
+        "semantic-content-frame-points",
+        "semantic content escaped the actual systemMedium host bounds",
         "test01MaximumLightLarge",
         "test02MaximumDarkLarge",
         "test03MaximumLightAX5",

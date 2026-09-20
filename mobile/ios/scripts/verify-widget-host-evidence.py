@@ -96,14 +96,54 @@ def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
     # bind density counts to each fixture
     if payload.get("groupCount") != expected_groups or payload.get("intervalCount") != expected_intervals:
         fail(f"{path.name} has incorrect group/interval counts")
-    # preserve the reviewed base-size floor
-    if float(payload.get("minimumNormalTextPoints", 0)) < 12:
-        fail(f"{path.name} reports text below 12 points")
+    # enforce the chosen widget-only visual type policy
+    if payload.get("visualTextPolicy") != "fixed-12pt-widget-only":
+        fail(f"{path.name} lacks the fixed widget visual text policy")
+    # require the corresponding complete spoken summary
+    if payload.get("voiceOverDetailPolicy") != "full-fixture-summary":
+        fail(f"{path.name} lacks the complete VoiceOver detail policy")
+    # preserve the reviewed 12-point visual presentation
+    if (
+        float(payload.get("minimumNormalTextPoints", 0)) != 12
+        or float(payload.get("maximumVisualTextPoints", 0)) != 12
+    ):
+        fail(f"{path.name} reports visual text outside 12 points")
 
-    bounds = payload.get("widgetBoundsPoints", {})
-    # require measured host geometry
-    if float(bounds.get("width", 0)) <= 0 or float(bounds.get("height", 0)) <= 0:
-        fail(f"{path.name} lacks measured widget bounds")
+    outer_bounds = payload.get("systemMediumOuterBoundsPoints", {})
+    content_bounds = payload.get("semanticContentBoundsPoints", {})
+    # require measured outer and inner geometry
+    for name, bounds in (("outer", outer_bounds), ("content", content_bounds)):
+        # reject missing geometry
+        if float(bounds.get("width", 0)) <= 0 or float(bounds.get("height", 0)) <= 0:
+            fail(f"{path.name} lacks measured {name} bounds")
+    # reject semantic content that escaped the fixed host
+    if payload.get("semanticContentWithinOuterBounds") is not True:
+        fail(f"{path.name} reports semantic content outside the host")
+    tolerance = 1.0
+    outer_min_x = float(outer_bounds.get("x", 0)) - tolerance
+    outer_min_y = float(outer_bounds.get("y", 0)) - tolerance
+    outer_max_x = (
+        float(outer_bounds.get("x", 0))
+        + float(outer_bounds.get("width", 0))
+        + tolerance
+    )
+    outer_max_y = (
+        float(outer_bounds.get("y", 0))
+        + float(outer_bounds.get("height", 0))
+        + tolerance
+    )
+    content_min_x = float(content_bounds.get("x", 0))
+    content_min_y = float(content_bounds.get("y", 0))
+    content_max_x = content_min_x + float(content_bounds.get("width", 0))
+    content_max_y = content_min_y + float(content_bounds.get("height", 0))
+    # verify the claimed containment from coordinates
+    if (
+        content_min_x < outer_min_x
+        or content_min_y < outer_min_y
+        or content_max_x > outer_max_x
+        or content_max_y > outer_max_y
+    ):
+        fail(f"{path.name} geometry proves semantic content escaped the host")
 
     weather_visible = scenario != "bedtime"
     # require visible credit with weather

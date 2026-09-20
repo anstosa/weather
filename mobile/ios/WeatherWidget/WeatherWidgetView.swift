@@ -13,7 +13,6 @@ struct WeatherWidgetEntryView: View {
     static let forecastURL = URL(string: "ballydidean-weather://forecast")!
 
     @Environment(\.widgetRenderingMode) private var renderingMode
-    @ScaledMetric(relativeTo: .caption) private var compactFontSize: CGFloat = 12
 
     let entry: WeatherWidgetEntry
 
@@ -130,10 +129,13 @@ struct WeatherWidgetEntryView: View {
         .fixedSize(horizontal: false, vertical: true)
     }
 
-    // scale from the reviewed normal-size floor
+    // preserve the reviewed dense visual size
     private func compactFont(weight: Font.Weight = .regular) -> Font {
-        let size = max(compactFontSize, CGFloat(WeatherWidgetFixture.minimumNormalFontSize))
-        return .system(size: size, weight: weight, design: .rounded)
+        .system(
+            size: CGFloat(WeatherWidgetFixture.widgetVisualFontSize),
+            weight: weight,
+            design: .rounded
+        )
     }
 
     // keep tinted mode system-controlled

@@ -527,6 +527,37 @@ final class WidgetHostUITests: XCTestCase {
         return try findWidget(on: springboard, scenario: .maximumDensity, timeout: 20)
     }
 
+    // locate the actual fixed Home Screen host frame
+    private func systemMediumHostFrame(on springboard: XCUIApplication) throws -> CGRect {
+        let candidates = springboard.otherElements.matching(
+            NSPredicate(format: "label ==[c] %@", "Weather")
+        )
+        let deadline = Date().addingTimeInterval(5)
+
+        // wait for the outer WidgetKit container
+        repeat {
+            // inspect frame geometry without requiring hit testing
+            for candidate in candidates.allElementsBoundByIndex {
+                let frame = candidate.frame
+                // accept only medium-sized landscape geometry
+                if frame.width > 250,
+                   frame.height > 100,
+                   frame.height < 250,
+                   frame.width > frame.height * 1.5 {
+                    return frame
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        attachState(springboard, name: "failure-system-medium-host-frame")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: "actual systemMedium host frame was not found"]
+        )
+    }
+
     // capture semantics, geometry, and the fixed primary tap
     private func captureAndTap(
         _ widget: XCUIElement,
@@ -534,7 +565,7 @@ final class WidgetHostUITests: XCTestCase {
         caseID: String,
         app: XCUIApplication,
         springboard: XCUIApplication
-    ) {
+    ) throws {
         attachState(springboard, name: "matrix-\(caseID)-home-screen")
         XCTAssertTrue(widget.isHittable)
         XCTAssertTrue(widget.label.contains("Sunset"))
@@ -549,13 +580,26 @@ final class WidgetHostUITests: XCTestCase {
         if scenario != .maximumDensity {
             XCTAssertTrue(widget.label.contains("go to bed"))
         }
-        XCTAssertGreaterThan(widget.frame.width, widget.frame.height * 1.5)
-        XCTAssertGreaterThan(widget.frame.width, 250)
-        XCTAssertGreaterThan(widget.frame.height, 100)
-
-        let geometryAttachment = XCTAttachment(
-            string: "case=\(caseID) scenario=\(scenario.rawValue) widget-frame-points=\(widget.frame)"
+        let outerHostFrame = try systemMediumHostFrame(on: springboard)
+        let semanticContentFrame = widget.frame
+        let expandedHostFrame = outerHostFrame.insetBy(dx: -1, dy: -1)
+        XCTAssertGreaterThan(outerHostFrame.width, outerHostFrame.height * 1.5)
+        XCTAssertGreaterThan(outerHostFrame.width, 250)
+        XCTAssertGreaterThan(outerHostFrame.height, 100)
+        XCTAssertTrue(
+            expandedHostFrame.contains(semanticContentFrame),
+            "semantic content escaped the actual systemMedium host bounds"
         )
+
+        // record outer and inner geometry separately
+        let geometryDescription = """
+        case=\(caseID)
+        scenario=\(scenario.rawValue)
+        system-medium-outer-frame-points=\(outerHostFrame)
+        semantic-content-frame-points=\(semanticContentFrame)
+        semantic-content-contained=\(expandedHostFrame.contains(semanticContentFrame))
+        """
+        let geometryAttachment = XCTAttachment(string: geometryDescription)
         geometryAttachment.name = "matrix-\(caseID)-widgetkit-bounds"
         geometryAttachment.lifetime = .keepAlways
         add(geometryAttachment)
@@ -574,7 +618,7 @@ final class WidgetHostUITests: XCTestCase {
     func test01MaximumLightLarge() throws {
         let host = try launchHost()
         let widget = try addMaximumWidget(on: host.springboard)
-        captureAndTap(
+        try captureAndTap(
             widget,
             scenario: .maximumDensity,
             caseID: "01-maximum-light-large",
@@ -587,7 +631,7 @@ final class WidgetHostUITests: XCTestCase {
     func test02MaximumDarkLarge() throws {
         let host = try launchHost()
         let widget = try findWidget(on: host.springboard, scenario: .maximumDensity)
-        captureAndTap(
+        try captureAndTap(
             widget,
             scenario: .maximumDensity,
             caseID: "02-maximum-dark-large",
@@ -596,11 +640,11 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // capture the uncapped AX5 actual widget
+    // capture fixed visual type under the actual AX5 setting
     func test03MaximumLightAX5() throws {
         let host = try launchHost()
         let widget = try findWidget(on: host.springboard, scenario: .maximumDensity)
-        captureAndTap(
+        try captureAndTap(
             widget,
             scenario: .maximumDensity,
             caseID: "03-maximum-light-ax5",
@@ -618,7 +662,7 @@ final class WidgetHostUITests: XCTestCase {
             to: .nearCutoff,
             on: host.springboard
         )
-        captureAndTap(
+        try captureAndTap(
             widget,
             scenario: .nearCutoff,
             caseID: "04-near-cutoff-light-large",
@@ -636,7 +680,7 @@ final class WidgetHostUITests: XCTestCase {
             to: .bedtime,
             on: host.springboard
         )
-        captureAndTap(
+        try captureAndTap(
             widget,
             scenario: .bedtime,
             caseID: "05-bedtime-light-large",
@@ -655,7 +699,7 @@ final class WidgetHostUITests: XCTestCase {
             on: host.springboard
         )
         let widget = try selectTintedAppearance(for: maximum, on: host.springboard)
-        captureAndTap(
+        try captureAndTap(
             widget,
             scenario: .maximumDensity,
             caseID: "06-maximum-tinted-large",

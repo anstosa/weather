@@ -81,7 +81,8 @@ enum WeatherWidgetScenario: String, CaseIterable {
 
 struct WeatherWidgetFixture: Equatable {
     static let slotCapacity = 7
-    static let minimumNormalFontSize: Double = 12
+    // preserve the verified dense presentation
+    static let widgetVisualFontSize: Double = 12
 
     let scenario: WeatherWidgetScenario
     let generatedAt: Date

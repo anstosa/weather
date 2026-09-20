@@ -6,10 +6,19 @@
   "simulatorRuntime": "iOS 26.5",
   "simulatorName": "iPhone 17",
   "widgetFamily": "systemMedium",
-  "widgetBoundsPoints": {
+  "systemMediumOuterBoundsPoints": {
+    "x": 0,
+    "y": 0,
     "width": 0,
     "height": 0
   },
+  "semanticContentBoundsPoints": {
+    "x": 0,
+    "y": 0,
+    "width": 0,
+    "height": 0
+  },
+  "semanticContentWithinOuterBounds": false,
   "fixtureScenario": "maximumDensity",
   "scheme": "WeatherWidgetHostTests",
   "contentSize": "large",
@@ -17,7 +26,10 @@
   "renderingMode": "fullColor",
   "groupCount": 7,
   "intervalCount": 21,
+  "visualTextPolicy": "fixed-12pt-widget-only",
+  "voiceOverDetailPolicy": "full-fixture-summary",
   "minimumNormalTextPoints": 12,
+  "maximumVisualTextPoints": 12,
   "providerRan": false,
   "allIntervalsExactlyOnce": false,
   "noClippingOrOverlap": false,

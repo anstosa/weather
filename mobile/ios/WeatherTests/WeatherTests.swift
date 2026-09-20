@@ -119,7 +119,23 @@ final class WeatherWidgetFixtureTests: XCTestCase {
         XCTAssertTrue(summary.contains("adjusted air temperature"))
         XCTAssertTrue(summary.contains("Open-Meteo"))
         XCTAssertTrue(summary.contains("CC BY 4.0"))
-        XCTAssertEqual(WeatherWidgetFixture.minimumNormalFontSize, 12)
+    }
+
+    // preserve the selected widget-only visual size
+    func testWidgetVisualTypeUsesReviewedTwelvePoints() {
+        XCTAssertEqual(WeatherWidgetFixture.widgetVisualFontSize, 12)
+    }
+
+    // retain every interval group in VoiceOver
+    func testVoiceOverSummaryRetainsEveryForecastGroup() {
+        let fixture = WeatherWidgetFixtures.fixture(for: .maximumDensity)
+        let summary = fixture.accessibilitySummary(unit: .fahrenheit)
+
+        XCTAssertTrue(summary.hasPrefix("21 forecast intervals in 7 groups"))
+        // retain every group in VoiceOver detail
+        for group in fixture.groups {
+            XCTAssertTrue(summary.contains(group.accessibilityLabel(unit: .fahrenheit)))
+        }
     }
 
     // prove wettest-hour ordering

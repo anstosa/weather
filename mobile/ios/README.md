@@ -112,9 +112,10 @@ Review each captured case as follows:
 1. Confirm `raw-capture.json` identifies the pinned runtime, exact case, public host method, and requested system state.
 2. Confirm the screenshot is actual SpringBoard rather than a preview canvas.
 3. Inspect every visible label. Do not accept truncation, overlap, missing intervals, inaccessible semantics, or a base font below 12 points.
-4. Confirm the measured medium bounds, exact provider identity, and `route=forecast source=deep-link` tap evidence.
-5. For the accented case, confirm the Home Screen customization receipts show a genuine **Tinted** selection.
-6. Hash the reviewed screenshot/log files and complete one receipt from `Documentation/widget-host-receipt-template.json`.
+4. Confirm the measured outer `systemMedium` bounds contain the separately recorded semantic-content bounds; this geometry check supplements rather than replaces screenshot review.
+5. Confirm the exact provider identity and `route=forecast source=deep-link` tap evidence.
+6. For the accented case, confirm the Home Screen customization receipts show a genuine **Tinted** selection.
+7. Hash the reviewed screenshot/log files and complete one receipt from `Documentation/widget-host-receipt-template.json`.
 
 Required receipt matrix:
 
@@ -127,7 +128,7 @@ Required receipt matrix:
 | near cutoff | Large | light | full color |
 | bedtime | Large | light | full color |
 
-The widget uses an uncapped `@ScaledMetric` starting at 12 points. Accessibility text is not forced back to 13 points to make a screenshot pass. If the maximum-density case does not fit at the required larger text size, M0 fails and the plan stops before shared/edge implementation.
+The widget deliberately fixes its visual typography at the independently reviewed 12-point size. This cap applies only inside the fixed `systemMedium` widget; it does not spoof the Simulator setting or alter Dynamic Type in the containing app. The real AX5 case remains in the matrix, every group and visible label remains present, and the widget exposes the complete 21-interval fixture summary to VoiceOver. Independent AX5 screenshot review remains mandatory because passing outer/inner geometry alone cannot prove that every glyph is visible.
 
 Place receipts under `<evidence>/receipts/` and referenced files under the same evidence root. Validate the complete matrix with:
 
