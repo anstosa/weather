@@ -67,6 +67,22 @@ jobs:
         env:
           RESULTS: ${{ runner.temp }}/weather-ios/widget-host-probe
         run: mobile/ios/scripts/probe-widget-host.sh
+      - name: Print bounded iOS M0 diagnostic markers
+        if: always()
+        env:
+          BUILD_RESULTS: ${{ runner.temp }}/weather-ios
+          HOST_RESULTS: ${{ runner.temp }}/weather-ios/widget-host-probe
+        run: |
+          # print only the bounded debug marker contracts
+          for receipt in \
+            "$BUILD_RESULTS/test-app-lifecycle.log" \
+            "$HOST_RESULTS/provider-and-route.log"; do
+            # skip receipts unavailable at the reached gate
+            if [[ ! -f "$receipt" ]]; then
+              continue
+            fi
+            grep -E 'm0-webview-lifecycle|m0-fixture-resolution' "$receipt" || true
+          done
       - id: ios-receipt
         name: Upload bounded iOS M0 evidence
         if: always()
@@ -88,6 +104,8 @@ jobs:
             ${{ runner.temp }}/weather-ios/test-attachments-export.log
             ${{ runner.temp }}/weather-ios/test-attachments-export-status.txt
             ${{ runner.temp }}/weather-ios/test-app-lifecycle.log
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle-start-status.txt
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle-process-status.txt
             ${{ runner.temp }}/weather-ios/test-app-lifecycle-status.txt
             ${{ runner.temp }}/weather-ios/test-attachments/**
             ${{ runner.temp }}/weather-ios/Weather.xcresult

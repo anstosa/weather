@@ -83,7 +83,7 @@ final class WeatherWidgetFixtureTests: XCTestCase {
         XCTAssertEqual(first.temperatureLabel(unit: .fahrenheit), "27–30°F")
     }
 
-    // prove default and alternate units
+    // prove default and alternate intent values
     func testIntentDefaultsToFahrenheit() {
         XCTAssertEqual(WeatherWidgetConfigurationIntent().temperatureUnit, .fahrenheit)
         XCTAssertEqual(
@@ -93,13 +93,22 @@ final class WeatherWidgetFixtureTests: XCTestCase {
         #if DEBUG
         // test only compiled matrix controls
         XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario, .maximumDensity)
-        XCTAssertEqual(
-            WeatherWidgetConfigurationIntent(
+        let fixtureMappings: [(WeatherWidgetFixtureSelection, WeatherWidgetScenario)] = [
+            (.maximumDensity, .maximumDensity),
+            (.nearCutoff, .nearCutoff),
+            (.bedtime, .bedtime)
+        ]
+        // prove every test-only selection maps explicitly
+        for (selection, scenario) in fixtureMappings {
+            let intent = WeatherWidgetConfigurationIntent(
                 temperatureUnit: .fahrenheit,
-                fixtureScenario: .nearCutoff
-            ).fixtureScenario,
-            .nearCutoff
-        )
+                fixtureScenario: selection
+            )
+            XCTAssertEqual(intent.fixtureScenario, selection)
+            XCTAssertEqual(intent.fixtureScenario.scenario, scenario)
+        }
+        // cover every declared enum case
+        XCTAssertEqual(fixtureMappings.map { $0.0 }, WeatherWidgetFixtureSelection.allCases)
         #endif
     }
 

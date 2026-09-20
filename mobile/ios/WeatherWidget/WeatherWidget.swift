@@ -51,7 +51,7 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
         case (_, let scenario?):
             overrideReceipt = scenario.rawValue
         }
-        let fixture = WeatherWidgetFixtures.configured(configuration.fixtureScenario)
+        let fixture = WeatherWidgetFixtures.configured(configuration.fixtureScenario.scenario)
         logger.notice(
             "m0-fixture-resolution input=\(configuration.fixtureScenario.rawValue, privacy: .public) override=\(overrideReceipt, privacy: .public) resolved=\(fixture.scenario.rawValue, privacy: .public)"
         )

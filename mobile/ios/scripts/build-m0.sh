@@ -59,8 +59,19 @@ printf 'source_commit=%s\ndebug_build=passed\n' \
   "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)" \
   > "$RESULTS/debug-build-passed.txt"
 
-# run credential-free Simulator tests with normal local signing
+# stream diagnostics before tests can stop the Simulator
 set +e
+: > "$RESULTS/test-app-lifecycle.log"
+xcrun simctl spawn "$SIMULATOR_UDID" log stream \
+  --style compact \
+  --level debug \
+  --predicate 'subsystem == "farm.ballydidean.weather"' \
+  > "$RESULTS/test-app-lifecycle.log" 2>&1 &
+TEST_APP_LIFECYCLE_PID=$!
+kill -0 "$TEST_APP_LIFECYCLE_PID" 2>/dev/null
+TEST_APP_LIFECYCLE_START_STATUS=$?
+
+# run credential-free Simulator tests with normal local signing
 xcodebuild \
   -project "$PROJECT" \
   -scheme Weather \
@@ -68,6 +79,7 @@ xcodebuild \
   -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
   -derivedDataPath "$DERIVED_DATA" \
   -resultBundlePath "$RESULT_BUNDLE" \
+  -parallel-testing-enabled NO \
   test | tee "$RESULTS/test.log"
 TEST_STATUS=${PIPESTATUS[0]}
 
@@ -77,16 +89,22 @@ xcrun xcresulttool export attachments \
   --output-path "$TEST_ATTACHMENTS" \
   > "$RESULTS/test-attachments-export.log" 2>&1
 TEST_ATTACHMENTS_STATUS=$?
-# capture bounded app and WebKit lifecycle receipts
-xcrun simctl spawn "$SIMULATOR_UDID" log show \
-  --last 10m \
-  --style compact \
-  --predicate 'subsystem == "farm.ballydidean.weather"' \
-  > "$RESULTS/test-app-lifecycle.log" 2>&1
-TEST_APP_LIFECYCLE_STATUS=$?
+# stop only the bounded lifecycle stream
+if kill -0 "$TEST_APP_LIFECYCLE_PID" 2>/dev/null; then
+  kill "$TEST_APP_LIFECYCLE_PID" 2>/dev/null
+  wait "$TEST_APP_LIFECYCLE_PID"
+  TEST_APP_LIFECYCLE_PROCESS_STATUS=$?
+  TEST_APP_LIFECYCLE_STATUS=0
+else
+  wait "$TEST_APP_LIFECYCLE_PID"
+  TEST_APP_LIFECYCLE_PROCESS_STATUS=$?
+  TEST_APP_LIFECYCLE_STATUS=$TEST_APP_LIFECYCLE_PROCESS_STATUS
+fi
 set -e
 printf '%s\n' "$TEST_STATUS" > "$RESULTS/test-status.txt"
 printf '%s\n' "$TEST_ATTACHMENTS_STATUS" > "$RESULTS/test-attachments-export-status.txt"
+printf '%s\n' "$TEST_APP_LIFECYCLE_START_STATUS" > "$RESULTS/test-app-lifecycle-start-status.txt"
+printf '%s\n' "$TEST_APP_LIFECYCLE_PROCESS_STATUS" > "$RESULTS/test-app-lifecycle-process-status.txt"
 printf '%s\n' "$TEST_APP_LIFECYCLE_STATUS" > "$RESULTS/test-app-lifecycle-status.txt"
 
 # stop after preserving a failed test result

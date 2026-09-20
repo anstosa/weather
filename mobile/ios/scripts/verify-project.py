@@ -197,20 +197,41 @@ def verify_release_reachable_sources() -> None:
     # keep scenario overrides out of Release compilation
     if "#if DEBUG" not in fixture_source or "WEATHER_WIDGET_FIXTURE" not in fixture_source:
         fail("debug fixture selector is not compilation-gated")
-    scenario_conformance = "extension WeatherWidgetScenario: AppEnum"
-    scenario_conformance_index = model_source.find(scenario_conformance)
-    scenario_guard_index = model_source.rfind("#if DEBUG", 0, scenario_conformance_index)
-    scenario_end_index = model_source.find("#endif", scenario_conformance_index)
-    # keep the matrix intent out of Release and its conformance beside the enum
+    selection_declaration = "enum WeatherWidgetFixtureSelection: String, AppEnum, CaseIterable"
+    selection_index = intent_source.find(selection_declaration)
+    selection_guard_index = intent_source.rfind("#if DEBUG", 0, selection_index)
+    selection_end_index = intent_source.find("#endif", selection_index)
+    parameter_declaration = "var fixtureScenario: WeatherWidgetFixtureSelection"
+    parameter_index = intent_source.find(parameter_declaration)
+    parameter_guard_index = intent_source.rfind("#if DEBUG", 0, parameter_index)
+    parameter_end_index = intent_source.find("#endif", parameter_index)
+    selection_fragments = (
+        parameter_declaration,
+        "var scenario: WeatherWidgetScenario",
+        "case .maximumDensity:\n            return .maximumDensity",
+        "case .nearCutoff:\n            return .nearCutoff",
+        "case .bedtime:\n            return .bedtime",
+    )
+    # keep the matrix intent and direct enum metadata out of Release
     if (
         "#if DEBUG" not in intent_source
         or '@Parameter(title: "M0 fixture"' not in intent_source
-        or scenario_conformance_index < 0
-        or scenario_guard_index < 0
-        or scenario_end_index < scenario_conformance_index
-        or 'TypeDisplayRepresentation(name: "M0 fixture")' not in model_source
+        or selection_index < 0
+        or selection_guard_index < 0
+        or selection_end_index < selection_index
+        or parameter_index < 0
+        or parameter_guard_index < 0
+        or parameter_end_index < parameter_index
+        or 'TypeDisplayRepresentation(name: "M0 fixture")' not in intent_source
+        or "extension WeatherWidgetScenario: AppEnum" in model_source
+        or "import AppIntents" in model_source
     ):
         fail("debug AppIntent fixture configuration is not compilation-gated")
+    # require explicit test-parameter mapping
+    for fragment in selection_fragments:
+        # reject implicit or incomplete fixture mappings
+        if fragment not in intent_source:
+            fail(f"debug AppIntent fixture mapping lacks {fragment}")
     # preserve wrapper-owned decoding defaults
     if "init() {}" not in intent_source:
         fail("widget configuration intent does not use the empty system initializer")
@@ -223,6 +244,8 @@ def verify_release_reachable_sources() -> None:
         fixture_assertion_index < 0
         or debug_guard_index < 0
         or debug_end_index < fixture_assertion_index
+        or "WeatherWidgetFixtureSelection.allCases" not in test_source
+        or "intent.fixtureScenario.scenario" not in test_source
     ):
         fail("debug AppIntent fixture assertions are not compilation-gated")
     diagnostic_marker = "m0-fixture-resolution"
@@ -407,7 +430,10 @@ def verify_build_evidence() -> None:
         "xcresulttool export attachments",
         "test-app-lifecycle.log",
         "test-app-lifecycle-status.txt",
-        "log show",
+        "test-app-lifecycle-start-status.txt",
+        "test-app-lifecycle-process-status.txt",
+        "log stream",
+        "-parallel-testing-enabled NO",
         'subsystem == "farm.ballydidean.weather"',
         'if [[ "$TEST_STATUS" -ne 0 ]]',
     )
@@ -415,6 +441,15 @@ def verify_build_evidence() -> None:
         # require durable stage evidence
         if fragment not in build:
             fail(f"build script lacks {fragment}")
+    stream_index = build.find("log stream")
+    parallel_disabled_index = build.find("-parallel-testing-enabled NO")
+    test_index = build.find('test | tee "$RESULTS/test.log"')
+    # start lifecycle capture before the test can stop the Simulator
+    if test_index < 0 or stream_index > test_index:
+        fail("build script starts lifecycle capture after Simulator tests")
+    # keep regular tests on the selected streamed destination
+    if parallel_disabled_index < 0 or parallel_disabled_index > test_index:
+        fail("build script permits cloned Simulator test destinations")
 
 
 def main() -> None:
