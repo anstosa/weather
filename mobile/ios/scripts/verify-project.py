@@ -204,6 +204,7 @@ def verify_host_probe() -> None:
         "widget-host-test-skipped.txt",
         "public-xcui-widget-gallery",
         'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
+        'labeled: ["Edit"]',
         'labeled: ["Add Widget"]',
         'typeText("Weather")',
     )

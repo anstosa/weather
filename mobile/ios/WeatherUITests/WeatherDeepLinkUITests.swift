@@ -158,11 +158,26 @@ final class WidgetHostUITests: XCTestCase {
             editAction.tap()
         }
 
-        let addControl = try requireHittable(
-            in: elements(in: springboard, labeled: ["Add Widget", "Add"]),
-            springboard: springboard,
-            stage: "home-screen-add"
-        )
+        let addControls = elements(in: springboard, labeled: ["Add Widget", "Add"])
+        let addControl: XCUIElement
+        // use a directly exposed gallery control when available
+        if let directAddControl = firstHittable(in: addControls, timeout: 2) {
+            addControl = directAddControl
+        } else {
+            // open the iOS 26 edit menu observed in hosted evidence
+            let editMenu = try requireHittable(
+                in: elements(in: springboard, labeled: ["Edit"]),
+                springboard: springboard,
+                stage: "home-screen-edit-menu"
+            )
+            editMenu.tap()
+            addControl = try requireHittable(
+                in: addControls,
+                springboard: springboard,
+                stage: "home-screen-edit-menu-add-widget"
+            )
+            attachState(springboard, name: "home-screen-edit-menu")
+        }
         addControl.tap()
         attachState(springboard, name: "widget-gallery")
 
