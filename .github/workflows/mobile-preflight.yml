@@ -45,9 +45,16 @@ jobs:
         env:
           RESULTS: ${{ runner.temp }}/weather-ios
         run: mobile/ios/scripts/build-m0.sh
+      - id: ios-debug-compile
+        name: Verify the iOS Debug compile marker
+        if: always() && steps.apple-probe.outcome == 'success'
+        continue-on-error: true
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios
+        run: test -f "$RESULTS/debug-build-passed.txt"
       - id: ios-host-probe
         name: Probe the WidgetKit Home Screen host
-        if: always() && steps.ios-build.outcome == 'success'
+        if: always() && steps.ios-debug-compile.outcome == 'success'
         continue-on-error: true
         env:
           RESULTS: ${{ runner.temp }}/weather-ios/widget-host-probe
@@ -66,7 +73,12 @@ jobs:
             ${{ runner.temp }}/weather-ios/simulator-boot.stderr
             ${{ runner.temp }}/weather-ios/simulator-udid.txt
             ${{ runner.temp }}/weather-ios/debug-build.log
+            ${{ runner.temp }}/weather-ios/debug-build-passed.txt
             ${{ runner.temp }}/weather-ios/test.log
+            ${{ runner.temp }}/weather-ios/test-status.txt
+            ${{ runner.temp }}/weather-ios/test-attachments-export.log
+            ${{ runner.temp }}/weather-ios/test-attachments-export-status.txt
+            ${{ runner.temp }}/weather-ios/test-attachments/**
             ${{ runner.temp }}/weather-ios/Weather.xcresult
             ${{ runner.temp }}/weather-ios/release-build-analyze.log
             ${{ runner.temp }}/weather-ios/release-receipts/**
@@ -79,6 +91,7 @@ jobs:
           APPLE_PROBE_OUTCOME: ${{ steps.apple-probe.outcome }}
           APPLE_RECEIPT_OUTCOME: ${{ steps.apple-receipt.outcome }}
           IOS_BUILD_OUTCOME: ${{ steps.ios-build.outcome }}
+          IOS_DEBUG_COMPILE_OUTCOME: ${{ steps.ios-debug-compile.outcome }}
           IOS_HOST_PROBE_OUTCOME: ${{ steps.ios-host-probe.outcome }}
           IOS_RECEIPT_OUTCOME: ${{ steps.ios-receipt.outcome }}
         run: |
@@ -86,6 +99,7 @@ jobs:
           if [[ "${APPLE_PROBE_OUTCOME}" != "success" \
             || "${APPLE_RECEIPT_OUTCOME}" != "success" \
             || "${IOS_BUILD_OUTCOME}" != "success" \
+            || "${IOS_DEBUG_COMPILE_OUTCOME}" != "success" \
             || "${IOS_HOST_PROBE_OUTCOME}" != "success" \
             || "${IOS_RECEIPT_OUTCOME}" != "success" ]]; then
             printf 'iOS M0 evidence is incomplete; inspect both uploaded receipts.\n' >&2

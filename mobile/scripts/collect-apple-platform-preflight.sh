@@ -53,6 +53,10 @@ capture_command simulator-runtimes xcrun simctl list runtimes --json
 capture_command simulator-devices xcrun simctl list devices available --json
 capture_command xcdebug-find xcrun --find xcdebug
 
+# capture non-gating visual-control contracts
+capture_command simctl-ui-help xcrun simctl help ui
+capture_command xcresulttool-export-attachments-help xcrun xcresulttool export attachments --help
+
 # inspect only the documented top-level help surface
 if [[ "$(captured_status xcdebug-find)" == "0" ]]; then
   capture_command xcdebug-help xcrun xcdebug --help
