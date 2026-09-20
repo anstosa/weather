@@ -204,6 +204,7 @@ def verify_host_probe() -> None:
         "widget-host-test-skipped.txt",
         "public-xcui-widget-gallery",
         'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
+        "com.apple.springboardhome.application-shortcut-item.rearrange-icons",
         'labeled: ["Edit"]',
         'labeled: ["Add Widget"]',
         "springboard.cells.matching",

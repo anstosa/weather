@@ -119,6 +119,58 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
+    // enter editing through the exact captured SpringBoard action
+    private func enterHomeScreenEditing(on springboard: XCUIApplication) throws {
+        let editModeEdit = springboard.buttons.matching(
+            NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Edit", "Edit")
+        )
+        let editModeDone = springboard.buttons.matching(
+            NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Done", "Done")
+        )
+
+        // accept a completed prior transition
+        if firstHittable(in: editModeEdit, timeout: 1) != nil,
+           firstHittable(in: editModeDone, timeout: 1) != nil {
+            return
+        }
+
+        let editHomeScreen = springboard.buttons.matching(
+            NSPredicate(
+                format: "identifier == %@ AND label ==[c] %@",
+                "com.apple.springboardhome.application-shortcut-item.rearrange-icons",
+                "Edit Home Screen"
+            )
+        )
+        // retry one ignored public system-menu action
+        for attempt in 1...2 {
+            let editAction = try requireHittable(
+                in: editHomeScreen,
+                springboard: springboard,
+                stage: "edit-home-screen-action-\(attempt)",
+                timeout: 3
+            )
+            editAction.tap()
+
+            // require the observed edit-mode controls
+            if firstHittable(in: editModeEdit, timeout: 3) != nil,
+               firstHittable(in: editModeDone, timeout: 3) != nil {
+                return
+            }
+
+            // preserve the one bounded retry state
+            if attempt == 1 {
+                attachState(springboard, name: "edit-home-screen-retry-state")
+            }
+        }
+
+        attachState(springboard, name: "failure-home-screen-edit-mode")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "SpringBoard did not enter Home Screen edit mode"]
+        )
+    }
+
     // add the real WidgetKit surface through the public gallery UI
     private func addMaximumWidget(on springboard: XCUIApplication) throws -> XCUIElement {
         let widgetPredicate = NSPredicate(
@@ -148,15 +200,7 @@ final class WidgetHostUITests: XCTestCase {
             stage: "weather-icon"
         )
         weatherIcon.press(forDuration: 1.5)
-
-        let editActions = elements(
-            in: springboard,
-            labeled: ["Edit Home Screen", "Edit Home Screen…"]
-        )
-        // enter edit mode when the icon menu appears
-        if let editAction = firstHittable(in: editActions, timeout: 3) {
-            editAction.tap()
-        }
+        try enterHomeScreenEditing(on: springboard)
 
         let addControls = elements(in: springboard, labeled: ["Add Widget", "Add"])
         let addControl: XCUIElement
