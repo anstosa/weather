@@ -31,7 +31,7 @@ Official references:
 - `Weather` — hosted SwiftUI/WKWebView companion
 - `WeatherWidgetExtension` — fixture-only M0 WidgetKit extension
 - `WeatherTests` — navigation, fixture, density, temperature, and intent tests
-- `WeatherUITests` — containing-app deep-link smoke
+- `WeatherUITests` — containing-app deep-link smoke and bounded actual-host matrix
 
 Shared schemes:
 
@@ -39,9 +39,9 @@ Shared schemes:
 - `WeatherWidget-Maximum` — 21 intervals in seven three-hour groups, including repeated fall-back labels
 - `WeatherWidget-NearCutoff` — one 7 p.m. group plus `go to bed`
 - `WeatherWidget-Bedtime` — all post-cutoff space reads `go to bed`
-- `WeatherWidgetHostTests` — bounded public-XCUI inspection/tap after real scheme placement
+- `WeatherWidgetHostTests` — bounded public-XCUI placement, configuration, inspection, and tap
 
-Every widget scheme pins `_XCWidgetFamily=medium`. Its fourth fixed environment value selects a compiled debug fixture. `#if DEBUG` removes that selector from Release; the Release widget retains only the deterministic maximum fixture until M4 replaces fixtures with the public snapshot contract.
+Every widget scheme pins `_XCWidgetFamily=medium`. Its fourth fixed environment value selects a compiled debug fixture. The host matrix exposes the same fixtures as a Debug-only AppIntent parameter so XCUI can use the real **Edit Widget** surface. A Debug-only containing-app launch argument requests a public `WidgetCenter` reload; provider logs, not the request itself, prove each refresh. `#if DEBUG` removes all three hooks from Release, which retains only the deterministic maximum fixture until M4 replaces fixtures with the public snapshot contract.
 
 The widget launch actions match Apple's checked-in [Building Widgets Using WidgetKit and SwiftUI](https://developer.apple.com/documentation/widgetkit/building-widgets-using-widgetkit-and-swiftui) sample: the scheme is marked as an app-extension scheme, uses the extension PosixSpawn launcher, runs the extension as a mode-2 SpringBoard `RemoteRunnable`, expands build settings from the containing app, and requests automatic widget launch. This is Xcode scheme metadata for Apple's documented Product > Run behavior, not a production SpringBoard API or a runtime security exception.
 
@@ -99,33 +99,33 @@ RESULTS="$RUNNER_TEMP/weather-ios/widget-host-probe" \
   bash mobile/ios/scripts/probe-widget-host.sh
 ```
 
-The extension defaults to the maximum-density Debug fixture when no scheme environment is present. `WeatherWidgetHostTests` requires the real hosted widget's accessibility content and medium geometry, captures SpringBoard and selector hierarchies as XCTest attachments, taps the widget, and asserts the fixed forecast route in the containing app. The script separately requires the test to execute without skipping, plus the real timeline-provider and route logs. Stable outputs include `provider-and-route.log`, `WeatherWidgetHost.xcresult`, exported `attachments/`, `widget-host-test.log`, `widget-host-test-executed.txt`, `widget-host-test-skipped.txt`, `host-path.txt`, `after-widget-tap.png`, and `capture-manifest.txt`. `host-path.txt` records `xcui-home-screen-conversion` or the `xcui-widget-gallery` fallback without relabeling the evidence. Non-gating `simctl-ui-help.txt` and `xcresulttool-export-attachments-help.txt` receipts record the pinned runner's installed visual-control and attachment-export contracts before the host attempt.
+The probe builds the host products once with `build-for-testing`, then runs six ordered `test-without-building` cases on the same Simulator. The extension defaults to maximum density, and later fixture cases use the real **Edit Widget** surface. The final case uses Home Screen **Customize** → **Tinted** rather than a SwiftUI environment override. `WeatherWidgetHostTests` requires actual hosted accessibility content and medium geometry, captures SpringBoard and selector hierarchies as XCTest attachments, taps the widget, and asserts the fixed forecast route. The script separately requires every test to execute without skipping, an exact timeline-provider line for that case, and the route log.
+
+Stable aggregate outputs include `provider-and-route.log`, `widget-host-test.log`, `widget-host-test-executed.txt`, `widget-host-test-skipped.txt`, `host-path.txt`, `matrix-status.tsv`, `after-widget-tap.png`, and `capture-manifest.txt`. Each `cases/<case-id>/` directory contains its own `WeatherWidgetHost.xcresult`, exported `attachments/`, exact Simulator-state receipts, provider/tap logs, status files, and `raw-capture.json`. Raw manifests state facts observed by automation and always mark `visualReviewRequired`; they never assert clipping or text-visibility verdicts. `host-path.txt` records `xcui-home-screen-conversion` or the `xcui-widget-gallery` fallback without relabeling the evidence. Non-gating `simctl-ui-help.txt` and `xcresulttool-export-attachments-help.txt` record the pinned runner's installed contracts.
 
 If public control discovery, placement, rendering, or tap fails, the probe preserves the test result bundle, stage-specific screenshots and accessibility hierarchies, a final Simulator screenshot, and bounded SpringBoard/WidgetKit logs. It fails honestly when selectors change; it does not disable TCC, change trust settings, automate privacy prompts, or use a private widget-placement command.
 
-The probe exits 78 if launch, placement, provider, XCUI inspection, or tap evidence fails. Even after a successful maximum-density capture it exits 78 until the screenshot is reviewed for clipping and the full appearance/scenario matrix has immutable receipts. A preview never satisfies that gate.
+The probe exits 78 if launch, placement, system-state readback, provider, XCUI inspection, or tap evidence fails. After all raw captures succeed, it still exits 78 until an independent reviewer records clipping, visibility, accessibility, attribution, and tint verdicts in immutable receipts. Earlier cases remain available when a later selector or visual state fails, so the AX5 density boundary can be reviewed before fixture and tint automation is repaired. A preview never satisfies the gate.
 
-On an agent-accessible interactive Mac, capture each required case as follows:
+Review each captured case as follows:
 
-1. Boot the pinned iOS 26.5 iPhone 17 Simulator.
-2. Start a log capture for subsystems `farm.ballydidean.weather.widget` and `farm.ballydidean.weather`.
-3. Open `Weather.xcodeproj`, select the named widget scheme and Simulator, then use Product > Run.
-4. Confirm the widget is on SpringBoard rather than in a preview canvas.
-5. Capture its measured medium bounds and a full Simulator screenshot.
-6. Inspect every visible label. Do not accept truncation, overlap, missing intervals, inaccessible semantics, or text below the normal 12-point floor.
-7. Tap the widget and capture the containing app plus `route=forecast source=deep-link` log line.
-8. Hash the screenshot/log files and complete one receipt from `Documentation/widget-host-receipt-template.json`.
+1. Confirm `raw-capture.json` identifies the pinned runtime, exact case, public host method, and requested system state.
+2. Confirm the screenshot is actual SpringBoard rather than a preview canvas.
+3. Inspect every visible label. Do not accept truncation, overlap, missing intervals, inaccessible semantics, or a base font below 12 points.
+4. Confirm the measured medium bounds, exact provider identity, and `route=forecast source=deep-link` tap evidence.
+5. For the accented case, confirm the Home Screen customization receipts show a genuine **Tinted** selection.
+6. Hash the reviewed screenshot/log files and complete one receipt from `Documentation/widget-host-receipt-template.json`.
 
 Required receipt matrix:
 
 | Fixture | Content size | Appearance | Widget rendering |
 | --- | --- | --- | --- |
-| maximum density | normal | light | full color |
-| maximum density | normal | dark | full color |
-| maximum density | accessibility | light | full color |
-| maximum density | normal | light | accented/tinted |
-| near cutoff | normal | light | full color |
-| bedtime | normal | light | full color |
+| maximum density | Large | light | full color |
+| maximum density | Large | dark | full color |
+| maximum density | AX5 (`accessibility-extra-extra-extra-large`) | light | full color |
+| maximum density | Large | light | accented/tinted |
+| near cutoff | Large | light | full color |
+| bedtime | Large | light | full color |
 
 The widget uses an uncapped `@ScaledMetric` starting at 12 points. Accessibility text is not forced back to 13 points to make a screenshot pass. If the maximum-density case does not fit at the required larger text size, M0 fails and the plan stops before shared/edge implementation.
 

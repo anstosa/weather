@@ -186,9 +186,25 @@ def verify_release_reachable_sources() -> None:
                 fail(f"{path.relative_to(ROOT)} contains banned pattern {pattern}")
 
     fixture_source = (ROOT / "WeatherWidget/WeatherWidgetFixtures.swift").read_text()
+    intent_source = (ROOT / "WeatherWidget/WeatherWidgetIntent.swift").read_text()
+    app_source = (ROOT / "WeatherApp/App/WeatherApp.swift").read_text()
     # keep scenario overrides out of Release compilation
     if "#if DEBUG" not in fixture_source or "WEATHER_WIDGET_FIXTURE" not in fixture_source:
         fail("debug fixture selector is not compilation-gated")
+    # keep the matrix intent out of Release compilation
+    if (
+        "#if DEBUG" not in intent_source
+        or 'TypeDisplayRepresentation(name: "M0 fixture")' not in intent_source
+        or '@Parameter(title: "M0 fixture"' not in intent_source
+    ):
+        fail("debug AppIntent fixture configuration is not compilation-gated")
+    # keep the matrix reload request out of Release compilation
+    if (
+        "#if DEBUG" not in app_source
+        or 'contains("-weather-m0-reload-widget")' not in app_source
+        or "WidgetCenter.shared.reloadTimelines" not in app_source
+    ):
+        fail("debug widget reload request is not compilation-gated")
 
 
 def verify_host_probe() -> None:
@@ -198,19 +214,36 @@ def verify_host_probe() -> None:
 
     required_fragments = (
         "WeatherWidgetHostTests",
+        "build-for-testing",
+        "test-without-building",
         "xcresulttool export attachments",
         "provider-ready.txt",
         "widget-host-test-executed.txt",
         "widget-host-test-skipped.txt",
+        "visualReviewRequired",
         "xcui-home-screen-conversion",
         "xcui-widget-gallery",
+        "accessibility-extra-extra-extra-large",
         'XCUIApplication(bundleIdentifier: "com.apple.springboard")',
         "com.apple.springboardhome.application-shortcut-item.rearrange-icons",
         "Medium-sized widget",
         'labeled: ["Edit"]',
-        'labeled: ["Add Widget"]',
+        '" Add Widget"',
         "springboard.cells.matching",
         'typeText("Weather")',
+        '"M0 fixture"',
+        '"Maximum density M0"',
+        '"Near cutoff M0"',
+        '"Bedtime M0"',
+        'labeled: ["Customize"]',
+        'labeled: ["Tinted"]',
+        "selectedTint.isSelected",
+        "test01MaximumLightLarge",
+        "test02MaximumDarkLarge",
+        "test03MaximumLightAX5",
+        "test04NearCutoffLightLarge",
+        "test05BedtimeLightLarge",
+        "test06MaximumTintedLarge",
     )
     combined = probe + ui_test
     for fragment in required_fragments:
@@ -229,6 +262,17 @@ def verify_host_probe() -> None:
         # reject consent bypasses and private placement
         if fragment in probe:
             fail(f"host probe contains forbidden mechanism {fragment}")
+
+    visual_claims = (
+        '"allIntervalsExactlyOnce": True',
+        '"noClippingOrOverlap": True',
+        '"allTextFullyVisible": True',
+        '"accessibleSemanticsComplete": True',
+    )
+    for fragment in visual_claims:
+        # leave screenshot verdicts to independent review
+        if fragment in probe:
+            fail(f"host probe auto-asserts visual claim {fragment}")
 
 
 def verify_build_evidence() -> None:

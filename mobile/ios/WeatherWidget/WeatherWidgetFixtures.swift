@@ -25,6 +25,18 @@ enum WeatherWidgetFixtures {
         return maximumDensity
     }
 
+    #if DEBUG
+    // prefer fixed scheme overrides before per-widget configuration
+    static func configured(_ scenario: WeatherWidgetScenario) -> WeatherWidgetFixture {
+        // preserve Product Run fixture schemes
+        if let value = ProcessInfo.processInfo.environment["WEATHER_WIDGET_FIXTURE"],
+           let schemeScenario = WeatherWidgetScenario(rawValue: value) {
+            return fixture(for: schemeScenario)
+        }
+        return fixture(for: scenario)
+    }
+    #endif
+
     private static let maximumDensity = WeatherWidgetFixture(
         scenario: .maximumDensity,
         generatedAt: date("2026-11-01T07:00:00Z"),

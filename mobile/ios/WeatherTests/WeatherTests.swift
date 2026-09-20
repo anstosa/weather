@@ -86,9 +86,17 @@ final class WeatherWidgetFixtureTests: XCTestCase {
     // prove default and alternate units
     func testIntentDefaultsToFahrenheit() {
         XCTAssertEqual(WeatherWidgetConfigurationIntent().temperatureUnit, .fahrenheit)
+        XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario, .maximumDensity)
         XCTAssertEqual(
             WeatherWidgetConfigurationIntent(temperatureUnit: .celsius).temperatureUnit,
             .celsius
+        )
+        XCTAssertEqual(
+            WeatherWidgetConfigurationIntent(
+                temperatureUnit: .fahrenheit,
+                fixtureScenario: .nearCutoff
+            ).fixtureScenario,
+            .nearCutoff
         )
     }
 

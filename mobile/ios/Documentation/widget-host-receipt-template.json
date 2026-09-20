@@ -1,5 +1,5 @@
 {
-  "method": "xcode-product-run",
+  "method": "xcui-home-screen-conversion",
   "sourceCommit": "REPLACE_WITH_GIT_SHA",
   "runnerImage": "macOS 26.6.2 / interactive Mac identity",
   "xcodeVersion": "26.6",
@@ -11,8 +11,8 @@
     "height": 0
   },
   "fixtureScenario": "maximumDensity",
-  "scheme": "WeatherWidget-Maximum",
-  "contentSize": "normal",
+  "scheme": "WeatherWidgetHostTests",
+  "contentSize": "large",
   "appearance": "light",
   "renderingMode": "fullColor",
   "groupCount": 7,
@@ -27,12 +27,12 @@
   "accessibleProviderLicense": false,
   "bedtimeText": null,
   "primaryTapOpenedForecast": false,
-  "homeScreenScreenshot": "screenshots/maximum-normal-light-full.png",
+  "homeScreenScreenshot": "screenshots/maximum-large-light-full.png",
   "homeScreenScreenshotSHA256": "REPLACE_WITH_SHA256",
-  "providerLog": "logs/maximum-normal-light-full-provider.log",
+  "providerLog": "logs/maximum-large-light-full-provider.log",
   "providerLogSHA256": "REPLACE_WITH_SHA256",
-  "tapScreenshot": "screenshots/maximum-normal-light-full-tap.png",
+  "tapScreenshot": "screenshots/maximum-large-light-full-tap.png",
   "tapScreenshotSHA256": "REPLACE_WITH_SHA256",
-  "tapLog": "logs/maximum-normal-light-full-tap.log",
+  "tapLog": "logs/maximum-large-light-full-tap.log",
   "tapLogSHA256": "REPLACE_WITH_SHA256"
 }

@@ -48,6 +48,38 @@ final class WeatherDeepLinkUITests: XCTestCase {
 
 @MainActor
 final class WidgetHostUITests: XCTestCase {
+    private enum MatrixScenario: String {
+        case maximumDensity
+        case nearCutoff
+        case bedtime
+
+        // expose the Debug AppIntent choice
+        var optionLabel: String {
+            // map every selectable fixture
+            switch self {
+            case .maximumDensity:
+                return "Maximum density M0"
+            case .nearCutoff:
+                return "Near cutoff M0"
+            case .bedtime:
+                return "Bedtime M0"
+            }
+        }
+
+        // identify the actual hosted semantic surface
+        var widgetLabelFragments: [String] {
+            // bind each fixture to unique output
+            switch self {
+            case .maximumDensity:
+                return ["21 forecast intervals", "Open-Meteo", "daylight", "standard"]
+            case .nearCutoff:
+                return ["1 forecast intervals", "Open-Meteo", "go to bed"]
+            case .bedtime:
+                return ["0 forecast intervals", "go to bed", "day complete"]
+            }
+        }
+    }
+
     // capture one bounded application state
     private func attachState(_ application: XCUIApplication, name: String) {
         let screenshot = XCTAttachment(screenshot: application.screenshot())
@@ -293,7 +325,7 @@ final class WidgetHostUITests: XCTestCase {
         attachState(springboard, name: "weather-widget-size")
 
         let addWidget = try requireHittable(
-            in: elements(in: springboard, labeled: ["Add Widget"]),
+            in: elements(in: springboard, labeled: ["Add Widget", " Add Widget"]),
             springboard: springboard,
             stage: "add-weather-widget"
         )
@@ -315,46 +347,216 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // add and tap a real hosted widget
-    func testPlacedWidgetOpensForecast() throws {
+    // query one fixture's actual hosted accessibility summary
+    private func widgetQuery(
+        on springboard: XCUIApplication,
+        scenario: MatrixScenario
+    ) -> XCUIElementQuery {
+        // require every scenario fragment
+        let predicates = scenario.widgetLabelFragments.map { fragment in
+            NSPredicate(format: "label CONTAINS[c] %@", fragment)
+        }
+        return springboard.descendants(matching: .any).matching(
+            NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+        )
+    }
+
+    // find one widget across bounded Home Screen pages
+    private func findWidget(
+        on springboard: XCUIApplication,
+        scenario: MatrixScenario,
+        timeout: TimeInterval = 10
+    ) throws -> XCUIElement {
+        let widgets = widgetQuery(on: springboard, scenario: scenario)
+        var widget = firstHittable(in: widgets, timeout: timeout)
+        // inspect the bounded Home Screen pages
+        for _ in 0..<4 where widget == nil {
+            springboard.swipeLeft()
+            widget = firstHittable(in: widgets, timeout: 2)
+        }
+        // return the witnessed hosted control
+        if let widget {
+            return widget
+        }
+        return try requireHittable(
+            in: widgets,
+            springboard: springboard,
+            stage: "matrix-\(scenario.rawValue)-widget",
+            timeout: 2
+        )
+    }
+
+    // launch the deterministic app and request a public timeline refresh
+    private func launchHost() throws -> (app: XCUIApplication, springboard: XCUIApplication) {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["WEATHER_RUN_WIDGET_HOST_TEST"] == "1",
             "actual WidgetKit host capture runs only in the bounded host probe"
         )
 
         let app = XCUIApplication()
-        app.launchArguments = ["-weather-ui-test"]
+        app.launchArguments = ["-weather-ui-test", "-weather-m0-reload-widget"]
         app.launch()
         // require the containing app before host interaction
         guard app.webViews["weather.webview"].waitForExistence(timeout: 15) else {
             attachState(app, name: "failure-containing-app-launch")
             XCTFail("containing app did not expose its WebKit surface")
-            return
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 2,
+                userInfo: nil
+            )
         }
 
         XCUIDevice.shared.press(.home)
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        // require SpringBoard before gallery interaction
+        // require SpringBoard before host interaction
         guard springboard.wait(for: .runningForeground, timeout: 10) else {
             attachState(springboard, name: "failure-springboard-launch")
             XCTFail("SpringBoard did not become foreground")
-            return
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 3,
+                userInfo: nil
+            )
+        }
+        return (app, springboard)
+    }
+
+    // select a DEBUG-only fixture through the real Edit Widget surface
+    private func configureWidget(
+        _ widget: XCUIElement,
+        to targetScenario: MatrixScenario,
+        on springboard: XCUIApplication
+    ) throws -> XCUIElement {
+        widget.press(forDuration: 1.5)
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-edit-widget-context")
+
+        let editWidget = try requireHittable(
+            in: springboard.buttons.matching(
+                NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Edit Widget", "Edit Widget")
+            ),
+            springboard: springboard,
+            stage: "matrix-\(targetScenario.rawValue)-edit-widget"
+        )
+        editWidget.tap()
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configuration")
+
+        let fixtureRow = try requireHittable(
+            in: springboard.descendants(matching: .any).matching(
+                NSPredicate(
+                    format: "label CONTAINS[c] %@ OR value CONTAINS[c] %@",
+                    "M0 fixture",
+                    "M0 fixture"
+                )
+            ),
+            springboard: springboard,
+            stage: "matrix-\(targetScenario.rawValue)-fixture-row"
+        )
+        fixtureRow.tap()
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-options")
+
+        let fixtureOption = try requireHittable(
+            in: elements(in: springboard, labeled: [targetScenario.optionLabel]),
+            springboard: springboard,
+            stage: "matrix-\(targetScenario.rawValue)-fixture-option"
+        )
+        fixtureOption.tap()
+        XCUIDevice.shared.press(.home)
+        _ = springboard.wait(for: .runningForeground, timeout: 10)
+
+        let configuredWidget = try findWidget(
+            on: springboard,
+            scenario: targetScenario,
+            timeout: 45
+        )
+        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configured")
+        return configuredWidget
+    }
+
+    // choose genuine Home Screen tinted rendering
+    private func selectTintedAppearance(
+        for widget: XCUIElement,
+        on springboard: XCUIApplication
+    ) throws -> XCUIElement {
+        widget.press(forDuration: 1.5)
+        try enterHomeScreenEditing(on: springboard)
+
+        let editMenu = try requireHittable(
+            in: elements(in: springboard, labeled: ["Edit"]),
+            springboard: springboard,
+            stage: "matrix-tinted-edit-menu"
+        )
+        editMenu.tap()
+        let customize = try requireHittable(
+            in: elements(in: springboard, labeled: ["Customize"]),
+            springboard: springboard,
+            stage: "matrix-tinted-customize"
+        )
+        attachState(springboard, name: "matrix-tinted-edit-menu")
+        customize.tap()
+        attachState(springboard, name: "matrix-tinted-customization")
+
+        let tinted = try requireHittable(
+            in: elements(in: springboard, labeled: ["Tinted"]),
+            springboard: springboard,
+            stage: "matrix-tinted-control"
+        )
+        tinted.tap()
+        attachState(springboard, name: "matrix-tinted-selected")
+
+        let selectedTint = try requireHittable(
+            in: elements(in: springboard, labeled: ["Tinted"]),
+            springboard: springboard,
+            stage: "matrix-tinted-selected-control"
+        )
+        let selectedValue = String(describing: selectedTint.value ?? "")
+        // require an exposed selected-state postcondition
+        guard selectedTint.isSelected ||
+            selectedValue.localizedCaseInsensitiveContains("selected") else {
+            attachState(springboard, name: "failure-matrix-tinted-not-selected")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "SpringBoard did not expose Tinted as selected"]
+            )
         }
 
-        let widget = try addMaximumWidget(on: springboard)
-        attachState(springboard, name: "actual-widgetkit-home-screen")
+        // dismiss customization through the public Home control
+        XCUIDevice.shared.press(.home)
+        _ = springboard.wait(for: .runningForeground, timeout: 10)
+        return try findWidget(on: springboard, scenario: .maximumDensity, timeout: 20)
+    }
+
+    // capture semantics, geometry, and the fixed primary tap
+    private func captureAndTap(
+        _ widget: XCUIElement,
+        scenario: MatrixScenario,
+        caseID: String,
+        app: XCUIApplication,
+        springboard: XCUIApplication
+    ) {
+        attachState(springboard, name: "matrix-\(caseID)-home-screen")
         XCTAssertTrue(widget.isHittable)
         XCTAssertTrue(widget.label.contains("Sunset"))
-        XCTAssertTrue(widget.label.contains("adjusted air temperature"))
-        XCTAssertTrue(widget.label.contains("CC BY 4.0"))
-        XCTAssertTrue(widget.label.contains("daylight"))
-        XCTAssertTrue(widget.label.contains("standard"))
+        // require weather-only content and credit
+        if scenario != .bedtime {
+            XCTAssertTrue(widget.label.contains("adjusted air temperature"))
+            XCTAssertTrue(widget.label.contains("CC BY 4.0"))
+        } else {
+            XCTAssertFalse(widget.label.contains("Open-Meteo"))
+        }
+        // require exact cutoff copy
+        if scenario != .maximumDensity {
+            XCTAssertTrue(widget.label.contains("go to bed"))
+        }
         XCTAssertGreaterThan(widget.frame.width, widget.frame.height * 1.5)
         XCTAssertGreaterThan(widget.frame.width, 250)
         XCTAssertGreaterThan(widget.frame.height, 100)
 
-        let geometryAttachment = XCTAttachment(string: "widget-frame-points=\(widget.frame)")
-        geometryAttachment.name = "actual-widgetkit-bounds"
+        let geometryAttachment = XCTAttachment(
+            string: "case=\(caseID) scenario=\(scenario.rawValue) widget-frame-points=\(widget.frame)"
+        )
+        geometryAttachment.name = "matrix-\(caseID)-widgetkit-bounds"
         geometryAttachment.lifetime = .keepAlways
         add(geometryAttachment)
 
@@ -363,8 +565,102 @@ final class WidgetHostUITests: XCTestCase {
         XCTAssertTrue(app.webViews["weather.webview"].staticTexts["Weather route /forecast"].waitForExistence(timeout: 10))
 
         let tapAttachment = XCTAttachment(screenshot: app.screenshot())
-        tapAttachment.name = "widget-tap-forecast-route"
+        tapAttachment.name = "matrix-\(caseID)-widget-tap-forecast-route"
         tapAttachment.lifetime = .keepAlways
         add(tapAttachment)
+    }
+
+    // place and capture the baseline actual widget
+    func test01MaximumLightLarge() throws {
+        let host = try launchHost()
+        let widget = try addMaximumWidget(on: host.springboard)
+        captureAndTap(
+            widget,
+            scenario: .maximumDensity,
+            caseID: "01-maximum-light-large",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture the dark actual widget
+    func test02MaximumDarkLarge() throws {
+        let host = try launchHost()
+        let widget = try findWidget(on: host.springboard, scenario: .maximumDensity)
+        captureAndTap(
+            widget,
+            scenario: .maximumDensity,
+            caseID: "02-maximum-dark-large",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture the uncapped AX5 actual widget
+    func test03MaximumLightAX5() throws {
+        let host = try launchHost()
+        let widget = try findWidget(on: host.springboard, scenario: .maximumDensity)
+        captureAndTap(
+            widget,
+            scenario: .maximumDensity,
+            caseID: "03-maximum-light-ax5",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // configure and capture the near-cutoff actual widget
+    func test04NearCutoffLightLarge() throws {
+        let host = try launchHost()
+        let maximum = try findWidget(on: host.springboard, scenario: .maximumDensity)
+        let widget = try configureWidget(
+            maximum,
+            to: .nearCutoff,
+            on: host.springboard
+        )
+        captureAndTap(
+            widget,
+            scenario: .nearCutoff,
+            caseID: "04-near-cutoff-light-large",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // configure and capture the bedtime actual widget
+    func test05BedtimeLightLarge() throws {
+        let host = try launchHost()
+        let nearCutoff = try findWidget(on: host.springboard, scenario: .nearCutoff)
+        let widget = try configureWidget(
+            nearCutoff,
+            to: .bedtime,
+            on: host.springboard
+        )
+        captureAndTap(
+            widget,
+            scenario: .bedtime,
+            caseID: "05-bedtime-light-large",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // restore maximum density and capture genuine tinting
+    func test06MaximumTintedLarge() throws {
+        let host = try launchHost()
+        let bedtime = try findWidget(on: host.springboard, scenario: .bedtime)
+        let maximum = try configureWidget(
+            bedtime,
+            to: .maximumDensity,
+            on: host.springboard
+        )
+        let widget = try selectTintedAppearance(for: maximum, on: host.springboard)
+        captureAndTap(
+            widget,
+            scenario: .maximumDensity,
+            caseID: "06-maximum-tinted-large",
+            app: host.app,
+            springboard: host.springboard
+        )
     }
 }

@@ -36,10 +36,15 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
 
     // bind configuration to fixture content
     private func entry(configuration: WeatherWidgetConfigurationIntent) -> WeatherWidgetEntry {
-        WeatherWidgetEntry(
+        #if DEBUG
+        let fixture = WeatherWidgetFixtures.configured(configuration.fixtureScenario)
+        #else
+        let fixture = WeatherWidgetFixtures.active
+        #endif
+        return WeatherWidgetEntry(
             date: Date(),
             configuration: configuration,
-            fixture: WeatherWidgetFixtures.active
+            fixture: fixture
         )
     }
 }

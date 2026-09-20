@@ -9,12 +9,17 @@ import sys
 from pathlib import Path
 
 REQUIRED_CASES = {
-    ("maximumDensity", "normal", "light", "fullColor"),
-    ("maximumDensity", "normal", "dark", "fullColor"),
-    ("maximumDensity", "accessibility", "light", "fullColor"),
-    ("maximumDensity", "normal", "light", "accented"),
-    ("nearCutoff", "normal", "light", "fullColor"),
-    ("bedtime", "normal", "light", "fullColor"),
+    ("maximumDensity", "large", "light", "fullColor"),
+    ("maximumDensity", "large", "dark", "fullColor"),
+    (
+        "maximumDensity",
+        "accessibility-extra-extra-extra-large",
+        "light",
+        "fullColor",
+    ),
+    ("maximumDensity", "large", "light", "accented"),
+    ("nearCutoff", "large", "light", "fullColor"),
+    ("bedtime", "large", "light", "fullColor"),
 }
 
 
@@ -91,7 +96,7 @@ def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
     # bind density counts to each fixture
     if payload.get("groupCount") != expected_groups or payload.get("intervalCount") != expected_intervals:
         fail(f"{path.name} has incorrect group/interval counts")
-    # preserve the reviewed normal-size floor
+    # preserve the reviewed base-size floor
     if float(payload.get("minimumNormalTextPoints", 0)) < 12:
         fail(f"{path.name} reports text below 12 points")
 
