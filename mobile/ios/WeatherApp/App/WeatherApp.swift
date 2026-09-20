@@ -18,9 +18,11 @@ struct WeatherApp: App {
     // request only a Debug timeline refresh for host evidence
     init() {
         #if DEBUG
+        // snapshot state before logger autoclosure capture
+        let deterministicTestDocument = usesDeterministicTestDocument
         // record process-level test mode
         Logger(subsystem: "farm.ballydidean.weather", category: "webview").notice(
-            "m0-webview-lifecycle app-init deterministic=\(usesDeterministicTestDocument, privacy: .public)"
+            "m0-webview-lifecycle app-init deterministic=\(deterministicTestDocument, privacy: .public)"
         )
         // keep the hook out of production bytes
         if ProcessInfo.processInfo.arguments.contains("-weather-m0-reload-widget") {
