@@ -3750,7 +3750,7 @@ function renderCloudsCondition(state: DashboardState): string {
   });
 }
 
-// format the earliest continuous minimum-cover window within one farm-day forecast
+// format the earliest minimum-cover window with nearest-hour endpoints
 export function clearestCloudRange(
   records: readonly WeatherRecord[],
   timezone: string,
@@ -3796,13 +3796,23 @@ export function clearestCloudRange(
   const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
   const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
   const finish = new Date(Math.min(end, midnight, daylight?.sunset?.getTime() ?? midnight));
-  const from = formatConditionTime(start, timezone);
-  const to = formatConditionTime(finish, timezone);
+  // round only the display after selecting and clipping the actual window
+  const roundedStart = roundConditionHour(start, timezone);
+  const roundedFinish = roundConditionHour(finish, timezone);
+  const from = formatConditionTime(roundedStart, timezone);
+  const to = formatConditionTime(roundedFinish, timezone);
   const fromClock = from.value.replace(/:00$/u, "");
   const toClock = to.value.replace(/:00$/u, "");
 
+  // show one time when both rounded endpoints coincide
+  if (roundedStart.getTime() === roundedFinish.getTime()) {
+    return roundedFinish.getTime() === midnight
+      ? { unit: "", value: "midnight" }
+      : { unit: from.unit, value: fromClock };
+  }
+
   // make the end-of-day boundary explicit rather than repeating twelve am
-  if (finish.getTime() === midnight) {
+  if (roundedFinish.getTime() === midnight) {
     return { unit: "", value: `${fromClock} ${from.unit}–midnight` };
   }
 
@@ -3814,11 +3824,24 @@ export function clearestCloudRange(
       timeZone: timezone,
       timeZoneName: "short",
     });
-    return { unit: "", value: `${formatter.format(start).replace(":00", "")}–${formatter.format(finish).replace(":00", "")}` };
+    return { unit: "", value: `${formatter.format(roundedStart).replace(":00", "")}–${formatter.format(roundedFinish).replace(":00", "")}` };
   }
 
   const startLabel = from.unit === to.unit ? fromClock : `${fromClock} ${from.unit}`;
   return { unit: to.unit, value: `${startLabel}–${toClock}` };
+}
+
+// choose the nearest real local hour across offset changes
+function roundConditionHour(value: Date, timezone: string): Date {
+  const minute = formatWallClockParts(value, timezone).minute;
+  const hourStart = value.getTime() - minute * 60_000 -
+    value.getUTCSeconds() * 1_000 - value.getUTCMilliseconds();
+  // realign boundaries when daylight saving shifts by part of an hour
+  const previous = new Date(hourStart - formatWallClockParts(new Date(hourStart), timezone).minute * 60_000);
+  const nextStart = hourStart + 3_600_000;
+  const nextMinute = formatWallClockParts(new Date(nextStart), timezone).minute;
+  const next = new Date(nextStart + (60 - nextMinute) % 60 * 60_000);
+  return value.getTime() - previous.getTime() < next.getTime() - value.getTime() ? previous : next;
 }
 
 // calculate sunrise, evening events and sunset's change from the previous site day

@@ -4415,8 +4415,8 @@ test("clouds secondary shows overall only when its clearest time range differs",
   }
 });
 
-// clip both hourly edges to the farm's sunrise and sunset
-test("clouds range stays within sunrise and sunset on desktop and mobile", { timeout: 60_000 }, async () => {
+// round the daylight-selected range without changing sunset precision
+test("clouds range rounds sunrise and sunset to hours on desktop and mobile", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -4441,11 +4441,12 @@ test("clouds range stays within sunrise and sunset on desktop and mobile", { tim
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
-      assert.equal((await tile.locator(".condition-secondary > strong").innerText()).replace(/\s+/gu, " "), "6:50 AM–7:17PM");
+      assert.equal((await tile.locator(".condition-secondary > strong").innerText()).replace(/\s+/gu, " "), "7 AM–7PM");
       assert.equal(await tile.locator(".condition-secondary-comparison strong").innerText(), "12–1AM");
+      assert.equal(await page.locator("[data-condition='sunset'] .condition-primary").innerText(), "7:17PM");
       assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
       assert.equal(await tile.locator(".condition-secondary").evaluate(
-        // retain the minute-precise range without clipping its reserved row
+        // retain the rounded range without clipping its reserved row
         (element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight,
       ), true, `sunrise–sunset range clips at ${width}px`);
       await page.close();

@@ -1304,7 +1304,7 @@ test("clearest cloud range formats midnight and all-day windows", () => {
   );
   assert.deepEqual(
     clearestCloudRange([cloudForecastRecord("2026-09-13T06:30:00Z", 12)], site.timezone),
-    { unit: "", value: "11:30 PM–midnight" },
+    { unit: "", value: "midnight" },
   );
   const allDay = Array.from(
     { length: 24 },
@@ -1319,11 +1319,15 @@ test("clearest cloud range formats midnight and all-day windows", () => {
   );
 });
 
-// render literal elapsed hours across minute and daylight-saving boundaries
-test("clearest cloud range formats minutes and daylight-saving transitions", () => {
+// round displayed endpoints without losing daylight-saving distinctions
+test("clearest cloud range rounds to the nearest hour across daylight-saving transitions", () => {
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-12T20:29:59.999Z", 12)], site.timezone),
+    { unit: "PM", value: "1–2" },
+  );
   assert.deepEqual(
     clearestCloudRange([cloudForecastRecord("2026-09-12T20:30:00Z", 12)], site.timezone),
-    { unit: "PM", value: "1:30–2:30" },
+    { unit: "PM", value: "2–3" },
   );
   assert.deepEqual(
     clearestCloudRange([
@@ -1336,10 +1340,26 @@ test("clearest cloud range formats minutes and daylight-saving transitions", () 
     clearestCloudRange([cloudForecastRecord("2026-11-01T08:00:00Z", 12)], site.timezone),
     { unit: "", value: "1 AM PDT–1 AM PST" },
   );
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-12T20:40:00Z", 12)], "Asia/Kolkata"),
+    { unit: "AM", value: "2–3" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-12T20:40:00Z", 12)], "Pacific/Chatham"),
+    { unit: "AM", value: "9–10" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-10-03T15:20:00Z", 12)], "Australia/Lord_Howe"),
+    { unit: "AM", value: "3" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-04-04T14:45:00Z", 12)], "Australia/Lord_Howe"),
+    { unit: "AM", value: "2" },
+  );
 });
 
-// clip overlapping hourly bins to the exact astronomical daylight interval
-test("clearest cloud range clips partial sunrise and sunset hours", () => {
+// select exact daylight overlap before rounding its displayed endpoints
+test("clearest cloud range rounds clipped sunrise and sunset hours", () => {
   const daylight = {
     sunrise: new Date("2026-09-12T14:17:00Z"),
     sunset: new Date("2026-09-13T02:17:00Z"),
@@ -1350,7 +1370,7 @@ test("clearest cloud range clips partial sunrise and sunset hours", () => {
       cloudForecastRecord("2026-09-12T14:00:00Z", 20),
       cloudForecastRecord("2026-09-12T15:00:00Z", 20),
     ], site.timezone, daylight),
-    { unit: "AM", value: "7:17–9" },
+    { unit: "AM", value: "7–9" },
   );
   assert.deepEqual(
     clearestCloudRange([
@@ -1359,7 +1379,32 @@ test("clearest cloud range clips partial sunrise and sunset hours", () => {
       cloudForecastRecord("2026-09-13T02:00:00Z", 20),
       cloudForecastRecord("2026-09-13T03:00:00Z", 5),
     ], site.timezone, daylight),
-    { unit: "PM", value: "5–7:17" },
+    { unit: "PM", value: "5–7" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-12T14:00:00Z", 20),
+      cloudForecastRecord("2026-09-12T15:00:00Z", 20),
+    ], site.timezone, { ...daylight, sunrise: new Date("2026-09-12T14:40:00Z") }),
+    { unit: "AM", value: "8–9" },
+  );
+  assert.deepEqual(
+    clearestCloudRange([
+      cloudForecastRecord("2026-09-13T01:00:00Z", 20),
+      cloudForecastRecord("2026-09-13T02:00:00Z", 20),
+    ], site.timezone, { ...daylight, sunset: new Date("2026-09-13T02:40:00Z") }),
+    { unit: "PM", value: "6–8" },
+  );
+});
+
+// avoid repeated labels when a short daylight window rounds to one hour
+test("clearest cloud range collapses identical rounded endpoints", () => {
+  assert.deepEqual(
+    clearestCloudRange([cloudForecastRecord("2026-09-12T14:00:00Z", 12)], site.timezone, {
+      sunrise: new Date("2026-09-12T14:40:00Z"),
+      sunset: new Date("2026-09-12T14:55:00Z"),
+    }),
+    { unit: "AM", value: "8" },
   );
 });
 
