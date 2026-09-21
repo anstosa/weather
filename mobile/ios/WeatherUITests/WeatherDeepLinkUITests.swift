@@ -202,6 +202,37 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
+    // require the actual Home Screen before querying icons
+    private func requireHomeScreen(on springboard: XCUIApplication) throws {
+        let homeScreen = springboard.otherElements.matching(
+            NSPredicate(format: "identifier == %@", "Home screen icons")
+        )
+        let appSwitcher = springboard.otherElements.matching(
+            NSPredicate(format: "identifier == %@", "AppSwitcherContentView")
+        )
+
+        // accept the intended state immediately
+        if firstExisting(in: homeScreen, timeout: 2) != nil {
+            return
+        }
+
+        // dismiss the observed post-install app switcher state
+        if firstExisting(in: appSwitcher, timeout: 1) != nil {
+            attachState(springboard, name: "home-screen-app-switcher-before-recovery")
+            XCUIDevice.shared.press(.home)
+        }
+
+        // fail before an app-switcher card can masquerade as an icon
+        guard firstExisting(in: homeScreen, timeout: 10) != nil else {
+            attachState(springboard, name: "failure-home-screen-state")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 10,
+                userInfo: [NSLocalizedDescriptionKey: "SpringBoard did not expose Home screen icons"]
+            )
+        }
+    }
+
     // enter editing through the exact captured SpringBoard action
     private func enterHomeScreenEditing(on springboard: XCUIApplication) throws {
         let editModeEdit = springboard.buttons.matching(
@@ -474,6 +505,7 @@ final class WidgetHostUITests: XCTestCase {
                 userInfo: nil
             )
         }
+        try requireHomeScreen(on: springboard)
         return (app, springboard)
     }
 
