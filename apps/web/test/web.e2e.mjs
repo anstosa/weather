@@ -1780,9 +1780,9 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator(".condition-status-light").count(), 0);
     assert.equal(
       await page.locator("[data-condition='humidity'] .condition-status-color rect").getAttribute("fill"),
-      "rgb(239, 126, 31)",
+      "rgb(67, 151, 86)",
     );
-    assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Very humid/u);
+    assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Comfortable/u);
     assert.equal(
       await page.locator(".condition-status-dark").first().evaluate(
         // require maximum contrast over mid-tone bands
@@ -4056,6 +4056,70 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
   }
 });
 
+// make humidity discomfort depend on paired air temperature at every screen size
+test("humidity colors stay comfortable in cool air and warn only in hot humid air", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  try {
+    browser = await launchBrowser();
+    // cover both compact and wide card layouts
+    for (const width of [320, 1440]) {
+      const page = await createFixturePage(browser, { viewport: { height: 900, width } });
+      await page.clock.setFixedTime(new Date("2026-08-21T20:00:00Z"));
+      let temperatureC = 16;
+      // retain the numeric humidity while varying only its paired air temperature
+      await page.route("**/api/v1/sites/ballydidean/current", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.data = body.data.map(
+          // prevent a feels-like value from acting as the humidity heat gate
+          (record) => ({ ...record, metrics: { ...record.metrics, relativeHumidityPercent: 85, temperatureC, apparentTemperatureC: 35 } }),
+        );
+        await route.fulfill({ response, json: body });
+      });
+      // keep the humidity maximum cold while another forecast hour is hot
+      await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.data = [[95, 16], [75, 30], [85, null], [85, 30]].map(
+          // align each humidity and temperature pair with its own hourly color stop
+          ([relativeHumidityPercent, temperature], index) => ({
+            ...body.data[index],
+            validAt: `2026-08-21T${String(18 + index)}:00:00.000Z`,
+            metrics: { ...body.data[index].metrics, relativeHumidityPercent, temperatureC: temperature },
+          }),
+        );
+        await route.fulfill({ response, json: body });
+      });
+      // test known comfort, actual hot humidity and missing temperature separately
+      for (const [temperature, color, label] of [
+        [16, "rgb(67, 151, 86)", "Comfortable"],
+        [30, "rgb(207, 67, 55)", "Very humid"],
+        [null, "rgb(136, 136, 130)", "Unavailable"],
+      ]) {
+        temperatureC = temperature;
+        await page.goto(fixture.origin, { waitUntil: "networkidle" });
+        const card = page.locator("[data-condition='humidity']");
+        assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), color);
+        assert.equal(await card.locator(".condition-status").innerText(), label);
+        assert.equal(await card.locator(".condition-primary").innerText(), "85%");
+        assert.equal(await card.locator(".condition-forecast-reading").getAttribute("class"), "condition-forecast-reading condition-forecast-tone-green");
+        assert.match(await card.locator(".condition-forecast-reading").innerText(), /^Max\s*95%$/u);
+      }
+      await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+      assert.deepEqual(await page.locator("#forecast-line-humidity-0 stop").evaluateAll(
+        // include the terminal repeated stop in the pairing check
+        (stops) => stops.map((stop) => stop.getAttribute("stop-color")),
+      ), ["rgb(67, 151, 86)", "rgb(239, 126, 31)", "rgb(136, 136, 130)", "rgb(207, 67, 55)", "rgb(207, 67, 55)"]);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // distinguish current pressure movement from the strongest change across today
 test("pressure tile colors three-hour speed and shows the whole-day maximum", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -5047,7 +5111,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(0, 0, 0)", condition: "rain", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
-        { color: "rgb(239, 126, 31)", condition: "humidity", opacity: "0.75" },
+        { color: "rgb(67, 151, 86)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },

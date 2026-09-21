@@ -2121,9 +2121,9 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /data-condition="tide"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?<span>High<\/span>[\s\S]*?<div class="condition-primary"><strong>8\.2<small>ft<\/small><\/strong>[\s\S]*?class="condition-secondary-divider">Direction<\/span>[\s\S]*?<strong>Rising<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="tide"[\s\S]*?class="condition-detail">Rising<\/p>/u);
   assert.doesNotMatch(html, /condition-forecast-heading/u);
-  assert.equal((html.match(/condition-forecast-tone-green/gu) ?? []).length, 7);
+  assert.equal((html.match(/condition-forecast-tone-green/gu) ?? []).length, 8);
   assert.equal((html.match(/condition-forecast-tone-blue/gu) ?? []).length, 1);
-  assert.equal((html.match(/condition-forecast-tone-orange/gu) ?? []).length, 1);
+  assert.equal((html.match(/condition-forecast-tone-orange/gu) ?? []).length, 0);
   assert.equal((html.match(/condition-forecast-tone-yellow/gu) ?? []).length, 1);
   assert.equal((html.match(/condition-forecast-tone-neutral/gu) ?? []).length, 7);
   assert.doesNotMatch(html, /Next 24h/u);
@@ -2831,10 +2831,10 @@ test("current condition bands follow requested weather and health thresholds", (
   assert.deepEqual(
     [29, 30, 60, 61, 71, 81].map(
       // collect every humidity comfort band
-      (value) => humidityBand(value).color,
+      (value) => humidityBand(value, 30).color,
     ),
     [
-      "rgb(200, 183, 68)",
+      "rgb(67, 151, 86)",
       "rgb(67, 151, 86)",
       "rgb(67, 151, 86)",
       "rgb(230, 181, 25)",
@@ -2845,6 +2845,97 @@ test("current condition bands follow requested weather and health thresholds", (
   assert.equal(tideLevelLabel(tides[2], tides), "High");
   assert.equal(tideLevelLabel({ ...tides[2], waterLevelM: 1.8 }, tides), "Medium");
   assert.equal(tideLevelLabel({ ...tides[2], waterLevelM: 0.7 }, tides), "Low");
+});
+
+// reserve humidity discomfort colors for hot weather
+test("humidity comfort requires hot air rather than relative humidity alone", () => {
+  // keep cold saturated air and dry hot air out of warning bands
+  for (const [humidity, temperature] of [[100, 0], [95, 16], [100, 26], [20, 35], [60, 35]]) {
+    assert.equal(humidityBand(humidity, temperature).color, "rgb(67, 151, 86)");
+    assert.equal(humidityBand(humidity, temperature).label, "Comfortable");
+  }
+  const hotThresholdC = (80 - 32) * 5 / 9;
+  assert.equal(humidityBand(95, hotThresholdC - 0.000_001).color, "rgb(67, 151, 86)");
+  assert.equal(humidityBand(95, hotThresholdC).color, "rgb(207, 67, 55)");
+  // distinguish missing or invalid inputs from known comfortable conditions
+  for (const [humidity, temperature] of [[null, 30], [95, null], [NaN, 30], [95, Infinity], [-1, 30], [101, 30]]) {
+    assert.equal(humidityBand(humidity, temperature).color, "rgb(136, 136, 130)");
+    assert.equal(humidityBand(humidity, temperature).label, "Unavailable");
+  }
+});
+
+// keep observed humidity paired with the same station's actual air temperature
+test("humidity card uses observed air temperature and retains the percentage without comfort data", () => {
+  // reject apparent-temperature and unrelated-station substitutions
+  for (const [temperatureC, apparentTemperatureC, expectedColor, expectedLabel] of [
+    [16, 35, "rgb(67, 151, 86)", "Comfortable"],
+    [30, 16, "rgb(207, 67, 55)", "Very humid"],
+    [null, 35, "rgb(136, 136, 130)", "Unavailable"],
+  ]) {
+    const state = {
+      ...forecastState([], null),
+      current: [record, {
+        ...ecowittRecord,
+        metrics: { ...ecowittRecord.metrics, relativeHumidityPercent: 95, temperatureC, apparentTemperatureC },
+      }],
+    };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="humidity"[\s\S]*?<\/article>/u)?.[0];
+    assert.ok(tile);
+    assert.ok(tile.includes(`fill="${expectedColor}"`));
+    assert.ok(tile.includes(`<span>${expectedLabel}</span>`));
+    assert.match(tile, /class="condition-primary"><strong>95<small>%<\/small><\/strong>/u);
+  }
+});
+
+// preserve same-hour pairings through maxima and the shared raw-adjusted switch
+test("humidity forecast colors use paired temperatures in cards and chart gradients", () => {
+  const forecast = [[95, 16], [75, 30], [65, 30], [85, null], [70, 25]].map(
+    // create distinct moisture and heat peaks in one local day
+    ([relativeHumidityPercent, temperatureC], index) => {
+      const hour = {
+        ...forecastRecord,
+        validAt: `2026-08-21T${String(18 + index)}:00:00.000Z`,
+        metrics: { ...forecastRecord.metrics, relativeHumidityPercent, temperatureC },
+      };
+      return index === 4 ? { ...hour, adjustment: activeAdjustment(hour) } : hour;
+    },
+  );
+  // ensure both chart ends and the homepage max use the displayed metric mode
+  for (const mode of ["raw", "adjusted"]) {
+    const state = { ...forecastState(forecast, null), forecastAdjustmentMode: mode };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="humidity"[\s\S]*?<\/article>/u)?.[0];
+    assert.match(tile, /condition-forecast-reading condition-forecast-tone-green[\s\S]*?Max<\/span> <strong>95<small>%/u);
+    const chart = forecastChartHtml(renderWeatherDashboard(state, "forecast"), "humidity");
+    const colors = [...chart.matchAll(/stop-color="([^"]+)"/gu)].map(
+      // read the rendered hourly color stops including the final boundary
+      (match) => match[1],
+    );
+    assert.deepEqual(colors, [
+      "rgb(67, 151, 86)", "rgb(239, 126, 31)", "rgb(230, 181, 25)", "rgb(136, 136, 130)",
+      mode === "raw" ? "rgb(67, 151, 86)" : "rgb(230, 181, 25)",
+      mode === "raw" ? "rgb(67, 151, 86)" : "rgb(230, 181, 25)",
+    ]);
+    assert.deepEqual(forecastChartSeries(chart, "humidity")[0].values, mode === "raw" ? [95, 75, 65, 85, 70] : [95, 75, 65, 85, 65]);
+  }
+
+  const hotPeak = { ...forecast[0], metrics: { ...forecast[0].metrics, temperatureC: 30 } };
+  const adjustedPeak = { ...hotPeak, adjustment: {
+    ...activeAdjustment(hotPeak),
+    adjustedMetrics: { temperatureC: 16, relativeHumidityPercent: 95 },
+  } };
+  // cover a cooler corrected maximum and missing temperature without inventing comfort
+  for (const [hours, mode, tone] of [
+    [[hotPeak], "raw", "red"],
+    [[forecast[0], hotPeak], "raw", "red"],
+    [[adjustedPeak], "adjusted", "green"],
+    [[adjustedPeak], "raw", "red"],
+    [[forecast[3]], "raw", "gray"],
+    [[], "raw", "neutral"],
+  ]) {
+    const state = { ...forecastState(hours, null), forecastAdjustmentMode: mode };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="humidity"[\s\S]*?<\/article>/u)?.[0];
+    assert.ok(tile.includes(`condition-forecast-reading condition-forecast-tone-${tone}`));
+  }
 });
 
 test("controller loads validated unit preferences and persists changes", () => {

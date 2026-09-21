@@ -3436,12 +3436,12 @@ function renderCurrent(state: DashboardState): string {
         })}
       ${renderCloudsCondition(state)}
       ${renderConditionCard({
-          band: humidityBand(current.metrics.relativeHumidityPercent),
+          band: humidityBand(current.metrics.relativeHumidityPercent, current.metrics.temperatureC),
           className: "compact-condition",
           icon: "humidity_percentage",
           label: "Humidity",
           measurement: formatFixedMeasurement(current.metrics.relativeHumidityPercent, "%"),
-          forecast: forecastMaximumFixed(forecast, "relativeHumidityPercent", "%", 0, humidityBand, useForecastAdjustments),
+          forecast: forecastHumidity(forecast, useForecastAdjustments),
         })}
       ${renderConditionCard({
           band: airQualityBand(airQuality),
@@ -4172,6 +4172,8 @@ interface ForecastChartDefinition {
   readonly key: string;
   readonly label: string;
   readonly series: readonly ForecastChartSeries[];
+  // pair humidity colors with the same forecast hour's air temperature
+  readonly temperaturesC?: readonly (number | null)[];
 }
 
 // describe one line inside a forecast chart
@@ -4807,6 +4809,7 @@ function buildForecastCharts(
       key: "humidity",
       label: "Humidity",
       series: [{ label: "Humidity", values: metric("relativeHumidityPercent") }],
+      temperaturesC: metric("temperatureC"),
     },
     {
       domain: HISTORICAL_FORECAST_DOMAINS.airQuality,
@@ -4982,7 +4985,11 @@ function renderForecastLineGradient(
     <linearGradient id="${forecastLineGradientId(chart.key, seriesIndex)}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${String(width)}" y2="0">
       ${boundaryValues.map(
         // align every color stop with its forecast hour
-        (value, index) => `<stop offset="${((index / denominator) * 100).toFixed(3)}%" stop-color="${escapeHtml(forecastLineColor(chart.format, value, index, boundaryValues))}"/>`,
+        (value, index) => {
+          const temperatureC = chart.temperaturesC?.[Math.min(index, series.values.length - 1)] ?? null;
+          const color = forecastLineColor(chart.format, value, index, boundaryValues, temperatureC);
+          return `<stop offset="${((index / denominator) * 100).toFixed(3)}%" stop-color="${escapeHtml(color)}"/>`;
+        },
       ).join("")}
     </linearGradient>
   `;
@@ -4999,6 +5006,7 @@ function forecastLineColor(
   value: number | null,
   index: number,
   values: readonly (number | null)[],
+  temperatureC: number | null,
 ): string {
   switch (format) {
     case "temperature":
@@ -5016,7 +5024,7 @@ function forecastLineColor(
     case "cloudCover":
       return cloudBand(value).color;
     case "humidity":
-      return humidityBand(value).color;
+      return humidityBand(value, temperatureC).color;
     case "waterLevel": {
       const previous = values[index - 1];
 
@@ -8409,34 +8417,39 @@ export function pressureBand(
   return { color: "rgb(67, 151, 86)", detail: `${low.value}–${high.value} ${low.unit}`, label: "Normal" };
 }
 
-// classify relative humidity by outdoor comfort
-export function humidityBand(value: number | null): ConditionBand {
-  // preserve unavailable humidity honestly
-  if (value === null) {
+// color humidity discomfort only in hot air rather than treating damp cold air as oppressive
+export function humidityBand(value: number | null, temperatureC: number | null): ConditionBand {
+  // preserve unavailable or invalid humidity honestly
+  if (value === null || !Number.isFinite(value) || value < 0 || value > 100) {
     return unavailableBand("Humidity reading unavailable");
   }
 
-  // label dry air
-  if (value < 30) {
-    return { color: "rgb(200, 183, 68)", detail: "Dry air", label: "Dry" };
+  // avoid inferring comfort without paired air temperature
+  if (temperatureC === null || !Number.isFinite(temperatureC)) {
+    return unavailableBand("Air temperature unavailable for humidity comfort");
   }
 
-  // label the common comfort range
+  // use an 80-degree fahrenheit display cutoff rather than a medical heat-risk threshold
+  if (temperatureC < (80 - 32) * 5 / 9) {
+    return { color: "rgb(67, 151, 86)", detail: "No heat-related humidity discomfort", label: "Comfortable" };
+  }
+
+  // keep dry hot air free of humidity warnings
   if (value <= 60) {
-    return { color: "rgb(67, 151, 86)", detail: "Comfortable humidity", label: "Comfortable" };
+    return { color: "rgb(67, 151, 86)", detail: "Humidity below the muggy range", label: "Comfortable" };
   }
 
   // flag the first humid comfort band
   if (value <= 70) {
-    return { color: "rgb(230, 181, 25)", detail: "Noticeably humid air", label: "Humid" };
+    return { color: "rgb(230, 181, 25)", detail: "Humid air adds to the heat", label: "Humid" };
   }
 
   // flag uncomfortable humidity
   if (value <= 80) {
-    return { color: "rgb(239, 126, 31)", detail: "Uncomfortably humid air", label: "Very humid" };
+    return { color: "rgb(239, 126, 31)", detail: "Uncomfortably hot and humid", label: "Very humid" };
   }
 
-  return { color: "rgb(207, 67, 55)", detail: "Oppressively humid air", label: "Very humid" };
+  return { color: "rgb(207, 67, 55)", detail: "Oppressively hot and humid", label: "Very humid" };
 }
 
 // classify modeled cloud cover using the dashboard's three display bands
@@ -8512,6 +8525,7 @@ function forecastToneForBand(value: number | null, band: ConditionBand): Forecas
     case "rgb(56, 120, 197)": return "blue";
     case "rgb(114, 30, 52)": return "burgundy";
     case "rgb(200, 183, 68)": return "gold";
+    case "rgb(136, 136, 130)":
     case "rgb(84, 84, 80)": return "gray";
     case "rgb(0, 146, 63)":
     case "rgb(67, 151, 86)": return "green";
@@ -11412,6 +11426,23 @@ function totalMetric(
       (total, value) => total + value,
       0,
     );
+}
+
+// color maximum humidity using only temperatures recorded at that same humidity
+function forecastHumidity(records: readonly WeatherRecord[], useAdjustments: boolean): ForecastCardValue {
+  const value = maximumMetric(records, "relativeHumidityPercent", useAdjustments);
+  const matchingHours = records.filter(
+    // exclude unrelated daily temperature peaks
+    (record) => value !== null && forecastMetricValue(record, "relativeHumidityPercent", useAdjustments) === value,
+  );
+  const temperatureC = maximumMetric(matchingHours, "temperatureC", useAdjustments);
+  return {
+    readings: [{
+      label: "Max",
+      measurement: formatFixedMeasurement(value, "%", 0),
+      tone: forecastToneForBand(value, humidityBand(value, temperatureC)),
+    }],
+  };
 }
 
 // format one fixed-unit forecast maximum
