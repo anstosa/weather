@@ -135,9 +135,15 @@ targets the containing app and its embedded widget extension rather than
 compiling DEBUG-only fixture tests as production artifacts.
 
 The product AppIntent probe places a real `systemMedium` widget through public
-Simulator UI, changes Fahrenheit to Celsius, restarts the Simulator extension
-process, verifies persisted Celsius output, and returns to Fahrenheit. Its
-provider log, result bundles, typed and visible/spoken attachments, restart
+Simulator UI, changes Fahrenheit to Celsius through the native edit sheet,
+requires the observed Home Screen host to render Celsius, restarts the
+Simulator extension process, verifies persisted Celsius output, and returns
+to Fahrenheit. Each phase requires one matching `kind`/`family` typed
+`WidgetInfo` result plus provider and exact-host visible/spoken evidence.
+The fresh public query is epoch-tagged; duplicate or untyped results fail
+closed rather than choosing a Celsius entry. The observed single placement
+and its screenshots establish host continuity, not a public scalar widget ID.
+Provider logs, result bundles, typed and visible/spoken attachments, restart
 receipt, and evidence hashes are mandatory.
 
 The extension persistence probe uses a separate disposable Simulator and one
@@ -146,12 +152,14 @@ otherwise empty extension-owned production store once through
 `WeatherWidgetDataController`; changing the same widget to Celsius persists one
 sanitized offline attempt without replacing its last-good snapshot. After a
 full Simulator shutdown and boot, the Celsius provider reads that exact state
-without fetching or writing. The gate requires the same snapshot UUID, failure
-timestamp/outcome, and public WidgetInfo ID, a different extension process ID,
-and genuine before/after SpringBoard screenshots plus the complete accessible
-Offline numeric forecast and credit. It sends no production traffic, uses no
-App Group or private container access, and never substitutes for the separate
-product AppIntent roundtrip. A special-flag unit regression also fans out
+without fetching or writing. The gate requires the same extension-store
+snapshot UUID and failure timestamp/outcome, unique typed Celsius results in
+both phases, a different extension process ID, and genuine before/after
+screenshots of the one observed Home Screen host with complete accessible
+Offline numeric forecast and credit. The snapshot UUID identifies a cache
+transaction, not widget placement. The probe sends no production traffic,
+uses no App Group or private container access, and never substitutes for the
+separate product AppIntent roundtrip. A special-flag unit regression also fans out
 concurrent Fahrenheit and Celsius provider requests and requires exactly one
 seed, one offline write, and byte-identical read-only attempts afterward.
 

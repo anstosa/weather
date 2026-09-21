@@ -30,6 +30,8 @@ cleanup() {
   local status=$?
   trap - EXIT
   stop_log_capture
+  # retain both phase-local streams even when XCTest fails early
+  cat "$RESULTS"/*-provider.log > "$RESULTS/widget-unit.log" 2>/dev/null || true
   # delete only the recorded created device
   if [[ -n "$SIMULATOR_UDID" ]]; then
     xcrun simctl shutdown "$SIMULATOR_UDID" >/dev/null 2>&1 || true
@@ -96,11 +98,12 @@ run_unit_test() {
 
 # start one log stream for the currently booted simulator
 start_log_capture() {
+  local phase_log="$1"
   xcrun simctl spawn "$SIMULATOR_UDID" log stream \
     --style compact \
     --level info \
     --predicate 'subsystem == "farm.ballydidean.weather.widget" OR subsystem == "farm.ballydidean.weather"' \
-    >> "$RESULTS/widget-unit.log" 2>&1 &
+    > "$phase_log" 2>&1 &
   LOG_PID=$!
 }
 
@@ -161,8 +164,7 @@ xcrun simctl uninstall "$SIMULATOR_UDID" "$APP_BUNDLE_ID" \
   > "$RESULTS/pre-test-uninstall.log" 2>&1 || true
 
 # capture the public F-to-C edit and provider delivery
-: > "$RESULTS/widget-unit.log"
-start_log_capture
+start_log_capture "$RESULTS/edit-to-celsius-provider.log"
 run_unit_test "test07TemperatureUnitEditToCelsius" "edit-to-celsius"
 stop_log_capture
 
@@ -173,19 +175,29 @@ xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 printf 'simulator-rebooted-between-unit-phases=1\n' > "$RESULTS/restart-receipt.txt"
 
 # prove the persisted Celsius configuration survives before restoring Fahrenheit
-start_log_capture
+start_log_capture "$RESULTS/restart-and-return-fahrenheit-provider.log"
 run_unit_test "test08TemperatureUnitPersistsAfterExtensionRestart" "restart-and-return-fahrenheit"
 stop_log_capture
 
-# require executed public edit, provider delivery, and both roundtrip values
-WIDGET_IDS="$(grep -oE 'widget-id=[^ ]+' "$RESULTS/widget-unit.log" || true)"
-WIDGET_ID_COUNT="$(printf '%s\n' "$WIDGET_IDS" | sed '/^$/d' | sort -u | wc -l | tr -d '[:space:]')"
-if [[ "$WIDGET_ID_COUNT" != "1" ]] \
-  || ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/widget-unit.log" \
-  || ! grep -Fq 'configuration-unit unit=fahrenheit' "$RESULTS/widget-unit.log" \
-  || ! grep -Fq 'widget-info widget-id=' "$RESULTS/widget-unit.log" \
-  || ! grep -Fq 'unit=celsius' "$RESULTS/widget-unit.log" \
-  || ! grep -Fq 'unit=fahrenheit' "$RESULTS/widget-unit.log"; then
+# require one exact current typed summary from a phase-local provider stream
+require_unique_summary() {
+  local phase_log="$1"
+  local unit="$2"
+  grep -Eq "widget-info widget-config epoch=[1-9][0-9]* observedAtMs=[1-9][0-9]* status=unique total=[1-9][0-9]* matchCount=1 kind=farm[.]ballydidean[.]weather[.]forecast family=systemMedium unit=${unit}$" "$phase_log"
+}
+
+cat "$RESULTS/edit-to-celsius-provider.log" \
+  "$RESULTS/restart-and-return-fahrenheit-provider.log" > "$RESULTS/widget-unit.log"
+
+# bind typed and provider values to the two actual execution phases
+if ! require_unique_summary "$RESULTS/edit-to-celsius-provider.log" fahrenheit \
+  || ! require_unique_summary "$RESULTS/edit-to-celsius-provider.log" celsius \
+  || ! require_unique_summary "$RESULTS/restart-and-return-fahrenheit-provider.log" celsius \
+  || ! require_unique_summary "$RESULTS/restart-and-return-fahrenheit-provider.log" fahrenheit \
+  || ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/edit-to-celsius-provider.log" \
+  || ! grep -Fq 'configuration-unit unit=fahrenheit' "$RESULTS/edit-to-celsius-provider.log" \
+  || ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/restart-and-return-fahrenheit-provider.log" \
+  || ! grep -Fq 'configuration-unit unit=fahrenheit' "$RESULTS/restart-and-return-fahrenheit-provider.log"; then
   xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/failure.png" >/dev/null 2>&1 || true
   echo "iOS product temperature-unit probe failed; see $RESULTS" >&2
   exit 78
@@ -210,6 +222,9 @@ done
 
 find "$ATTACHMENTS" -type f -print0 | sort -z | xargs -0 shasum -a 256 \
   > "$RESULTS/attachments.sha256"
-shasum -a 256 "$RESULTS/widget-unit.log" "$RESULTS/attachments.sha256" \
+shasum -a 256 "$RESULTS/widget-unit.log" \
+  "$RESULTS/edit-to-celsius-provider.log" \
+  "$RESULTS/restart-and-return-fahrenheit-provider.log" \
+  "$RESULTS/attachments.sha256" \
   > "$RESULTS/evidence.sha256"
 echo "iOS product temperature-unit AppIntent probe passed: $RESULTS"

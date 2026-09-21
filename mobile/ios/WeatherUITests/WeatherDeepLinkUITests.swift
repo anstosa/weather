@@ -1,5 +1,53 @@
 import XCTest
 
+// parse only the complete current public configuration summary
+private struct WidgetConfigurationReceipt {
+    let epoch: Int
+    let observedAtMs: Int64
+    let status: String
+    let total: Int
+    let matchCount: Int
+    let kind: String
+    let family: String
+    let unit: String
+
+    // reject partial or appended ambiguity details
+    init?(_ text: String) {
+        let parts = text.split(separator: " ").map(String.init)
+        guard parts.count == 9, parts[0] == "widget-config" else {
+            return nil
+        }
+        let keys = ["epoch", "observedAtMs", "status", "total", "matchCount", "kind", "family", "unit"]
+        let values = zip(keys, parts.dropFirst()).map { key, part -> String? in
+            let prefix = "\(key)="
+            return part.hasPrefix(prefix) ? String(part.dropFirst(prefix.count)) : nil
+        }
+        guard values.allSatisfy({ $0 != nil }),
+              let epoch = Int(values[0]!),
+              let observedAtMs = Int64(values[1]!),
+              let total = Int(values[3]!),
+              let matchCount = Int(values[4]!) else {
+            return nil
+        }
+        self.epoch = epoch
+        self.observedAtMs = observedAtMs
+        status = values[2]!
+        self.total = total
+        self.matchCount = matchCount
+        kind = values[5]!
+        family = values[6]!
+        unit = values[7]!
+    }
+
+    // require the requested epoch and exact unique typed value
+    func accepts(epoch expectedEpoch: Int, unit expectedUnit: String) -> Bool {
+        epoch == expectedEpoch && observedAtMs > 0 && status == "unique" &&
+            total >= 1 && matchCount == 1 &&
+            kind == "farm.ballydidean.weather.forecast" &&
+            family == "systemMedium" && unit == expectedUnit
+    }
+}
+
 @MainActor
 final class WeatherDeepLinkUITests: XCTestCase {
     // preserve an actual loaded WebKit failure state
@@ -518,11 +566,76 @@ final class WidgetHostUITests: XCTestCase {
 
     // find the tappable SpringBoard widget container
     private func widgetHostElement(on springboard: XCUIApplication) throws -> XCUIElement {
-        return try requireHittable(
+        let widget = try requireHittable(
             in: widgetHostQuery(on: springboard),
             springboard: springboard,
             stage: "weather-widget-springboard-host",
             timeout: 10
+        )
+        // reject multiple indistinguishable placements
+        guard widgetHostQuery(on: springboard).count == 1 else {
+            attachState(springboard, name: "failure-ambiguous-widget-host")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 12,
+                userInfo: [NSLocalizedDescriptionKey: "SpringBoard exposed multiple Weather widget hosts"]
+            )
+        }
+        return widget
+    }
+
+    // bind one accessible content frame to the observed host
+    private func semanticBelongsToHost(_ semanticFrame: CGRect, hostFrame: CGRect) -> Bool {
+        let normalized = normalizedSemanticFrame(semanticFrame, within: hostFrame).frame
+        return normalized.width > 0 && normalized.height > 0 &&
+            hostFrame.insetBy(dx: -1, dy: -1).contains(normalized)
+    }
+
+    // require only semantics geometrically bound to the one observed host
+    private func requireTargetSemantics(
+        on springboard: XCUIApplication,
+        fragments: [String],
+        stage: String,
+        timeout: TimeInterval = 45
+    ) throws -> XCUIElement {
+        let deadline = Date().addingTimeInterval(timeout)
+        let predicates = fragments.map { NSPredicate(format: "label CONTAINS[c] %@", $0) }
+        let candidates = springboard.descendants(matching: .any).matching(
+            NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+        )
+
+        // wait for the target's own rendered semantics
+        repeat {
+            let hosts = widgetHostQuery(on: springboard).allElementsBoundByIndex.filter { $0.exists }
+            // reject a second physical host rather than sampling it
+            if hosts.count > 1 {
+                attachState(springboard, name: "failure-\(stage)-ambiguous-host")
+                throw NSError(
+                    domain: "farm.ballydidean.weather.widget-host",
+                    code: 13,
+                    userInfo: [NSLocalizedDescriptionKey: "multiple Weather widget hosts appeared"]
+                )
+            }
+            // inspect semantics only after the unique host appears
+            if let host = hosts.first {
+                let frame = host.frame
+                // ignore matching weather elsewhere on SpringBoard
+                for candidate in candidates.allElementsBoundByIndex {
+                    // accept only nonempty contained content
+                    if candidate.exists,
+                       semanticBelongsToHost(candidate.frame, hostFrame: frame) {
+                        return candidate
+                    }
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        attachState(springboard, name: "failure-\(stage)")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 14,
+            userInfo: [NSLocalizedDescriptionKey: "observed Weather host did not render \(stage)"]
         )
     }
 
@@ -942,6 +1055,8 @@ final class WidgetHostUITests: XCTestCase {
         on springboard: XCUIApplication
     ) throws {
         let hostWidget = try widgetHostElement(on: springboard)
+        let originalFrame = hostWidget.frame
+        attachState(springboard, name: "unit-target-before-\(label.lowercased())-edit")
         hostWidget.press(forDuration: 1.5)
         let editWidget = try requireHittable(
             in: elements(in: springboard, labeled: ["Edit Widget"]),
@@ -971,6 +1086,7 @@ final class WidgetHostUITests: XCTestCase {
         attachState(springboard, name: "unit-choice-open-\(label.lowercased())")
         choice.tap()
         attachState(springboard, name: "unit-selected-\(label.lowercased())")
+        let editRow = elements(in: springboard, labeled: ["Temperature unit"])
 
         // commit through the system sheet when it exposes Done
         if let done = firstHittable(
@@ -979,9 +1095,51 @@ final class WidgetHostUITests: XCTestCase {
         ) {
             done.tap()
         } else {
-            XCUIDevice.shared.press(.home)
+            // dismiss at the observed blank point above the edit card
+            let screen = springboard.frame
+            let outsideCard = springboard.coordinate(
+                withNormalizedOffset: CGVector(dx: 0.5, dy: 0.12)
+            )
+            guard editRow.firstMatch.exists,
+                  screen.minY + screen.height * 0.12 < editRow.firstMatch.frame.minY - 80 else {
+                attachState(springboard, name: "failure-unit-outside-card-geometry")
+                throw NSError(
+                    domain: "farm.ballydidean.weather.widget-host",
+                    code: 15,
+                    userInfo: [NSLocalizedDescriptionKey: "outside-card point overlaps the edit controls"]
+                )
+            }
+            outsideCard.tap()
+        }
+        // require the public edit card to close before reading the host
+        let dismissalDeadline = Date().addingTimeInterval(3)
+        // wait only for the actual card transition
+        while editRow.firstMatch.exists && Date() < dismissalDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        guard !editRow.firstMatch.exists else {
+            attachState(springboard, name: "failure-unit-edit-card-not-dismissed")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 16,
+                userInfo: [NSLocalizedDescriptionKey: "widget edit card remained open after public dismissal"]
+            )
         }
         try requireHomeScreen(on: springboard)
+        let observedFrame = try widgetHostElement(on: springboard).frame
+        // retain the same visible placement after dismissal
+        guard abs(observedFrame.minX - originalFrame.minX) <= 2,
+              abs(observedFrame.minY - originalFrame.minY) <= 2,
+              abs(observedFrame.width - originalFrame.width) <= 2,
+              abs(observedFrame.height - originalFrame.height) <= 2 else {
+            attachState(springboard, name: "failure-unit-target-changed-after-dismissal")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 17,
+                userInfo: [NSLocalizedDescriptionKey: "observed Weather host changed after edit"]
+            )
+        }
+        attachState(springboard, name: "unit-target-after-\(label.lowercased())-dismissal")
     }
 
     // prove the typed persisted unit and visible spoken rerender
@@ -992,30 +1150,58 @@ final class WidgetHostUITests: XCTestCase {
         springboard: XCUIApplication,
         stage: String
     ) throws {
+        try requireHomeScreen(on: springboard)
+        let widget = try requireTargetSemantics(
+            on: springboard,
+            fragments: [symbol, "adjusted air temperature", "Open-Meteo"],
+            stage: "unit-\(stage)-visible-spoken"
+        )
+        XCTAssertTrue(widget.label.contains(symbol))
+        XCTAssertTrue(widget.label.contains("adjusted air temperature"))
+        attachState(springboard, name: "unit-\(stage)-visible-spoken")
+
+        // inspect typed configuration only after the target renders
         _ = try captureWidgetConfiguration(
             unit: unit,
             app: app,
             stage: "unit-\(stage)-typed-widget-info"
         )
-
+        // restore the same public host before the next edit stage
         XCUIDevice.shared.press(.home)
         XCTAssertTrue(springboard.wait(for: .runningForeground, timeout: 10))
         try requireHomeScreen(on: springboard)
-        let unitSemantics = springboard.descendants(matching: .any).matching(
-            NSPredicate(format: "label CONTAINS[c] %@", symbol)
-        )
-        let widget = try requireExisting(
-            in: unitSemantics,
-            springboard: springboard,
-            stage: "unit-\(stage)-visible-spoken",
-            timeout: 45
-        )
-        XCTAssertTrue(widget.label.contains(symbol))
-        XCTAssertTrue(widget.label.contains("adjusted air temperature"))
-        attachState(springboard, name: "unit-\(stage)-visible-spoken")
+        _ = try widgetHostElement(on: springboard)
     }
 
     // wait for the expected public typed WidgetInfo value
+    private func assertConfigurationReceiptBoundaries() {
+        let valid = "widget-config epoch=2 observedAtMs=123 status=unique total=1 matchCount=1 kind=farm.ballydidean.weather.forecast family=systemMedium unit=celsius"
+        XCTAssertTrue(WidgetConfigurationReceipt(valid)?.accepts(epoch: 2, unit: "celsius") == true)
+        let rejected = [
+            valid.replacingOccurrences(of: "status=unique total=1 matchCount=1", with: "status=missing total=0 matchCount=0"),
+            valid.replacingOccurrences(of: "status=unique total=1 matchCount=1", with: "status=ambiguous total=2 matchCount=2"),
+            valid.replacingOccurrences(of: "status=unique", with: "status=untyped"),
+            valid.replacingOccurrences(of: "unit=celsius", with: "unit=nil"),
+            valid.replacingOccurrences(of: "status=unique", with: "status=ambiguous") + " detail=celsius",
+            valid.replacingOccurrences(of: "family=systemMedium", with: "family=systemLarge"),
+            String(valid.dropLast(8))
+        ]
+        // reject every missing, ambiguous, untyped, or partial receipt
+        for receipt in rejected {
+            XCTAssertFalse(WidgetConfigurationReceipt(receipt)?.accepts(epoch: 2, unit: "celsius") == true)
+        }
+        XCTAssertFalse(WidgetConfigurationReceipt(valid)?.accepts(epoch: 3, unit: "celsius") == true)
+        let host = CGRect(x: 24, y: 88, width: 354, height: 191)
+        // reject another widget's temperature even when its label matches
+        XCTAssertFalse(semanticBelongsToHost(
+            CGRect(x: 400, y: 88, width: 200, height: 160), hostFrame: host
+        ))
+        XCTAssertTrue(semanticBelongsToHost(
+            CGRect(x: 26, y: 90, width: 349, height: 164), hostFrame: host
+        ))
+    }
+
+    // query a fresh supported summary within one stage deadline
     private func captureWidgetConfiguration(
         unit: String,
         app: XCUIApplication,
@@ -1029,18 +1215,39 @@ final class WidgetHostUITests: XCTestCase {
         ]
         app.launch()
         let diagnostic = app.staticTexts["weather.widget.configuration"]
+        let refresh = app.buttons["weather.widget.configuration.refresh"]
         let deadline = Date().addingTimeInterval(15)
+        var refreshCount = 0
+        var lastQueryRequest = Date()
 
-        // reject the initial pending value
+        // reject pending, stale, ambiguous, and mismatched values
         repeat {
-            // accept only the requested typed configuration
-            if diagnostic.exists, diagnostic.label.contains("unit=\(unit)") {
-                let receipt = XCTAttachment(string: diagnostic.label)
-                receipt.name = stage
-                receipt.lifetime = .keepAlways
-                add(receipt)
-                attachState(app, name: stage)
-                return diagnostic.label
+            let value = String(describing: refresh.value ?? "")
+            let currentEpoch = value.hasPrefix("epoch=") ? Int(value.dropFirst(6)) : nil
+            // process only the epoch independently exposed by the control
+            if diagnostic.exists,
+               let expectedEpoch = currentEpoch,
+               expectedEpoch > 0,
+               let summary = WidgetConfigurationReceipt(diagnostic.label),
+               summary.epoch == expectedEpoch {
+                // accept only a complete unique current result
+                if summary.accepts(epoch: expectedEpoch, unit: unit) {
+                    let receipt = XCTAttachment(string: diagnostic.label)
+                    receipt.name = stage
+                    receipt.lifetime = .keepAlways
+                    add(receipt)
+                    attachState(app, name: stage)
+                    return diagnostic.label
+                }
+                // refresh only a completed unresolved public query
+                if summary.status != "pending",
+                   refreshCount < 2,
+                   Date().timeIntervalSince(lastQueryRequest) >= 4,
+                   refresh.exists {
+                    refresh.tap()
+                    refreshCount += 1
+                    lastQueryRequest = Date()
+                }
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         } while Date() < deadline
@@ -1049,7 +1256,7 @@ final class WidgetHostUITests: XCTestCase {
         throw NSError(
             domain: "farm.ballydidean.weather.widget-host",
             code: 11,
-            userInfo: [NSLocalizedDescriptionKey: "typed WidgetInfo did not report unit=\(unit)"]
+            userInfo: [NSLocalizedDescriptionKey: "unique current typed WidgetInfo did not report unit=\(unit)"]
         )
     }
 
@@ -1059,18 +1266,7 @@ final class WidgetHostUITests: XCTestCase {
         stage: String
     ) throws -> XCUIElement {
         let required = ["Offline", "°C", "Open-Meteo", "CC BY 4.0"]
-        let predicates = required.map { fragment in
-            NSPredicate(format: "label CONTAINS[c] %@", fragment)
-        }
-        let query = springboard.descendants(matching: .any).matching(
-            NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
-        )
-        let widget = try requireExisting(
-            in: query,
-            springboard: springboard,
-            stage: stage,
-            timeout: 45
-        )
+        let widget = try requireTargetSemantics(on: springboard, fragments: required, stage: stage)
         let label = widget.label
         XCTAssertTrue(label.contains("Offline, adjusted"), label)
         XCTAssertEqual(label.components(separatedBy: "air temperature").count - 1, 7, label)
@@ -1278,6 +1474,7 @@ final class WidgetHostUITests: XCTestCase {
 
     // leave one publicly edited Celsius configuration for the restart probe
     func test07TemperatureUnitEditToCelsius() throws {
+        assertConfigurationReceiptBoundaries()
         let host = try launchHost()
         _ = try addWidget(on: host.springboard, scenario: .maximumDensity)
         try assertTemperatureUnit(
@@ -1426,7 +1623,7 @@ final class WidgetHostUITests: XCTestCase {
             app: host.app,
             stage: "persistence-before-restart-widget-info"
         )
-        XCTAssertTrue(widgetInfo.contains("widget-id="), widgetInfo)
+        XCTAssertTrue(widgetInfo.contains("status=unique"), widgetInfo)
         XCUIDevice.shared.press(.home)
         try requireHomeScreen(on: host.springboard)
     }
@@ -1443,7 +1640,7 @@ final class WidgetHostUITests: XCTestCase {
             app: host.app,
             stage: "persistence-after-restart-widget-info"
         )
-        XCTAssertTrue(widgetInfo.contains("widget-id="), widgetInfo)
+        XCTAssertTrue(widgetInfo.contains("status=unique"), widgetInfo)
         XCUIDevice.shared.press(.home)
         try requireHomeScreen(on: host.springboard)
     }

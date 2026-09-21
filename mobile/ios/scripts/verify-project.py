@@ -414,7 +414,9 @@ def verify_release_reachable_sources() -> None:
         "phase_b_state_source=read-only",
         "before_extension_pid",
         "after_extension_pid",
-        "widget_id=",
+        "configuration_receipt=unique-celsius-before-and-after",
+        "placement_continuity=single-observed-medium-host",
+        "require_unique_celsius_summary",
         "persistence-before-restart-offline-visible-spoken",
         "persistence-after-restart-offline-visible-spoken",
         "persistence-probe-passed.txt",
@@ -627,7 +629,9 @@ def verify_release_reachable_sources() -> None:
         "test08TemperatureUnitPersistsAfterExtensionRestart",
         "xcrun simctl shutdown",
         "simulator-rebooted-between-unit-phases=1",
-        "WIDGET_ID_COUNT",
+        "require_unique_summary",
+        "edit-to-celsius-provider.log",
+        "restart-and-return-fahrenheit-provider.log",
         "unit-celsius-after-restart-typed-widget-info",
         "unit-final-fahrenheit-visible-spoken",
     )
@@ -635,6 +639,33 @@ def verify_release_reachable_sources() -> None:
     for fragment in unit_probe_fragments:
         if fragment not in unit_probe:
             fail(f"widget product-unit probe lacks {fragment}")
+    # reject the unsupported self-typed WidgetInfo scalar claim
+    if any(
+        fragment in app_source + ui_test_source + unit_probe + persistence_probe
+        for fragment in ("widget-id=", "widget_id=", "WIDGET_ID_COUNT")
+    ):
+        fail("widget probes still claim a scalar WidgetInfo placement ID")
+    diagnostic_fragments = (
+        "widget-config epoch=",
+        "widget-config-entry epoch=",
+        "widget-info-discarded epoch=",
+        "weather.widget.configuration.refresh",
+        'accessibilityValue("epoch=',
+        'let currentEpoch = value.hasPrefix("epoch=")',
+        "summary.accepts(epoch: expectedEpoch, unit: unit)",
+        "assertConfigurationReceiptBoundaries",
+        "unit-target-after-",
+        "requireTargetSemantics",
+        "semanticBelongsToHost",
+        "outsideCard.tap()",
+        "failure-unit-edit-card-not-dismissed",
+    )
+    # retain fail-closed fresh typed and observed-host checks
+    for fragment in diagnostic_fragments:
+        if fragment not in app_source + ui_test_source:
+            fail(f"product WidgetInfo protocol lacks {fragment}")
+    if "widget-config" not in release_scan:
+        fail("Release scan lacks Debug WidgetInfo diagnostic ban")
     unit_lifecycle_fragments = (
         'SIMULATOR_UDID=""',
         '"Weather Unit Probe $$"',

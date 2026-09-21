@@ -234,23 +234,16 @@ if [[ -z "$BEFORE_SNAPSHOT" || "$BEFORE_SNAPSHOT" == "missing" ]] \
   exit 78
 fi
 
-# require the same public WidgetInfo identity before and after restart
-BEFORE_WIDGET_IDS="$(
-  grep -oE 'widget-info widget-id=[^ ]+ unit=celsius' "$BEFORE_LOG" \
-    | sed -E 's/.*widget-id=([^ ]+) unit=.*/\1/' \
-    | sort -u
-)"
-AFTER_WIDGET_IDS="$(
-  grep -oE 'widget-info widget-id=[^ ]+ unit=celsius' "$AFTER_LOG" \
-    | sed -E 's/.*widget-id=([^ ]+) unit=.*/\1/' \
-    | sort -u
-)"
-BEFORE_WIDGET_ID_COUNT="$(printf '%s\n' "$BEFORE_WIDGET_IDS" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
-AFTER_WIDGET_ID_COUNT="$(printf '%s\n' "$AFTER_WIDGET_IDS" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
-if [[ "$BEFORE_WIDGET_ID_COUNT" != "1" ]] \
-  || [[ "$AFTER_WIDGET_ID_COUNT" != "1" ]] \
-  || [[ "$BEFORE_WIDGET_IDS" != "$AFTER_WIDGET_IDS" ]]; then
-  echo "typed WidgetInfo identity did not survive the extension restart" >&2
+# require a unique typed Celsius result in each actual process phase
+require_unique_celsius_summary() {
+  local phase_log="$1"
+  grep -Eq 'widget-info widget-config epoch=[1-9][0-9]* observedAtMs=[1-9][0-9]* status=unique total=[1-9][0-9]* matchCount=1 kind=farm[.]ballydidean[.]weather[.]forecast family=systemMedium unit=celsius$' "$phase_log"
+}
+if ! require_unique_celsius_summary "$BEFORE_LOG" \
+  || ! require_unique_celsius_summary "$AFTER_LOG" \
+  || ! grep -Fq 'configuration-unit unit=celsius' "$BEFORE_LOG" \
+  || ! grep -Fq 'configuration-unit unit=celsius' "$AFTER_LOG"; then
+  echo "unique typed Celsius and provider delivery did not survive restart" >&2
   exit 78
 fi
 
@@ -284,7 +277,8 @@ failure_attempted_at=$BEFORE_ATTEMPT
 failure_outcome=$BEFORE_OUTCOME
 before_extension_pid=$BEFORE_PID
 after_extension_pid=$AFTER_PID
-widget_id=$BEFORE_WIDGET_IDS
+configuration_receipt=unique-celsius-before-and-after
+placement_continuity=single-observed-medium-host
 phase_b_state_source=read-only
 EOF
 cat > "$RESULTS/persistence-probe-passed.txt" <<EOF

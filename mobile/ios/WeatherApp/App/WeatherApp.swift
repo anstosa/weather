@@ -10,6 +10,7 @@ struct WeatherApp: App {
     @StateObject private var webViewModel = WeatherWebViewModel()
     #if DEBUG
     @State private var widgetConfigurationDiagnostic = "Widget configuration pending"
+    @State private var widgetConfigurationEpoch = 0
     #endif
     private let logger = Logger(subsystem: "farm.ballydidean.weather", category: "route")
 
@@ -99,16 +100,26 @@ struct WeatherApp: App {
             .overlay(alignment: .top) {
                 // expose only the supported typed WidgetInfo receipt
                 if showsWidgetConfigurationDiagnostic {
-                    Text(widgetConfigurationDiagnostic)
-                        .accessibilityIdentifier("weather.widget.configuration")
-                        .padding(8)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    VStack(spacing: 4) {
+                        Text(widgetConfigurationDiagnostic)
+                            .accessibilityIdentifier("weather.widget.configuration")
+                        Button("Refresh widget configuration") {
+                            // issue only an explicit public refresh
+                            Task { @MainActor in
+                                readWidgetConfigurationDiagnostic()
+                            }
+                        }
+                        .accessibilityIdentifier("weather.widget.configuration.refresh")
+                        .accessibilityValue("epoch=\(widgetConfigurationEpoch)")
+                    }
+                    .padding(8)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
             .task {
                 // inspect only when the bounded host test requests it
                 if showsWidgetConfigurationDiagnostic {
-                    readWidgetConfigurationDiagnostic()
+                    await readWidgetConfigurationDiagnostic()
                 }
             }
             #endif
@@ -131,30 +142,53 @@ struct WeatherApp: App {
 
     #if DEBUG
     // read the persisted product unit through WidgetKit's public typed API
+    @MainActor
     private func readWidgetConfigurationDiagnostic() {
+        widgetConfigurationEpoch += 1
+        let epoch = widgetConfigurationEpoch
+        let kind = WeatherWidgetConfigurationIntent.widgetKind
+        let prefix = "widget-config epoch=\(epoch)"
+        widgetConfigurationDiagnostic = "\(prefix) observedAtMs=0 status=pending total=-1 matchCount=-1 kind=\(kind) family=systemMedium unit=none"
         WidgetCenter.shared.getCurrentConfigurations { result in
             let diagnostic: String
+            var entries: [String] = []
             switch result {
             case .success(let configurations):
-                let weather = configurations.filter { configuration in
-                    configuration.kind == WeatherWidgetConfigurationIntent.widgetKind &&
-                        configuration.family == .systemMedium
+                let weather = configurations.enumerated().filter { _, configuration in
+                    configuration.kind == kind && configuration.family == .systemMedium
                 }
-                // require one test-owned widget instead of guessing first
-                if weather.count == 1,
-                   let configuration = weather[0].widgetConfigurationIntent(
-                       of: WeatherWidgetConfigurationIntent.self
-                   ) {
-                    diagnostic = "widget-id=\(weather[0].id) unit=\(configuration.temperatureUnit.rawValue)"
-                } else {
-                    diagnostic = "widget-configuration-unavailable count=\(weather.count)"
+                // preserve bounded observations without inventing placement IDs
+                for (index, configuration) in weather.prefix(8) {
+                    let unit = configuration.widgetConfigurationIntent(
+                        of: WeatherWidgetConfigurationIntent.self
+                    )?.temperatureUnit.rawValue ?? "nil"
+                    entries.append("widget-config-entry epoch=\(epoch) index=\(index) kind=\(kind) family=systemMedium unit=\(unit)")
                 }
+                let typed = weather.count == 1 ? weather[0].element.widgetConfigurationIntent(
+                    of: WeatherWidgetConfigurationIntent.self
+                ) : nil
+                let status = weather.count == 0 ? "missing" :
+                    weather.count > 1 ? "ambiguous" :
+                    typed == nil ? "untyped" : "unique"
+                let unit = status == "unique" ? typed?.temperatureUnit.rawValue ?? "none" : "none"
+                let observedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+                diagnostic = "\(prefix) observedAtMs=\(observedAtMs) status=\(status) total=\(configurations.count) matchCount=\(weather.count) kind=\(kind) family=systemMedium unit=\(unit)"
             case .failure:
-                diagnostic = "widget-configuration-query-failed"
+                let observedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+                diagnostic = "\(prefix) observedAtMs=\(observedAtMs) status=query-failed total=-1 matchCount=-1 kind=\(kind) family=systemMedium unit=none"
             }
             Task { @MainActor in
+                // discard callbacks superseded by a newer public query
+                guard epoch == widgetConfigurationEpoch else {
+                    logger.notice("widget-info-discarded epoch=\(epoch)")
+                    return
+                }
                 widgetConfigurationDiagnostic = diagnostic
                 logger.notice("widget-info \(diagnostic, privacy: .public)")
+                // emit only bounded matching entries from the accepted epoch
+                for entry in entries {
+                    logger.notice("widget-info \(entry, privacy: .public)")
+                }
             }
         }
     }
