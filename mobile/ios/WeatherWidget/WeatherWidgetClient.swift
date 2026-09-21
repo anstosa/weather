@@ -66,7 +66,7 @@ private final class WeatherWidgetBoundedRequest: NSObject, URLSessionDataDelegat
         if Task.isCancelled {
             throw WeatherWidgetFetchError.cancelled
         }
-        try await withCheckedThrowingContinuation { continuation in
+        return try await withCheckedThrowingContinuation { continuation in
             lock.lock()
             self.continuation = continuation
             let session = URLSession(
