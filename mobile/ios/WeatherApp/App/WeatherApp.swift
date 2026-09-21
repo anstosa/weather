@@ -148,7 +148,7 @@ struct WeatherApp: App {
         let epoch = widgetConfigurationEpoch
         let kind = WeatherWidgetConfigurationIntent.widgetKind
         let prefix = "widget-config epoch=\(epoch)"
-        widgetConfigurationDiagnostic = "\(prefix) observedAtMs=0 status=pending total=-1 matchCount=-1 kind=\(kind) family=systemMedium unit=none"
+        widgetConfigurationDiagnostic = "\(prefix) observedAtMs=0 status=pending total=-1 matchCount=-1 kind=\(kind) family=systemMedium entries=none"
         WidgetCenter.shared.getCurrentConfigurations { result in
             let diagnostic: String
             var entries: [String] = []
@@ -157,25 +157,25 @@ struct WeatherApp: App {
                 let weather = configurations.enumerated().filter { _, configuration in
                     configuration.kind == kind && configuration.family == .systemMedium
                 }
+                var listedUnits: [String] = []
                 // preserve bounded observations without inventing placement IDs
                 for (index, configuration) in weather.prefix(8) {
                     let unit = configuration.widgetConfigurationIntent(
                         of: WeatherWidgetConfigurationIntent.self
                     )?.temperatureUnit.rawValue ?? "nil"
+                    listedUnits.append("\(index):\(unit)")
                     entries.append("widget-config-entry epoch=\(epoch) index=\(index) kind=\(kind) family=systemMedium unit=\(unit)")
                 }
-                let typed = weather.count == 1 ? weather[0].element.widgetConfigurationIntent(
-                    of: WeatherWidgetConfigurationIntent.self
-                ) : nil
-                let status = weather.count == 0 ? "missing" :
-                    weather.count > 1 ? "ambiguous" :
-                    typed == nil ? "untyped" : "unique"
-                let unit = status == "unique" ? typed?.temperatureUnit.rawValue ?? "none" : "none"
+                // distinguish complete results from missing, overflow, and untyped
+                let status = weather.isEmpty ? "missing" :
+                    weather.count > 8 ? "overflow" :
+                    listedUnits.contains(where: { $0.hasSuffix(":nil") }) ? "untyped" : "complete"
+                let listing = listedUnits.isEmpty ? "none" : listedUnits.joined(separator: ",")
                 let observedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
-                diagnostic = "\(prefix) observedAtMs=\(observedAtMs) status=\(status) total=\(configurations.count) matchCount=\(weather.count) kind=\(kind) family=systemMedium unit=\(unit)"
+                diagnostic = "\(prefix) observedAtMs=\(observedAtMs) status=\(status) total=\(configurations.count) matchCount=\(weather.count) kind=\(kind) family=systemMedium entries=\(listing)"
             case .failure:
                 let observedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
-                diagnostic = "\(prefix) observedAtMs=\(observedAtMs) status=query-failed total=-1 matchCount=-1 kind=\(kind) family=systemMedium unit=none"
+                diagnostic = "\(prefix) observedAtMs=\(observedAtMs) status=query-failed total=-1 matchCount=-1 kind=\(kind) family=systemMedium entries=none"
             }
             Task { @MainActor in
                 // discard callbacks superseded by a newer public query

@@ -48,7 +48,7 @@
     "test:urls:local": "node scripts/test-urls.mjs --local",
     "test:urls:remote": "node scripts/test-urls.mjs --remote",
     "typecheck": "npm run typecheck --workspaces",
-    "verify:mobile-static": "mobile/android/scripts/verify-wrapper.sh && python3 mobile/ios/scripts/verify-project.py",
+    "verify:mobile-static": "mobile/android/scripts/verify-wrapper.sh && python3 mobile/ios/scripts/verify-project.py && python3 mobile/ios/scripts/test-widget-configuration-phase.py",
     "weather:backfill": "npm run weather:backfill --workspace @weather/worker --",
     "weather:forecast-adjustment:bundle": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-bundle-cli.js",
     "weather:forecast-adjustment:evaluate": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evaluate-cli.js",

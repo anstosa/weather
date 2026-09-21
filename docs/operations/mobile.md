@@ -34,8 +34,9 @@ npm run verify:mobile-static
 npm run test:mobile-shared:compiled
 ```
 
-`verify:mobile-static` verifies the checked Gradle wrapper and the authored
-Xcode project structure. `test:mobile-shared:compiled` runs the browser-side
+`verify:mobile-static` verifies the checked Gradle wrapper, the authored
+Xcode project structure, and the iOS configuration-evidence regressions.
+`test:mobile-shared:compiled` runs the browser-side
 projector tests, checks the platform-neutral fixture semantics, and verifies
 that committed fixtures are current without regenerating them.
 
@@ -139,13 +140,17 @@ Simulator UI, changes Fahrenheit to Celsius through the native **Use Celsius**
 switch in Edit Widget, checks the observed off/on state before and after the tap,
 requires the observed Home Screen host to render Celsius, restarts the
 Simulator extension process, verifies persisted Celsius output, and returns
-to Fahrenheit. Each phase requires one matching `kind`/`family` typed
-`WidgetInfo` result plus provider and exact-host visible/spoken evidence.
-The fresh public query is epoch-tagged; duplicate or untyped results fail
-closed rather than choosing a Celsius entry. The observed single placement
-and its screenshots establish host continuity, not a public scalar widget ID.
-Provider logs, result bundles, typed and visible/spoken attachments, restart
-receipt, and evidence hashes are mandatory.
+to Fahrenheit. Each phase requires a fresh, complete, bounded typed
+`WidgetInfo` listing plus exact-host visible/spoken evidence.
+Matching records may include both units; they corroborate rather than identify
+the observed placement. The native switch is reread without toggling after
+each edit and restart. Missing, untyped, incomplete, or overflow listings fail
+closed. The observed placement and screenshots establish host continuity, not
+a public scalar widget ID or global configuration uniqueness.
+Provider logs are retained as phase diagnostics, not a host-joined acceptance
+gate: WidgetKit need not invoke a new timeline before the observed render.
+Result bundles, typed and visible/spoken attachments, restart receipt, and
+evidence hashes are mandatory.
 
 The extension persistence probe uses a separate disposable Simulator and one
 Debug-only compiled artifact. A public Fahrenheit configuration seeds the
@@ -154,7 +159,7 @@ otherwise empty extension-owned production store once through
 sanitized offline attempt without replacing its last-good snapshot. After a
 full Simulator shutdown and boot, the Celsius provider reads that exact state
 without fetching or writing. The gate requires the same extension-store
-snapshot UUID and failure timestamp/outcome, unique typed Celsius results in
+snapshot UUID and failure timestamp/outcome, complete typed Celsius corroboration in
 both phases, a different extension process ID, and genuine before/after
 screenshots of the one observed Home Screen host with complete accessible
 Offline numeric forecast and credit. The snapshot UUID identifies a cache

@@ -3,12 +3,11 @@
 
 from __future__ import annotations
 
-import plistlib
 import json
+import plistlib
 import re
 import shlex
 import subprocess
-import sys
 from pathlib import Path
 from xml.etree import ElementTree
 
@@ -48,6 +47,8 @@ EXPECTED_FILES = (
     "scripts/probe-widget-host.sh",
     "scripts/probe-widget-unit.sh",
     "scripts/probe-widget-persistence.sh",
+    "scripts/verify-widget-configuration-phase.py",
+    "scripts/test-widget-configuration-phase.py",
     "scripts/probe-widget-semantic-host.sh",
     "scripts/probe-webview-https.sh",
 )
@@ -72,6 +73,19 @@ BANNED_SOURCE_PATTERNS = (
 def fail(message: str) -> None:
     """exit with one actionable error"""
     raise SystemExit(f"ios project verification failed: {message}")
+
+
+def verify_widget_host_method_scope(source: str) -> None:
+    """require target helpers in the class that calls them"""
+    marker = "final class WidgetHostUITests: XCTestCase {"
+    # reject missing or duplicated host test classes
+    if source.count(marker) != 1:
+        fail("widget host test class is missing or duplicated")
+    deep_link, host = source.split(marker, 1)
+    methods = ("private func observedTarget(", "private func assertObservedTarget(")
+    # reject private helpers stranded in the unrelated deep-link class
+    if any(method in deep_link or host.count(method) != 1 for method in methods):
+        fail("widget target helpers are outside WidgetHostUITests")
 
 
 def verify_files() -> None:
@@ -103,6 +117,7 @@ def verify_assets() -> None:
         cwd=ROOT.parents[1],
         capture_output=True,
         text=True,
+        check=False,
     )
     # reject catalog, dimension, alpha, or source-provenance drift
     if result.returncode != 0:
@@ -284,8 +299,10 @@ def verify_release_reachable_sources() -> None:
     https_probe = (ROOT / "scripts/probe-webview-https.sh").read_text()
     unit_probe = (ROOT / "scripts/probe-widget-unit.sh").read_text()
     persistence_probe = (ROOT / "scripts/probe-widget-persistence.sh").read_text()
+    configuration_phase = (ROOT / "scripts/verify-widget-configuration-phase.py").read_text()
     semantic_probe = (ROOT / "scripts/probe-widget-semantic-host.sh").read_text()
     ui_test_source = (ROOT / "WeatherUITests/WeatherDeepLinkUITests.swift").read_text()
+    verify_widget_host_method_scope(ui_test_source)
     obsolete_fixture_controls = (
         "WEATHER_WIDGET_FIXTURE",
         "WeatherWidgetFixtureSelection",
@@ -470,9 +487,15 @@ def verify_release_reachable_sources() -> None:
         "phase_b_state_source=read-only",
         "before_extension_pid",
         "after_extension_pid",
-        "configuration_receipt=unique-celsius-before-and-after",
+        "configuration_receipt=complete-typed-celsius-before-and-after",
         "placement_continuity=single-observed-medium-host",
-        "require_unique_celsius_summary",
+        "require_celsius_configuration",
+        "verify-widget-configuration-phase.py",
+        "persistence-before-restart-stored-unit",
+        "persistence-after-restart-stored-unit",
+        "persistence-before-restart-target",
+        "persistence-after-restart-target",
+        "runner-utc-offset.txt",
         "persistence-before-restart-offline-visible-spoken",
         "persistence-after-restart-offline-visible-spoken",
         "persistence-probe-passed.txt",
@@ -685,7 +708,15 @@ def verify_release_reachable_sources() -> None:
         "test08TemperatureUnitPersistsAfterExtensionRestart",
         "xcrun simctl shutdown",
         "simulator-rebooted-between-unit-phases=1",
-        "require_unique_summary",
+        "require_configuration_stage",
+        "verify-widget-configuration-phase.py",
+        "unit-celsius-stored-unit",
+        "unit-celsius-after-restart-stored-unit",
+        "unit-final-fahrenheit-stored-unit",
+        "target-after-restart.txt",
+        "--baseline-target",
+        "--observation",
+        "utc-offset.txt",
         "edit-to-celsius-provider.log",
         "restart-and-return-fahrenheit-provider.log",
         "unit-celsius-after-restart-typed-widget-info",
@@ -777,12 +808,19 @@ def verify_release_reachable_sources() -> None:
     diagnostic_fragments = (
         "widget-config epoch=",
         "widget-config-entry epoch=",
+        "entries=",
         "widget-info-discarded epoch=",
         "weather.widget.configuration.refresh",
         'accessibilityValue("epoch=',
         'let currentEpoch = value.hasPrefix("epoch=")',
         "summary.accepts(epoch: expectedEpoch, unit: unit)",
         "assertConfigurationReceiptBoundaries",
+        "assertStoredTemperatureUnit",
+        "assertObservedTarget",
+        'identifier == %@", "Page control"',
+        "pages.count == 1",
+        "page=\\(page) frame=",
+        'status == "complete"',
         "unit-target-after-",
         "requireTargetSemantics",
         "semanticBelongsToHost",
@@ -793,6 +831,39 @@ def verify_release_reachable_sources() -> None:
     for fragment in diagnostic_fragments:
         if fragment not in app_source + ui_test_source:
             fail(f"product WidgetInfo protocol lacks {fragment}")
+    unit_assertion = ui_test_source.split("private func assertTemperatureUnit(", 1)[-1]
+    unit_assertion = unit_assertion.split("private func assertConfigurationReceiptBoundaries()", 1)[0]
+    # preserve direct host, stored-switch, then typed-corroboration ordering
+    if not (
+        0 <= unit_assertion.find("expectedTarget: WidgetTargetObservation")
+        < unit_assertion.find("assertObservedTarget(expectedTarget,")
+        < unit_assertion.find("requireTargetSemantics(")
+        < unit_assertion.find("assertStoredTemperatureUnit(unit,")
+        < unit_assertion.find("captureWidgetConfiguration(")
+    ):
+        fail("unit proof no longer binds the observed host and reopened native switch")
+    persistence_tests = ui_test_source.split("func test15PersistenceSeedAndFailBeforeRestart()", 1)[-1]
+    if persistence_tests.count('assertStoredTemperatureUnit("celsius"') != 2:
+        fail("persistence proof must reread Celsius before and after restart")
+    # keep public listing reconciliation independent of native target proof
+    for fragment in (
+        "count > 8",
+        "logged != pairs",
+        "widget-config-entry",
+        "app_pid.group(1)",
+        "provider_diagnostic=",
+        "selected edit, render, and typed query are out of order",
+        "reopened native switch receipt disagrees with target unit",
+        "selected-edit PNG is incomplete",
+        "abs(observed_at / 1000 - query_time) > 2",
+        "target_matches",
+        "args.baseline_target",
+        "len(matches) != 1",
+    ):
+        if fragment not in configuration_phase:
+            fail(f"widget configuration phase verifier lacks {fragment}")
+    if "status=unique" in app_source + ui_test_source + unit_probe + persistence_probe:
+        fail("widget probes still require unsupported global configuration uniqueness")
     if "widget-config" not in release_scan:
         fail("Release scan lacks Debug WidgetInfo diagnostic ban")
     unit_lifecycle_fragments = (

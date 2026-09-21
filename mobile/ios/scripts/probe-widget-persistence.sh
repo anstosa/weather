@@ -51,6 +51,7 @@ run_phase() {
 
   mkdir -p "$RESULTS/$phase"
   : > "$provider_log"
+  date +%z > "$RESULTS/$phase/runner-utc-offset.txt"
   xcrun simctl spawn "$SIMULATOR_UDID" log stream \
     --style compact \
     --level info \
@@ -234,16 +235,30 @@ if [[ -z "$BEFORE_SNAPSHOT" || "$BEFORE_SNAPSHOT" == "missing" ]] \
   exit 78
 fi
 
-# require a unique typed Celsius result in each actual process phase
-require_unique_celsius_summary() {
+# reconcile each complete public listing with its phase evidence
+require_celsius_configuration() {
   local phase_log="$1"
-  grep -Eq 'widget-info widget-config epoch=[1-9][0-9]* observedAtMs=[1-9][0-9]* status=unique total=[1-9][0-9]* matchCount=1 kind=farm[.]ballydidean[.]weather[.]forecast family=systemMedium unit=celsius$' "$phase_log"
+  local manifest="$2"
+  local stage="$3"
+  shift 3
+  python3 "$SCRIPT_DIR/verify-widget-configuration-phase.py" \
+    --log "$phase_log" --manifest "$manifest" --stage "$stage" \
+    --utc-offset "$(dirname "$manifest")/../runner-utc-offset.txt" \
+    --unit celsius "$@"
 }
-if ! require_unique_celsius_summary "$BEFORE_LOG" \
-  || ! require_unique_celsius_summary "$AFTER_LOG" \
-  || ! grep -Fq 'configuration-unit unit=celsius' "$BEFORE_LOG" \
-  || ! grep -Fq 'configuration-unit unit=celsius' "$AFTER_LOG"; then
-  echo "unique typed Celsius and provider delivery did not survive restart" >&2
+if ! require_celsius_configuration "$BEFORE_LOG" "$RESULTS/before-restart/attachments/manifest.json" \
+    persistence-before-restart-widget-info \
+    --target-stage persistence-before-restart --target-out "$RESULTS/target-before-restart.txt" \
+    --observation persistence-before-restart-offline-visible-spoken-screenshot \
+    --reopened persistence-before-restart-stored-unit --reopen-order after \
+    --anchor unit-selected-celsius-screenshot --order after \
+  || ! require_celsius_configuration "$AFTER_LOG" "$RESULTS/after-restart/attachments/manifest.json" \
+    persistence-after-restart-widget-info \
+    --target-stage persistence-after-restart --target-out "$RESULTS/target-after-restart.txt" \
+    --baseline-target "$RESULTS/target-before-restart.txt" \
+    --observation persistence-after-restart-offline-visible-spoken-screenshot \
+    --reopened persistence-after-restart-stored-unit --reopen-order after; then
+  echo "complete typed Celsius and native target evidence did not survive restart" >&2
   exit 78
 fi
 
@@ -252,7 +267,9 @@ for receipt in \
   persistence-seeded-success-screenshot \
   persistence-before-restart-offline-visible-spoken-screenshot \
   persistence-before-restart-offline-visible-spoken-hierarchy \
-  persistence-before-restart-widget-info; do
+  persistence-before-restart-widget-info \
+  persistence-before-restart-stored-unit \
+  persistence-before-restart-target; do
   # reject incomplete phase-A evidence
   if ! grep -Fq "$receipt" "$RESULTS/before-restart/attachments/manifest.json"; then
     echo "persistence phase A lacks $receipt" >&2
@@ -262,7 +279,9 @@ done
 for receipt in \
   persistence-after-restart-offline-visible-spoken-screenshot \
   persistence-after-restart-offline-visible-spoken-hierarchy \
-  persistence-after-restart-widget-info; do
+  persistence-after-restart-widget-info \
+  persistence-after-restart-stored-unit \
+  persistence-after-restart-target; do
   # reject incomplete phase-B evidence
   if ! grep -Fq "$receipt" "$RESULTS/after-restart/attachments/manifest.json"; then
     echo "persistence phase B lacks $receipt" >&2
@@ -277,7 +296,7 @@ failure_attempted_at=$BEFORE_ATTEMPT
 failure_outcome=$BEFORE_OUTCOME
 before_extension_pid=$BEFORE_PID
 after_extension_pid=$AFTER_PID
-configuration_receipt=unique-celsius-before-and-after
+configuration_receipt=complete-typed-celsius-before-and-after
 placement_continuity=single-observed-medium-host
 phase_b_state_source=read-only
 EOF
@@ -294,6 +313,10 @@ shasum -a 256 \
   "$AFTER_LOG" \
   "$RESULTS/restart-receipt.txt" \
   "$RESULTS/concurrency/test-status.txt" \
+  "$RESULTS/before-restart/runner-utc-offset.txt" \
+  "$RESULTS/after-restart/runner-utc-offset.txt" \
+  "$RESULTS/target-before-restart.txt" \
+  "$RESULTS/target-after-restart.txt" \
   "$RESULTS/persistence-receipt.txt" \
   "$RESULTS/persistence-probe-passed.txt" \
   "$RESULTS/attachments.sha256" \

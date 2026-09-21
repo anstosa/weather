@@ -299,7 +299,7 @@ last_index = summary_indexes[-1] if summary_indexes else -1
 latest = lines[last_index][:1000] if last_index >= 0 else ""
 summary_pattern = re.compile(
     r"widget-config epoch=\d+ observedAtMs=\d+ status=\S+ total=\d+ "
-    r"matchCount=\d+ kind=\S+ family=\S+ unit=\S+"
+    r"matchCount=\d+ kind=\S+ family=\S+ entries=\S+"
 )
 log_summary_match = re.search(r"\b(" + summary_pattern.pattern + r")$", latest)
 log_summary = log_summary_match.group(1) if log_summary_match else ""
@@ -469,6 +469,7 @@ xcrun simctl uninstall "$SIMULATOR_UDID" "$APP_BUNDLE_ID" \
   > "$RESULTS/pre-test-uninstall.log" 2>&1 || true
 
 # capture the public F-to-C edit and provider delivery
+date +%z > "$RESULTS/edit-to-celsius-utc-offset.txt"
 start_log_capture "$RESULTS/edit-to-celsius-provider.log"
 run_unit_test "test07TemperatureUnitEditToCelsius" "edit-to-celsius"
 stop_log_capture
@@ -480,29 +481,53 @@ xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 printf 'simulator-rebooted-between-unit-phases=1\n' > "$RESULTS/restart-receipt.txt"
 
 # prove the persisted Celsius configuration survives before restoring Fahrenheit
+date +%z > "$RESULTS/restart-and-return-fahrenheit-utc-offset.txt"
 start_log_capture "$RESULTS/restart-and-return-fahrenheit-provider.log"
 run_unit_test "test08TemperatureUnitPersistsAfterExtensionRestart" "restart-and-return-fahrenheit"
 stop_log_capture
 
-# require one exact current typed summary from a phase-local provider stream
-require_unique_summary() {
+# reconcile one fresh public listing with the exact phase-local provider stream
+require_configuration_stage() {
   local phase_log="$1"
-  local unit="$2"
-  grep -Eq "widget-info widget-config epoch=[1-9][0-9]* observedAtMs=[1-9][0-9]* status=unique total=[1-9][0-9]* matchCount=1 kind=farm[.]ballydidean[.]weather[.]forecast family=systemMedium unit=${unit}$" "$phase_log"
+  local phase="$2"
+  local stage="$3"
+  local unit="$4"
+  shift 4
+  python3 "$SCRIPT_DIR/verify-widget-configuration-phase.py" \
+    --log "$phase_log" --manifest "$ATTACHMENTS/$phase/manifest.json" \
+    --utc-offset "$RESULTS/$phase-utc-offset.txt" \
+    --stage "$stage" --unit "$unit" "$@"
 }
 
 cat "$RESULTS/edit-to-celsius-provider.log" \
   "$RESULTS/restart-and-return-fahrenheit-provider.log" > "$RESULTS/widget-unit.log"
 
-# bind typed and provider values to the two actual execution phases
-if ! require_unique_summary "$RESULTS/edit-to-celsius-provider.log" fahrenheit \
-  || ! require_unique_summary "$RESULTS/edit-to-celsius-provider.log" celsius \
-  || ! require_unique_summary "$RESULTS/restart-and-return-fahrenheit-provider.log" celsius \
-  || ! require_unique_summary "$RESULTS/restart-and-return-fahrenheit-provider.log" fahrenheit \
-  || ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/edit-to-celsius-provider.log" \
-  || ! grep -Fq 'configuration-unit unit=fahrenheit' "$RESULTS/edit-to-celsius-provider.log" \
-  || ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/restart-and-return-fahrenheit-provider.log" \
-  || ! grep -Fq 'configuration-unit unit=fahrenheit' "$RESULTS/restart-and-return-fahrenheit-provider.log"; then
+# bind each accepted listing to its own provider phase and edit boundary
+if ! require_configuration_stage "$RESULTS/edit-to-celsius-provider.log" edit-to-celsius \
+    unit-initial-fahrenheit-typed-widget-info fahrenheit \
+    --target-stage unit-initial-fahrenheit --target-out "$RESULTS/target-initial.txt" \
+    --observation unit-initial-fahrenheit-visible-spoken-screenshot \
+    --reopened unit-initial-fahrenheit-stored-unit \
+  || ! require_configuration_stage "$RESULTS/edit-to-celsius-provider.log" edit-to-celsius \
+    unit-celsius-typed-widget-info celsius \
+    --target-stage unit-celsius --target-out "$RESULTS/target-celsius.txt" \
+    --baseline-target "$RESULTS/target-initial.txt" \
+    --observation unit-celsius-visible-spoken-screenshot \
+    --reopened unit-celsius-stored-unit \
+    --anchor unit-selected-celsius-screenshot --order after \
+  || ! require_configuration_stage "$RESULTS/restart-and-return-fahrenheit-provider.log" restart-and-return-fahrenheit \
+    unit-celsius-after-restart-typed-widget-info celsius \
+    --target-stage unit-celsius-after-restart --target-out "$RESULTS/target-after-restart.txt" \
+    --baseline-target "$RESULTS/target-celsius.txt" \
+    --observation unit-celsius-after-restart-visible-spoken-screenshot \
+    --reopened unit-celsius-after-restart-stored-unit \
+    --anchor unit-selected-fahrenheit-screenshot --order before \
+  || ! require_configuration_stage "$RESULTS/restart-and-return-fahrenheit-provider.log" restart-and-return-fahrenheit \
+    unit-final-fahrenheit-typed-widget-info fahrenheit \
+    --target-stage unit-final-fahrenheit --baseline-target "$RESULTS/target-after-restart.txt" \
+    --observation unit-final-fahrenheit-visible-spoken-screenshot \
+    --reopened unit-final-fahrenheit-stored-unit \
+    --anchor unit-selected-fahrenheit-screenshot --order after; then
   xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/failure.png" >/dev/null 2>&1 || true
   echo "iOS product temperature-unit probe failed; see $RESULTS" >&2
   exit 78
@@ -512,12 +537,20 @@ fi
 for receipt in \
   'unit-initial-fahrenheit-typed-widget-info' \
   'unit-initial-fahrenheit-visible-spoken' \
+  'unit-initial-fahrenheit-stored-unit' \
+  'unit-initial-fahrenheit-target' \
   'unit-celsius-typed-widget-info' \
   'unit-celsius-visible-spoken' \
+  'unit-celsius-stored-unit' \
+  'unit-celsius-target' \
   'unit-celsius-after-restart-typed-widget-info' \
   'unit-celsius-after-restart-visible-spoken' \
+  'unit-celsius-after-restart-stored-unit' \
+  'unit-celsius-after-restart-target' \
   'unit-final-fahrenheit-typed-widget-info' \
-  'unit-final-fahrenheit-visible-spoken'; do
+  'unit-final-fahrenheit-visible-spoken' \
+  'unit-final-fahrenheit-stored-unit' \
+  'unit-final-fahrenheit-target'; do
   # reject a green test without its required public evidence
   if ! grep -RFq "$receipt" "$ATTACHMENTS"/*/manifest.json; then
     echo "iOS product temperature-unit probe lacks $receipt" >&2
@@ -530,6 +563,11 @@ find "$ATTACHMENTS" -type f -print0 | sort -z | xargs -0 shasum -a 256 \
 shasum -a 256 "$RESULTS/widget-unit.log" \
   "$RESULTS/edit-to-celsius-provider.log" \
   "$RESULTS/restart-and-return-fahrenheit-provider.log" \
+  "$RESULTS/edit-to-celsius-utc-offset.txt" \
+  "$RESULTS/restart-and-return-fahrenheit-utc-offset.txt" \
+  "$RESULTS/target-initial.txt" \
+  "$RESULTS/target-celsius.txt" \
+  "$RESULTS/target-after-restart.txt" \
   "$RESULTS/attachments.sha256" \
   > "$RESULTS/evidence.sha256"
 echo "iOS product temperature-unit AppIntent probe passed: $RESULTS"
