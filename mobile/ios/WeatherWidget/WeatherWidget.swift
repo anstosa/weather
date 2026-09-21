@@ -49,6 +49,8 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
     // provide a redacted placeholder
     func placeholder(in context: Context) -> WeatherWidgetEntry {
         #if DEBUG
+        // distinguish an unsupplied placeholder from a configured entry
+        logger.notice("v4-provider-input stage=placeholder unit=unsupplied")
         // retain only explicitly compiled host-fixture artifacts
         if let selection = compiledFixtureSelection {
             return fixtureEntry(
@@ -73,6 +75,10 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
         for configuration: WeatherWidgetConfigurationIntent,
         in context: Context
     ) async -> WeatherWidgetEntry {
+        #if DEBUG
+        // record the supplied snapshot unit before any fixture branch
+        logger.notice("v4-provider-input stage=snapshot unit=\(configuration.temperatureUnit.rawValue, privacy: .public)")
+        #endif
         #if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
         // exercise the real extension store without production traffic
         return await persistenceProbeEntry(configuration: configuration)
@@ -102,6 +108,10 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
         for configuration: WeatherWidgetConfigurationIntent,
         in context: Context
     ) async -> Timeline<WeatherWidgetEntry> {
+        #if DEBUG
+        // record the supplied timeline unit before any fixture branch
+        logger.notice("v4-provider-input stage=timeline unit=\(configuration.temperatureUnit.rawValue, privacy: .public)")
+        #endif
         #if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
         // exercise the same persisted transition for timeline requests
         let currentEntry = await persistenceProbeEntry(configuration: configuration)

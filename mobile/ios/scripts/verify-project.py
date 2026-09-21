@@ -346,6 +346,47 @@ def verify_release_reachable_sources() -> None:
         # reject incomplete compiled fixture evidence
         if fragment not in widget_source:
             fail(f"compiled fixture receipt lacks {fragment}")
+    provider_input_receipts = (
+        (
+            "placeholder",
+            "func placeholder(",
+            "if let selection = compiledFixtureSelection",
+            'logger.notice("v4-provider-input stage=placeholder unit=unsupplied")',
+        ),
+        (
+            "snapshot",
+            "func snapshot(",
+            "#if DEBUG && WEATHER_V4_PERSISTENCE_PROBE",
+            'logger.notice("v4-provider-input stage=snapshot unit=\\(configuration.temperatureUnit.rawValue, privacy: .public)")',
+        ),
+        (
+            "timeline",
+            "func timeline(",
+            "#if DEBUG && WEATHER_V4_PERSISTENCE_PROBE",
+            'logger.notice("v4-provider-input stage=timeline unit=\\(configuration.temperatureUnit.rawValue, privacy: .public)")',
+        ),
+    )
+    # lock each method-local Debug receipt before its first fixture branch
+    for stage, signature, first_branch, receipt in provider_input_receipts:
+        method = widget_source.partition(signature)[2]
+        prefix = method.partition(first_branch)[0]
+        # reject absent, moved, duplicated, or unguarded input receipts
+        if (
+            not method
+            or not prefix
+            or widget_source.count(receipt) != 1
+            or not re.search(r"#if DEBUG\n\s*//[^\n]*\n\s*" + re.escape(receipt), prefix)
+            or (stage != "placeholder" and not prefix.rstrip().endswith("#endif"))
+        ):
+            fail(f"{stage} provider input receipt is not Debug-isolated before branches")
+    # retain the existing render receipt and phase-local provider stream
+    if (
+        widget_source.count("configuration-unit unit=") != 2
+        or 'subsystem == "farm.ballydidean.weather.widget"' not in unit_probe
+        or 'cat "$RESULTS/edit-to-celsius-provider.log"' not in unit_probe
+        or "v4-provider-input" not in release_scan
+    ):
+        fail("provider input evidence or Release exclusion is incomplete")
     for fragment in (
         diagnostic_marker,
         "WEATHER_M0_FIXTURE_MAXIMUM",
