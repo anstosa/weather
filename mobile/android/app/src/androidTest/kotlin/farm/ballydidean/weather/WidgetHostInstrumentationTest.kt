@@ -15,6 +15,7 @@ import android.view.ViewGroup
 import android.view.View.MeasureSpec
 import android.widget.TextView
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.NetworkType
 import androidx.work.WorkManager
 import farm.ballydidean.weather.debug.FixtureHostActivity
 import farm.ballydidean.weather.debug.FixtureVariant
@@ -23,6 +24,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -103,6 +105,62 @@ class WidgetHostInstrumentationTest {
         )
     }
 
+    // verify pure raw provenance stays visible
+    @Test
+    fun testRawPortrait() {
+        verifyRenderedWidget(
+            FixtureHostActivity.PORTRAIT_WIDTH_DP,
+            FixtureHostActivity.PORTRAIT_HEIGHT_DP,
+            FixtureVariant.RAW,
+            expectedGroups = 7,
+            expectedBedtime = false,
+        )
+    }
+
+    // verify unavailable never invents weather or credit
+    @Test
+    fun testUnavailablePortrait() {
+        verifyRenderedWidget(
+            FixtureHostActivity.PORTRAIT_WIDTH_DP,
+            FixtureHostActivity.PORTRAIT_HEIGHT_DP,
+            FixtureVariant.UNAVAILABLE,
+            expectedGroups = 0,
+            expectedBedtime = false,
+        )
+    }
+
+    // verify one host responds to an options resize
+    @Test
+    fun testResizePortraitToLandscape() {
+        setOrientation(instrumentation, landscape = true)
+        adoptWidgetBinding(instrumentation)
+        val intent = Intent(instrumentation.targetContext, FixtureHostActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra(FixtureHostActivity.EXTRA_WIDTH_DP, FixtureHostActivity.PORTRAIT_WIDTH_DP)
+            putExtra(FixtureHostActivity.EXTRA_HEIGHT_DP, FixtureHostActivity.PORTRAIT_HEIGHT_DP)
+            putExtra(FixtureHostActivity.EXTRA_VARIANT, FixtureVariant.MAXIMUM.name)
+        }
+        val activity = instrumentation.startActivitySync(intent) as FixtureHostActivity
+        try {
+            waitForHostView(activity, FixtureVariant.MAXIMUM, landscape = false)
+            instrumentation.runOnMainSync {
+                activity.resizeWidget(
+                    FixtureHostActivity.LANDSCAPE_WIDTH_DP,
+                    FixtureHostActivity.LANDSCAPE_HEIGHT_DP,
+                    FixtureVariant.MAXIMUM,
+                )
+            }
+            val resized = waitForHostView(activity, FixtureVariant.MAXIMUM, landscape = true)
+            val density = activity.resources.displayMetrics.density
+            assertEquals((FixtureHostActivity.LANDSCAPE_WIDTH_DP * density).toInt(), resized.width)
+            assertEquals((FixtureHostActivity.LANDSCAPE_HEIGHT_DP * density).toInt(), resized.height)
+        } finally {
+            instrumentation.runOnMainSync(activity::finish)
+            instrumentation.waitForIdleSync()
+            instrumentation.uiAutomation.dropShellPermissionIdentity()
+        }
+    }
+
     // verify celsius preserves the same dense geometry
     @Test
     fun testCelsiusPortrait() {
@@ -156,6 +214,7 @@ class WidgetHostInstrumentationTest {
             val hostView = waitForHostView(activity, variant, landscape)
             val allViews = mutableListOf<View>()
             collectViews(hostView, allViews)
+            val fixture = DebugWidgetFixtures.fixture(variant).presentation
             val density = activity.resources.displayMetrics.density
             assertEquals((widthDp * density).toInt(), hostView.width)
             assertEquals((heightDp * density).toInt(), hostView.height)
@@ -163,20 +222,27 @@ class WidgetHostInstrumentationTest {
                 .filter { (it.contains("through") || it.contains("repeated")) && !it.contains(';') }
             assertEquals(expectedGroups, groupDescriptions.size)
             // match the size-specific visible interval labels
-            val expectedHourLabels = DebugWidgetFixtures.fixture(variant).presentation
-                .groups.map { if (landscape) it.landscapeLabel else it.hourLabel }.toSet()
+            val expectedHourLabels = fixture.groups.map { if (landscape) it.landscapeLabel else it.hourLabel }.toSet()
             val visibleHourLabels = allViews.filterIsInstance<TextView>().map { it.text.toString() }
                 .filter { it in expectedHourLabels }.toSet()
             assertEquals(expectedHourLabels, visibleHourLabels)
             assertVisibleTextWithinHost(hostView, allViews)
             val bedtimeVisible = allViews.filterIsInstance<TextView>().any { it.text.toString() == "go to bed" }
             assertEquals(expectedBedtime, bedtimeVisible)
+            assertFooterSemantics(hostView, fixture)
             // require visible credit whenever weather exists
             if (expectedGroups > 0) {
                 val visibleText = allViews.filterIsInstance<TextView>().filter { it.visibility == View.VISIBLE }
                     .joinToString(" ") { it.text }
                 assertTrue(visibleText.contains("Open-Meteo"))
                 assertTrue(visibleText.contains("CC BY 4.0"))
+            }
+            // keep unavailable free of misleading attribution
+            if (variant == FixtureVariant.UNAVAILABLE) {
+                val visibleText = allViews.filterIsInstance<TextView>().filter { it.visibility == View.VISIBLE }
+                    .joinToString(" ") { it.text }
+                assertFalse(visibleText.contains("Open-Meteo"))
+                assertFalse(visibleText.contains("CC BY 4.0"))
             }
             val fontScale = activity.resources.configuration.fontScale.toString().replace('.', '_')
             val nightMode = activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK
@@ -186,20 +252,15 @@ class WidgetHostInstrumentationTest {
             assertNoTextClipping(allViews)
             // prove update entrypoints coalesce named refresh work
             if (variant == FixtureVariant.MAXIMUM && !landscape) {
-                assertEquals(
-                    1,
-                    WorkManager.getInstance(activity)
-                        .getWorkInfosForUniqueWork("weather-widget-periodic-v1")
-                        .get(5, TimeUnit.SECONDS)
-                        .size,
-                )
-                assertEquals(
-                    1,
-                    WorkManager.getInstance(activity)
-                        .getWorkInfosForUniqueWork("weather-widget-immediate-v1")
-                        .get(5, TimeUnit.SECONDS)
-                        .size,
-                )
+                val workManager = WorkManager.getInstance(activity)
+                val periodic = workManager.getWorkInfosForUniqueWork("weather-widget-periodic-v1")
+                    .get(5, TimeUnit.SECONDS).single()
+                val immediate = workManager.getWorkInfosForUniqueWork("weather-widget-immediate-v1")
+                    .get(5, TimeUnit.SECONDS).single()
+                assertEquals(NetworkType.CONNECTED, periodic.constraints.requiredNetworkType)
+                assertEquals(TimeUnit.MINUTES.toMillis(30), periodic.periodicityInfo?.repeatIntervalMillis)
+                assertEquals(NetworkType.CONNECTED, immediate.constraints.requiredNetworkType)
+                assertEquals(null, immediate.periodicityInfo)
             }
         } finally {
             // release the host allocation between cases
@@ -247,8 +308,22 @@ class WidgetHostInstrumentationTest {
             FixtureVariant.ALL_BEDTIME -> text.contains("go to bed")
             FixtureVariant.STALE -> text.contains("stale")
             FixtureVariant.RAW_MIXED -> text.contains("mix")
+            FixtureVariant.RAW -> text.contains("raw")
+            FixtureVariant.UNAVAILABLE -> text.contains("refresh needed") && text.contains("unavailable")
             FixtureVariant.CELSIUS -> text.contains("°C")
         }
+    }
+
+    // require one sunset source for visible and spoken output
+    private fun assertFooterSemantics(hostView: View, presentation: farm.ballydidean.weather.widget.WidgetPresentation) {
+        val footer = checkNotNull(hostView.findViewById<TextView>(R.id.footer_primary))
+        assertEquals(presentation.footer, footer.text.toString())
+        val visibleSunset = Regex("^(\\d{1,2}:\\d{2})").find(footer.text.toString())?.groupValues?.get(1)
+        val spokenSunset = Regex("Sunset (\\d{1,2}:\\d{2})")
+            .find(footer.contentDescription?.toString().orEmpty())?.groupValues?.get(1)
+        assertEquals("visible and spoken sunset differ", visibleSunset, spokenSunset)
+        val rootDescription = hostView.findViewById<View>(R.id.widget_root)?.contentDescription?.toString().orEmpty()
+        assertTrue(rootDescription.contains("${presentation.status.name.lowercase()} forecast"))
     }
 
     // flatten the host hierarchy for semantic inspection

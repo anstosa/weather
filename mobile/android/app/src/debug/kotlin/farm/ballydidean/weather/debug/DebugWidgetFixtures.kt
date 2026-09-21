@@ -7,6 +7,9 @@ import farm.ballydidean.weather.widget.WidgetGroup
 import farm.ballydidean.weather.widget.WidgetPresentation
 import farm.ballydidean.weather.widget.WidgetPresentationMode
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 enum class FixtureVariant {
     MAXIMUM,
@@ -14,6 +17,8 @@ enum class FixtureVariant {
     ALL_BEDTIME,
     STALE,
     RAW_MIXED,
+    RAW,
+    UNAVAILABLE,
     CELSIUS;
 
     companion object {
@@ -31,6 +36,9 @@ data class DebugWidgetFixture(
 
 object DebugWidgetFixtures {
     private val dayStart = Instant.parse("2026-11-01T07:00:00Z")
+    private val fixtureSunset = Instant.parse("2026-11-02T00:50:59Z")
+    private val siteZone = ZoneId.of("America/Los_Angeles")
+    private val timeFormatter = DateTimeFormatter.ofPattern("h:mm", Locale.US)
 
     // return one debug-only host fixture
     fun fixture(variant: FixtureVariant): DebugWidgetFixture {
@@ -38,6 +46,7 @@ object DebugWidgetFixtures {
             FixtureVariant.MAXIMUM -> maximum(ForecastStatus.ADJUSTED, false, TemperatureUnit.FAHRENHEIT, fahrenheitGroups())
             FixtureVariant.STALE -> maximum(ForecastStatus.ADJUSTED, true, TemperatureUnit.FAHRENHEIT, fahrenheitGroups())
             FixtureVariant.RAW_MIXED -> maximum(ForecastStatus.MIXED, false, TemperatureUnit.FAHRENHEIT, fahrenheitGroups())
+            FixtureVariant.RAW -> maximum(ForecastStatus.RAW, false, TemperatureUnit.FAHRENHEIT, fahrenheitGroups())
             FixtureVariant.CELSIUS -> maximum(ForecastStatus.ADJUSTED, false, TemperatureUnit.CELSIUS, celsiusGroups())
             FixtureVariant.NEAR_CUTOFF -> build(
                 groups = listOf(group("6–8p", "6–8 48–51", "6 PM through 8 PM", "48–51°", RainCondition.SPRINKLE, listOf(18, 19))),
@@ -45,7 +54,7 @@ object DebugWidgetFixtures {
                 stale = false,
                 unit = TemperatureUnit.FAHRENHEIT,
                 message = "go to bed",
-                footer = "7:18 · adj · 0m · °F",
+                footer = footer(fixtureSunset, ForecastStatus.ADJUSTED, false, TemperatureUnit.FAHRENHEIT),
             )
             FixtureVariant.ALL_BEDTIME -> build(
                 groups = emptyList(),
@@ -53,8 +62,20 @@ object DebugWidgetFixtures {
                 stale = false,
                 unit = TemperatureUnit.FAHRENHEIT,
                 message = "go to bed",
-                footer = "7:18 · adj · 0m · °F",
+                footer = footer(fixtureSunset, ForecastStatus.ADJUSTED, false, TemperatureUnit.FAHRENHEIT),
                 mode = WidgetPresentationMode.BEDTIME,
+            )
+            FixtureVariant.UNAVAILABLE -> build(
+                groups = emptyList(),
+                status = ForecastStatus.UNAVAILABLE,
+                stale = true,
+                unit = TemperatureUnit.FAHRENHEIT,
+                message = "refresh needed",
+                footer = "unavailable · °F",
+                mode = WidgetPresentationMode.UNAVAILABLE,
+                hardExpired = true,
+                showBedtime = false,
+                sunset = null,
             )
         }
     }
@@ -66,6 +87,24 @@ object DebugWidgetFixtures {
         unit: TemperatureUnit,
         groups: List<Pair<WidgetGroup, List<Int>>>,
     ): DebugWidgetFixture {
+        return build(
+            groups = groups,
+            status = status,
+            stale = stale,
+            unit = unit,
+            message = null,
+            footer = footer(fixtureSunset, status, stale, unit),
+        )
+    }
+
+    // format visible fixture metadata from structured values
+    private fun footer(
+        sunset: Instant,
+        status: ForecastStatus,
+        stale: Boolean,
+        unit: TemperatureUnit,
+    ): String {
+        val sunsetText = sunset.atZone(siteZone).format(timeFormatter)
         val freshness = if (stale) "stale" else "0m"
         val provenance = when (status) {
             ForecastStatus.ADJUSTED -> "adj"
@@ -73,14 +112,7 @@ object DebugWidgetFixtures {
             ForecastStatus.RAW -> "raw"
             ForecastStatus.UNAVAILABLE -> "n/a"
         }
-        return build(
-            groups = groups,
-            status = status,
-            stale = stale,
-            unit = unit,
-            message = null,
-            footer = "7:18 · $provenance · $freshness · ${unit.symbol}",
-        )
+        return "$sunsetText · $provenance · $freshness · ${unit.symbol}"
     }
 
     // construct one complete debug presentation
@@ -92,19 +124,22 @@ object DebugWidgetFixtures {
         message: String?,
         footer: String,
         mode: WidgetPresentationMode = WidgetPresentationMode.WEATHER,
+        hardExpired: Boolean = false,
+        showBedtime: Boolean = message != null,
+        sunset: Instant? = fixtureSunset,
     ): DebugWidgetFixture {
         return DebugWidgetFixture(
             presentation = WidgetPresentation(
                 date = "2026-11-01",
-                groups = groups.map { it.first },
+                groups = groups.map { it.first.copy(status = status) },
                 status = status,
                 stale = stale,
-                hardExpired = false,
+                hardExpired = hardExpired,
                 mode = mode,
-                showBedtime = message != null,
+                showBedtime = showBedtime,
                 message = message,
                 footer = footer,
-                sunset = Instant.parse("2026-11-02T00:50:59Z"),
+                sunset = sunset,
                 generatedAt = dayStart,
                 unit = unit,
             ),

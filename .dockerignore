@@ -4,3 +4,14 @@
 node_modules
 **/node_modules
 **/dist
+
+# exclude native build and local host evidence from the production context
+mobile/android/.gradle
+mobile/android/.kotlin
+mobile/android/build
+mobile/android/app/build
+mobile/android/host-evidence
+mobile/ios/.artifacts
+mobile/ios/.derived-data
+mobile/ios/.host-evidence
+mobile/ios/.results

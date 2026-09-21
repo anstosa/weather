@@ -59,15 +59,36 @@ fi
 "${ADB}" install -r "${TEST_APK}"
 "${ADB}" shell pm clear "${PACKAGE}" >/dev/null
 
+# prove snapshot and failed-attempt files survive process restart
+PERSISTENCE_RECEIPT="${EVIDENCE}/persistence-restart.txt"
+{
+  "${ADB}" shell am broadcast -W -f 0x20 \
+    -n "${PACKAGE}/farm.ballydidean.weather.debug.FixtureControlReceiver" \
+    -a 'farm.ballydidean.weather.debug.SEED_PERSISTENCE'
+  "${ADB}" shell am force-stop "${PACKAGE}"
+  "${ADB}" shell am broadcast -W -f 0x20 \
+    -n "${PACKAGE}/farm.ballydidean.weather.debug.FixtureControlReceiver" \
+    -a 'farm.ballydidean.weather.debug.VERIFY_PERSISTENCE'
+} | tee "${PERSISTENCE_RECEIPT}"
+if ! grep -q 'result=-1, data="seeded"' "${PERSISTENCE_RECEIPT}" || \
+  ! grep -q 'result=-1, data="restart-ok"' "${PERSISTENCE_RECEIPT}"; then
+  printf 'snapshot and failed-attempt state did not survive process restart\n' >&2
+  RESULT=1
+fi
+
 # run genuine appwidgethost checks at normal font scale
 "${ADB}" shell settings put system font_scale 1.0
 "${ADB}" shell cmd uimode night no >/dev/null
-run_instrumentation normal 14 "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
+run_instrumentation normal 17 \
+  -e class 'farm.ballydidean.weather.WidgetHostInstrumentationTest,farm.ballydidean.weather.WidgetStorageInstrumentationTest' \
+  "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
 
 # run every fixture and the clipping oracle at large text
 "${ADB}" shell settings put system font_scale 1.3
 "${ADB}" shell am force-stop "${PACKAGE}"
-run_instrumentation large 14 "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
+run_instrumentation large 17 \
+  -e class 'farm.ballydidean.weather.WidgetHostInstrumentationTest,farm.ballydidean.weather.WidgetStorageInstrumentationTest' \
+  "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
 
 # capture the same fixture under the dark resource set
 "${ADB}" shell settings put system font_scale 1.0

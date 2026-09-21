@@ -6,7 +6,6 @@ import WebKit
 @MainActor
 final class WeatherWebViewModel: ObservableObject {
     @Published private(set) var canGoBack = false
-    @Published private(set) var cookieDiagnostic: String?
     @Published private(set) var failureMessage: String?
     private weak var webView: WKWebView?
 
@@ -43,12 +42,6 @@ final class WeatherWebViewModel: ObservableObject {
         canGoBack = webView?.canGoBack == true
     }
 
-    #if DEBUG
-    // expose only the deterministic persistent-cookie receipt
-    func setCookieDiagnostic(_ value: String) {
-        cookieDiagnostic = value
-    }
-    #endif
 }
 
 struct SecureWeatherWebView: UIViewRepresentable {
@@ -61,6 +54,14 @@ struct SecureWeatherWebView: UIViewRepresentable {
         subsystem: "farm.ballydidean.weather",
         category: "webview"
     )
+    private var httpsFixtureRequested: Bool {
+        WeatherHTTPSFixtureConfiguration.isRequested(
+            arguments: ProcessInfo.processInfo.arguments
+        )
+    }
+    private var httpsFixture: WeatherHTTPSFixtureConfiguration? {
+        WeatherHTTPSFixtureConfiguration.load()
+    }
     #endif
 
     // create persistent hosted browsing
@@ -75,17 +76,6 @@ struct SecureWeatherWebView: UIViewRepresentable {
         webView.scrollView.contentInsetAdjustmentBehavior = .automatic
         webView.accessibilityIdentifier = "weather.webview"
         model.attach(webView)
-        #if DEBUG
-        // exercise the same persistent store without production traffic
-        configureDeterministicCookie(in: configuration.websiteDataStore.httpCookieStore)
-        // expose the retry journey only to the deterministic UI test
-        if ProcessInfo.processInfo.arguments.contains("-weather-ui-test-error") {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(750))
-                model.didFail()
-            }
-        }
-        #endif
         return webView
     }
 
@@ -110,6 +100,20 @@ struct SecureWeatherWebView: UIViewRepresentable {
         context.coordinator.lastRequestedRoute = route
 
         #if DEBUG
+        // use only the validated real HTTPS fixture when explicitly requested
+        if httpsFixtureRequested {
+            guard let httpsFixture else {
+                model.didFail()
+                Self.diagnosticLogger.error("https-fixture-invalid")
+                return
+            }
+            let url = route == .forecast ? httpsFixture.forecastURL : httpsFixture.startURL
+            Self.diagnosticLogger.notice(
+                "https-fixture-load path=\(url.path, privacy: .public)"
+            )
+            webView.load(URLRequest(url: url))
+            return
+        }
         // avoid production traffic during UI tests
         if usesDeterministicTestDocument {
             Self.diagnosticLogger.notice(
@@ -125,58 +129,24 @@ struct SecureWeatherWebView: UIViewRepresentable {
 
     // install the navigation delegate
     func makeCoordinator() -> Coordinator {
+        #if DEBUG
+        Coordinator(
+            allowsDeterministicTestDocument: usesDeterministicTestDocument,
+            httpsFixture: httpsFixture,
+            injectsDeterministicFailure: ProcessInfo.processInfo.arguments.contains(
+                "-weather-ui-test-error"
+            ),
+            model: model
+        )
+        #else
         Coordinator(
             allowsDeterministicTestDocument: usesDeterministicTestDocument,
             model: model
         )
+        #endif
     }
 
     #if DEBUG
-    // set or read a production-shaped secure HttpOnly test cookie
-    private func configureDeterministicCookie(in store: WKHTTPCookieStore) {
-        let arguments = ProcessInfo.processInfo.arguments
-        let shouldSet = arguments.contains("-weather-ui-test-cookie-set")
-        let shouldRead = arguments.contains("-weather-ui-test-cookie-read") || shouldSet
-        // skip ordinary UI-test launches
-        guard shouldRead else {
-            return
-        }
-        let inspect = {
-            store.getAllCookies { cookies in
-                let cookie = cookies.first { candidate in
-                    candidate.name == "weather_admin_session" &&
-                        candidate.domain == "weather.ballydidean.farm" &&
-                        candidate.path == "/" &&
-                        candidate.isSecure &&
-                        candidate.isHTTPOnly
-                }
-                Task { @MainActor in
-                    model.setCookieDiagnostic(cookie == nil ? "cookie-missing" : "cookie-persisted")
-                }
-            }
-        }
-        // read without rewriting after app restart
-        guard shouldSet else {
-            inspect()
-            return
-        }
-        let properties: [HTTPCookiePropertyKey: Any] = [
-            .name: "weather_admin_session",
-            .value: "deterministic-ui-test",
-            .domain: "weather.ballydidean.farm",
-            .path: "/",
-            .secure: "TRUE",
-            .expires: Date().addingTimeInterval(60 * 60),
-            HTTPCookiePropertyKey(rawValue: "HttpOnly"): "TRUE"
-        ]
-        // reject an invalid synthetic cookie rather than weakening attributes
-        guard let cookie = HTTPCookie(properties: properties) else {
-            model.setCookieDiagnostic("cookie-invalid")
-            return
-        }
-        store.setCookie(cookie, completionHandler: inspect)
-    }
-
     // expose a deterministic route marker
     private static func testDocument(for route: WeatherRoute) -> String {
         let marker = route == .forecast ? "/forecast" : "/"
@@ -185,8 +155,8 @@ struct SecureWeatherWebView: UIViewRepresentable {
         <html lang="en"><head><meta name="viewport" content="width=device-width"></head>
         <body>
           <main>Weather route \(marker)</main>
-          <a href="about:blank#history">History fixture</a>
-          <a href="about:blank#popup" target="_blank">Popup fixture</a>
+          <a href="about:blank?history">History fixture</a>
+          <a href="about:blank?popup" target="_blank">Popup fixture</a>
         </body></html>
         """
     }
@@ -195,6 +165,10 @@ struct SecureWeatherWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var lastRequestedRoute: WeatherRoute?
         private let allowsDeterministicTestDocument: Bool
+        #if DEBUG
+        private let httpsFixture: WeatherHTTPSFixtureConfiguration?
+        private var pendingDeterministicFailure: Bool
+        #endif
         private let model: WeatherWebViewModel
         #if DEBUG
         private let diagnosticLogger = Logger(
@@ -203,7 +177,21 @@ struct SecureWeatherWebView: UIViewRepresentable {
         )
         #endif
 
-        // retain the debug-only document decision
+        #if DEBUG
+        // retain the debug-only fixture decision
+        init(
+            allowsDeterministicTestDocument: Bool,
+            httpsFixture: WeatherHTTPSFixtureConfiguration?,
+            injectsDeterministicFailure: Bool,
+            model: WeatherWebViewModel
+        ) {
+            self.allowsDeterministicTestDocument = allowsDeterministicTestDocument
+            self.httpsFixture = httpsFixture
+            self.pendingDeterministicFailure = injectsDeterministicFailure
+            self.model = model
+        }
+        #else
+        // retain only the production document decision
         init(
             allowsDeterministicTestDocument: Bool,
             model: WeatherWebViewModel
@@ -211,11 +199,17 @@ struct SecureWeatherWebView: UIViewRepresentable {
             self.allowsDeterministicTestDocument = allowsDeterministicTestDocument
             self.model = model
         }
+        #endif
 
         // record successful document completion
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             model.didFinish()
             #if DEBUG
+            // inject one failure only after the initial document commits
+            if pendingDeterministicFailure {
+                pendingDeterministicFailure = false
+                model.didFail()
+            }
             diagnosticLogger.notice(
                 "m0-webview-lifecycle did-finish path=\(webView.url?.path ?? "nil", privacy: .public)"
             )
@@ -287,7 +281,18 @@ struct SecureWeatherWebView: UIViewRepresentable {
             }
             #endif
 
-            switch WeatherNavigationPolicy.decision(for: url) {
+            let decision: WeatherNavigationDecision
+            #if DEBUG
+            // keep explicit HTTPS fixture navigation inside its two origins
+            if let httpsFixture {
+                decision = WeatherNavigationPolicy.decision(for: url, fixture: httpsFixture)
+            } else {
+                decision = WeatherNavigationPolicy.decision(for: url)
+            }
+            #else
+            decision = WeatherNavigationPolicy.decision(for: url)
+            #endif
+            switch decision {
             case .hosted:
                 // keep new hosted windows in the same view
                 if navigationAction.targetFrame == nil {
@@ -323,7 +328,18 @@ struct SecureWeatherWebView: UIViewRepresentable {
             }
             #endif
 
-            switch WeatherNavigationPolicy.decision(for: url) {
+            let decision: WeatherNavigationDecision
+            #if DEBUG
+            // keep explicit HTTPS fixture popups inside the current view
+            if let httpsFixture {
+                decision = WeatherNavigationPolicy.decision(for: url, fixture: httpsFixture)
+            } else {
+                decision = WeatherNavigationPolicy.decision(for: url)
+            }
+            #else
+            decision = WeatherNavigationPolicy.decision(for: url)
+            #endif
+            switch decision {
             case .hosted:
                 webView.load(navigationAction.request)
             case .external(let externalURL):

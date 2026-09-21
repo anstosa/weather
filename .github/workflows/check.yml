@@ -89,6 +89,8 @@ jobs:
         run: npm run lint
       - name: Verify native project structure
         run: npm run verify:mobile-static
+      - name: Verify the shared native HTTPS fixture
+        run: python3 mobile/scripts/native_https_fixture_test.py
       - name: Build and typecheck once
         run: npm run build
       - name: Verify the shared widget contract
@@ -146,6 +148,8 @@ jobs:
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         with:
           packages: platform-tools
+      - name: Install Android emulator runtime libraries
+        run: sudo apt-get update && sudo apt-get install --yes libpulse0
       - name: Install pinned Android packages
         shell: bash
         run: |
@@ -169,7 +173,7 @@ jobs:
           mobile/android/scripts/toolchain-receipt.sh | tee "${RESULTS}/toolchain.txt"
           java mobile/android/scripts/GenerateBrandAssets.java --check \
             | tee "${RESULTS}/brand-assets.txt"
-      - name: Build test lint and exercise the Android widget host
+      - name: Build test and lint Android artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -179,8 +183,17 @@ jobs:
             :app:lintDebug \
             :app:assembleDebug \
             :app:lintRelease \
-            :app:assembleRelease \
-            widgetPhoneDebugAndroidTest
+            :app:assembleRelease
+      - name: Exercise the real Android HTTPS hosted shell
+        env:
+          RESULTS: ${{ runner.temp }}/weather-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          mobile/scripts/with-native-https-fixture.sh \
+            --evidence-dir "${RESULTS}/https-fixture" \
+            -- mobile/android/scripts/run-hosted-shell-tests.sh \
+            "${RESULTS}/android-webview"
       - name: Verify unsigned Android Release isolation
         env:
           RESULTS: ${{ runner.temp }}/weather-android
@@ -197,7 +210,18 @@ jobs:
             > "${RESULTS}/apk-sha256.txt"
           test -s \
             mobile/android/app/build/outputs/androidTest-results/managedDevice/debug/widgetPhone/TEST-widgetPhone.xml
+          test -s "${RESULTS}/android-webview/TEST-widgetPhone.xml"
           test -d mobile/android/app/build/reports/androidTests/managedDevice
+          python3 - "${RESULTS}/android-webview/TEST-widgetPhone.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as element_tree
+
+          receipt = element_tree.parse(sys.argv[1]).getroot()
+          expected = {"errors": "0", "failures": "0", "skipped": "0", "tests": "21"}
+          # require the complete real-hosted journey count
+          if any(receipt.attrib.get(name) != value for name, value in expected.items()):
+              raise SystemExit(f"unexpected Android hosted-shell result: {receipt.attrib}")
+          PY
       - name: Retain Android build and host evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -258,6 +282,51 @@ jobs:
               "${retained}/Weather-${configuration}-iphonesimulator.app.tar" Weather.app
           done
           (cd "${retained}" && shasum -a 256 ./*.tar > app-bundles.sha256)
+      - name: Exercise the real iOS HTTPS hosted shell
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-webview
+        run: |
+          mobile/scripts/with-native-https-fixture.sh \
+            --evidence-dir "${RUNNER_TEMP}/weather-native-https-fixture" \
+            -- mobile/ios/scripts/probe-webview-https.sh
+      - name: Verify mandatory iOS HTTPS hosted-shell receipts
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-webview
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat "${RESULTS}/webview-https-status.txt")" = '0'
+          grep -Fxq 'webview_https_journeys=passed' "${RESULTS}/webview-https-passed.txt"
+          grep -Fxq 'trusted_tls=passed' "${RESULTS}/webview-https-passed.txt"
+          grep -Fxq 'untrusted_tls_rejected=passed' "${RESULTS}/webview-https-passed.txt"
+          grep -Fq 'disposable_simulator_deleted=' "${RESULTS}/simulator-cleanup.txt"
+          test -s "${RESULTS}/evidence.sha256"
+          test -s "${RESULTS}/webview-https-test.log"
+          test -s "${RESULTS}/webview-lifecycle.log"
+          test -s "${RESULTS}/attachments.sha256"
+          test -d "${RESULTS}/WeatherHTTPS.xcresult"
+          test -d "${RESULTS}/attachments"
+          test -s "${RESULTS}/attachments/manifest.json"
+          # require all four independently inspectable HTTPS journey attachments
+          for attachment in \
+            https-fixture-authenticated-celsius-screenshot \
+            https-fixture-authenticated-celsius-webview-hierarchy \
+            https-fixture-untrusted-retry-screenshot \
+            https-fixture-untrusted-retry-webview-hierarchy; do
+            grep -Fq "${attachment}" "${RESULTS}/attachments/manifest.json"
+          done
+      - name: Rescan the produced iOS Release after fixture cleanup
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          mobile/ios/scripts/verify-release-artifacts.sh \
+            "${RESULTS}/DerivedData" \
+            "${RESULTS}/post-https-release-receipts"
+          cmp \
+            "${RESULTS}/release-receipts/release-sha256.txt" \
+            "${RESULTS}/post-https-release-receipts/release-sha256.txt"
       - name: Exercise the product AppIntent host lifecycle
         env:
           RESULTS: ${{ runner.temp }}/weather-ios-widget-unit
@@ -314,11 +383,15 @@ jobs:
             ${{ runner.temp }}/weather-ios-build/release-build-analyze.log
             ${{ runner.temp }}/weather-ios-build/release-validation-passed.txt
             ${{ runner.temp }}/weather-ios-build/release-receipts/**
+            ${{ runner.temp }}/weather-ios-build/post-https-release-receipts/**
             ${{ runner.temp }}/weather-ios-build/retained-apps/**
             ${{ runner.temp }}/weather-ios-widget-unit/**
             !${{ runner.temp }}/weather-ios-widget-unit/DerivedData/**
             ${{ runner.temp }}/weather-ios-semantic-host/**
             !${{ runner.temp }}/weather-ios-semantic-host/DerivedData/**
+            ${{ runner.temp }}/weather-ios-webview/**
+            !${{ runner.temp }}/weather-ios-webview/DerivedData/**
+            ${{ runner.temp }}/weather-native-https-fixture/**
           retention-days: 14
 
   check-complete:

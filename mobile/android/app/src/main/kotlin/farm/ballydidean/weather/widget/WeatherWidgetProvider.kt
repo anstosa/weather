@@ -113,11 +113,11 @@ object WidgetController {
     ) {
         val unit = WidgetPreferences.unit(context, appWidgetId)
         val storage = WidgetStorage(context)
-        val snapshot = storage.readSnapshot()
-        val presentation = if (snapshot == null) {
+        val stored = storage.readStoredSnapshot()
+        val presentation = if (stored == null) {
             WidgetSemanticRenderer.unavailable(now, unit)
         } else {
-            WidgetSemanticRenderer.render(snapshot, now, unit, runtimeAttempt(storage, snapshot, now))
+            WidgetSemanticRenderer.render(stored.snapshot, now, unit, runtimeAttempt(storage, stored, now))
         }
         manager.updateAppWidget(
             appWidgetId,
@@ -133,15 +133,15 @@ object WidgetController {
         for (appWidgetId in manager.getAppWidgetIds(provider)) {
             val unit = WidgetPreferences.unit(context, appWidgetId)
             val storage = WidgetStorage(context)
-            val snapshot = storage.readSnapshot()
-            val presentation = if (snapshot == null) {
+            val stored = storage.readStoredSnapshot()
+            val presentation = if (stored == null) {
                 WidgetSemanticRenderer.unavailable(now, unit)
             } else {
                 WidgetSemanticRenderer.render(
-                    snapshot,
+                    stored.snapshot,
                     now,
                     unit,
-                    attemptOverride ?: runtimeAttempt(storage, snapshot, now),
+                    boundAttempt(attemptOverride ?: storage.readAttempt(), stored, now),
                 )
             }
             manager.updateAppWidget(
@@ -154,10 +154,25 @@ object WidgetController {
     // fail missing or corrupt runtime metadata conservatively
     private fun runtimeAttempt(
         storage: WidgetStorage,
-        snapshot: WidgetForecastSnapshot,
+        stored: StoredWidgetSnapshot,
         now: Instant,
     ): WidgetAttempt {
-        return storage.readAttempt() ?: WidgetAttempt(maxOf(snapshot.receivedAt, now), WidgetAttemptOutcome.INVALID)
+        return boundAttempt(storage.readAttempt(), stored, now)
+    }
+
+    // require success metadata to identify the exact cached bytes
+    internal fun boundAttempt(
+        attempt: WidgetAttempt?,
+        stored: StoredWidgetSnapshot,
+        now: Instant,
+    ): WidgetAttempt {
+        // fail missing or mismatched receipts conservatively
+        if (attempt == null ||
+            attempt.outcome == WidgetAttemptOutcome.SUCCESS && attempt.snapshotIdentity != stored.identity
+        ) {
+            return WidgetAttempt(maxOf(stored.snapshot.receivedAt, now), WidgetAttemptOutcome.INVALID)
+        }
+        return attempt
     }
 }
 
@@ -259,7 +274,10 @@ object WeatherWidgetRenderer {
         if (presentation.message != null) {
             val firstWeight = if (primaryGroups.isEmpty()) 1 else 3
             views.addView(R.id.row_primary, messageView(context, firstWeight, presentation.message))
-            views.addView(R.id.row_secondary, messageView(context, 1, presentation.message))
+            // reserve the second unavailable row for readable metadata
+            if (presentation.mode != WidgetPresentationMode.UNAVAILABLE) {
+                views.addView(R.id.row_secondary, messageView(context, 1, presentation.message))
+            }
         }
         // move metadata into spare second-row width at large scale
         if (largeText) {
@@ -368,7 +386,7 @@ object WeatherWidgetRenderer {
     }
 
     // open the enum-like in-app forecast route
-    private fun forecastPendingIntent(context: Context, appWidgetId: Int): PendingIntent {
+    internal fun forecastPendingIntent(context: Context, appWidgetId: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             putExtra(MainActivity.EXTRA_ROUTE, MainActivity.ROUTE_FORECAST)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)

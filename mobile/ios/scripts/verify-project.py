@@ -22,6 +22,7 @@ EXPECTED_FILES = (
     "Configurations/Release.xcconfig",
     "WeatherApp/App/WeatherApp.swift",
     "WeatherApp/Web/SecureWeatherWebView.swift",
+    "WeatherApp/Web/WeatherHTTPSFixture.swift",
     "WeatherApp/Web/WeatherNavigationPolicy.swift",
     "WeatherApp/Resources/Info.plist",
     "WeatherApp/Resources/Assets.xcassets/Contents.json",
@@ -46,6 +47,7 @@ EXPECTED_FILES = (
     "scripts/probe-widget-host.sh",
     "scripts/probe-widget-unit.sh",
     "scripts/probe-widget-semantic-host.sh",
+    "scripts/probe-webview-https.sh",
 )
 EXPECTED_SCHEMES = (
     "Weather.xcscheme",
@@ -189,6 +191,7 @@ def verify_project_graph() -> None:
     required_fragments = (
         "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon",
         "Assets.xcassets in Resources",
+        "EXCLUDED_SOURCE_FILE_NAMES = WeatherWidgetIntent.swift",
         "IPHONEOS_DEPLOYMENT_TARGET = 17.0",
         "farm.ballydidean.weather.widget",
         "com.apple.product-type.app-extension",
@@ -200,15 +203,31 @@ def verify_project_graph() -> None:
         # require the approved project contract
         if fragment not in combined:
             fail(f"project lacks {fragment}")
+    # compile the debug-only HTTPS fixture into the app and unit-test targets
+    if text.count("WeatherHTTPSFixture.swift in Sources") != 4:
+        fail("HTTPS fixture source membership is incomplete")
 
 
 def verify_release_reachable_sources() -> None:
     """reject source-level release boundary violations"""
     source_paths = list((ROOT / "WeatherApp").rglob("*.swift"))
     source_paths.extend((ROOT / "WeatherWidget").rglob("*.swift"))
+    https_fixture_path = ROOT / "WeatherApp/Web/WeatherHTTPSFixture.swift"
+    https_fixture_source = https_fixture_path.read_text()
+    # require one outer compile-time boundary around every fixture byte
+    if (
+        not https_fixture_source.startswith("#if DEBUG\n")
+        or not https_fixture_source.endswith("#endif\n")
+        or https_fixture_source.count("#if DEBUG") != 1
+        or https_fixture_source.count("#endif") != 1
+    ):
+        fail("HTTPS fixture source is not entirely DEBUG-isolated")
     for path in source_paths:
         text = path.read_text()
         for pattern in BANNED_SOURCE_PATTERNS:
+            # permit only the reviewed loopback literal inside the outer DEBUG file
+            if path == https_fixture_path and pattern == r"127\.0\.0\.1":
+                continue
             # reject forbidden release mechanisms
             if re.search(pattern, text, re.IGNORECASE):
                 fail(f"{path.relative_to(ROOT)} contains banned pattern {pattern}")
@@ -220,9 +239,14 @@ def verify_release_reachable_sources() -> None:
     web_view_source = (ROOT / "WeatherApp/Web/SecureWeatherWebView.swift").read_text()
     model_source = (ROOT / "WeatherWidget/WeatherWidgetModel.swift").read_text()
     view_source = (ROOT / "WeatherWidget/WeatherWidgetView.swift").read_text()
+    client_source = (ROOT / "WeatherWidget/WeatherWidgetClient.swift").read_text()
+    store_source = (ROOT / "WeatherWidget/WeatherWidgetStore.swift").read_text()
     test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
     release_scan = (ROOT / "scripts/verify-release-artifacts.sh").read_text()
     debug_fixtures = (ROOT / "WeatherWidget/WeatherWidgetDebugFixtures.swift").read_text()
+    https_probe = (ROOT / "scripts/probe-webview-https.sh").read_text()
+    unit_probe = (ROOT / "scripts/probe-widget-unit.sh").read_text()
+    ui_test_source = (ROOT / "WeatherUITests/WeatherDeepLinkUITests.swift").read_text()
     obsolete_fixture_controls = (
         "WEATHER_WIDGET_FIXTURE",
         "WeatherWidgetFixtureSelection",
@@ -299,6 +323,31 @@ def verify_release_reachable_sources() -> None:
         or "for scenario in WeatherWidgetScenario.allCases" not in test_source
     ):
         fail("fixture identity tests are incomplete")
+    persistence_fragments = (
+        "weather-widget-attempt/v2",
+        "weather-widget-cache/v2",
+        "snapshotAcquiredAt",
+        "snapshotIdentifier",
+        "attempt.snapshotIdentifier == cached.snapshotIdentifier",
+        "testMatchingSuccessMetadataSurvivesRestart",
+        "testInterruptedSnapshotReplacementIsConservativeAcrossRestart",
+        "testMissingAttemptMetadataIsConservativeAcrossRestart",
+        "testCorruptAttemptMetadataIsConservativeAcrossRestart",
+    )
+    # retain the causal restart boundary for independent persistence files
+    for fragment in persistence_fragments:
+        if fragment not in client_source + store_source + test_source:
+            fail(f"widget persistence boundary lacks {fragment}")
+    transport_test_fragments = (
+        "testTotalDeadlineWinsOverLateSuccess",
+        "testDeclaredOversizedPayloadIsRejected",
+        "testStreamedOversizedPayloadIsRejected",
+        "WeatherWidgetHTTPClient.deadline, 8",
+    )
+    # retain direct transport tests for every bounded client control
+    for fragment in transport_test_fragments:
+        if fragment not in test_source:
+            fail(f"widget transport tests lack {fragment}")
     web_diagnostic_marker = "m0-webview-lifecycle"
     web_diagnostic_fragments = (
         "inline-load-request",
@@ -319,6 +368,106 @@ def verify_release_reachable_sources() -> None:
         # reject incomplete blank-document evidence
         if fragment not in web_view_source:
             fail(f"debug WebKit lifecycle receipt lacks {fragment}")
+    https_fixture_fragments = (
+        "-weather-https-fixture",
+        "-weather-https-fixture-path",
+        "WEATHER_HTTPS_FIXTURE_IOS_ORIGIN",
+        "WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN",
+        '"https"',
+        '"127.0.0.1"',
+        "18_443",
+        "18_444",
+    )
+    # preserve the exact debug-only fixture gate and origin contract
+    for fragment in https_fixture_fragments:
+        if fragment not in https_fixture_source:
+            fail(f"HTTPS fixture source lacks {fragment}")
+    https_ui_fragments = (
+        "testHTTPSFixtureJourneys",
+        "Fixture sign in",
+        "HttpOnly session hidden",
+        "Server unit: Celsius",
+        "Fixture session signed out",
+        "Public unit preference: Celsius",
+        "Public unit preference: Fahrenheit",
+        "Open fixture map in new window",
+        "Fixture logs",
+        "Fixture trends",
+        "Unsafe HTTP fixture",
+        "Lookalike Weather origin",
+        "External fixture policy",
+        "Open untrusted TLS fixture",
+        'app.buttons["Retry"]',
+        "https-fixture-authenticated-celsius",
+        "https-fixture-untrusted-retry",
+    )
+    # retain each real WebKit journey assertion
+    for fragment in https_ui_fragments:
+        if fragment not in ui_test_source:
+            fail(f"HTTPS fixture UI journey lacks {fragment}")
+    https_probe_fragments = (
+        "xcrun simctl create",
+        "xcrun simctl keychain",
+        "add-root-cert",
+        "xcrun simctl delete",
+        "WEATHER_RUN_HTTPS_FIXTURE_TEST=1",
+        "testHTTPSFixtureJourneys",
+        "did-finish path=/logs",
+        "did-finish path=/trends",
+        "NSURLErrorDomain code=-1202",
+        "https-fixture-authenticated-celsius-webview-hierarchy",
+        "https-fixture-untrusted-retry-webview-hierarchy",
+        "webview-https-passed.txt",
+        "untrusted_tls_rejected=passed",
+    )
+    # require disposable trust and executed TLS receipts
+    for fragment in https_probe_fragments:
+        if fragment not in https_probe:
+            fail(f"HTTPS fixture probe lacks {fragment}")
+    # reject evidence reuse before preflight creates the results directory
+    if https_probe.find('if [[ -e "$RESULTS" ]]') > https_probe.find('"$SCRIPT_DIR/preflight.sh"'):
+        fail("HTTPS fixture probe checks evidence reuse after preflight")
+    for forbidden in (
+        "NSAllowsArbitraryLoads",
+        "NSExceptionDomains",
+        "didReceive challenge",
+        "serverTrust",
+        "SecTrust",
+        "keychain reset",
+        "curl -k",
+        "curl --insecure",
+    ):
+        # reject fixture-specific trust bypasses
+        if forbidden in https_fixture_source + web_view_source + https_probe:
+            fail(f"HTTPS fixture path contains trust bypass {forbidden}")
+    for fragment in (
+        "weather-https-fixture",
+        "WEATHER_HTTPS_FIXTURE_IOS_ORIGIN",
+        "WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN",
+        "https-fixture-load",
+        "Weather Native Fixture Trusted Root",
+        "Weather Native Fixture Untrusted Root",
+        "Weather Native HTTPS Fixture",
+    ):
+        # require produced Release scans to reject fixture bytes
+        if fragment not in release_scan:
+            fail(f"Release scan lacks HTTPS fixture ban {fragment}")
+    unit_probe_fragments = (
+        "test07TemperatureUnitEditToCelsius",
+        "test08TemperatureUnitPersistsAfterExtensionRestart",
+        "xcrun simctl shutdown",
+        "simulator-rebooted-between-unit-phases=1",
+        "WIDGET_ID_COUNT",
+        "unit-celsius-after-restart-typed-widget-info",
+        "unit-final-fahrenheit-visible-spoken",
+    )
+    # preserve the product F-to-C-to-F restart gate
+    for fragment in unit_probe_fragments:
+        if fragment not in unit_probe:
+            fail(f"widget product-unit probe lacks {fragment}")
+    # reject evidence reuse before preflight creates the results directory
+    if unit_probe.find('if [[ -e "$RESULTS" ]]') > unit_probe.find('"$SCRIPT_DIR/preflight.sh"'):
+        fail("widget product-unit probe checks evidence reuse after preflight")
     # keep the matrix reload request out of Release compilation
     if (
         "#if DEBUG" not in app_source

@@ -20,7 +20,7 @@ find "${TEMP_DIR}" -type f -exec strings {} + >"${STRINGS_FILE}"
 
 # reject debug-only classes and fixture controls
 if grep -E -q \
-  'FixtureHostActivity|DebugWidgetFixtures|FixtureVariant|PinWidgetActivity|SET_FIXTURE|127\.0\.0\.1|10\.0\.2\.2|localhost|addJavascriptInterface|onReceivedSslError.*proceed|setWebContentsDebuggingEnabled' \
+  'FixtureHostActivity|DebugWidgetFixtures|FixtureVariant|PinWidgetActivity|SET_FIXTURE|SEED_PERSISTENCE|VERIFY_PERSISTENCE|127\.0\.0\.1|10\.0\.2\.2|localhost|Weather Native Fixture (Trusted Root|Untrusted Root)|Weather Native HTTPS Fixture|native_fixture_ca|fixtureOrigin|untrustedFixtureOrigin|fixtureUsername|fixturePassword|addJavascriptInterface|onReceivedSslError.*proceed|setWebContentsDebuggingEnabled' \
   "${STRINGS_FILE}"; then
   printf 'release artifact contains a forbidden debug origin, fixture control, bridge, or tls bypass\n' >&2
   exit 1

@@ -184,12 +184,12 @@ class WidgetRefreshWorker(
             return Result.success()
         }
         try {
-            val now = Instant.now()
+            val startedAt = Instant.now()
             val storage = WidgetStorage(applicationContext)
             // avoid back-to-back fetches from the two unique work names
-            if (!WidgetRefreshCoordinator.shouldFetch(storage.readAttempt(), now)) {
-                WidgetController.updateAll(applicationContext, now)
-                WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), now)
+            if (!WidgetRefreshCoordinator.shouldFetch(storage.readAttempt(), startedAt)) {
+                WidgetController.updateAll(applicationContext, startedAt)
+                WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), startedAt)
                 return Result.success()
             }
             val result = WidgetForecastClient().fetch()
@@ -197,24 +197,34 @@ class WidgetRefreshWorker(
                 is WidgetFetchResult.Success -> WidgetAttemptOutcome.SUCCESS
                 is WidgetFetchResult.Failure -> result.outcome
             }
-            val currentAttempt = WidgetAttempt(now, outcome)
             var writeFailed = false
+            var snapshotIdentity: String? = null
             // preserve weather and metadata independently
             if (result is WidgetFetchResult.Success) {
                 try {
-                    storage.writeSnapshot(result.bytes)
+                    snapshotIdentity = storage.writeSnapshot(result.bytes)
                 } catch (_: Exception) {
                     writeFailed = true
                 }
+                // never label an ignored rollback callback successful
+                if (!writeFailed && snapshotIdentity == null) {
+                    val renderAt = Instant.now()
+                    WidgetController.updateAll(applicationContext, renderAt)
+                    WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), renderAt)
+                    return Result.success()
+                }
             }
+            val completedAt = Instant.now()
+            val currentAttempt = WidgetAttempt(completedAt, outcome, snapshotIdentity)
             try {
-                storage.writeAttempt(if (writeFailed) WidgetAttempt(now, WidgetAttemptOutcome.INVALID) else currentAttempt)
+                storage.writeAttempt(if (writeFailed) WidgetAttempt(completedAt, WidgetAttemptOutcome.INVALID) else currentAttempt)
             } catch (_: Exception) {
                 writeFailed = true
             }
-            val visibleAttempt = if (writeFailed) WidgetAttempt(now, WidgetAttemptOutcome.INVALID) else currentAttempt
-            WidgetController.updateAll(applicationContext, now, visibleAttempt)
-            WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), now)
+            val renderAt = Instant.now()
+            val visibleAttempt = if (writeFailed) WidgetAttempt(completedAt, WidgetAttemptOutcome.INVALID) else currentAttempt
+            WidgetController.updateAll(applicationContext, renderAt, visibleAttempt)
+            WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), renderAt)
             return when {
                 writeFailed -> Result.failure()
                 result is WidgetFetchResult.Failure && result.retry -> Result.retry()

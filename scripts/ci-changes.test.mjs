@@ -112,6 +112,11 @@ test("shared mobile paths and renames select conservatively", () => {
     nativeAndroid: true,
     nativeIos: true,
   });
+  assert.deepEqual(classifyPaths(["mobile/scripts/native_https_fixture.py"]), {
+    ...baselineOnly,
+    nativeAndroid: true,
+    nativeIos: true,
+  });
   const renamed = parseNameStatus(Buffer.from(
     "R100\0mobile/android/Old.kt\0mobile/ios/New.swift\0",
   ));
@@ -226,6 +231,7 @@ test("Check workflow binds selected native jobs to the exact commit", async () =
     "utf8",
   );
   const selection = workflowJob(workflow, "change-selection");
+  const quality = workflowJob(workflow, "quality-gates");
   const android = workflowJob(workflow, "native-android");
   const ios = workflowJob(workflow, "native-ios");
   const aggregate = workflowJob(workflow, "check-complete");
@@ -240,10 +246,21 @@ test("Check workflow binds selected native jobs to the exact commit", async () =
   );
   assert.match(android, /'platforms;android-37\.0'/u);
   assert.doesNotMatch(android, /'platforms;android-37'/u);
+  assert.match(android, /apt-get install --yes libpulse0/u);
   assert.match(android, /GenerateBrandAssets\.java --check/u);
+  assert.match(android, /with-native-https-fixture\.sh[\s\S]*run-hosted-shell-tests\.sh/u);
+  assert.match(android, /android-webview\/TEST-widgetPhone\.xml/u);
+  assert.match(android, /"tests": "21"/u);
   assert.match(android, /managedDevice\/debug\/widgetPhone\/TEST-widgetPhone\.xml/u);
+  assert.match(quality, /python3 mobile\/scripts\/native_https_fixture_test\.py/u);
   assert.match(ios, /timeout-minutes: 180/u);
   assert.match(ios, /probe-widget-semantic-host\.sh/u);
+  assert.match(ios, /with-native-https-fixture\.sh[\s\S]*probe-webview-https\.sh/u);
+  assert.match(ios, /webview_https_journeys=passed/u);
+  assert.match(ios, /untrusted_tls_rejected=passed/u);
+  assert.match(ios, /https-fixture-untrusted-retry-webview-hierarchy/u);
+  assert.ok(ios.indexOf("probe-webview-https.sh") < ios.indexOf("verify-release-artifacts.sh"));
+  assert.match(ios, /post-https-release-receipts/u);
   assert.match(ios, /visual-review-required\.txt/u);
   assert.match(ios, /Weather-\$\{configuration\}-iphonesimulator\.app\.tar/u);
   assert.match(ios, /app-bundles\.sha256/u);

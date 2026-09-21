@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import android.net.http.SslError
@@ -33,11 +34,16 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var errorView: View
     private lateinit var canonicalOrigin: String
+    private var mainFrameFailed = false
 
     // configure the persistent hosted shell
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        canonicalOrigin = getString(R.string.canonical_weather_origin)
+        canonicalOrigin = HostedTestConfiguration.canonicalOrigin(
+            this,
+            intent,
+            getString(R.string.canonical_weather_origin),
+        )
         webView = WebView(this)
         configureWebView(webView)
         setContentView(shellView())
@@ -112,7 +118,13 @@ class MainActivity : Activity() {
                     errorView.visibility = View.GONE
                     webView.visibility = View.VISIBLE
                     val current = webView.url
-                    webView.loadUrl(if (current != null && HostedNavigationPolicy.isCanonical(current)) current else canonicalOrigin)
+                    webView.loadUrl(
+                        if (current != null && HostedNavigationPolicy.isCanonical(current, canonicalOrigin)) {
+                            current
+                        } else {
+                            canonicalOrigin
+                        },
+                    )
                 }
             })
         }
@@ -146,13 +158,21 @@ class MainActivity : Activity() {
         view.webViewClient = object : WebViewClient() {
             // route modern navigation
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest): Boolean {
-                return handleNavigation(request.url.toString())
+                return handleNavigation(view, request.url.toString())
             }
 
             // route legacy navigation
             @Suppress("DEPRECATION")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String): Boolean {
-                return handleNavigation(url)
+                return handleNavigation(view, url)
+            }
+
+            // reset failure state for a new trusted main frame
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                // clear only when a trusted navigation actually begins
+                if (url != null && HostedNavigationPolicy.isCanonical(url, canonicalOrigin)) {
+                    mainFrameFailed = false
+                }
             }
 
             // retain ordinary certificate validation
@@ -184,7 +204,7 @@ class MainActivity : Activity() {
             // clear retry state after a trusted page succeeds
             override fun onPageFinished(view: WebView?, url: String?) {
                 // reveal only exact-origin pages
-                if (url != null && HostedNavigationPolicy.isCanonical(url)) {
+                if (url != null && !mainFrameFailed && HostedNavigationPolicy.isCanonical(url, canonicalOrigin)) {
                     errorView.visibility = View.GONE
                     webView.visibility = View.VISIBLE
                 }
@@ -209,13 +229,14 @@ class MainActivity : Activity() {
     }
 
     // enforce hosted and external navigation policy
-    private fun handleNavigation(value: String): Boolean {
+    private fun handleNavigation(view: WebView?, value: String): Boolean {
         // keep exact-origin links in the webview
-        if (HostedNavigationPolicy.isCanonical(value)) {
-            return false
+        if (HostedNavigationPolicy.isCanonical(value, canonicalOrigin)) {
+            view?.loadUrl(value)
+            return true
         }
         // send other safe web links outside the app
-        if (HostedNavigationPolicy.isSafeExternal(value)) {
+        if (HostedNavigationPolicy.isSafeExternal(value, canonicalOrigin)) {
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value)))
             } catch (_: ActivityNotFoundException) {
@@ -227,6 +248,7 @@ class MainActivity : Activity() {
 
     // reveal the local bounded error state
     private fun showError() {
+        mainFrameFailed = true
         webView.visibility = View.GONE
         errorView.visibility = View.VISIBLE
     }

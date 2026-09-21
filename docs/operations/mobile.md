@@ -47,7 +47,25 @@ them.
 
 Install the pinned SDK packages outside the repository, including Android 36
 and 37 platforms, Build Tools 36.0.0, the emulator, platform tools, and the
-Android 36 default x86_64 system image. Then run:
+Android 36 default x86_64 system image. The SDK manager identifier for the
+API 37 platform is exactly `platforms;android-37.0`; `platforms;android-37`
+does not resolve on the selected runner. The Linux emulator also requires the
+host `libpulse0` package before even its version receipt can execute. A fresh
+Ubuntu setup therefore includes:
+
+```bash
+sudo apt-get update
+sudo apt-get install --yes libpulse0
+sdkmanager --install \
+  'platform-tools' \
+  'emulator' \
+  'platforms;android-36' \
+  'platforms;android-37.0' \
+  'build-tools;36.0.0' \
+  'system-images;android-36;default;x86_64'
+```
+
+Then run:
 
 ```bash
 source mobile/android/scripts/android-env.sh
@@ -139,6 +157,61 @@ independent reviewer supplies complete hashed receipts. Do not convert that
 exit into success, substitute a SwiftUI preview, or call the AppIntent unit
 probe a visual review. The exact-commit host matrix must be captured and
 reviewed again when production presentation changes.
+
+## Real HTTPS WebView fixture
+
+Native hosted-shell journeys use the dependency-free shared fixture rather
+than production accounts or production traffic. The wrapper creates a private
+mode-0700 runtime under the host temporary directory, generates per-run trusted
+and untrusted root and leaf certificates, and binds only `127.0.0.1` ports
+18443 and 18444. Both leaf certificates cover `127.0.0.1` and the Android
+emulator alias `10.0.2.2`. Fixed-port conflicts fail closed rather than moving
+the test to a different origin.
+
+Run the fixture contract test independently with:
+
+```bash
+python3 mobile/scripts/native_https_fixture_test.py
+```
+
+The native journey wrappers consume the same bounded environment:
+
+```bash
+RESULTS="$RUNNER_TEMP/weather-android" \
+  mobile/scripts/with-native-https-fixture.sh \
+  --evidence-dir "$RUNNER_TEMP/weather-android/https-fixture" \
+  -- mobile/android/scripts/run-hosted-shell-tests.sh \
+  "$RUNNER_TEMP/weather-android/android-webview"
+
+RESULTS="$RUNNER_TEMP/weather-ios-webview" \
+  mobile/scripts/with-native-https-fixture.sh \
+  --evidence-dir "$RUNNER_TEMP/weather-native-https-fixture" \
+  -- mobile/ios/scripts/probe-webview-https.sh
+```
+
+The wrapper exports the trusted public CA, platform-specific origins, and fake
+fixture credentials only to its child. Android packages the CA only into the
+generated Debug test resource. The disposable iOS Simulator installs only the
+trusted CA. Neither platform trusts the negative CA or disables ordinary TLS
+validation. Release scans must reject fixture origins, public test roots,
+fixture arguments, credentials, arbitrary trust configuration, and transport
+exceptions.
+
+The deterministic DOM exposes `Fixture home`, forecast, map, logs, trends,
+settings, sign-in, administration, and policy pages. Stable visible labels
+cover the sign-in fields, settings controls, logout, same-origin history,
+target-blank navigation, unsafe and lookalike links, and the untrusted TLS
+destination. The fixture never follows an external link itself, and native
+policy tests intercept or cancel those destinations without ordinary offsite
+traffic.
+
+Successful retained fixture evidence contains only the trusted public CA,
+public certificate fingerprints, sanitized request-status booleans and counts,
+and a cleanup receipt. It never retains a private key, the untrusted CA, a
+session token, raw cookie, or fake password. The production Docker context also
+excludes native Gradle output, DerivedData-style iOS output, and local native
+host evidence; those files remain bounded CI artifacts rather than web image
+inputs.
 
 ## CI selection and evidence
 

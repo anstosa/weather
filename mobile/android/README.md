@@ -52,8 +52,10 @@ hard expiry are checked against all six shared goldens.
 `AtomicFile` stores a bounded last-good snapshot and sanitized attempt metadata
 in separate files under serialized access. Failed attempts never replace
 weather. Missing/corrupt/impossible attempt metadata is conservative stale;
-older callbacks cannot replace newer acquisitions. Each widget independently
-persists Fahrenheit (default) or Celsius.
+older callbacks cannot replace newer acquisitions. Successful attempt metadata
+binds to the exact cached snapshot SHA-256, so interrupted or conflicting writes
+render stale instead of inheriting an unrelated success. Each widget
+independently persists Fahrenheit (default) or Celsius.
 
 WorkManager coalesces one immediate network refresh and one network-constrained
 30-minute periodic request. Both use the same process fetch lock and a short
@@ -91,22 +93,45 @@ mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 The artifact scan rejects debug fixtures/hosts, local origins, bridge or TLS
-bypass markers, credential-shaped values, protected fixture permissions and
+bypass markers, generated fixture certificate subjects/resources, fixture
+runner arguments, credential-shaped values, protected fixture permissions and
 cleartext-enabled manifests. It requires the canonical origin and fixed widget
 endpoint. Passing proves unsigned Release isolation, not store readiness.
 
-Run the full Android 36 managed-device suite:
+Run the 21-test Android 36 managed-device suite through the loopback-only HTTPS
+fixture. The wrapper creates ephemeral certificates, exposes only its public
+test CA, and removes every private key after the child exits:
 
 ```bash
-source mobile/android/scripts/android-env.sh
-mobile/android/gradlew -p mobile/android --no-daemon widgetPhoneDebugAndroidTest
+mobile/scripts/with-native-https-fixture.sh \
+  --evidence-dir /tmp/weather-android-https-fixture -- \
+  mobile/android/scripts/run-hosted-shell-tests.sh \
+  /tmp/weather-android-webview
 ```
 
 This binds the real provider into a real `AppWidgetHost` at 276×102dp and
-554×51dp, exercises the fixture matrix and persistent cache, and checks
-semantics, credits, accessibility and clipping. Managed-device results are
-under `app/build/outputs/androidTest-results/managedDevice/widgetPhone/` and
-`app/build/reports/androidTests/managedDevice/`.
+554×51dp, exercises the fixture matrix and persistent cache, and drives the
+production WebView through real HTTPS login, settings, logout, history, popup,
+origin-policy and certificate-negative journeys. Managed-device results are
+under
+`app/build/outputs/androidTest-results/managedDevice/debug/widgetPhone/` and
+`app/build/reports/androidTests/managedDevice/`; the wrapper copies the exact
+`TEST-widgetPhone.xml` receipt into the selected WebView evidence directory.
+
+An already-running API 36 emulator can additionally prove WebView state across
+real application process stops. This three-phase test logs in through the page,
+stops the application externally, verifies the persisted HttpOnly session and
+settings, logs out, stops it again, and verifies logout remains cleared:
+
+```bash
+mobile/scripts/with-native-https-fixture.sh \
+  --evidence-dir /tmp/weather-android-process-https -- \
+  mobile/android/scripts/run-hosted-shell-process-tests.sh \
+  /tmp/weather-android-process emulator-5554
+```
+
+The device serial is explicit; the script never starts, stops or broadly kills
+an emulator or the external fixture process.
 
 For an already-running full emulator, the separate smoke exercises the ordinary
 launcher placement flow and saves ignored evidence under

@@ -64,4 +64,17 @@ enum WeatherNavigationPolicy {
         // hand safe external web links to the system
         return .external(url)
     }
+
+    #if DEBUG
+    // classify only frozen fixture origins during an explicit HTTPS test
+    static func decision(
+        for url: URL,
+        fixture: WeatherHTTPSFixtureConfiguration
+    ) -> WeatherNavigationDecision {
+        guard fixture.contains(url) else {
+            return .rejected
+        }
+        return .hosted
+    }
+    #endif
 }

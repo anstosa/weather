@@ -5,6 +5,9 @@ import java.io.IOException
 import java.io.InputStream
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -92,6 +95,20 @@ class WidgetWorkTest {
                 now,
             ),
         )
+        val acquired = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        val holder = executor.submit {
+            assertTrue(WidgetRefreshCoordinator.tryAcquire())
+            acquired.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            WidgetRefreshCoordinator.release()
+        }
+        assertTrue(acquired.await(5, TimeUnit.SECONDS))
+        assertFalse(WidgetRefreshCoordinator.tryAcquire())
+        release.countDown()
+        holder.get(5, TimeUnit.SECONDS)
+        executor.shutdownNow()
     }
 
     // schedule the earliest correction before the next hour
@@ -104,6 +121,31 @@ class WidgetWorkTest {
             Instant.parse("2026-09-12T08:30:00Z"),
             WidgetBoundaryPlanner.earliest(snapshot, Instant.parse("2026-09-12T08:00:00Z")),
         )
+    }
+
+    // render successful fetches at completion rather than request start
+    @Test
+    fun receiptDuringFetchIsFreshButAReceiptAfterRenderIsStale() {
+        val snapshot = WidgetForecastDecoder.decode(resource("fixtures/adjusted-standard/snapshot.json"))
+        val startedAt = Instant.parse("2026-09-12T07:00:00.500Z")
+        val completedAt = Instant.parse("2026-09-12T07:00:02.000Z")
+        assertTrue(
+            WidgetSemanticRenderer.render(
+                snapshot,
+                completedAt,
+                TemperatureUnit.FAHRENHEIT,
+                WidgetAttempt(startedAt, WidgetAttemptOutcome.SUCCESS),
+            ).stale,
+        )
+        assertFalse(
+            WidgetSemanticRenderer.render(
+                snapshot,
+                completedAt,
+                TemperatureUnit.FAHRENHEIT,
+                WidgetAttempt(completedAt, WidgetAttemptOutcome.SUCCESS),
+            ).stale,
+        )
+        assertTrue(WidgetSemanticRenderer.render(snapshot, startedAt, TemperatureUnit.FAHRENHEIT).stale)
     }
 
     // load one frozen test resource

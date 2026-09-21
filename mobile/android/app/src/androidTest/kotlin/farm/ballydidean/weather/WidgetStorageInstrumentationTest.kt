@@ -1,10 +1,12 @@
 package farm.ballydidean.weather
 
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.NetworkType
 import androidx.work.WorkManager
 import farm.ballydidean.weather.widget.TemperatureUnit
 import farm.ballydidean.weather.widget.WidgetAttempt
 import farm.ballydidean.weather.widget.WidgetAttemptOutcome
+import farm.ballydidean.weather.widget.WidgetController
 import farm.ballydidean.weather.widget.WidgetForecastDecoder
 import farm.ballydidean.weather.widget.WidgetPreferences
 import farm.ballydidean.weather.widget.WidgetStorage
@@ -15,6 +17,7 @@ import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -43,7 +46,7 @@ class WidgetStorageInstrumentationTest {
     @Test
     fun failedAttemptPersistsWithoutReplacingSnapshot() {
         val bytes = asset("fixtures/adjusted-standard/snapshot.json")
-        assertTrue(storage.writeSnapshot(bytes))
+        assertNotNull(storage.writeSnapshot(bytes))
         storage.writeAttempt(WidgetAttempt(Instant.parse("2026-09-12T07:01:00Z"), WidgetAttemptOutcome.NETWORK))
         val restarted = WidgetStorage(context)
         assertArrayEquals(bytes, restarted.readSnapshotBytes())
@@ -55,9 +58,51 @@ class WidgetStorageInstrumentationTest {
     fun olderSnapshotCannotReplaceNewerAcquisition() {
         val newer = asset("fixtures/adjusted-standard/snapshot.json")
         val older = asset("fixtures/spring-forward-23/snapshot.json")
-        assertTrue(storage.writeSnapshot(newer))
-        assertFalse(storage.writeSnapshot(older))
+        val identity = checkNotNull(storage.writeSnapshot(newer))
+        assertNull(storage.writeSnapshot(older))
         assertArrayEquals(newer, storage.readSnapshotBytes())
+        val conflict = newer.toString(Charsets.UTF_8)
+            .replaceFirst("15.555555555555555", "15.0")
+            .toByteArray()
+        storage.writeAttempt(
+            WidgetAttempt(
+                Instant.parse("2026-09-12T07:01:00Z"),
+                WidgetAttemptOutcome.SUCCESS,
+                identity,
+            ),
+        )
+        assertNull(storage.writeSnapshot(conflict))
+        val restarted = WidgetStorage(context)
+        val stored = checkNotNull(restarted.readStoredSnapshot())
+        assertEquals(identity, stored.identity)
+        assertEquals(identity, restarted.readAttempt()?.snapshotIdentity)
+        assertEquals(
+            WidgetAttemptOutcome.SUCCESS,
+            WidgetController.boundAttempt(
+                restarted.readAttempt(),
+                stored,
+                Instant.parse("2026-09-12T07:02:00Z"),
+            ).outcome,
+        )
+
+        val rollbackIdentity = WidgetStorage.snapshotIdentity(asset("fixtures/spring-forward-23/snapshot.json"))
+        storage.writeAttempt(
+            WidgetAttempt(
+                Instant.parse("2026-09-12T07:02:00Z"),
+                WidgetAttemptOutcome.SUCCESS,
+                rollbackIdentity,
+            ),
+        )
+        val mismatched = checkNotNull(restarted.readAttempt())
+        assertFalse(mismatched.snapshotIdentity == stored.identity)
+        assertEquals(
+            WidgetAttemptOutcome.INVALID,
+            WidgetController.boundAttempt(
+                mismatched,
+                stored,
+                Instant.parse("2026-09-12T07:03:00Z"),
+            ).outcome,
+        )
     }
 
     // delete corrupt and oversized cache files safely
@@ -88,12 +133,39 @@ class WidgetStorageInstrumentationTest {
         val bytes = asset("fixtures/adjusted-standard/snapshot.json")
         storage.writeSnapshot(bytes)
         val snapshot = checkNotNull(storage.readSnapshot())
+        val workManager = WorkManager.getInstance(context)
         WidgetWorkScheduler.scheduleBoundary(context, snapshot, Instant.parse("2026-09-12T07:00:01Z"))
-        val infos = WorkManager.getInstance(context)
+        val first = workManager
             .getWorkInfosForUniqueWork("weather-widget-boundary-v1")
-            .get(5, TimeUnit.SECONDS)
-        assertEquals(1, infos.size)
-        WorkManager.getInstance(context).cancelUniqueWork("weather-widget-boundary-v1")
+            .get(5, TimeUnit.SECONDS).single { !it.state.isFinished }
+        assertEquals(NetworkType.NOT_REQUIRED, first.constraints.requiredNetworkType)
+        assertEquals(3_599_000L, first.initialDelayMillis)
+        WidgetWorkScheduler.scheduleBoundary(context, snapshot, Instant.parse("2026-09-12T07:30:01Z"))
+        val replacement = workManager
+            .getWorkInfosForUniqueWork("weather-widget-boundary-v1")
+            .get(5, TimeUnit.SECONDS).single { !it.state.isFinished }
+        assertFalse(first.id == replacement.id)
+        assertEquals(1_799_000L, replacement.initialDelayMillis)
+        workManager.cancelUniqueWork("weather-widget-boundary-v1")
+    }
+
+    // clear per-widget state and work after final disable
+    @Test
+    fun finalDisableCleansConfigurationCacheAndWork() {
+        val bytes = asset("fixtures/adjusted-standard/snapshot.json")
+        assertNotNull(storage.writeSnapshot(bytes))
+        WidgetPreferences.setUnit(context, 451, TemperatureUnit.CELSIUS)
+        WidgetWorkScheduler.scheduleBoundary(
+            context,
+            checkNotNull(storage.readSnapshot()),
+            Instant.parse("2026-09-12T07:00:01Z"),
+        )
+        val provider = farm.ballydidean.weather.widget.WeatherWidgetProvider()
+        provider.onDeleted(context, intArrayOf(451))
+        assertEquals(TemperatureUnit.FAHRENHEIT, WidgetPreferences.unit(context, 451))
+        provider.onDisabled(context)
+        assertNull(storage.readSnapshot())
+        assertNull(storage.readAttempt())
     }
 
     // read one packaged shared fixture

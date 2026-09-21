@@ -58,6 +58,135 @@ final class WeatherNavigationPolicyTests: XCTestCase {
             XCTAssertNil(WeatherRoute(deepLink: try XCTUnwrap(URL(string: value))), value)
         }
     }
+
+    #if DEBUG
+    // load only the explicit frozen HTTPS fixture contract
+    func testHTTPSFixtureConfigurationRequiresExactLaunchInputs() throws {
+        let arguments = [
+            "Weather",
+            WeatherHTTPSFixtureConfiguration.launchArgument,
+            WeatherHTTPSFixtureConfiguration.pathArgument,
+            "/settings"
+        ]
+        let environment = [
+            WeatherHTTPSFixtureConfiguration.trustedOriginEnvironment:
+                "https://127.0.0.1:18443",
+            WeatherHTTPSFixtureConfiguration.untrustedOriginEnvironment:
+                "https://127.0.0.1:18444"
+        ]
+        let fixture = try XCTUnwrap(
+            WeatherHTTPSFixtureConfiguration.load(
+                arguments: arguments,
+                environment: environment
+            )
+        )
+        XCTAssertEqual(fixture.startURL.absoluteString, "https://127.0.0.1:18443/settings")
+        XCTAssertEqual(fixture.forecastURL.absoluteString, "https://127.0.0.1:18443/forecast")
+        XCTAssertEqual(
+            WeatherHTTPSFixtureConfiguration.load(
+                arguments: ["Weather"],
+                environment: environment
+            ),
+            nil
+        )
+    }
+
+    // reject malformed origins and initial routes without production fallback
+    func testHTTPSFixtureConfigurationFailsClosed() {
+        let arguments = ["Weather", WeatherHTTPSFixtureConfiguration.launchArgument]
+        let malformedEnvironments = [
+            [
+                WeatherHTTPSFixtureConfiguration.trustedOriginEnvironment:
+                    "http://127.0.0.1:18443",
+                WeatherHTTPSFixtureConfiguration.untrustedOriginEnvironment:
+                    "https://127.0.0.1:18444"
+            ],
+            [
+                WeatherHTTPSFixtureConfiguration.trustedOriginEnvironment:
+                    "https://localhost:18443",
+                WeatherHTTPSFixtureConfiguration.untrustedOriginEnvironment:
+                    "https://127.0.0.1:18444"
+            ],
+            [
+                WeatherHTTPSFixtureConfiguration.trustedOriginEnvironment:
+                    "https://127.0.0.1:18443",
+                WeatherHTTPSFixtureConfiguration.untrustedOriginEnvironment:
+                    "https://127.0.0.1:18443"
+            ]
+        ]
+        // reject every malformed environment
+        for environment in malformedEnvironments {
+            XCTAssertNil(
+                WeatherHTTPSFixtureConfiguration.load(
+                    arguments: arguments,
+                    environment: environment
+                )
+            )
+        }
+        XCTAssertNil(
+            WeatherHTTPSFixtureConfiguration.load(
+                arguments: [
+                    "Weather",
+                    WeatherHTTPSFixtureConfiguration.launchArgument,
+                    WeatherHTTPSFixtureConfiguration.pathArgument,
+                    "/not-allowlisted"
+                ],
+                environment: [
+                    WeatherHTTPSFixtureConfiguration.trustedOriginEnvironment:
+                        "https://127.0.0.1:18443",
+                    WeatherHTTPSFixtureConfiguration.untrustedOriginEnvironment:
+                        "https://127.0.0.1:18444"
+                ]
+            )
+        )
+    }
+
+    // host only the two fixture origins during an explicit debug launch
+    func testHTTPSFixtureNavigationPolicyIsClosedToEveryOtherOrigin() throws {
+        let fixture = try XCTUnwrap(
+            WeatherHTTPSFixtureConfiguration.load(
+                arguments: ["Weather", WeatherHTTPSFixtureConfiguration.launchArgument],
+                environment: [
+                    WeatherHTTPSFixtureConfiguration.trustedOriginEnvironment:
+                        "https://127.0.0.1:18443",
+                    WeatherHTTPSFixtureConfiguration.untrustedOriginEnvironment:
+                        "https://127.0.0.1:18444"
+                ]
+            )
+        )
+        for value in [
+            "https://127.0.0.1:18443/admin",
+            "https://127.0.0.1:18444/tls-negative"
+        ] {
+            // allow both exact fixture origins through normal WebKit trust
+            XCTAssertEqual(
+                WeatherNavigationPolicy.decision(
+                    for: try XCTUnwrap(URL(string: value)),
+                    fixture: fixture
+                ),
+                .hosted,
+                value
+            )
+        }
+        for value in [
+            "http://127.0.0.1:18443/",
+            "https://127.0.0.1:18445/",
+            "https://user@127.0.0.1:18443/",
+            "https://weather.ballydidean.farm/",
+            "https://open-meteo.com/"
+        ] {
+            // reject every non-fixture destination instead of handing off
+            XCTAssertEqual(
+                WeatherNavigationPolicy.decision(
+                    for: try XCTUnwrap(URL(string: value)),
+                    fixture: fixture
+                ),
+                .rejected,
+                value
+            )
+        }
+    }
+    #endif
 }
 
 final class WeatherWidgetFixtureTests: XCTestCase {
@@ -332,6 +461,25 @@ final class WeatherWidgetContractTests: XCTestCase {
         )
         XCTAssertTrue(beforeReceipt.stale)
 
+        let futureReceiptSnapshot = WeatherWidgetSnapshot(
+            attribution: snapshot.attribution,
+            calendar: snapshot.calendar,
+            generatedAt: snapshot.generatedAt,
+            hours: snapshot.hours,
+            receivedAt: snapshot.receivedAt.addingTimeInterval(60),
+            schemaVersion: snapshot.schemaVersion,
+            site: snapshot.site,
+            status: snapshot.status
+        )
+        let beforeFutureReceipt = renderer.render(
+            snapshot: futureReceiptSnapshot,
+            acquiredAt: snapshot.receivedAt,
+            attempt: nil,
+            now: snapshot.receivedAt,
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(beforeFutureReceipt.stale)
+
         let cutoff = renderer.render(
             snapshot: snapshot,
             acquiredAt: snapshot.receivedAt,
@@ -579,17 +727,19 @@ final class WeatherWidgetPersistenceTests: XCTestCase {
         let store = WeatherWidgetStore(directory: directory)
         let successful = WeatherWidgetDataController(
             fetcher: StubFetcher(result: .success(data)),
-            store: store
+            store: store,
+            clock: { now }
         )
-        let first = await successful.refresh(now: now)
+        let first = await successful.refresh()
         XCTAssertNotNil(first.cached)
         XCTAssertEqual(first.attempt?.outcome, .success)
 
         let failed = WeatherWidgetDataController(
             fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
-            store: WeatherWidgetStore(directory: directory)
+            store: WeatherWidgetStore(directory: directory),
+            clock: { now.addingTimeInterval(60) }
         )
-        let second = await failed.refresh(now: now.addingTimeInterval(60))
+        let second = await failed.refresh()
         XCTAssertEqual(second.cached?.snapshot, first.cached?.snapshot)
         XCTAssertEqual(second.attempt?.outcome, .offline)
 
@@ -602,21 +752,131 @@ final class WeatherWidgetPersistenceTests: XCTestCase {
         XCTAssertEqual(persisted.attempt?.outcome, .offline)
     }
 
-    // corrupt attempt metadata cannot assert a newer success
-    func testCorruptAttemptMetadataDoesNotClobberGoodWeather() async throws {
+    // accept success metadata bound to the exact cached acquisition
+    func testMatchingSuccessMetadataSurvivesRestart() async throws {
         let store = WeatherWidgetStore(directory: directory)
         let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
-        try store.saveSnapshot(
-            WeatherWidgetCachedSnapshot(
-                acquiredAt: snapshot.receivedAt,
-                schemaVersion: WeatherWidgetStore.storageSchemaVersion,
-                snapshot: snapshot
+        let cached = WeatherWidgetCachedSnapshot(
+            acquiredAt: snapshot.receivedAt,
+            schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+            snapshot: snapshot
+        )
+        try store.saveSnapshot(cached)
+        try store.saveAttempt(
+            WeatherWidgetAttempt(
+                attemptedAt: cached.acquiredAt,
+                outcome: .success,
+                schemaVersion: WeatherWidgetStore.attemptSchemaVersion,
+                snapshotAcquiredAt: cached.acquiredAt,
+                snapshotIdentifier: cached.snapshotIdentifier
             )
         )
-        try Data(#"{"schemaVersion":"weather-widget-attempt/v1","outcome":"success"}"#.utf8)
-            .write(to: directory.appending(path: "last-attempt.json"), options: .atomic)
-        XCTAssertNotNil(store.loadSnapshot())
+        let restarted = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: WeatherWidgetStore(directory: directory)
+        )
+        let state = await restarted.cachedState()
+        XCTAssertEqual(state.cached, cached)
+        XCTAssertEqual(state.attempt?.outcome, .success)
+        XCTAssertEqual(state.attempt?.snapshotAcquiredAt, cached.acquiredAt)
+        XCTAssertEqual(state.attempt?.snapshotIdentifier, cached.snapshotIdentifier)
+    }
+
+    // reject an older success after an interrupted snapshot replacement
+    func testInterruptedSnapshotReplacementIsConservativeAcrossRestart() async throws {
+        let store = WeatherWidgetStore(directory: directory)
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
+        let first = WeatherWidgetCachedSnapshot(
+            acquiredAt: snapshot.receivedAt,
+            schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+            snapshot: snapshot
+        )
+        try store.saveSnapshot(first)
+        try store.saveAttempt(
+            WeatherWidgetAttempt(
+                attemptedAt: first.acquiredAt,
+                outcome: .success,
+                schemaVersion: WeatherWidgetStore.attemptSchemaVersion,
+                snapshotAcquiredAt: first.acquiredAt,
+                snapshotIdentifier: first.snapshotIdentifier
+            )
+        )
+        let replacementSnapshot = try WeatherWidgetSnapshotDecoder().decode(
+            fixtureData("stale-old-source")
+        )
+        let replacement = WeatherWidgetCachedSnapshot(
+            acquiredAt: first.acquiredAt,
+            schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+            snapshot: replacementSnapshot
+        )
+        XCTAssertNotEqual(first.snapshot, replacement.snapshot)
+        XCTAssertNotEqual(first.snapshotIdentifier, replacement.snapshotIdentifier)
+        // simulate termination after the atomic snapshot write
+        try store.saveSnapshot(replacement)
+
+        let restarted = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: WeatherWidgetStore(directory: directory)
+        )
+        let state = await restarted.cachedState()
+        XCTAssertEqual(state.cached, replacement)
+        XCTAssertEqual(state.attempt?.outcome, .storageError)
+        let presentation = WeatherWidgetRenderer().render(
+            snapshot: replacement.snapshot,
+            acquiredAt: replacement.acquiredAt,
+            attempt: state.attempt,
+            now: replacement.acquiredAt,
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(presentation.stale)
+        XCTAssertTrue(
+            presentation.display(
+                ageAnchor: replacement.acquiredAt,
+                attempt: state.attempt
+            ).statusLabel.hasPrefix("Offline")
+        )
+    }
+
+    // treat missing success metadata as a conservative restart failure
+    func testMissingAttemptMetadataIsConservativeAcrossRestart() async throws {
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
+        let cached = WeatherWidgetCachedSnapshot(
+            acquiredAt: snapshot.receivedAt,
+            schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+            snapshot: snapshot
+        )
+        try WeatherWidgetStore(directory: directory).saveSnapshot(cached)
+        let restarted = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: WeatherWidgetStore(directory: directory)
+        )
+        let state = await restarted.cachedState()
+        XCTAssertEqual(state.cached, cached)
+        XCTAssertEqual(state.attempt?.outcome, .storageError)
+    }
+
+    // treat corrupt attempt metadata as a conservative restart failure
+    func testCorruptAttemptMetadataIsConservativeAcrossRestart() async throws {
+        let store = WeatherWidgetStore(directory: directory)
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
+        let cached = WeatherWidgetCachedSnapshot(
+            acquiredAt: snapshot.receivedAt,
+            schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+            snapshot: snapshot
+        )
+        try store.saveSnapshot(cached)
+        try Data("not-json".utf8).write(
+            to: directory.appending(path: "last-attempt.json"),
+            options: .atomic
+        )
         XCTAssertNil(store.loadAttempt())
+        let restarted = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: WeatherWidgetStore(directory: directory)
+        )
+        let state = await restarted.cachedState()
+        XCTAssertEqual(state.cached, cached)
+        XCTAssertEqual(state.attempt?.outcome, .storageError)
     }
 
     // reject corrupt and oversized snapshot files on read
@@ -633,8 +893,8 @@ final class WeatherWidgetPersistenceTests: XCTestCase {
         XCTAssertNil(WeatherWidgetStore(directory: directory).loadSnapshot())
     }
 
-    // retain the current failure when its metadata write fails
-    func testAttemptWriteFailureCannotReuseOlderSuccess() async throws {
+    // surface metadata write failure instead of reusing older success
+    func testAttemptWriteFailureBecomesStorageError() async throws {
         let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
         let cached = WeatherWidgetCachedSnapshot(
             acquiredAt: snapshot.receivedAt,
@@ -644,16 +904,90 @@ final class WeatherWidgetPersistenceTests: XCTestCase {
         let oldSuccess = WeatherWidgetAttempt(
             attemptedAt: snapshot.receivedAt,
             outcome: .success,
-            schemaVersion: WeatherWidgetStore.attemptSchemaVersion
+            schemaVersion: WeatherWidgetStore.attemptSchemaVersion,
+            snapshotAcquiredAt: cached.acquiredAt,
+            snapshotIdentifier: cached.snapshotIdentifier
         )
         let store = FailingAttemptStore(cached: cached, attempt: oldSuccess)
         let controller = WeatherWidgetDataController(
             fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
-            store: store
+            store: store,
+            clock: { snapshot.receivedAt.addingTimeInterval(60) }
         )
-        let state = await controller.refresh(now: snapshot.receivedAt.addingTimeInterval(60))
+        let state = await controller.refresh()
         XCTAssertEqual(state.cached, cached)
-        XCTAssertEqual(state.attempt?.outcome, .offline)
+        XCTAssertEqual(state.attempt?.outcome, .storageError)
+    }
+
+    // retain newly fetched weather while reporting attempt metadata failure
+    func testSuccessfulFetchWithAttemptWriteFailureKeepsNewWeather() async throws {
+        let data = try fixtureData("adjusted-standard")
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(data)
+        let store = FailingAttemptStore(cached: nil, attempt: nil)
+        let controller = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .success(data)),
+            store: store,
+            clock: { snapshot.receivedAt }
+        )
+        let state = await controller.refresh()
+        XCTAssertEqual(state.cached?.snapshot, snapshot)
+        XCTAssertEqual(state.attempt?.outcome, .storageError)
+    }
+
+    // coalesce concurrent provider refreshes before persistence commits
+    func testConcurrentRefreshesShareOneOrderedFetch() async throws {
+        let data = try fixtureData("adjusted-standard")
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(data)
+        let fetcher = BlockingFetcher()
+        let controller = WeatherWidgetDataController(
+            fetcher: fetcher,
+            store: WeatherWidgetStore(directory: directory),
+            clock: { snapshot.receivedAt }
+        )
+        let firstNow = snapshot.receivedAt
+        let first = Task { await controller.refresh() }
+        await fetcher.waitUntilStarted()
+        let second = Task {
+            await controller.refresh()
+        }
+        // allow the second caller to observe the in-flight task
+        try await Task.sleep(for: .milliseconds(50))
+        let callsBeforeCompletion = await fetcher.callCount()
+        XCTAssertEqual(callsBeforeCompletion, 1)
+        await fetcher.succeed(with: data)
+        let firstState = await first.value
+        let secondState = await second.value
+        XCTAssertEqual(firstState.cached, secondState.cached)
+        XCTAssertEqual(firstState.cached?.acquiredAt, firstNow)
+        let totalCalls = await fetcher.callCount()
+        XCTAssertEqual(totalCalls, 1)
+    }
+
+    // acquire only after a response receipt can exist
+    func testResponseReceiptBetweenStartAndCompletionRendersFresh() async throws {
+        let data = try fixtureData("adjusted-standard")
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(data)
+        let completion = snapshot.receivedAt.addingTimeInterval(1)
+        let fetcher = BlockingFetcher()
+        let controller = WeatherWidgetDataController(
+            fetcher: fetcher,
+            store: WeatherWidgetStore(directory: directory),
+            clock: { completion }
+        )
+        let refresh = Task { await controller.refresh() }
+        await fetcher.waitUntilStarted()
+        await fetcher.succeed(with: data)
+        let state = await refresh.value
+        let cached = try XCTUnwrap(state.cached)
+        XCTAssertEqual(cached.acquiredAt, completion)
+        let presentation = WeatherWidgetRenderer().render(
+            snapshot: cached.snapshot,
+            acquiredAt: cached.acquiredAt,
+            attempt: state.attempt,
+            now: completion,
+            unit: .fahrenheit
+        )
+        XCTAssertFalse(presentation.stale)
     }
 
     // load one immutable shared snapshot
@@ -777,11 +1111,134 @@ final class WeatherWidgetHTTPClientTests: XCTestCase {
         }
     }
 
-    // build one intercepted ephemeral client
-    private func client() -> WeatherWidgetHTTPClient {
+    // preserve cancellation delivered before continuation registration
+    func testPreRegistrationCancellationNeverStartsTransport() async throws {
+        let lock = NSLock()
+        var requestCount = 0
+        StubURLProtocol.handler = { _, protocolInstance in
+            lock.lock()
+            requestCount += 1
+            lock.unlock()
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didFailWithError: URLError(.cancelled)
+            )
+        }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
-        return WeatherWidgetHTTPClient(configuration: configuration)
+        let request = WeatherWidgetBoundedRequest(configuration: configuration)
+        request.cancel()
+        do {
+            _ = try await request.load(url: WeatherWidgetHTTPClient.endpoint)
+            XCTFail("pre-cancelled request unexpectedly succeeded")
+        } catch let error as WeatherWidgetFetchError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        lock.lock()
+        let observedRequestCount = requestCount
+        lock.unlock()
+        XCTAssertEqual(observedRequestCount, 0)
+    }
+
+    // enforce the total deadline and ignore a late transport completion
+    func testTotalDeadlineWinsOverLateSuccess() async throws {
+        XCTAssertEqual(WeatherWidgetHTTPClient.deadline, 8)
+        StubURLProtocol.handler = { request, protocolInstance in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                protocolInstance.client?.urlProtocol(
+                    protocolInstance,
+                    didReceive: response,
+                    cacheStoragePolicy: .notAllowed
+                )
+                protocolInstance.client?.urlProtocol(
+                    protocolInstance,
+                    didLoad: Data("late-success".utf8)
+                )
+                protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
+            }
+        }
+        do {
+            _ = try await client(deadline: 0.02).fetch()
+            XCTFail("late response unexpectedly beat the total deadline")
+        } catch let error as WeatherWidgetFetchError {
+            XCTAssertEqual(error, .timeout)
+        }
+        // let callbacks exercise the finished request guard
+        try await Task.sleep(for: .milliseconds(200))
+    }
+
+    // reject a declared payload beyond the exact byte cap
+    func testDeclaredOversizedPayloadIsRejected() async throws {
+        StubURLProtocol.handler = { request, protocolInstance in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": "\(WeatherWidgetContract.maximumPayloadBytes + 1)",
+                    "Content-Type": "application/json"
+                ]
+            )!
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didReceive: response,
+                cacheStoragePolicy: .notAllowed
+            )
+        }
+        do {
+            _ = try await client().fetch()
+            XCTFail("declared oversized response unexpectedly succeeded")
+        } catch let error as WeatherWidgetFetchError {
+            XCTAssertEqual(error, .oversized)
+        }
+    }
+
+    // reject streamed bytes immediately after the exact byte cap
+    func testStreamedOversizedPayloadIsRejected() async throws {
+        StubURLProtocol.handler = { request, protocolInstance in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didReceive: response,
+                cacheStoragePolicy: .notAllowed
+            )
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didLoad: Data(repeating: 0x20, count: WeatherWidgetContract.maximumPayloadBytes)
+            )
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didLoad: Data([0x20])
+            )
+            protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
+        }
+        do {
+            _ = try await client().fetch()
+            XCTFail("streamed oversized response unexpectedly succeeded")
+        } catch let error as WeatherWidgetFetchError {
+            XCTAssertEqual(error, .oversized)
+        }
+    }
+
+    // build one intercepted ephemeral client
+    private func client(deadline: TimeInterval = WeatherWidgetHTTPClient.deadline) -> WeatherWidgetHTTPClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return WeatherWidgetHTTPClient(
+            configuration: configuration,
+            requestDeadline: deadline
+        )
     }
 }
 
@@ -791,6 +1248,42 @@ private struct StubFetcher: WeatherWidgetFetching {
     // return one deterministic transport result
     func fetch() async throws -> Data {
         try result.get()
+    }
+}
+
+private actor BlockingFetcher: WeatherWidgetFetching {
+    private var calls = 0
+    private var continuations: [CheckedContinuation<Data, Error>] = []
+
+    // suspend one deterministic in-flight fetch
+    func fetch() async throws -> Data {
+        calls += 1
+        return try await withCheckedThrowingContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    // wait until the controller starts transport
+    func waitUntilStarted() async {
+        // yield until the fetch continuation is installed
+        while continuations.isEmpty {
+            await Task.yield()
+        }
+    }
+
+    // return the observed transport count
+    func callCount() -> Int {
+        calls
+    }
+
+    // complete every controlled transport
+    func succeed(with data: Data) {
+        let pending = continuations
+        continuations.removeAll()
+        // release every unexpected duplicate so failures cannot hang
+        for continuation in pending {
+            continuation.resume(returning: data)
+        }
     }
 }
 

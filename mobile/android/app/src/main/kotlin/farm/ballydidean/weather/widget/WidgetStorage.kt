@@ -4,6 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.util.AtomicFile
 import java.io.File
+import java.security.MessageDigest
 import java.time.Instant
 
 enum class WidgetAttemptOutcome {
@@ -18,6 +19,12 @@ enum class WidgetAttemptOutcome {
 data class WidgetAttempt(
     val attemptedAt: Instant,
     val outcome: WidgetAttemptOutcome,
+    val snapshotIdentity: String? = null,
+)
+
+internal data class StoredWidgetSnapshot(
+    val snapshot: WidgetForecastSnapshot,
+    val identity: String,
 )
 
 class WidgetStorage(context: Context) {
@@ -25,10 +32,13 @@ class WidgetStorage(context: Context) {
     private val attemptFile = AtomicFile(File(context.filesDir, ATTEMPT_FILE))
 
     // return only a currently valid cached snapshot
-    fun readSnapshot(): WidgetForecastSnapshot? = synchronized(lock) {
+    fun readSnapshot(): WidgetForecastSnapshot? = readStoredSnapshot()?.snapshot
+
+    // return decoded weather with its exact persisted identity
+    internal fun readStoredSnapshot(): StoredWidgetSnapshot? = synchronized(lock) {
         try {
             val bytes = readBounded(snapshotFile, WidgetForecastDecoder.MAX_BYTES)
-            WidgetForecastDecoder.decode(bytes)
+            StoredWidgetSnapshot(WidgetForecastDecoder.decode(bytes), snapshotIdentity(bytes))
         } catch (_: Exception) {
             snapshotFile.delete()
             null
@@ -46,19 +56,26 @@ class WidgetStorage(context: Context) {
     }
 
     // atomically replace only with a valid public snapshot
-    fun writeSnapshot(bytes: ByteArray): Boolean = synchronized(lock) {
+    fun writeSnapshot(bytes: ByteArray): String? = synchronized(lock) {
         val incoming = WidgetForecastDecoder.decode(bytes)
+        val incomingIdentity = snapshotIdentity(bytes)
+        var existingBytes: ByteArray? = null
         val existing = try {
-            WidgetForecastDecoder.decode(readBounded(snapshotFile, WidgetForecastDecoder.MAX_BYTES))
+            existingBytes = readBounded(snapshotFile, WidgetForecastDecoder.MAX_BYTES)
+            WidgetForecastDecoder.decode(checkNotNull(existingBytes))
         } catch (_: Exception) {
             null
         }
         // never replace a newer acquisition with an older callback
         if (existing != null && incoming.receivedAt < existing.receivedAt) {
-            return@synchronized false
+            return@synchronized null
+        }
+        // reject conflicting payloads at the same acquisition receipt
+        if (existing != null && incoming.receivedAt == existing.receivedAt) {
+            return@synchronized if (snapshotIdentity(checkNotNull(existingBytes)) == incomingIdentity) incomingIdentity else null
         }
         write(snapshotFile, bytes)
-        true
+        incomingIdentity
     }
 
     // read bounded sanitized attempt metadata
@@ -73,7 +90,15 @@ class WidgetStorage(context: Context) {
 
     // atomically replace attempt metadata independently
     fun writeAttempt(attempt: WidgetAttempt) = synchronized(lock) {
-        val payload = "{\"attemptedAt\":\"${attempt.attemptedAt}\",\"outcome\":\"${attempt.outcome.name.lowercase()}\"}"
+        val identity = attempt.snapshotIdentity
+        // bind only successful acquisition receipts to snapshots
+        if (attempt.outcome == WidgetAttemptOutcome.SUCCESS) {
+            require(identity != null && identity.matches(identityPattern)) { "successful attempt is missing snapshot identity" }
+        } else {
+            require(identity == null) { "failed attempt cannot bind a snapshot" }
+        }
+        val encodedIdentity = identity?.let { "\"$it\"" } ?: "null"
+        val payload = "{\"attemptedAt\":\"${attempt.attemptedAt}\",\"outcome\":\"${attempt.outcome.name.lowercase()}\",\"snapshotIdentity\":$encodedIdentity}"
             .toByteArray(Charsets.UTF_8)
         require(payload.size <= MAX_ATTEMPT_BYTES) { "attempt metadata is oversized" }
         write(attemptFile, payload)
@@ -115,22 +140,36 @@ class WidgetStorage(context: Context) {
         }
     }
 
-    // accept only the two attempt metadata members
+    // accept only the three attempt metadata members
     private fun decodeAttempt(bytes: ByteArray): WidgetAttempt {
         require(bytes.size <= MAX_ATTEMPT_BYTES) { "attempt metadata is oversized" }
-        val value = StrictJson.parse(bytes).closedObject(setOf("attemptedAt", "outcome"), "attempt")
+        val value = StrictJson.parse(bytes).closedObject(setOf("attemptedAt", "outcome", "snapshotIdentity"), "attempt")
         val attemptedAt = Instant.parse(value.string("attemptedAt"))
         val outcome = WidgetAttemptOutcome.entries.firstOrNull {
             it.name.equals(value.string("outcome"), ignoreCase = true)
         } ?: throw IllegalArgumentException("unknown attempt outcome")
-        return WidgetAttempt(attemptedAt, outcome)
+        val identity = when (val encoded = value.values.getValue("snapshotIdentity")) {
+            JsonNull -> null
+            is JsonString -> encoded.value.also { require(it.matches(identityPattern)) { "invalid snapshot identity" } }
+            else -> throw IllegalArgumentException("invalid snapshot identity")
+        }
+        require((outcome == WidgetAttemptOutcome.SUCCESS) == (identity != null)) { "attempt identity does not match outcome" }
+        return WidgetAttempt(attemptedAt, outcome, identity)
     }
 
     companion object {
         private const val SNAPSHOT_FILE = "weather-widget-v1.json"
         private const val ATTEMPT_FILE = "weather-widget-attempt-v1.json"
         private const val MAX_ATTEMPT_BYTES = 512
+        private val identityPattern = Regex("[0-9a-f]{64}")
         private val lock = Any()
+
+        // hash exact public snapshot bytes for private cache binding
+        internal fun snapshotIdentity(bytes: ByteArray): String {
+            return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") {
+                "%02x".format(it.toInt() and 0xff)
+            }
+        }
     }
 }
 

@@ -12,6 +12,8 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="farm.ballydidean.weather.debug.SET_FIXTURE" />
+                <action android:name="farm.ballydidean.weather.debug.SEED_PERSISTENCE" />
+                <action android:name="farm.ballydidean.weather.debug.VERIFY_PERSISTENCE" />
             </intent-filter>
         </receiver>
     </application>

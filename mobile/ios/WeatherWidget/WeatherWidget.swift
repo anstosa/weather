@@ -85,8 +85,8 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
         if context.isPreview {
             return WeatherWidgetEntry(date: Date(), display: .placeholder)
         }
+        let state = await Self.controller.refresh()
         let now = Date()
-        let state = await Self.controller.refresh(now: now)
         return entry(configuration: configuration, state: state, at: now)
     }
 
@@ -113,8 +113,8 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
             )
         }
         #endif
+        let state = await Self.controller.refresh()
         let now = Date()
-        let state = await Self.controller.refresh(now: now)
         var entries = [entry(configuration: configuration, state: state, at: now)]
         // precompute deterministic cached boundary rerenders
         if let cached = state.cached {

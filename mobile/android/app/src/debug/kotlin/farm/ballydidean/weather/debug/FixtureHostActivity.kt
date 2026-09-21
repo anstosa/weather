@@ -41,6 +41,22 @@ class FixtureHostActivity : Activity() {
         super.onDestroy()
     }
 
+    // resize one bound host instance through real options
+    fun resizeWidget(widthDp: Int, heightDp: Int, variant: FixtureVariant) {
+        val appWidgetId = checkNotNull(allocatedWidgetId)
+        val hostView = checkNotNull(renderedHostView)
+        val options = widgetOptions(widthDp, heightDp)
+        val density = resources.displayMetrics.density
+        hostView.layoutParams = (hostView.layoutParams as FrameLayout.LayoutParams).apply {
+            width = (widthDp * density).toInt()
+            height = (heightDp * density).toInt()
+        }
+        AppWidgetManager.getInstance(this).updateAppWidgetOptions(appWidgetId, options)
+        hostView.updateAppWidgetSize(options, widthDp, heightDp, widthDp, heightDp)
+        applyFixture(appWidgetId, options, variant)
+        hostView.postDelayed({ applyFixture(appWidgetId, options, variant) }, FIXTURE_SETTLE_DELAY_MS)
+    }
+
     // permit only approved M0 dimensions
     private fun requestedBounds(): Pair<Int, Int> {
         val requestedWidth = intent.getIntExtra(EXTRA_WIDTH_DP, PORTRAIT_WIDTH_DP)
@@ -58,13 +74,7 @@ class FixtureHostActivity : Activity() {
         val provider = ComponentName(this, WeatherWidgetProvider::class.java)
         val appWidgetId = widgetHost.allocateAppWidgetId()
         allocatedWidgetId = appWidgetId
-        val options = Bundle().apply {
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
-            putInt(AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY, AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN)
-        }
+        val options = widgetOptions(widthDp, heightDp)
         // surface missing shell-granted bind authority
         if (!manager.bindAppWidgetIdIfAllowed(appWidgetId, provider, options)) {
             root.addView(TextView(this).apply {
@@ -84,9 +94,30 @@ class FixtureHostActivity : Activity() {
         }
         root.addView(hostView, layoutParams)
         // apply the fixture after bind-time provider callbacks settle
-        hostView.postDelayed({
-            WeatherWidgetProvider.updateWidget(this, manager, appWidgetId, options, DebugWidgetFixtures.fixture(variant).presentation)
-        }, FIXTURE_UPDATE_DELAY_MS)
+        hostView.postDelayed({ applyFixture(appWidgetId, options, variant) }, FIXTURE_UPDATE_DELAY_MS)
+        hostView.postDelayed({ applyFixture(appWidgetId, options, variant) }, FIXTURE_SETTLE_DELAY_MS)
+    }
+
+    // apply deterministic content through the production renderer
+    private fun applyFixture(appWidgetId: Int, options: Bundle, variant: FixtureVariant) {
+        WeatherWidgetProvider.updateWidget(
+            this,
+            AppWidgetManager.getInstance(this),
+            appWidgetId,
+            options,
+            DebugWidgetFixtures.fixture(variant).presentation,
+        )
+    }
+
+    // build exact appwidget option bounds
+    private fun widgetOptions(widthDp: Int, heightDp: Int): Bundle {
+        return Bundle().apply {
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
+            putInt(AppWidgetManager.OPTION_APPWIDGET_HOST_CATEGORY, AppWidgetProviderInfo.WIDGET_CATEGORY_HOME_SCREEN)
+        }
     }
 
     companion object {
@@ -99,5 +130,6 @@ class FixtureHostActivity : Activity() {
         const val LANDSCAPE_HEIGHT_DP = 51
         private const val HOST_ID = 0x57454154
         private const val FIXTURE_UPDATE_DELAY_MS = 250L
+        private const val FIXTURE_SETTLE_DELAY_MS = 1_000L
     }
 }

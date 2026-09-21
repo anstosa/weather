@@ -20,6 +20,28 @@ final class WeatherDeepLinkUITests: XCTestCase {
         add(webViewState)
     }
 
+    // retain one named real HTTPS journey state
+    private func attachHTTPSFixtureState(
+        _ name: String,
+        app: XCUIApplication,
+        webView: XCUIElement
+    ) {
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "\(name)-screenshot"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        let hierarchy = XCTAttachment(string: app.debugDescription)
+        hierarchy.name = "\(name)-app-hierarchy"
+        hierarchy.lifetime = .keepAlways
+        add(hierarchy)
+
+        let webViewState = XCTAttachment(string: webView.debugDescription)
+        webViewState.name = "\(name)-webview-hierarchy"
+        webViewState.lifetime = .keepAlways
+        add(webViewState)
+    }
+
     // open the same fixed route used by the widget
     func testForecastDeepLinkOpensContainingApp() throws {
         let app = XCUIApplication()
@@ -78,19 +100,190 @@ final class WeatherDeepLinkUITests: XCTestCase {
         )
     }
 
-    // prove production-shaped WebKit cookies survive app process restart
-    func testPersistentSecureHTTPOnlyCookieSurvivesRestart() throws {
+    // launch one exact real HTTPS fixture path
+    private func fixtureApp(path: String) throws -> XCUIApplication {
+        let environment = ProcessInfo.processInfo.environment
+        let requiredKeys = [
+            "WEATHER_HTTPS_FIXTURE_IOS_ORIGIN",
+            "WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN",
+            "WEATHER_HTTPS_FIXTURE_USERNAME",
+            "WEATHER_HTTPS_FIXTURE_PASSWORD"
+        ]
         let app = XCUIApplication()
-        app.launchArguments = ["-weather-ui-test", "-weather-ui-test-cookie-set"]
-        app.launch()
-        XCTAssertTrue(app.staticTexts["weather.cookie.diagnostic"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.staticTexts["weather.cookie.diagnostic"].label, "cookie-persisted")
+        app.launchArguments = [
+            "-weather-https-fixture",
+            "-weather-https-fixture-path",
+            path
+        ]
+        // pass only the wrapper's four explicit fixture values
+        for key in requiredKeys {
+            app.launchEnvironment[key] = try XCTUnwrap(environment[key], key)
+        }
+        return app
+    }
 
-        app.terminate()
-        app.launchArguments = ["-weather-ui-test", "-weather-ui-test-cookie-read"]
+    // choose one HTML select option through the native WebKit picker
+    private func chooseServerUnit(
+        _ unit: String,
+        app: XCUIApplication,
+        webView: XCUIElement
+    ) throws {
+        let selector = webView.buttons["Fixture server unit"]
+        XCTAssertTrue(selector.waitForExistence(timeout: 5))
+        selector.tap()
+        let picker = app.pickerWheels.firstMatch
+        // use the standard iOS select picker when exposed
+        if picker.waitForExistence(timeout: 3) {
+            picker.adjust(toPickerWheelValue: unit)
+            let done = app.toolbars.buttons["Done"]
+            XCTAssertTrue(done.waitForExistence(timeout: 3))
+            done.tap()
+            return
+        }
+        let option = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label == %@", unit)
+        ).firstMatch
+        XCTAssertTrue(option.waitForExistence(timeout: 3))
+        option.tap()
+    }
+
+    // prove real TLS, cookie, settings, navigation, and denial journeys
+    func testHTTPSFixtureJourneys() throws {
+        let environment = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(
+            environment["WEATHER_RUN_HTTPS_FIXTURE_TEST"] == "1",
+            "real HTTPS journeys run only inside the bounded fixture probe"
+        )
+        var app = try fixtureApp(path: "/admin")
         app.launch()
-        XCTAssertTrue(app.staticTexts["weather.cookie.diagnostic"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.staticTexts["weather.cookie.diagnostic"].label, "cookie-persisted")
+        var webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture sign in"].waitForExistence(timeout: 15))
+        let username = webView.textFields["Fixture username"]
+        let password = webView.secureTextFields["Fixture password"]
+        username.tap()
+        username.typeText(try XCTUnwrap(environment["WEATHER_HTTPS_FIXTURE_USERNAME"]))
+        password.tap()
+        password.typeText(try XCTUnwrap(environment["WEATHER_HTTPS_FIXTURE_PASSWORD"]))
+        webView.buttons["Sign in to fixture"].tap()
+        XCTAssertTrue(webView.staticTexts["Fixture administration"].waitForExistence(timeout: 10))
+        XCTAssertTrue(webView.staticTexts["Authenticated fixture session"].exists)
+        XCTAssertTrue(webView.staticTexts["HttpOnly session hidden"].exists)
+
+        try chooseServerUnit("Celsius", app: app, webView: webView)
+        webView.buttons["Save fixture settings"].tap()
+        XCTAssertTrue(webView.staticTexts["Server unit: Celsius"].waitForExistence(timeout: 10))
+        attachHTTPSFixtureState(
+            "https-fixture-authenticated-celsius",
+            app: app,
+            webView: webView
+        )
+
+        // prove the server-authenticated session survives process restart
+        app.terminate()
+        app = try fixtureApp(path: "/admin")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture administration"].waitForExistence(timeout: 15))
+        XCTAssertTrue(webView.staticTexts["Server unit: Celsius"].exists)
+        webView.buttons["Sign out of fixture"].tap()
+        XCTAssertTrue(webView.staticTexts["Fixture session signed out"].waitForExistence(timeout: 10))
+
+        // prove logout deletion survives another process restart
+        app.terminate()
+        app = try fixtureApp(path: "/admin")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture sign in"].waitForExistence(timeout: 15))
+
+        // prove WebKit local storage retains the public unit setting
+        app.terminate()
+        app = try fixtureApp(path: "/settings")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture settings"].waitForExistence(timeout: 15))
+        webView.buttons["Use Celsius"].tap()
+        XCTAssertTrue(webView.staticTexts["Public unit preference: Celsius"].waitForExistence(timeout: 5))
+        app.terminate()
+        app = try fixtureApp(path: "/settings")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Public unit preference: Celsius"].waitForExistence(timeout: 15))
+        webView.buttons["Use Fahrenheit"].tap()
+        XCTAssertTrue(webView.staticTexts["Public unit preference: Fahrenheit"].waitForExistence(timeout: 5))
+
+        // prove same-origin history and target-blank stay in one WebView
+        app.terminate()
+        app = try fixtureApp(path: "/")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 15))
+        webView.links["Open fixture forecast"].tap()
+        XCTAssertTrue(webView.staticTexts["Fixture forecast"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Back"].waitForExistence(timeout: 5))
+        app.buttons["Back"].tap()
+        XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 10))
+        webView.links["Open fixture map in new window"].tap()
+        XCTAssertTrue(webView.staticTexts["Fixture map"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.webViews.count, 1)
+
+        // prove logs load through the same native hosted surface
+        app.terminate()
+        app = try fixtureApp(path: "/logs")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture logs"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.webViews.count, 1)
+
+        // prove trends load through the same native hosted surface
+        app.terminate()
+        app = try fixtureApp(path: "/trends")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture trends"].waitForExistence(timeout: 15))
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.webViews.count, 1)
+
+        // prove unsafe and external policy links never leave the fixture
+        app.terminate()
+        app = try fixtureApp(path: "/policy")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        for label in ["Unsafe HTTP fixture", "Lookalike Weather origin", "External fixture policy"] {
+            let link = webView.links[label]
+            XCTAssertTrue(link.waitForExistence(timeout: 15))
+            link.tap()
+            XCTAssertTrue(link.waitForExistence(timeout: 3))
+        }
+
+        // pass the matched-host negative origin to normal TLS evaluation
+        app.terminate()
+        app = try fixtureApp(path: "/")
+        app.launch()
+        webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 15))
+        webView.links["Open untrusted TLS fixture"].tap()
+        let loadError = app.otherElements["weather.load-error"]
+        XCTAssertTrue(loadError.waitForExistence(timeout: 15))
+        let retry = app.buttons["Retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        retry.tap()
+        XCTAssertTrue(loadError.waitForExistence(timeout: 15))
+        attachHTTPSFixtureState(
+            "https-fixture-untrusted-retry",
+            app: app,
+            webView: webView
+        )
+    }
+
+    // refuse malformed fixture environment instead of loading production
+    func testHTTPSFixtureFailsClosedWithoutOrigins() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-weather-https-fixture"]
+        app.launchEnvironment["WEATHER_HTTPS_FIXTURE_IOS_ORIGIN"] = "invalid"
+        app.launchEnvironment["WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN"] = "invalid"
+        app.launch()
+        XCTAssertTrue(app.otherElements["weather.load-error"].waitForExistence(timeout: 10))
     }
 }
 

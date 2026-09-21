@@ -94,13 +94,6 @@ struct WeatherApp: App {
                         .padding(8)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
-                // expose only the deterministic WebKit cookie receipt
-                if let cookieDiagnostic = webViewModel.cookieDiagnostic {
-                    Text(cookieDiagnostic)
-                        .accessibilityIdentifier("weather.cookie.diagnostic")
-                        .padding(8)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-                }
             }
             .task {
                 // inspect only when the bounded host test requests it

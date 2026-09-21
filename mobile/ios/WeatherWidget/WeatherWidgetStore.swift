@@ -15,8 +15,8 @@ protocol WeatherWidgetStoring {
 }
 
 struct WeatherWidgetStore: WeatherWidgetStoring {
-    static let storageSchemaVersion = "weather-widget-cache/v1"
-    static let attemptSchemaVersion = "weather-widget-attempt/v1"
+    static let storageSchemaVersion = "weather-widget-cache/v2"
+    static let attemptSchemaVersion = "weather-widget-attempt/v2"
 
     private let directory: URL
     private let fileManager: FileManager
@@ -66,7 +66,11 @@ struct WeatherWidgetStore: WeatherWidgetStoring {
                   from: data
               ),
               attempt.schemaVersion == Self.attemptSchemaVersion,
-              attempt.attemptedAt.isFiniteDate else {
+              attempt.attemptedAt.isFiniteDate,
+              attempt.snapshotAcquiredAt?.isFiniteDate != false,
+              attempt.outcome != .success || (
+                  attempt.snapshotAcquiredAt != nil && attempt.snapshotIdentifier != nil
+              ) else {
             return nil
         }
         return attempt
@@ -86,6 +90,12 @@ struct WeatherWidgetStore: WeatherWidgetStoring {
 
     // persist sanitized outcome metadata without touching weather
     func saveAttempt(_ attempt: WeatherWidgetAttempt) throws {
+        // refuse success metadata without its exact cache identity
+        guard attempt.outcome != .success || (
+            attempt.snapshotAcquiredAt != nil && attempt.snapshotIdentifier != nil
+        ) else {
+            throw WeatherWidgetContractError.invalid("missing success cache identity")
+        }
         try requireDirectory()
         let data = try WeatherWidgetDateCodec.encoder().encode(attempt)
         try data.write(to: attemptURL, options: [.atomic, .completeFileProtection])

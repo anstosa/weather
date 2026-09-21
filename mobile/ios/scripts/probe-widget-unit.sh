@@ -67,6 +67,12 @@ start_log_capture() {
   LOG_PID=$!
 }
 
+# reject reused evidence before preflight creates its own directory
+if [[ -e "$RESULTS" ]]; then
+  echo "widget unit probe results already exist: $RESULTS" >&2
+  exit 78
+fi
+
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
 
@@ -82,13 +88,6 @@ for runtime, devices in payload["devices"].items():
                 raise SystemExit(0)
 raise SystemExit("no available iPhone 17 on iOS 26.5")
 ')"
-
-# reject evidence reuse before the diagnostic build
-if [[ -e "$RESULTS" ]]; then
-  echo "widget unit probe results already exist: $RESULTS" >&2
-  exit 78
-fi
-mkdir -p "$RESULTS"
 
 # boot only the selected simulator
 if ! xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
@@ -142,7 +141,10 @@ cleanup
 LOG_PID=""
 
 # require executed public edit, provider delivery, and both roundtrip values
-if ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/widget-unit.log" \
+WIDGET_IDS="$(grep -oE 'widget-id=[^ ]+' "$RESULTS/widget-unit.log" || true)"
+WIDGET_ID_COUNT="$(printf '%s\n' "$WIDGET_IDS" | sed '/^$/d' | sort -u | wc -l | tr -d '[:space:]')"
+if [[ "$WIDGET_ID_COUNT" != "1" ]] \
+  || ! grep -Fq 'configuration-unit unit=celsius' "$RESULTS/widget-unit.log" \
   || ! grep -Fq 'configuration-unit unit=fahrenheit' "$RESULTS/widget-unit.log" \
   || ! grep -Fq 'widget-info widget-id=' "$RESULTS/widget-unit.log" \
   || ! grep -Fq 'unit=celsius' "$RESULTS/widget-unit.log" \

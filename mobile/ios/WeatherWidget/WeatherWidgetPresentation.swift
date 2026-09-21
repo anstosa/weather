@@ -108,12 +108,43 @@ struct WeatherWidgetAttempt: Codable, Equatable {
     let attemptedAt: Date
     let outcome: WeatherWidgetAttemptOutcome
     let schemaVersion: String
+    let snapshotAcquiredAt: Date?
+    let snapshotIdentifier: UUID?
+
+    // bind successful metadata to one exact cached record
+    init(
+        attemptedAt: Date,
+        outcome: WeatherWidgetAttemptOutcome,
+        schemaVersion: String,
+        snapshotAcquiredAt: Date? = nil,
+        snapshotIdentifier: UUID? = nil
+    ) {
+        self.attemptedAt = attemptedAt
+        self.outcome = outcome
+        self.schemaVersion = schemaVersion
+        self.snapshotAcquiredAt = snapshotAcquiredAt
+        self.snapshotIdentifier = snapshotIdentifier
+    }
 }
 
 struct WeatherWidgetCachedSnapshot: Codable, Equatable {
     let acquiredAt: Date
     let schemaVersion: String
     let snapshot: WeatherWidgetSnapshot
+    let snapshotIdentifier: UUID
+
+    // assign one collision-resistant persistence transaction identity
+    init(
+        acquiredAt: Date,
+        schemaVersion: String,
+        snapshot: WeatherWidgetSnapshot,
+        snapshotIdentifier: UUID = UUID()
+    ) {
+        self.acquiredAt = acquiredAt
+        self.schemaVersion = schemaVersion
+        self.snapshot = snapshot
+        self.snapshotIdentifier = snapshotIdentifier
+    }
 }
 
 struct WeatherWidgetResolvedValue {

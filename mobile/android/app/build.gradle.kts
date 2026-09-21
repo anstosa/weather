@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
 }
 
+val weatherFixtureResDir = providers.gradleProperty("weatherFixtureResDir").orNull
+
 android {
     namespace = "farm.ballydidean.weather"
     compileSdk {
@@ -23,6 +25,11 @@ android {
     sourceSets {
         getByName("test").resources.srcDir("../../shared")
         getByName("androidTest").assets.srcDir("../../shared")
+        getByName("debug").assets.srcDir("../../shared")
+        // overlay only ephemeral debug fixture trust resources
+        if (weatherFixtureResDir != null) {
+            getByName("debug").res.srcDir(weatherFixtureResDir)
+        }
     }
 
     buildFeatures {
