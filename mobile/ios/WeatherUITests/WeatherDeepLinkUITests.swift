@@ -46,6 +46,20 @@ final class WeatherDeepLinkUITests: XCTestCase {
         add(webViewState)
     }
 
+    // count the identified native host, not nested WebKit accessibility wrappers
+    private func assertOneHostedWebView(
+        _ name: String,
+        app: XCUIApplication,
+        webView: XCUIElement
+    ) {
+        let hostCount = app.webViews.matching(identifier: "weather.webview").count
+        // retain identified-host evidence on failure
+        if hostCount != 1 {
+            attachHTTPSFixtureState("\(name)-host-identity-failure", app: app, webView: webView)
+            XCTFail("expected one identified Weather WebView host, found \(hostCount)")
+        }
+    }
+
     // open the same fixed route used by the widget
     func testForecastDeepLinkOpensContainingApp() throws {
         let app = XCUIApplication()
@@ -213,7 +227,22 @@ final class WeatherDeepLinkUITests: XCTestCase {
         app = try fixtureApp(path: "/settings")
         app.launch()
         webView = app.webViews["weather.webview"]
-        XCTAssertTrue(webView.staticTexts["Public unit preference: Celsius"].waitForExistence(timeout: 15))
+        let settingsDeadline = Date().addingTimeInterval(15)
+        // separate an unloaded document from a lost persisted preference
+        guard webView.staticTexts["Fixture settings"].waitForExistence(timeout: 15) else {
+            attachHTTPSFixtureState("https-fixture-settings-relaunch-load-failure", app: app, webView: webView)
+            XCTFail("fixture settings did not load after app restart")
+            return
+        }
+        // share the original fifteen-second readiness budget
+        let remainingUnitWait = max(0, settingsDeadline.timeIntervalSinceNow)
+        guard webView.staticTexts["Public unit preference: Celsius"].waitForExistence(
+            timeout: remainingUnitWait
+        ) else {
+            attachHTTPSFixtureState("https-fixture-public-unit-persistence-failure", app: app, webView: webView)
+            XCTFail("public Celsius preference did not persist after app restart")
+            return
+        }
         webView.buttons["Use Fahrenheit"].tap()
         XCTAssertTrue(webView.staticTexts["Public unit preference: Fahrenheit"].waitForExistence(timeout: 5))
 
@@ -230,7 +259,7 @@ final class WeatherDeepLinkUITests: XCTestCase {
         XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 10))
         webView.links["Open fixture map in new window"].tap()
         XCTAssertTrue(webView.staticTexts["Fixture map"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.webViews.count, 1)
+        assertOneHostedWebView("https-fixture-map", app: app, webView: webView)
 
         // prove logs load through the same native hosted surface
         app.terminate()
@@ -239,7 +268,7 @@ final class WeatherDeepLinkUITests: XCTestCase {
         webView = app.webViews["weather.webview"]
         XCTAssertTrue(webView.staticTexts["Fixture logs"].waitForExistence(timeout: 15))
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertEqual(app.webViews.count, 1)
+        assertOneHostedWebView("https-fixture-logs", app: app, webView: webView)
 
         // prove trends load through the same native hosted surface
         app.terminate()
@@ -248,7 +277,7 @@ final class WeatherDeepLinkUITests: XCTestCase {
         webView = app.webViews["weather.webview"]
         XCTAssertTrue(webView.staticTexts["Fixture trends"].waitForExistence(timeout: 15))
         XCTAssertEqual(app.state, .runningForeground)
-        XCTAssertEqual(app.webViews.count, 1)
+        assertOneHostedWebView("https-fixture-trends", app: app, webView: webView)
 
         // prove unsafe and external policy links never leave the fixture
         app.terminate()

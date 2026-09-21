@@ -119,8 +119,10 @@ struct SecureWeatherWebView: UIViewRepresentable {
                 return
             }
             let url = route == .forecast ? httpsFixture.forecastURL : httpsFixture.startURL
+            // report the root fixture path canonically
+            let diagnosticPath = url.path.isEmpty ? "/" : url.path
             Self.diagnosticLogger.notice(
-                "https-fixture-load path=\(url.path, privacy: .public)"
+                "https-fixture-load path=\(diagnosticPath, privacy: .public)"
             )
             model.rememberApprovedURL(url)
             webView.load(URLRequest(url: url))

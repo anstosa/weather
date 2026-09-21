@@ -512,6 +512,12 @@ def verify_release_reachable_sources() -> None:
     for fragment in https_ui_fragments:
         if fragment not in ui_test_source:
             fail(f"HTTPS fixture UI journey lacks {fragment}")
+    # count the identified host instead of nested WebKit AX wrappers
+    if (
+        "app.webViews.count" in ui_test_source
+        or ui_test_source.count('assertOneHostedWebView("https-fixture-') != 3
+    ):
+        fail("HTTPS fixture journey does not bind one identified WebView host")
     https_probe_fragments = (
         "xcrun simctl create",
         "xcrun simctl keychain",
@@ -521,6 +527,7 @@ def verify_release_reachable_sources() -> None:
         'xcrun simctl spawn "$SIMULATOR_UDID" launchctl setenv',
         "test-runner-environment-keys.txt",
         "testHTTPSFixtureJourneys",
+        "https-fixture-load path=/$",
         "did-finish path=/logs",
         "did-finish path=/trends",
         "NSURLErrorDomain code=-1202",
@@ -534,6 +541,12 @@ def verify_release_reachable_sources() -> None:
     for fragment in https_probe_fragments:
         if fragment not in https_probe:
             fail(f"HTTPS fixture probe lacks {fragment}")
+    # bind the root launch receipt to the observed empty Foundation URL path
+    if (
+        'let diagnosticPath = url.path.isEmpty ? "/" : url.path' not in web_view_source
+        or r"https-fixture-load path=\(diagnosticPath, privacy: .public)" not in web_view_source
+    ):
+        fail("HTTPS fixture root-path receipt is not canonicalized")
     retry_fragments = (
         "lastApprovedURL",
         "rememberApprovedURL",

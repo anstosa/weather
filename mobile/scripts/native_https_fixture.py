@@ -13,6 +13,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import ssl
 import stat
 import subprocess
@@ -735,22 +736,67 @@ class FixtureRequestHandler(BaseHTTPRequestHandler):
 
 
 # create one loopback-only TLS listener
+class FixtureHTTPSServer(ThreadingHTTPServer):
+    """Dispatch raw TCP before a bounded worker performs TLS."""
+
+    daemon_threads = True
+    request_queue_size = 16
+
+    # retain one bounded TLS context and worker allowance
+    def __init__(self, address: tuple[str, int], context: ssl.SSLContext) -> None:
+        self.tls_context = context
+        self.connection_slots = threading.BoundedSemaphore(16)
+        super().__init__(address, FixtureRequestHandler)
+
+    # reject excess idle peers before allocating another worker
+    def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        # keep concurrent handshakes and HTTP connections bounded
+        if not self.connection_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        # release the slot if thread creation fails
+        except BaseException:
+            self.connection_slots.release()
+            raise
+
+    # release one worker allowance after its socket closes
+    def process_request_thread(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.connection_slots.release()
+
+    # perform TLS only after the accepted connection has a worker
+    def finish_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+        try:
+            request.settimeout(5)
+            secured = self.tls_context.wrap_socket(request, server_side=True)
+        # close only failed handshakes without logging raw input
+        except OSError:
+            request.close()
+            return
+        # preserve normal HTTP handler failure diagnostics
+        with secured:
+            super().finish_request(secured, client_address)
+
+
+# create one loopback-only TLS listener
 def create_server(
     state: FixtureState,
     listener_name: str,
     port: int,
     certificate: Path,
     private_key: Path,
-) -> ThreadingHTTPServer:
+) -> FixtureHTTPSServer:
     """Create a TLS 1.2+ loopback listener."""
-    server = ThreadingHTTPServer(("127.0.0.1", port), FixtureRequestHandler)
-    server.daemon_threads = True
-    server.fixture_state = state  # type: ignore[attr-defined]
-    server.listener_name = listener_name  # type: ignore[attr-defined]
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certificate, private_key)
-    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server = FixtureHTTPSServer(("127.0.0.1", port), context)
+    server.fixture_state = state  # type: ignore[attr-defined]
+    server.listener_name = listener_name  # type: ignore[attr-defined]
     return server
 
 

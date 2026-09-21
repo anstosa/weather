@@ -6,10 +6,12 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import socket
 import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from urllib.parse import urlencode
@@ -217,6 +219,90 @@ class NativeHTTPSFixtureTest(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 with self.assertRaises(ValueError):
                     fixture.login_cookie_header(invalid)
+
+    # keep an idle raw TCP peer from blocking a verified HTTPS request
+    def test_idle_tcp_does_not_block_verified_health(self) -> None:
+        """Require concurrency before the TLS handshake completes."""
+        with tempfile.TemporaryDirectory(prefix="weather-fixture-idle-") as root:
+            runtime = Path(root)
+            authority = fixture.generate_authority(runtime, "idle", "Weather Fixture Idle Root")
+            state = fixture.FixtureState(runtime / "events.jsonl")
+            server = fixture.create_server(
+                state,
+                "trusted",
+                0,
+                authority["leaf_cert"],
+                authority["leaf_key"],
+            )
+            accepted = threading.Event()
+            original_get_request = server.get_request
+
+            # signal only after the real listener has accepted the idle peer
+            def observed_get_request() -> tuple[socket.socket, tuple[str, int]]:
+                result = original_get_request()
+                accepted.set()
+                return result
+
+            server.get_request = observed_get_request  # type: ignore[method-assign]
+            serving = threading.Thread(target=server.serve_forever, daemon=True)
+            serving.start()
+            idle = socket.create_connection(server.server_address, timeout=2)
+            try:
+                self.assertTrue(accepted.wait(timeout=2), "raw TCP peer blocked listener accept")
+                self.assertEqual(
+                    fixture.verified_health(server.server_address[1], authority["ca_cert"]),
+                    b"trusted fixture ready\n",
+                )
+            # close the idle peer only after verified HTTPS completes
+            finally:
+                idle.close()
+                server.shutdown()
+                server.server_close()
+                serving.join(timeout=2)
+            self.assertFalse(serving.is_alive(), "fixture listener thread did not stop")
+
+    # keep a stalled handshake from delaying listener shutdown
+    def test_idle_tcp_does_not_block_listener_shutdown(self) -> None:
+        """Close the accept loop while an idle client still owns its socket."""
+        with tempfile.TemporaryDirectory(prefix="weather-fixture-shutdown-") as root:
+            runtime = Path(root)
+            authority = fixture.generate_authority(runtime, "shutdown", "Weather Fixture Shutdown Root")
+            state = fixture.FixtureState(runtime / "events.jsonl")
+            server = fixture.create_server(
+                state,
+                "trusted",
+                0,
+                authority["leaf_cert"],
+                authority["leaf_key"],
+            )
+            accepted = threading.Event()
+            original_get_request = server.get_request
+
+            # signal only after the real listener has accepted the idle peer
+            def observed_get_request() -> tuple[socket.socket, tuple[str, int]]:
+                result = original_get_request()
+                accepted.set()
+                return result
+
+            server.get_request = observed_get_request  # type: ignore[method-assign]
+            serving = threading.Thread(target=server.serve_forever, daemon=True)
+            serving.start()
+            idle = socket.create_connection(server.server_address, timeout=2)
+            accepted_before_shutdown = accepted.wait(timeout=2)
+            stopping = threading.Thread(
+                target=lambda: (server.shutdown(), server.server_close()),
+                daemon=True,
+            )
+            stopping.start()
+            stopping.join(timeout=2)
+            # release the idle peer only after observing shutdown progress
+            completed_with_idle_open = not stopping.is_alive()
+            idle.close()
+            stopping.join(timeout=2)
+            serving.join(timeout=2)
+            self.assertTrue(accepted_before_shutdown, "raw TCP peer blocked listener accept")
+            self.assertTrue(completed_with_idle_open, "idle TLS peer blocked listener shutdown")
+            self.assertFalse(serving.is_alive(), "fixture listener thread did not stop")
 
     # verify a live trusted and deliberately untrusted TLS run
     def test_wrapper_exercises_tls_auth_and_sanitized_receipts(self) -> None:
