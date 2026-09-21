@@ -35,6 +35,9 @@
 		A1000000000000000000001B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* Assets.xcassets */; };
 		A1000000000000000000001C /* WeatherHTTPSFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* WeatherHTTPSFixture.swift */; };
 		A1000000000000000000001D /* WeatherHTTPSFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001A /* WeatherHTTPSFixture.swift */; };
+		A1000000000000000000001E /* WeatherWidgetPersistenceProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* WeatherWidgetPersistenceProbe.swift */; };
+		A1000000000000000000001F /* WeatherWidgetDebugFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* WeatherWidgetDebugFixtures.swift */; };
+		A10000000000000000000020 /* WeatherWidgetPersistenceProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000001B /* WeatherWidgetPersistenceProbe.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -95,6 +98,7 @@
 		B10000000000000000000018 /* WeatherWidgetDebugFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetDebugFixtures.swift; sourceTree = "<group>"; };
 		B10000000000000000000019 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B1000000000000000000001A /* WeatherHTTPSFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherHTTPSFixture.swift; sourceTree = "<group>"; };
+		B1000000000000000000001B /* WeatherWidgetPersistenceProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetPersistenceProbe.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -175,6 +179,7 @@
 				B10000000000000000000016 /* WeatherWidgetStore.swift */,
 				B10000000000000000000017 /* WeatherWidgetClient.swift */,
 				B10000000000000000000018 /* WeatherWidgetDebugFixtures.swift */,
+				B1000000000000000000001B /* WeatherWidgetPersistenceProbe.swift */,
 				B1000000000000000000000C /* Info.plist */,
 			);
 			path = WeatherWidget;
@@ -335,6 +340,7 @@
 				A10000000000000000000014 /* WeatherWidgetStore.swift in Sources */,
 				A10000000000000000000015 /* WeatherWidgetClient.swift in Sources */,
 				A1000000000000000000001A /* WeatherWidgetDebugFixtures.swift in Sources */,
+				A1000000000000000000001E /* WeatherWidgetPersistenceProbe.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -352,6 +358,8 @@
 				A10000000000000000000018 /* WeatherWidgetStore.swift in Sources */,
 				A10000000000000000000019 /* WeatherWidgetClient.swift in Sources */,
 				A1000000000000000000001D /* WeatherHTTPSFixture.swift in Sources */,
+				A1000000000000000000001F /* WeatherWidgetDebugFixtures.swift in Sources */,
+				A10000000000000000000020 /* WeatherWidgetPersistenceProbe.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

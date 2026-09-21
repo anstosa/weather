@@ -39,6 +39,7 @@ EXPECTED_FILES = (
     "WeatherWidget/WeatherWidgetStore.swift",
     "WeatherWidget/WeatherWidgetClient.swift",
     "WeatherWidget/WeatherWidgetDebugFixtures.swift",
+    "WeatherWidget/WeatherWidgetPersistenceProbe.swift",
     "WeatherWidget/Info.plist",
     "WeatherTests/WeatherTests.swift",
     "WeatherUITests/WeatherDeepLinkUITests.swift",
@@ -46,6 +47,7 @@ EXPECTED_FILES = (
     "scripts/generate-assets.py",
     "scripts/probe-widget-host.sh",
     "scripts/probe-widget-unit.sh",
+    "scripts/probe-widget-persistence.sh",
     "scripts/probe-widget-semantic-host.sh",
     "scripts/probe-webview-https.sh",
 )
@@ -115,6 +117,32 @@ def verify_schemes() -> None:
         if not path.is_file():
             fail(f"missing shared scheme {filename}")
         ElementTree.parse(path)
+
+    weather_root = ElementTree.parse(SCHEMES / "Weather.xcscheme").getroot()
+    weather_entries = {}
+    for entry in weather_root.findall("BuildAction/BuildActionEntries/BuildActionEntry"):
+        # index each explicitly listed scheme product
+        reference = entry.find("BuildableReference")
+        if reference is not None:
+            weather_entries[reference.get("BlueprintIdentifier")] = entry
+    app_entry = weather_entries.get("E10000000000000000000001")
+    unit_entry = weather_entries.get("E10000000000000000000003")
+    ui_entry = weather_entries.get("E10000000000000000000004")
+    analyze_action = weather_root.find("AnalyzeAction")
+    # retain production Release analysis while excluding test bundles
+    if (
+        app_entry is None
+        or app_entry.get("buildForAnalyzing") != "YES"
+        or unit_entry is None
+        or unit_entry.get("buildForTesting") != "YES"
+        or unit_entry.get("buildForAnalyzing") != "NO"
+        or ui_entry is None
+        or ui_entry.get("buildForTesting") != "YES"
+        or ui_entry.get("buildForAnalyzing") != "NO"
+        or analyze_action is None
+        or analyze_action.get("buildConfiguration") != "Release"
+    ):
+        fail("Weather scheme does not isolate production analysis from test bundles")
 
     for obsolete in ("WeatherWidget-NearCutoff.xcscheme", "WeatherWidget-Bedtime.xcscheme"):
         # reject obsolete runtime fixture schemes
@@ -206,6 +234,12 @@ def verify_project_graph() -> None:
     # compile the debug-only HTTPS fixture into the app and unit-test targets
     if text.count("WeatherHTTPSFixture.swift in Sources") != 4:
         fail("HTTPS fixture source membership is incomplete")
+    # compile the persistence probe only into the extension and unit-test bundle
+    if text.count("WeatherWidgetPersistenceProbe.swift in Sources") != 4:
+        fail("widget persistence probe source membership is incomplete")
+    # provide the shared fixture only to those same Debug-capable targets
+    if text.count("WeatherWidgetDebugFixtures.swift in Sources") != 4:
+        fail("widget persistence fixture source membership is incomplete")
 
 
 def verify_release_reachable_sources() -> None:
@@ -244,8 +278,12 @@ def verify_release_reachable_sources() -> None:
     test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
     release_scan = (ROOT / "scripts/verify-release-artifacts.sh").read_text()
     debug_fixtures = (ROOT / "WeatherWidget/WeatherWidgetDebugFixtures.swift").read_text()
+    persistence_probe_source = (
+        ROOT / "WeatherWidget/WeatherWidgetPersistenceProbe.swift"
+    ).read_text()
     https_probe = (ROOT / "scripts/probe-webview-https.sh").read_text()
     unit_probe = (ROOT / "scripts/probe-widget-unit.sh").read_text()
+    persistence_probe = (ROOT / "scripts/probe-widget-persistence.sh").read_text()
     ui_test_source = (ROOT / "WeatherUITests/WeatherDeepLinkUITests.swift").read_text()
     obsolete_fixture_controls = (
         "WEATHER_WIDGET_FIXTURE",
@@ -338,6 +376,74 @@ def verify_release_reachable_sources() -> None:
     for fragment in persistence_fragments:
         if fragment not in client_source + store_source + test_source:
             fail(f"widget persistence boundary lacks {fragment}")
+    # keep every process-restart probe byte out of Release
+    if (
+        not persistence_probe_source.startswith(
+            "#if DEBUG && WEATHER_V4_PERSISTENCE_PROBE\n"
+        )
+        or not persistence_probe_source.endswith("#endif\n")
+        or persistence_probe_source.count("#if") != 1
+        or persistence_probe_source.count("#endif") != 1
+    ):
+        fail("widget persistence probe source is not entirely DEBUG-isolated")
+    persistence_probe_fragments = (
+        "WeatherWidgetDataController",
+        "WeatherWidgetStore",
+        "persistenceProbeFilePresence",
+        'action: "seed-success"',
+        'action: "write-offline"',
+        'action: "read-offline"',
+        'action: "invalid-state"',
+        "while true",
+        "completedTransitionCount",
+        "startedTransitionCount",
+        "attempt.snapshotIdentifier == cached.snapshotIdentifier",
+        "testConcurrentFahrenheitThenCelsiusTransitionsWriteOnce",
+        "waitUntilFahrenheitStarted",
+        "waitUntilFahrenheitShared",
+        "waitUntilCelsiusQueuedBehindFahrenheit(count: 2)",
+        "waitUntilCelsiusResolved",
+        "duplicateTransition",
+        "sharedTransition",
+        "releaseFahrenheit",
+        "releaseCelsius",
+        "test15PersistenceSeedAndFailBeforeRestart",
+        "test16PersistenceFailureSurvivesExtensionRestart",
+        "simulator-rebooted-between-persistence-phases=1",
+        "phase_b_state_source=read-only",
+        "before_extension_pid",
+        "after_extension_pid",
+        "widget_id=",
+        "persistence-before-restart-offline-visible-spoken",
+        "persistence-after-restart-offline-visible-spoken",
+        "persistence-probe-passed.txt",
+        "concurrency/test-status.txt",
+    )
+    # require production-store execution and exact process receipts
+    combined_persistence_probe = (
+        persistence_probe_source
+        + store_source
+        + widget_source
+        + test_source
+        + ui_test_source
+        + persistence_probe
+    )
+    for fragment in persistence_probe_fragments:
+        if fragment not in combined_persistence_probe:
+            fail(f"widget persistence process probe lacks {fragment}")
+    # reject evidence reuse before preflight creates the results directory
+    if persistence_probe.find('if [[ -e "$RESULTS" ]]') > persistence_probe.find(
+        '"$SCRIPT_DIR/preflight.sh"'
+    ):
+        fail("widget persistence probe checks evidence reuse after preflight")
+    for fragment in (
+        "WEATHER_V4_PERSISTENCE_PROBE",
+        "persistence-probe",
+        "WeatherWidgetPersistenceProbe",
+    ):
+        # require produced Release scans to reject probe bytes
+        if fragment not in release_scan:
+            fail(f"Release scan lacks persistence probe ban {fragment}")
     transport_test_fragments = (
         "testTotalDeadlineWinsOverLateSuccess",
         "testDeclaredOversizedPayloadIsRejected",

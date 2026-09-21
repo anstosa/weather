@@ -101,6 +101,16 @@ struct WeatherWidgetStore: WeatherWidgetStoring {
         try data.write(to: attemptURL, options: [.atomic, .completeFileProtection])
     }
 
+    #if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
+    // distinguish an empty probe store from corrupt persisted files
+    func persistenceProbeFilePresence() -> (snapshot: Bool, attempt: Bool) {
+        (
+            fileManager.fileExists(atPath: snapshotURL.path),
+            fileManager.fileExists(atPath: attemptURL.path)
+        )
+    }
+    #endif
+
     // create only this extension-owned directory
     private func requireDirectory() throws {
         try fileManager.createDirectory(

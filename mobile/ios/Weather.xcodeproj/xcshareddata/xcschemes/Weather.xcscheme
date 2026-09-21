@@ -5,10 +5,10 @@
       <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E10000000000000000000001" BuildableName="Weather.app" BlueprintName="Weather" ReferencedContainer="container:Weather.xcodeproj"/>
       </BuildActionEntry>
-      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E10000000000000000000003" BuildableName="WeatherTests.xctest" BlueprintName="WeatherTests" ReferencedContainer="container:Weather.xcodeproj"/>
       </BuildActionEntry>
-      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E10000000000000000000004" BuildableName="WeatherUITests.xctest" BlueprintName="WeatherUITests" ReferencedContainer="container:Weather.xcodeproj"/>
       </BuildActionEntry>
     </BuildActionEntries>
@@ -33,6 +33,6 @@
       <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E10000000000000000000001" BuildableName="Weather.app" BlueprintName="Weather" ReferencedContainer="container:Weather.xcodeproj"/>
     </BuildableProductRunnable>
   </ProfileAction>
-  <AnalyzeAction buildConfiguration="Debug"/>
+  <AnalyzeAction buildConfiguration="Release"/>
   <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES"/>
 </Scheme>

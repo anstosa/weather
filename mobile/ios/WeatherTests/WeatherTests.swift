@@ -1001,6 +1001,282 @@ final class WeatherWidgetPersistenceTests: XCTestCase {
     }
 }
 
+#if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
+final class WeatherWidgetPersistenceProbeConcurrencyTests: XCTestCase {
+    private var directory: URL!
+
+    // create one isolated extension-store substitute
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+    }
+
+    // remove only this test's temporary store
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    // serialize concurrent unit changes into one seed and failure write
+    func testConcurrentFahrenheitThenCelsiusTransitionsWriteOnce() async throws {
+        let store = WeatherWidgetStore(directory: directory)
+        let gate = WeatherWidgetPersistenceProbeTestGate()
+        let probe = WeatherWidgetPersistenceProbe(
+            store: store,
+            onTransitionStart: { unit in
+                await gate.transitionStarted(unit: unit)
+            },
+            onWaiterQueued: { requestedUnit, activeUnit in
+                await gate.waiterQueued(requested: requestedUnit, active: activeUnit)
+            }
+        )
+
+        let firstFahrenheit = Task {
+            await probe.load(unit: .fahrenheit)
+        }
+        await gate.waitUntilFahrenheitStarted()
+        let secondFahrenheit = Task {
+            await probe.load(unit: .fahrenheit)
+        }
+        await gate.waitUntilFahrenheitShared()
+        let firstCelsius = Task {
+            await probe.load(unit: .celsius)
+        }
+        let secondCelsius = Task {
+            await probe.load(unit: .celsius)
+        }
+        await gate.waitUntilCelsiusQueuedBehindFahrenheit(count: 2)
+        let blockedFahrenheitStarts = await probe.startedTransitionCount(unit: .fahrenheit)
+        let blockedCelsiusStarts = await probe.startedTransitionCount(unit: .celsius)
+        XCTAssertEqual(blockedFahrenheitStarts, 1)
+        XCTAssertEqual(blockedCelsiusStarts, 0)
+        await gate.releaseFahrenheit()
+
+        let celsiusResolution = await gate.waitUntilCelsiusResolved()
+        XCTAssertEqual(celsiusResolution, .sharedTransition)
+        let heldFahrenheitStarts = await probe.startedTransitionCount(unit: .fahrenheit)
+        let heldCelsiusStarts = await probe.startedTransitionCount(unit: .celsius)
+        XCTAssertEqual(heldFahrenheitStarts, 1)
+        XCTAssertEqual(heldCelsiusStarts, 1)
+        await gate.releaseCelsius()
+
+        let firstFahrenheitResult = await firstFahrenheit.value
+        let secondFahrenheitResult = await secondFahrenheit.value
+        let firstCelsiusResult = await firstCelsius.value
+        let secondCelsiusResult = await secondCelsius.value
+        XCTAssertEqual(firstFahrenheitResult.action, "seed-success")
+        XCTAssertEqual(secondFahrenheitResult.action, "seed-success")
+        let seedCount = await probe.completedTransitionCount(action: "seed-success")
+        XCTAssertEqual(seedCount, 1)
+        let seeded = try XCTUnwrap(store.loadSnapshot())
+        XCTAssertEqual(firstCelsiusResult.action, "write-offline")
+        XCTAssertEqual(secondCelsiusResult.action, "write-offline")
+        let failureCount = await probe.completedTransitionCount(action: "write-offline")
+        XCTAssertEqual(failureCount, 1)
+        let fahrenheitStarts = await probe.startedTransitionCount(unit: .fahrenheit)
+        let celsiusStarts = await probe.startedTransitionCount(unit: .celsius)
+        XCTAssertEqual(fahrenheitStarts, 1)
+        XCTAssertEqual(celsiusStarts, 1)
+        let failedSnapshot = try XCTUnwrap(store.loadSnapshot())
+        let failedAttempt = try XCTUnwrap(store.loadAttempt())
+        XCTAssertEqual(failedSnapshot.snapshotIdentifier, seeded.snapshotIdentifier)
+        XCTAssertEqual(failedAttempt.outcome, .offline)
+
+        let snapshotURL = directory.appending(path: "last-good.json")
+        let attemptURL = directory.appending(path: "last-attempt.json")
+        let snapshotBytes = try Data(contentsOf: snapshotURL)
+        let attemptBytes = try Data(contentsOf: attemptURL)
+        let firstRead = await probe.load(unit: .celsius)
+        let secondRead = await probe.load(unit: .celsius)
+        XCTAssertEqual(firstRead.action, "read-offline")
+        XCTAssertEqual(secondRead.action, "read-offline")
+        XCTAssertEqual(try Data(contentsOf: snapshotURL), snapshotBytes)
+        XCTAssertEqual(try Data(contentsOf: attemptURL), attemptBytes)
+        XCTAssertEqual(firstRead.state?.cached?.snapshotIdentifier, seeded.snapshotIdentifier)
+        XCTAssertEqual(firstRead.state?.attempt?.attemptedAt, failedAttempt.attemptedAt)
+        XCTAssertEqual(secondRead.state?.attempt?.attemptedAt, failedAttempt.attemptedAt)
+        let readCount = await probe.completedTransitionCount(action: "read-offline")
+        XCTAssertEqual(readCount, 2)
+    }
+}
+
+private enum WeatherWidgetPersistenceProbeCelsiusResolution: Equatable {
+    case duplicateTransition
+    case sharedTransition
+}
+
+private actor WeatherWidgetPersistenceProbeTestGate {
+    private var celsiusBehindFahrenheitCount = 0
+    private var celsiusBehindFahrenheitContinuation: CheckedContinuation<Void, Never>?
+    private var celsiusBehindFahrenheitTarget = 0
+    private var celsiusReleaseContinuations: [CheckedContinuation<Void, Never>] = []
+    private var celsiusReleaseRequested = false
+    private var celsiusResolution: WeatherWidgetPersistenceProbeCelsiusResolution?
+    private var celsiusResolutionContinuation: CheckedContinuation<
+        WeatherWidgetPersistenceProbeCelsiusResolution,
+        Never
+    >?
+    private var celsiusSharedObserved = false
+    private var celsiusStartedCount = 0
+    private var fahrenheitReleaseContinuation: CheckedContinuation<Void, Never>?
+    private var fahrenheitReleaseRequested = false
+    private var fahrenheitShared = false
+    private var fahrenheitSharedContinuation: CheckedContinuation<Void, Never>?
+    private var fahrenheitStarted = false
+    private var fahrenheitStartedContinuation: CheckedContinuation<Void, Never>?
+
+    // hold the first physical transition of each unit
+    func transitionStarted(unit: TemperatureUnit) async {
+        switch unit {
+        case .fahrenheit:
+            fahrenheitStarted = true
+            fahrenheitStartedContinuation?.resume()
+            fahrenheitStartedContinuation = nil
+            // honor release requested before suspension registration
+            if fahrenheitReleaseRequested {
+                return
+            }
+            await withCheckedContinuation { continuation in
+                // close the release-registration race
+                if fahrenheitReleaseRequested {
+                    continuation.resume()
+                } else {
+                    fahrenheitReleaseContinuation = continuation
+                }
+            }
+        case .celsius:
+            celsiusStartedCount += 1
+            // let duplicate physical starts fail instead of deadlock
+            if celsiusStartedCount > 1 {
+                resolveCelsius(.duplicateTransition)
+            } else {
+                resolveSharedCelsiusIfReady()
+            }
+            // honor release requested before suspension registration
+            if celsiusReleaseRequested {
+                return
+            }
+            await withCheckedContinuation { continuation in
+                // release every physical transition after the verdict
+                if celsiusReleaseRequested {
+                    continuation.resume()
+                } else {
+                    celsiusReleaseContinuations.append(continuation)
+                }
+            }
+        }
+    }
+
+    // observe every requested and active unit pair
+    func waiterQueued(requested: TemperatureUnit, active: TemperatureUnit) {
+        switch (requested, active) {
+        case (.fahrenheit, .fahrenheit):
+            fahrenheitShared = true
+            fahrenheitSharedContinuation?.resume()
+            fahrenheitSharedContinuation = nil
+        case (.celsius, .fahrenheit):
+            celsiusBehindFahrenheitCount += 1
+            // release only after every intended opposite-unit caller queued
+            if celsiusBehindFahrenheitCount >= celsiusBehindFahrenheitTarget {
+                celsiusBehindFahrenheitContinuation?.resume()
+                celsiusBehindFahrenheitContinuation = nil
+            }
+        case (.celsius, .celsius):
+            celsiusSharedObserved = true
+            resolveSharedCelsiusIfReady()
+        default:
+            break
+        }
+    }
+
+    // wait without inferring scheduling from time
+    func waitUntilFahrenheitStarted() async {
+        // accept an already observed transition
+        if fahrenheitStarted {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            fahrenheitStartedContinuation = continuation
+        }
+    }
+
+    // prove the second Fahrenheit caller shared the held transition
+    func waitUntilFahrenheitShared() async {
+        // accept an already observed waiter
+        if fahrenheitShared {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            fahrenheitSharedContinuation = continuation
+        }
+    }
+
+    // wait for all intended Celsius callers behind Fahrenheit
+    func waitUntilCelsiusQueuedBehindFahrenheit(count: Int) async {
+        celsiusBehindFahrenheitTarget = count
+        // accept callers already queued by the actor
+        if celsiusBehindFahrenheitCount >= count {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            celsiusBehindFahrenheitContinuation = continuation
+        }
+    }
+
+    // release only the held Fahrenheit transition
+    func releaseFahrenheit() {
+        fahrenheitReleaseRequested = true
+        fahrenheitReleaseContinuation?.resume()
+        fahrenheitReleaseContinuation = nil
+    }
+
+    // resolve on sharing or a duplicate physical start
+    func waitUntilCelsiusResolved() async -> WeatherWidgetPersistenceProbeCelsiusResolution {
+        // accept an already resolved verdict
+        if let celsiusResolution {
+            return celsiusResolution
+        }
+        return await withCheckedContinuation { continuation in
+            celsiusResolutionContinuation = continuation
+        }
+    }
+
+    // release every held Celsius transition after the verdict
+    func releaseCelsius() {
+        celsiusReleaseRequested = true
+        let continuations = celsiusReleaseContinuations
+        celsiusReleaseContinuations = []
+        // resume every physical transition, including a duplicate
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+
+    // retain only the first deterministic Celsius verdict
+    private func resolveCelsius(
+        _ resolution: WeatherWidgetPersistenceProbeCelsiusResolution
+    ) {
+        guard celsiusResolution == nil else {
+            return
+        }
+        celsiusResolution = resolution
+        celsiusResolutionContinuation?.resume(returning: resolution)
+        celsiusResolutionContinuation = nil
+    }
+
+    // require both one physical start and one sharing witness
+    private func resolveSharedCelsiusIfReady() {
+        guard celsiusStartedCount == 1, celsiusSharedObserved else {
+            return
+        }
+        resolveCelsius(.sharedTransition)
+    }
+}
+#endif
+
 final class WeatherWidgetHTTPClientTests: XCTestCase {
     // reset request interception after every transport test
     override func tearDown() {

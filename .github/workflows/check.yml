@@ -341,6 +341,36 @@ jobs:
           test -s "${RESULTS}/evidence.sha256"
           test "$(cat "${RESULTS}/edit-to-celsius-status.txt")" = '0'
           test "$(cat "${RESULTS}/restart-and-return-fahrenheit-status.txt")" = '0'
+      - name: Exercise extension-owned failed-attempt persistence
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-widget-persistence
+        run: mobile/ios/scripts/probe-widget-persistence.sh
+      - name: Verify mandatory iOS persistence receipts
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-widget-persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(cat "${RESULTS}/concurrency/test-status.txt")" = '0'
+          test "$(cat "${RESULTS}/before-restart/test-status.txt")" = '0'
+          test "$(cat "${RESULTS}/after-restart/test-status.txt")" = '0'
+          grep -Fxq 'extension_owned_store=passed' \
+            "${RESULTS}/persistence-probe-passed.txt"
+          grep -Fxq 'matching_success_required=passed' \
+            "${RESULTS}/persistence-probe-passed.txt"
+          grep -Fxq 'failed_attempt_process_restart=passed' \
+            "${RESULTS}/persistence-probe-passed.txt"
+          grep -Fxq 'visible_spoken_offline_weather=passed' \
+            "${RESULTS}/persistence-probe-passed.txt"
+          grep -Fq "source_commit=${GITHUB_SHA}" "${RESULTS}/persistence-receipt.txt"
+          grep -Fxq 'failure_outcome=offline' "${RESULTS}/persistence-receipt.txt"
+          grep -Fxq 'phase_b_state_source=read-only' "${RESULTS}/persistence-receipt.txt"
+          grep -Fq 'disposable_simulator_deleted=' "${RESULTS}/simulator-cleanup.txt"
+          test -s "${RESULTS}/evidence.sha256"
+          test -s "${RESULTS}/attachments.sha256"
+          test -d "${RESULTS}/concurrency/WeatherPersistenceConcurrency.xcresult"
+          test -d "${RESULTS}/before-restart/WeatherPersistence.xcresult"
+          test -d "${RESULTS}/after-restart/WeatherPersistence.xcresult"
       - name: Exercise shared fixtures through the WidgetKit host
         env:
           RESULTS: ${{ runner.temp }}/weather-ios-semantic-host
@@ -387,6 +417,8 @@ jobs:
             ${{ runner.temp }}/weather-ios-build/retained-apps/**
             ${{ runner.temp }}/weather-ios-widget-unit/**
             !${{ runner.temp }}/weather-ios-widget-unit/DerivedData/**
+            ${{ runner.temp }}/weather-ios-widget-persistence/**
+            !${{ runner.temp }}/weather-ios-widget-persistence/DerivedData/**
             ${{ runner.temp }}/weather-ios-semantic-host/**
             !${{ runner.temp }}/weather-ios-semantic-host/DerivedData/**
             ${{ runner.temp }}/weather-ios-webview/**

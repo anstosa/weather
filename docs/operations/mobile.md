@@ -112,6 +112,8 @@ RESULTS="$RUNNER_TEMP/weather-ios-build" \
   mobile/ios/scripts/build-m0.sh
 RESULTS="$RUNNER_TEMP/weather-ios-widget-unit" \
   mobile/ios/scripts/probe-widget-unit.sh
+RESULTS="$RUNNER_TEMP/weather-ios-widget-persistence" \
+  mobile/ios/scripts/probe-widget-persistence.sh
 RESULTS="$RUNNER_TEMP/weather-ios-semantic-host" \
   mobile/ios/scripts/probe-widget-semantic-host.sh
 ```
@@ -127,11 +129,31 @@ extensions and compiled asset catalogs, under `retained-apps/`. Preserve
 `retained-apps/app-bundles.sha256` so a verifier can rehash the exact bounded
 archives without retaining the rest of DerivedData.
 
+The shared Weather scheme builds both test bundles for the Debug test action,
+but excludes them from analysis. The mandatory Release build/analyze therefore
+targets the containing app and its embedded widget extension rather than
+compiling DEBUG-only fixture tests as production artifacts.
+
 The product AppIntent probe places a real `systemMedium` widget through public
 Simulator UI, changes Fahrenheit to Celsius, restarts the Simulator extension
 process, verifies persisted Celsius output, and returns to Fahrenheit. Its
 provider log, result bundles, typed and visible/spoken attachments, restart
 receipt, and evidence hashes are mandatory.
+
+The extension persistence probe uses a separate disposable Simulator and one
+Debug-only compiled artifact. A public Fahrenheit configuration seeds the
+otherwise empty extension-owned production store once through
+`WeatherWidgetDataController`; changing the same widget to Celsius persists one
+sanitized offline attempt without replacing its last-good snapshot. After a
+full Simulator shutdown and boot, the Celsius provider reads that exact state
+without fetching or writing. The gate requires the same snapshot UUID, failure
+timestamp/outcome, and public WidgetInfo ID, a different extension process ID,
+and genuine before/after SpringBoard screenshots plus the complete accessible
+Offline numeric forecast and credit. It sends no production traffic, uses no
+App Group or private container access, and never substitutes for the separate
+product AppIntent roundtrip. A special-flag unit regression also fans out
+concurrent Fahrenheit and Celsius provider requests and requires exactly one
+seed, one offline write, and byte-identical read-only attempts afterward.
 
 The semantic host probe compiles each of the six shared production-decoder
 fixtures independently and requires real WidgetKit host placement, decoded

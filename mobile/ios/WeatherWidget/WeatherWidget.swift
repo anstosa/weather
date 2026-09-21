@@ -6,6 +6,9 @@ import WidgetKit
 
 struct WeatherWidgetProvider: AppIntentTimelineProvider {
     private static let controller = WeatherWidgetDataController()
+    #if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
+    private static let persistenceProbe = WeatherWidgetPersistenceProbe()
+    #endif
     private let renderer = WeatherWidgetRenderer()
     private let logger = Logger(subsystem: "farm.ballydidean.weather.widget", category: "timeline")
 
@@ -70,6 +73,10 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
         for configuration: WeatherWidgetConfigurationIntent,
         in context: Context
     ) async -> WeatherWidgetEntry {
+        #if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
+        // exercise the real extension store without production traffic
+        return await persistenceProbeEntry(configuration: configuration)
+        #endif
         #if DEBUG
         // retain only explicitly compiled host-fixture artifacts
         if let selection = compiledFixtureSelection {
@@ -95,6 +102,14 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
         for configuration: WeatherWidgetConfigurationIntent,
         in context: Context
     ) async -> Timeline<WeatherWidgetEntry> {
+        #if DEBUG && WEATHER_V4_PERSISTENCE_PROBE
+        // exercise the same persisted transition for timeline requests
+        let currentEntry = await persistenceProbeEntry(configuration: configuration)
+        return Timeline(
+            entries: [currentEntry],
+            policy: .after(Date().addingTimeInterval(30 * 60))
+        )
+        #endif
         #if DEBUG
         // retain only explicitly compiled host-fixture artifacts
         if let selection = compiledFixtureSelection {
@@ -163,6 +178,24 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
     }
 
     #if DEBUG
+    #if WEATHER_V4_PERSISTENCE_PROBE
+    // render one probe state through the production presentation path
+    private func persistenceProbeEntry(
+        configuration: WeatherWidgetConfigurationIntent
+    ) async -> WeatherWidgetEntry {
+        let result = await Self.persistenceProbe.load(unit: configuration.temperatureUnit)
+        guard let state = result.state else {
+            return WeatherWidgetEntry(date: Date(), display: .unavailable)
+        }
+        let rendered = entry(
+            configuration: configuration,
+            state: state,
+            at: result.renderDate
+        )
+        return WeatherWidgetEntry(date: Date(), display: rendered.display)
+    }
+    #endif
+
     // bind one explicit compiled artifact to deterministic host content
     private func fixtureEntry(
         configuration: WeatherWidgetConfigurationIntent,

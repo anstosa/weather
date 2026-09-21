@@ -1,5 +1,6 @@
 package farm.ballydidean.weather
 
+import android.content.ContextWrapper
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.work.NetworkType
 import androidx.work.WorkManager
@@ -29,14 +30,20 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 class WidgetStorageInstrumentationTest {
-    private val context
-        get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private val targetContext = InstrumentationRegistry.getInstrumentation().targetContext
+    private val storageDirectory = File(targetContext.filesDir, "widget-storage-instrumentation")
+    private val context = object : ContextWrapper(targetContext) {
+        // isolate cache files from real provider lifecycle callbacks
+        override fun getFilesDir(): File = storageDirectory
+    }
     private val storage
         get() = WidgetStorage(context)
 
     // clear persistent state around each cache case
     @Before
     fun setUp() {
+        storageDirectory.mkdirs()
+        assertTrue("isolated storage directory was not created", storageDirectory.isDirectory)
         storage.clear()
     }
 

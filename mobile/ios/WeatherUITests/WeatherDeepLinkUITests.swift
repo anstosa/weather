@@ -855,17 +855,11 @@ final class WidgetHostUITests: XCTestCase {
         springboard: XCUIApplication,
         stage: String
     ) throws {
-        app.terminate()
-        app.launchArguments = [
-            "-weather-ui-test",
-            "-weather-m0-reload-widget",
-            "-weather-widget-configuration-diagnostic"
-        ]
-        app.launch()
-        let diagnostic = app.staticTexts["weather.widget.configuration"]
-        XCTAssertTrue(diagnostic.waitForExistence(timeout: 15))
-        XCTAssertTrue(diagnostic.label.contains("unit=\(unit)"), diagnostic.label)
-        attachState(app, name: "unit-\(stage)-typed-widget-info")
+        _ = try captureWidgetConfiguration(
+            unit: unit,
+            app: app,
+            stage: "unit-\(stage)-typed-widget-info"
+        )
 
         XCUIDevice.shared.press(.home)
         XCTAssertTrue(springboard.wait(for: .runningForeground, timeout: 10))
@@ -882,6 +876,74 @@ final class WidgetHostUITests: XCTestCase {
         XCTAssertTrue(widget.label.contains(symbol))
         XCTAssertTrue(widget.label.contains("adjusted air temperature"))
         attachState(springboard, name: "unit-\(stage)-visible-spoken")
+    }
+
+    // wait for the expected public typed WidgetInfo value
+    private func captureWidgetConfiguration(
+        unit: String,
+        app: XCUIApplication,
+        stage: String
+    ) throws -> String {
+        app.terminate()
+        app.launchArguments = [
+            "-weather-ui-test",
+            "-weather-m0-reload-widget",
+            "-weather-widget-configuration-diagnostic"
+        ]
+        app.launch()
+        let diagnostic = app.staticTexts["weather.widget.configuration"]
+        let deadline = Date().addingTimeInterval(15)
+
+        // reject the initial pending value
+        repeat {
+            // accept only the requested typed configuration
+            if diagnostic.exists, diagnostic.label.contains("unit=\(unit)") {
+                let receipt = XCTAttachment(string: diagnostic.label)
+                receipt.name = stage
+                receipt.lifetime = .keepAlways
+                add(receipt)
+                attachState(app, name: stage)
+                return diagnostic.label
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        attachState(app, name: "failure-\(stage)")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 11,
+            userInfo: [NSLocalizedDescriptionKey: "typed WidgetInfo did not report unit=\(unit)"]
+        )
+    }
+
+    // require complete persisted failure semantics from WidgetKit
+    private func assertPersistenceFailure(
+        on springboard: XCUIApplication,
+        stage: String
+    ) throws -> XCUIElement {
+        let required = ["Offline", "°C", "Open-Meteo", "CC BY 4.0"]
+        let predicates = required.map { fragment in
+            NSPredicate(format: "label CONTAINS[c] %@", fragment)
+        }
+        let query = springboard.descendants(matching: .any).matching(
+            NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+        )
+        let widget = try requireExisting(
+            in: query,
+            springboard: springboard,
+            stage: stage,
+            timeout: 45
+        )
+        let label = widget.label
+        XCTAssertTrue(label.contains("Offline, adjusted"), label)
+        XCTAssertEqual(label.components(separatedBy: "air temperature").count - 1, 7, label)
+        XCTAssertNotNil(
+            label.range(of: #"-?[0-9]+(?:–-?[0-9]+)?°C"#, options: .regularExpression),
+            label
+        )
+        XCTAssertTrue(label.contains("Weather data by Open-Meteo under CC BY 4.0"), label)
+        attachState(springboard, name: stage)
+        return widget
     }
 
     // locate the actual fixed Home Screen host frame
@@ -1198,5 +1260,54 @@ final class WidgetHostUITests: XCTestCase {
             app: host.app,
             springboard: host.springboard
         )
+    }
+
+    // persist one real last-good snapshot and offline attempt
+    func test15PersistenceSeedAndFailBeforeRestart() throws {
+        let host = try launchHost()
+        let seeded = try addWidget(on: host.springboard, scenario: .adjustedStandard)
+        XCTAssertTrue(seeded.label.contains("Updated, adjusted"), seeded.label)
+        XCTAssertTrue(seeded.label.contains("°F"), seeded.label)
+        XCTAssertEqual(
+            seeded.label.components(separatedBy: "air temperature").count - 1,
+            7,
+            seeded.label
+        )
+        XCTAssertTrue(
+            seeded.label.contains("Weather data by Open-Meteo under CC BY 4.0"),
+            seeded.label
+        )
+        attachState(host.springboard, name: "persistence-seeded-success")
+
+        try editTemperatureUnit(to: "Celsius", on: host.springboard)
+        _ = try assertPersistenceFailure(
+            on: host.springboard,
+            stage: "persistence-before-restart-offline-visible-spoken"
+        )
+        let widgetInfo = try captureWidgetConfiguration(
+            unit: "celsius",
+            app: host.app,
+            stage: "persistence-before-restart-widget-info"
+        )
+        XCTAssertTrue(widgetInfo.contains("widget-id="), widgetInfo)
+        XCUIDevice.shared.press(.home)
+        try requireHomeScreen(on: host.springboard)
+    }
+
+    // read the exact persisted failure after extension process death
+    func test16PersistenceFailureSurvivesExtensionRestart() throws {
+        let host = try launchHost()
+        _ = try assertPersistenceFailure(
+            on: host.springboard,
+            stage: "persistence-after-restart-offline-visible-spoken"
+        )
+        let widgetInfo = try captureWidgetConfiguration(
+            unit: "celsius",
+            app: host.app,
+            stage: "persistence-after-restart-widget-info"
+        )
+        XCTAssertTrue(widgetInfo.contains("widget-id="), widgetInfo)
+        XCUIDevice.shared.press(.home)
+        try requireHomeScreen(on: host.springboard)
     }
 }
