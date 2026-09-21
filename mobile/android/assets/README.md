@@ -18,6 +18,10 @@ Verify the checked-in density assets byte-for-byte without changing them:
 java mobile/android/scripts/GenerateBrandAssets.java --check
 ```
 
+The generator writes filter-zero RGBA scanlines with stored DEFLATE blocks.
+That fixed encoding keeps the reviewed pixels byte-identical across pinned JDK
+17 vendors instead of inheriting platform `ImageIO` compression decisions.
+
 The five outputs are `app/src/main/res/mipmap-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher.png`.
 The source artwork remains governed by the repository's existing project asset
 provenance; this derivative step adds no third-party asset or new license.

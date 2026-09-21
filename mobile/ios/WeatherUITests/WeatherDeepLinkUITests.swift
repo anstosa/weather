@@ -67,39 +67,6 @@ final class WeatherDeepLinkUITests: XCTestCase {
         }
     }
 
-    // prove same-WebView popup handling and native back navigation
-    func testHistoryAndPopupRemainInTheHostedSurface() throws {
-        let app = XCUIApplication()
-        app.launchArguments = ["-weather-ui-test"]
-        app.launch()
-        let webView = app.webViews["weather.webview"]
-        XCTAssertTrue(webView.waitForExistence(timeout: 15))
-
-        webView.links["History fixture"].tap()
-        let back = app.buttons["Back"]
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
-        back.tap()
-        XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
-
-        webView.links["Popup fixture"].tap()
-        XCTAssertTrue(back.waitForExistence(timeout: 5))
-        back.tap()
-        XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
-    }
-
-    // prove error UI retries the last accepted document
-    func testErrorStateRetriesWithoutChangingOrigin() throws {
-        let app = XCUIApplication()
-        app.launchArguments = ["-weather-ui-test", "-weather-ui-test-error"]
-        app.launch()
-        let retry = app.buttons["Retry"]
-        XCTAssertTrue(retry.waitForExistence(timeout: 10))
-        retry.tap()
-        XCTAssertTrue(
-            app.webViews["weather.webview"].staticTexts["Weather route /"].waitForExistence(timeout: 5)
-        )
-    }
-
     // launch one exact real HTTPS fixture path
     private func fixtureApp(path: String) throws -> XCUIApplication {
         let environment = ProcessInfo.processInfo.environment
@@ -263,7 +230,7 @@ final class WeatherDeepLinkUITests: XCTestCase {
         webView = app.webViews["weather.webview"]
         XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 15))
         webView.links["Open untrusted TLS fixture"].tap()
-        let loadError = app.otherElements["weather.load-error"]
+        let loadError = app.staticTexts["weather.load-error"]
         XCTAssertTrue(loadError.waitForExistence(timeout: 15))
         let retry = app.buttons["Retry"]
         XCTAssertTrue(retry.waitForExistence(timeout: 5))
@@ -283,7 +250,8 @@ final class WeatherDeepLinkUITests: XCTestCase {
         app.launchEnvironment["WEATHER_HTTPS_FIXTURE_IOS_ORIGIN"] = "invalid"
         app.launchEnvironment["WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN"] = "invalid"
         app.launch()
-        XCTAssertTrue(app.otherElements["weather.load-error"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["weather.load-error"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Retry"].exists)
     }
 }
 

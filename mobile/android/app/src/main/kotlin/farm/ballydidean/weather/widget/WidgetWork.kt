@@ -32,6 +32,73 @@ internal sealed interface WidgetFetchResult {
     data class Failure(val outcome: WidgetAttemptOutcome, val retry: Boolean) : WidgetFetchResult
 }
 
+internal enum class WidgetRefreshCompletion {
+    SUCCESS,
+    RETRY,
+    FAILURE
+}
+
+internal data class PersistedWidgetRefresh(
+    val attempt: WidgetAttempt,
+    val completion: WidgetRefreshCompletion,
+)
+
+internal object WidgetRefreshPersistence {
+    // persist one fetch result and classify its work completion
+    fun persist(
+        storage: WidgetStorage,
+        result: WidgetFetchResult,
+        completedAt: Instant,
+    ): PersistedWidgetRefresh {
+        var writeFailed = false
+        var snapshotRejected = false
+        var snapshotIdentity: String? = null
+        // bind successful fetches to the exact accepted bytes
+        if (result is WidgetFetchResult.Success) {
+            try {
+                snapshotIdentity = storage.writeSnapshot(result.bytes)
+                snapshotRejected = snapshotIdentity == null
+            } catch (_: Exception) {
+                writeFailed = true
+            }
+        }
+        // classify rejected success bytes as invalid
+        val outcome = if (writeFailed || snapshotRejected) {
+            WidgetAttemptOutcome.INVALID
+        } else {
+            // preserve validated fetch classifications
+            when (result) {
+                is WidgetFetchResult.Success -> WidgetAttemptOutcome.SUCCESS
+                is WidgetFetchResult.Failure -> result.outcome
+            }
+        }
+        val persistedAttempt = WidgetAttempt(
+            completedAt,
+            outcome,
+            snapshotIdentity.takeIf { outcome == WidgetAttemptOutcome.SUCCESS },
+        )
+        try {
+            storage.writeAttempt(persistedAttempt)
+        } catch (_: Exception) {
+            writeFailed = true
+        }
+        // render conservatively after metadata failures
+        val visibleAttempt = if (writeFailed) {
+            WidgetAttempt(completedAt, WidgetAttemptOutcome.INVALID)
+        } else {
+            persistedAttempt
+        }
+        // map persistence and fetch outcomes to work policy
+        val completion = when {
+            writeFailed || snapshotRejected -> WidgetRefreshCompletion.FAILURE
+            result is WidgetFetchResult.Failure && result.retry -> WidgetRefreshCompletion.RETRY
+            result is WidgetFetchResult.Failure -> WidgetRefreshCompletion.FAILURE
+            else -> WidgetRefreshCompletion.SUCCESS
+        }
+        return PersistedWidgetRefresh(visibleAttempt, completion)
+    }
+}
+
 internal class WidgetForecastClient(
     private val deadlineMillis: Long = TOTAL_DEADLINE_MS,
     private val blockingFetch: (() -> WidgetFetchResult)? = null,
@@ -193,43 +260,16 @@ class WidgetRefreshWorker(
                 return Result.success()
             }
             val result = WidgetForecastClient().fetch()
-            val outcome = when (result) {
-                is WidgetFetchResult.Success -> WidgetAttemptOutcome.SUCCESS
-                is WidgetFetchResult.Failure -> result.outcome
-            }
-            var writeFailed = false
-            var snapshotIdentity: String? = null
-            // preserve weather and metadata independently
-            if (result is WidgetFetchResult.Success) {
-                try {
-                    snapshotIdentity = storage.writeSnapshot(result.bytes)
-                } catch (_: Exception) {
-                    writeFailed = true
-                }
-                // never label an ignored rollback callback successful
-                if (!writeFailed && snapshotIdentity == null) {
-                    val renderAt = Instant.now()
-                    WidgetController.updateAll(applicationContext, renderAt)
-                    WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), renderAt)
-                    return Result.success()
-                }
-            }
             val completedAt = Instant.now()
-            val currentAttempt = WidgetAttempt(completedAt, outcome, snapshotIdentity)
-            try {
-                storage.writeAttempt(if (writeFailed) WidgetAttempt(completedAt, WidgetAttemptOutcome.INVALID) else currentAttempt)
-            } catch (_: Exception) {
-                writeFailed = true
-            }
+            val persisted = WidgetRefreshPersistence.persist(storage, result, completedAt)
             val renderAt = Instant.now()
-            val visibleAttempt = if (writeFailed) WidgetAttempt(completedAt, WidgetAttemptOutcome.INVALID) else currentAttempt
-            WidgetController.updateAll(applicationContext, renderAt, visibleAttempt)
+            WidgetController.updateAll(applicationContext, renderAt, persisted.attempt)
             WidgetWorkScheduler.scheduleBoundary(applicationContext, storage.readSnapshot(), renderAt)
-            return when {
-                writeFailed -> Result.failure()
-                result is WidgetFetchResult.Failure && result.retry -> Result.retry()
-                result is WidgetFetchResult.Failure -> Result.failure()
-                else -> Result.success()
+            // return the classified work policy
+            return when (persisted.completion) {
+                WidgetRefreshCompletion.SUCCESS -> Result.success()
+                WidgetRefreshCompletion.RETRY -> Result.retry()
+                WidgetRefreshCompletion.FAILURE -> Result.failure()
             }
         } finally {
             WidgetRefreshCoordinator.release()

@@ -398,6 +398,7 @@ def verify_release_reachable_sources() -> None:
         "External fixture policy",
         "Open untrusted TLS fixture",
         'app.buttons["Retry"]',
+        'app.staticTexts["weather.load-error"]',
         "https-fixture-authenticated-celsius",
         "https-fixture-untrusted-retry",
     )
@@ -415,6 +416,7 @@ def verify_release_reachable_sources() -> None:
         "did-finish path=/logs",
         "did-finish path=/trends",
         "NSURLErrorDomain code=-1202",
+        "TLS_FAILURE_COUNT",
         "https-fixture-authenticated-celsius-webview-hierarchy",
         "https-fixture-untrusted-retry-webview-hierarchy",
         "webview-https-passed.txt",
@@ -424,6 +426,16 @@ def verify_release_reachable_sources() -> None:
     for fragment in https_probe_fragments:
         if fragment not in https_probe:
             fail(f"HTTPS fixture probe lacks {fragment}")
+    retry_fragments = (
+        "lastApprovedURL",
+        "rememberApprovedURL",
+        "webView.load(URLRequest(url: lastApprovedURL))",
+        "navigationAction.targetFrame?.isMainFrame != false",
+    )
+    # retain the explicit policy-approved retry boundary
+    for fragment in retry_fragments:
+        if fragment not in web_view_source:
+            fail(f"hosted retry boundary lacks {fragment}")
     # reject evidence reuse before preflight creates the results directory
     if https_probe.find('if [[ -e "$RESULTS" ]]') > https_probe.find('"$SCRIPT_DIR/preflight.sh"'):
         fail("HTTPS fixture probe checks evidence reuse after preflight")

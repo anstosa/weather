@@ -8,7 +8,11 @@ import farm.ballydidean.weather.widget.WidgetAttempt
 import farm.ballydidean.weather.widget.WidgetAttemptOutcome
 import farm.ballydidean.weather.widget.WidgetController
 import farm.ballydidean.weather.widget.WidgetForecastDecoder
+import farm.ballydidean.weather.widget.WidgetFetchResult
 import farm.ballydidean.weather.widget.WidgetPreferences
+import farm.ballydidean.weather.widget.WidgetRefreshCompletion
+import farm.ballydidean.weather.widget.WidgetRefreshPersistence
+import farm.ballydidean.weather.widget.WidgetSemanticRenderer
 import farm.ballydidean.weather.widget.WidgetStorage
 import farm.ballydidean.weather.widget.WidgetWorkScheduler
 import java.io.File
@@ -53,17 +57,12 @@ class WidgetStorageInstrumentationTest {
         assertEquals(WidgetAttemptOutcome.NETWORK, restarted.readAttempt()?.outcome)
     }
 
-    // reject older callbacks without replacing newer cache data
+    // persist rejected callbacks as stale across restart
     @Test
     fun olderSnapshotCannotReplaceNewerAcquisition() {
         val newer = asset("fixtures/adjusted-standard/snapshot.json")
         val older = asset("fixtures/spring-forward-23/snapshot.json")
         val identity = checkNotNull(storage.writeSnapshot(newer))
-        assertNull(storage.writeSnapshot(older))
-        assertArrayEquals(newer, storage.readSnapshotBytes())
-        val conflict = newer.toString(Charsets.UTF_8)
-            .replaceFirst("15.555555555555555", "15.0")
-            .toByteArray()
         storage.writeAttempt(
             WidgetAttempt(
                 Instant.parse("2026-09-12T07:01:00Z"),
@@ -71,36 +70,97 @@ class WidgetStorageInstrumentationTest {
                 identity,
             ),
         )
-        assertNull(storage.writeSnapshot(conflict))
-        val restarted = WidgetStorage(context)
-        val stored = checkNotNull(restarted.readStoredSnapshot())
+        val rollback = WidgetRefreshPersistence.persist(
+            storage,
+            WidgetFetchResult.Success(older),
+            Instant.parse("2026-09-12T07:02:00Z"),
+        )
+        assertEquals(WidgetRefreshCompletion.FAILURE, rollback.completion)
+        val restartedAfterRollback = WidgetStorage(context)
+        assertArrayEquals(newer, restartedAfterRollback.readSnapshotBytes())
+        assertEquals(WidgetAttemptOutcome.INVALID, restartedAfterRollback.readAttempt()?.outcome)
+        val storedAfterRollback = checkNotNull(restartedAfterRollback.readStoredSnapshot())
+        assertTrue(
+            WidgetSemanticRenderer.render(
+                storedAfterRollback.snapshot,
+                Instant.parse("2026-09-12T07:02:01Z"),
+                TemperatureUnit.FAHRENHEIT,
+                WidgetController.boundAttempt(
+                    restartedAfterRollback.readAttempt(),
+                    storedAfterRollback,
+                    Instant.parse("2026-09-12T07:02:01Z"),
+                ),
+            ).stale,
+        )
+
+        storage.writeAttempt(
+            WidgetAttempt(
+                Instant.parse("2026-09-12T07:03:00Z"),
+                WidgetAttemptOutcome.SUCCESS,
+                identity,
+            ),
+        )
+        val conflict = newer.toString(Charsets.UTF_8)
+            .replaceFirst("15.555555555555555", "15.0")
+            .toByteArray()
+        val equalReceiptConflict = WidgetRefreshPersistence.persist(
+            storage,
+            WidgetFetchResult.Success(conflict),
+            Instant.parse("2026-09-12T07:04:00Z"),
+        )
+        assertEquals(WidgetRefreshCompletion.FAILURE, equalReceiptConflict.completion)
+        val restartedAfterConflict = WidgetStorage(context)
+        val stored = checkNotNull(restartedAfterConflict.readStoredSnapshot())
+        assertArrayEquals(newer, restartedAfterConflict.readSnapshotBytes())
         assertEquals(identity, stored.identity)
-        assertEquals(identity, restarted.readAttempt()?.snapshotIdentity)
+        assertEquals(WidgetAttemptOutcome.INVALID, restartedAfterConflict.readAttempt()?.outcome)
+        assertNull(restartedAfterConflict.readAttempt()?.snapshotIdentity)
+        assertTrue(
+            WidgetSemanticRenderer.render(
+                stored.snapshot,
+                Instant.parse("2026-09-12T07:04:01Z"),
+                TemperatureUnit.FAHRENHEIT,
+                WidgetController.boundAttempt(
+                    restartedAfterConflict.readAttempt(),
+                    stored,
+                    Instant.parse("2026-09-12T07:04:01Z"),
+                ),
+            ).stale,
+        )
+
+        storage.writeAttempt(
+            WidgetAttempt(
+                Instant.parse("2026-09-12T07:05:00Z"),
+                WidgetAttemptOutcome.SUCCESS,
+                identity,
+            ),
+        )
         assertEquals(
             WidgetAttemptOutcome.SUCCESS,
             WidgetController.boundAttempt(
-                restarted.readAttempt(),
+                WidgetStorage(context).readAttempt(),
                 stored,
-                Instant.parse("2026-09-12T07:02:00Z"),
+                Instant.parse("2026-09-12T07:05:01Z"),
             ).outcome,
         )
 
         val rollbackIdentity = WidgetStorage.snapshotIdentity(asset("fixtures/spring-forward-23/snapshot.json"))
         storage.writeAttempt(
             WidgetAttempt(
-                Instant.parse("2026-09-12T07:02:00Z"),
+                Instant.parse("2026-09-12T07:06:00Z"),
                 WidgetAttemptOutcome.SUCCESS,
                 rollbackIdentity,
             ),
         )
-        val mismatched = checkNotNull(restarted.readAttempt())
+        val restartedAfterInterruptedWrite = WidgetStorage(context)
+        val mismatched = checkNotNull(restartedAfterInterruptedWrite.readAttempt())
         assertFalse(mismatched.snapshotIdentity == stored.identity)
         assertEquals(
             WidgetAttemptOutcome.INVALID,
             WidgetController.boundAttempt(
                 mismatched,
                 stored,
-                Instant.parse("2026-09-12T07:03:00Z"),
+                Instant.parse("2026-09-12T07:06:01Z"),
             ).outcome,
         )
     }

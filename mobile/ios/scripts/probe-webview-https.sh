@@ -11,6 +11,7 @@ ATTACHMENTS="$RESULTS/attachments"
 ATTACHMENT_MANIFEST="$ATTACHMENTS/manifest.json"
 SIMULATOR_UDID=""
 LOG_PID=""
+TLS_FAILURE_COUNT=0
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
 export WEATHER_RUN_HTTPS_FIXTURE_TEST=1
@@ -147,15 +148,18 @@ if kill -0 "$LOG_PID" 2>/dev/null; then
   wait "$LOG_PID" 2>/dev/null || true
 fi
 LOG_PID=""
+TLS_FAILURE_COUNT="$(grep -Fc \
+  'provisional-fail domain=NSURLErrorDomain code=-1202' \
+  "$RESULTS/webview-lifecycle.log" || true)"
 
-# require executed journeys and the default WebKit certificate failure
+# require executed journeys and both default certificate failures
 if [[ "$TEST_STATUS" -ne 0 ]] \
   || ! grep -Eq 'testHTTPSFixtureJourneys.*passed' "$RESULTS/webview-https-test.log" \
   || ! grep -Fq 'https-fixture-load path=/admin' "$RESULTS/webview-lifecycle.log" \
   || ! grep -Eq 'https-fixture-load path=/$' "$RESULTS/webview-lifecycle.log" \
   || ! grep -Fq 'did-finish path=/logs' "$RESULTS/webview-lifecycle.log" \
   || ! grep -Fq 'did-finish path=/trends' "$RESULTS/webview-lifecycle.log" \
-  || ! grep -Fq 'provisional-fail domain=NSURLErrorDomain code=-1202' "$RESULTS/webview-lifecycle.log" \
+  || [[ "$TLS_FAILURE_COUNT" -lt 2 ]] \
   || ! grep -Fq 'https-fixture-authenticated-celsius-screenshot' "$ATTACHMENT_MANIFEST" \
   || ! grep -Fq 'https-fixture-authenticated-celsius-webview-hierarchy' "$ATTACHMENT_MANIFEST" \
   || ! grep -Fq 'https-fixture-untrusted-retry-screenshot' "$ATTACHMENT_MANIFEST" \

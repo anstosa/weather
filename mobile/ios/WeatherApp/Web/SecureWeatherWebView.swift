@@ -7,12 +7,17 @@ import WebKit
 final class WeatherWebViewModel: ObservableObject {
     @Published private(set) var canGoBack = false
     @Published private(set) var failureMessage: String?
+    private var lastApprovedURL: URL?
     private weak var webView: WKWebView?
 
     // retain only the native WebKit surface
     func attach(_ webView: WKWebView) {
         self.webView = webView
-        canGoBack = webView.canGoBack
+    }
+
+    // retain only one policy-approved top-level destination
+    func rememberApprovedURL(_ url: URL) {
+        lastApprovedURL = url
     }
 
     // navigate only within WebKit's accepted history
@@ -26,8 +31,11 @@ final class WeatherWebViewModel: ObservableObject {
 
     // retry only the last policy-approved request
     func retry() {
+        guard let webView, let lastApprovedURL else {
+            return
+        }
         failureMessage = nil
-        webView?.reload()
+        webView.load(URLRequest(url: lastApprovedURL))
     }
 
     // clear errors after a committed successful document
@@ -103,7 +111,10 @@ struct SecureWeatherWebView: UIViewRepresentable {
         // use only the validated real HTTPS fixture when explicitly requested
         if httpsFixtureRequested {
             guard let httpsFixture else {
-                model.didFail()
+                // publish after the representable update completes
+                Task { @MainActor in
+                    model.didFail()
+                }
                 Self.diagnosticLogger.error("https-fixture-invalid")
                 return
             }
@@ -111,6 +122,7 @@ struct SecureWeatherWebView: UIViewRepresentable {
             Self.diagnosticLogger.notice(
                 "https-fixture-load path=\(url.path, privacy: .public)"
             )
+            model.rememberApprovedURL(url)
             webView.load(URLRequest(url: url))
             return
         }
@@ -124,6 +136,7 @@ struct SecureWeatherWebView: UIViewRepresentable {
         }
         #endif
 
+        model.rememberApprovedURL(route.url)
         webView.load(URLRequest(url: route.url))
     }
 
@@ -133,9 +146,6 @@ struct SecureWeatherWebView: UIViewRepresentable {
         Coordinator(
             allowsDeterministicTestDocument: usesDeterministicTestDocument,
             httpsFixture: httpsFixture,
-            injectsDeterministicFailure: ProcessInfo.processInfo.arguments.contains(
-                "-weather-ui-test-error"
-            ),
             model: model
         )
         #else
@@ -155,8 +165,6 @@ struct SecureWeatherWebView: UIViewRepresentable {
         <html lang="en"><head><meta name="viewport" content="width=device-width"></head>
         <body>
           <main>Weather route \(marker)</main>
-          <a href="about:blank?history">History fixture</a>
-          <a href="about:blank?popup" target="_blank">Popup fixture</a>
         </body></html>
         """
     }
@@ -167,7 +175,6 @@ struct SecureWeatherWebView: UIViewRepresentable {
         private let allowsDeterministicTestDocument: Bool
         #if DEBUG
         private let httpsFixture: WeatherHTTPSFixtureConfiguration?
-        private var pendingDeterministicFailure: Bool
         #endif
         private let model: WeatherWebViewModel
         #if DEBUG
@@ -182,12 +189,10 @@ struct SecureWeatherWebView: UIViewRepresentable {
         init(
             allowsDeterministicTestDocument: Bool,
             httpsFixture: WeatherHTTPSFixtureConfiguration?,
-            injectsDeterministicFailure: Bool,
             model: WeatherWebViewModel
         ) {
             self.allowsDeterministicTestDocument = allowsDeterministicTestDocument
             self.httpsFixture = httpsFixture
-            self.pendingDeterministicFailure = injectsDeterministicFailure
             self.model = model
         }
         #else
@@ -205,11 +210,6 @@ struct SecureWeatherWebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             model.didFinish()
             #if DEBUG
-            // inject one failure only after the initial document commits
-            if pendingDeterministicFailure {
-                pendingDeterministicFailure = false
-                model.didFail()
-            }
             diagnosticLogger.notice(
                 "m0-webview-lifecycle did-finish path=\(webView.url?.path ?? "nil", privacy: .public)"
             )
@@ -294,6 +294,10 @@ struct SecureWeatherWebView: UIViewRepresentable {
             #endif
             switch decision {
             case .hosted:
+                // remember only an approved main-frame destination
+                if navigationAction.targetFrame?.isMainFrame != false {
+                    model.rememberApprovedURL(url)
+                }
                 // keep new hosted windows in the same view
                 if navigationAction.targetFrame == nil {
                     webView.load(navigationAction.request)
@@ -341,6 +345,7 @@ struct SecureWeatherWebView: UIViewRepresentable {
             #endif
             switch decision {
             case .hosted:
+                model.rememberApprovedURL(url)
                 webView.load(navigationAction.request)
             case .external(let externalURL):
                 UIApplication.shared.open(externalURL, options: [:])
