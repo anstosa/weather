@@ -45,16 +45,26 @@ run_unit_test() {
   local status=${PIPESTATUS[0]}
   set -e
   printf '%s\n' "$status" > "$RESULTS/$phase-status.txt"
+  mkdir -p "$ATTACHMENTS/$phase"
+  # export failed-test AX before enforcing the test verdict
+  set +e
+  xcrun xcresulttool export attachments \
+    --path "$result_bundle" \
+    --output-path "$ATTACHMENTS/$phase" \
+    > "$RESULTS/$phase-export-attachments.log" 2>&1
+  local export_status=$?
+  set -e
+  printf '%s\n' "$export_status" > "$RESULTS/$phase-export-attachments-status.txt"
   # reject status-zero skips and missing execution
   if [[ "$status" -ne 0 ]] || ! grep -Eq "$method.*passed" "$test_log"; then
     echo "iOS product temperature-unit phase failed: $phase" >&2
     exit 78
   fi
-  mkdir -p "$ATTACHMENTS/$phase"
-  xcrun xcresulttool export attachments \
-    --path "$result_bundle" \
-    --output-path "$ATTACHMENTS/$phase" \
-    > "$RESULTS/$phase-export-attachments.log" 2>&1
+  # reject missing attachments after a passing test
+  if [[ "$export_status" -ne 0 ]]; then
+    echo "iOS product temperature-unit attachment export failed: $phase" >&2
+    exit 78
+  fi
 }
 
 # start one log stream for the currently booted simulator

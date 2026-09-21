@@ -635,6 +635,25 @@ def verify_release_reachable_sources() -> None:
     # reject evidence reuse before preflight creates the results directory
     if unit_probe.find('if [[ -e "$RESULTS" ]]') > unit_probe.find('"$SCRIPT_DIR/preflight.sh"'):
         fail("widget product-unit probe checks evidence reuse after preflight")
+    # lock one phase's export-before-verdict sequence
+    unit_phase = unit_probe.partition("run_unit_test() {")[2].partition("\n}")[0]
+    unit_evidence_order = (
+        'local status=${PIPESTATUS[0]}',
+        '"$RESULTS/$phase-status.txt"',
+        'set +e\n  xcrun xcresulttool export attachments',
+        'local export_status=$?',
+        '"$RESULTS/$phase-export-attachments-status.txt"',
+        'if [[ "$status" -ne 0 ]] || ! grep -Eq',
+        'if [[ "$export_status" -ne 0 ]]; then',
+    )
+    cursor = -1
+    # retain failed-phase AX and the original test verdict
+    for fragment in unit_evidence_order:
+        position = unit_phase.find(fragment, cursor + 1)
+        # reject exports after failure or missing status receipts
+        if position < 0:
+            fail(f"widget product-unit failure evidence order lacks {fragment}")
+        cursor = position
     # keep the matrix reload request out of Release compilation
     if (
         "#if DEBUG" not in app_source

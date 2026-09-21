@@ -944,23 +944,26 @@ final class WidgetHostUITests: XCTestCase {
             stage: "unit-edit-widget"
         )
         editWidget.tap()
-        attachState(springboard, name: "unit-edit-sheet")
 
-        let target = elements(in: springboard, labeled: [label])
-        // open the parameter choice when the value is not directly actionable
-        if firstHittable(in: target, timeout: 2) == nil {
-            let parameter = try requireHittable(
-                in: elements(in: springboard, labeled: ["Temperature unit", "Temperature Unit"]),
-                springboard: springboard,
-                stage: "unit-parameter"
-            )
-            parameter.tap()
-        }
+        // open the observed value-side control after the edit sheet loads
+        let currentUnit = label == "Celsius" ? "Fahrenheit" : "Celsius"
+        let currentValue = try requireHittable(
+            in: springboard.buttons.matching(
+                NSPredicate(format: "label ==[c] %@", currentUnit)
+            ),
+            springboard: springboard,
+            stage: "unit-current-value-\(currentUnit.lowercased())"
+        )
+        attachState(springboard, name: "unit-edit-sheet")
+        currentValue.tap()
+
+        // require a real choice after opening the system parameter picker
         let choice = try requireHittable(
-            in: target,
+            in: elements(in: springboard, labeled: [label]),
             springboard: springboard,
             stage: "unit-choice-\(label.lowercased())"
         )
+        attachState(springboard, name: "unit-choice-open-\(label.lowercased())")
         choice.tap()
         attachState(springboard, name: "unit-selected-\(label.lowercased())")
 
