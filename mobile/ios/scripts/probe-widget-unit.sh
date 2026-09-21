@@ -64,29 +64,135 @@ collect_unit_failure_diagnostics() {
     return 1
   fi
 
-  # stream only system widget processes into a capped public log
+  # bind compact log timestamps to the runner clock and exact UI anchors
+  local clock_reading=""
+  local clock_status=0
+  clock_reading="$(date '+%s %z')" || clock_status=$?
+  # stream only system widget processes into bounded public receipts
   set +e
   xcrun simctl spawn "$SIMULATOR_UDID" log show \
     --last 12m --style compact --info \
     --predicate 'process == "chronod" OR subsystem BEGINSWITH "com.apple.widgetkit" OR subsystem BEGINSWITH "com.apple.appintents"' \
     | python3 -c '
-import collections, pathlib, sys
-# account for every source line before retaining a bounded tail
+import collections, datetime, json, pathlib, re, sys
+
+directory = pathlib.Path(sys.argv[1])
+manifest = pathlib.Path(sys.argv[2])
+phase = sys.argv[3]
+clock_reading = sys.argv[4]
+clock_status = int(sys.argv[5])
+clock_match = re.fullmatch(r"(\d+) ([+-])(\d{2})(\d{2})", clock_reading)
+clock_epoch = int(clock_match.group(1)) if clock_match else 0
+clock_offset = clock_match.group(2) + clock_match.group(3) + clock_match.group(4) if clock_match else "invalid"
+offset_minutes = (1 if clock_match and clock_match.group(2) == "+" else -1) * (
+    int(clock_match.group(3)) * 60 + int(clock_match.group(4))
+) if clock_match else 0
+clock_valid = clock_status == 0 and bool(clock_match) and abs(offset_minutes) <= 14 * 60
+zone = datetime.timezone(datetime.timedelta(minutes=offset_minutes)) if clock_valid else None
+
+# reject absent or ambiguous public edit screenshots as window anchors
+anchor_status = "not-required" if phase != "edit-to-celsius" else "missing"
+selected = dismissed = requested_start = requested_end = None
+if phase == "edit-to-celsius":
+    try:
+        # reject oversized or absent export manifests
+        if not manifest.is_file() or manifest.stat().st_size > 262144:
+            raise ValueError("manifest-missing-or-oversized")
+        attachments = json.loads(manifest.read_text())
+        names = (
+            "unit-selected-celsius-screenshot",
+            "unit-target-after-celsius-dismissal-screenshot",
+        )
+        anchors = []
+        # require one selected and one dismissed screenshot
+        for base in names:
+            pattern = re.compile(re.escape(base) + r"_\d+_[0-9A-Fa-f-]{36}\.png")
+            matches = [
+                item for test in attachments for item in test.get("attachments", [])
+                if pattern.fullmatch(item.get("suggestedHumanReadableName", ""))
+            ]
+            # reject missing or duplicate public anchors
+            if len(matches) != 1:
+                anchor_status = "ambiguous" if len(matches) > 1 else "missing"
+                break
+            # require the actual exported screenshot inside this phase
+            filename = matches[0].get("exportedFileName", "")
+            exported = (manifest.parent / filename).resolve()
+            if not filename or pathlib.Path(filename).name != filename or exported.suffix != ".png" \
+                    or not exported.is_relative_to(manifest.parent.resolve()) or not exported.is_file():
+                anchor_status = "invalid"
+                break
+            anchors.append(float(matches[0]["timestamp"]))
+        # bound the edit transaction inside the queried log range
+        if len(anchors) == 2:
+            selected, dismissed = anchors
+            requested_start = selected - 30
+            requested_end = dismissed + 60
+            # require the whole requested window inside --last 12m
+            anchor_status = "present" if clock_valid and 0 <= dismissed - selected <= 120 \
+                and clock_epoch - 720 <= requested_start \
+                and requested_end <= clock_epoch else "invalid"
+    except (OSError, ValueError, KeyError, TypeError):
+        anchor_status = "invalid"
+
+timestamp = re.compile(rb"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) ")
+# retain the older edit boundary even when many later records arrive
 lines = collections.deque(maxlen=200)
 input_lines = input_bytes = oversized_lines = 0
-for line in sys.stdin.buffer:
-    input_lines += 1
-    input_bytes += len(line)
-    payload = line.rstrip(b"\r\n")
-    suffix = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
-    limit = 1000 - len(suffix)
-    clipped = payload[:limit] + suffix
-    oversized_lines += int(len(payload) > limit)
-    lines.append((clipped, len(payload) > limit))
+excluded_lines = excluded_bytes = unparsed_lines = unparsed_bytes = 0
+window_lines = window_bytes = retained_lines = retained_bytes_window = 0
+truncated_lines = truncated_bytes_window = 0
+current_record = first_record = last_record = first_window_record = last_window_record = None
+with (directory / "focused-system-widget.log").open("wb") as focused:
+    # classify each source line without buffering the full log
+    for line in sys.stdin.buffer:
+        input_lines += 1
+        input_bytes += len(line)
+        payload = line.rstrip(b"\r\n")
+        suffix = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+        limit = 1000 - len(suffix)
+        clipped = payload[:limit] + suffix
+        oversized_lines += int(len(payload) > limit)
+        lines.append((clipped, len(payload) > limit))
+
+        # attach continuation lines to their preceding dated record
+        match = timestamp.match(line)
+        # parse only complete compact timestamps
+        if match:
+            try:
+                local_time = datetime.datetime.strptime(match.group(1).decode(), "%Y-%m-%d %H:%M:%S.%f")
+                current_record = local_time.replace(tzinfo=zone).timestamp() if zone else None
+                first_record = current_record if first_record is None else first_record
+                last_record = current_record
+            except ValueError:
+                current_record = None
+        elif re.match(rb"^\d{4}-\d{2}-\d{2} ", line):
+            current_record = None
+        # count lines without a valid parent record separately
+        if current_record is None:
+            unparsed_lines += 1
+            unparsed_bytes += len(line)
+        elif anchor_status == "present" and requested_start <= current_record <= requested_end:
+            window_lines += 1
+            window_bytes += len(line)
+            first_window_record = current_record if first_window_record is None else first_window_record
+            last_window_record = current_record
+            # preserve the earliest edit records before the cap fills
+            if retained_bytes_window + len(line) <= 4 * 1024 * 1024:
+                focused.write(line)
+                retained_lines += 1
+                retained_bytes_window += len(line)
+            else:
+                truncated_lines += 1
+                truncated_bytes_window += len(line)
+        else:
+            excluded_lines += 1
+            excluded_bytes += len(line)
 retained_bytes = sum(len(payload) for payload, _ in lines)
 retained_oversized = sum(int(oversized) for _, oversized in lines)
-pathlib.Path(sys.argv[1]).write_bytes(b"".join(payload for payload, _ in lines))
-pathlib.Path(sys.argv[2]).write_text(
+clock_aligned = bool(clock_valid and last_record is not None and abs(last_record - clock_epoch) <= 180)
+(directory / "public-system-widget.log").write_bytes(b"".join(payload for payload, _ in lines))
+(directory / "system-log-cap-status.txt").write_text(
     f"input_line_count={input_lines}\nretained_line_count={len(lines)}\n"
     f"dropped_line_count={input_lines - len(lines)}\n"
     f"oversized_line_count={oversized_lines}\n"
@@ -95,17 +201,39 @@ pathlib.Path(sys.argv[2]).write_text(
     f"truncated_byte_count={input_bytes - retained_bytes}\n"
     f"truncated={int(input_lines > len(lines) or input_bytes > retained_bytes)}\n"
 )
-' "$directory/public-system-widget.log" "$directory/system-log-cap-status.txt"
+(directory / "focused-system-widget-status.txt").write_text(
+    f"anchor_status={anchor_status}\nclock_source=runner-date\nclock_command_status={clock_status}\n"
+    f"runner_epoch={clock_epoch}\nrunner_offset={clock_offset}\n"
+    f"first_source_record_epoch={first_record or 0}\nlast_source_record_epoch={last_record or 0}\n"
+    f"clock_aligned={int(clock_aligned)}\n"
+    f"last_source_clock_delta_seconds={(last_record - clock_epoch) if last_record is not None else 0}\n"
+    f"selected_anchor_epoch={selected or 0}\ndismissed_anchor_epoch={dismissed or 0}\n"
+    f"requested_start_epoch={requested_start or 0}\nrequested_end_epoch={requested_end or 0}\n"
+    f"observed_first_epoch={first_window_record or 0}\nobserved_last_epoch={last_window_record or 0}\n"
+    f"source_line_count={input_lines}\nsource_byte_count={input_bytes}\n"
+    f"window_line_count={window_lines}\nwindow_byte_count={window_bytes}\n"
+    f"retained_line_count={retained_lines}\nretained_byte_count={retained_bytes_window}\n"
+    f"truncated_line_count={truncated_lines}\ntruncated_byte_count={truncated_bytes_window}\n"
+    f"excluded_line_count={excluded_lines}\nexcluded_byte_count={excluded_bytes}\n"
+    f"unparsed_line_count={unparsed_lines}\nunparsed_byte_count={unparsed_bytes}\n"
+    f"truncated={int(truncated_lines > 0)}\n"
+)
+# fail incomplete diagnostic evidence without changing XCTest
+if phase == "edit-to-celsius" and (
+    anchor_status != "present" or not clock_aligned or window_lines == 0 or truncated_lines > 0
+):
+    raise SystemExit(1)
+' "$directory" "$ATTACHMENTS/$phase/manifest.json" "$phase" "$clock_reading" "$clock_status"
   local log_statuses=("${PIPESTATUS[@]}")
   set -e
   # record source and cap failures independently of the input counts
-  if ! printf 'system_log_source_status=%s\nsystem_log_cap_status=%s\n' \
-    "${log_statuses[0]}" "${log_statuses[1]}" \
+  if ! printf 'system_log_source_status=%s\nsystem_log_cap_status=%s\nclock_command_status=%s\n' \
+    "${log_statuses[0]}" "${log_statuses[1]}" "$clock_status" \
     > "$directory/system-log-status.txt"; then
     outcome=1
   fi
   # preserve a failed collection without changing XCTest's verdict
-  if [[ "${log_statuses[0]}" -ne 0 || "${log_statuses[1]}" -ne 0 ]]; then
+  if [[ "${log_statuses[0]}" -ne 0 || "${log_statuses[1]}" -ne 0 || "$clock_status" -ne 0 ]]; then
     outcome=1
   fi
 
