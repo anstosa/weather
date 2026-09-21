@@ -1112,6 +1112,25 @@ final class WeatherWidgetPersistenceProbeConcurrencyTests: XCTestCase {
         XCTAssertEqual(secondRead.state?.attempt?.attemptedAt, failedAttempt.attemptedAt)
         let readCount = await probe.completedTransitionCount(action: "read-offline")
         XCTAssertEqual(readCount, 2)
+
+        // read a late fahrenheit callback from the same offline transaction
+        let lateFahrenheitRead = await probe.load(unit: .fahrenheit)
+        XCTAssertEqual(lateFahrenheitRead.action, "read-offline")
+        XCTAssertEqual(lateFahrenheitRead.state?.cached?.snapshotIdentifier, seeded.snapshotIdentifier)
+        XCTAssertEqual(lateFahrenheitRead.state?.attempt?.attemptedAt, failedAttempt.attemptedAt)
+        XCTAssertEqual(lateFahrenheitRead.state?.attempt?.outcome, .offline)
+        XCTAssertEqual(try Data(contentsOf: snapshotURL), snapshotBytes)
+        XCTAssertEqual(try Data(contentsOf: attemptURL), attemptBytes)
+        let finalSeedCount = await probe.completedTransitionCount(action: "seed-success")
+        let finalFailureCount = await probe.completedTransitionCount(action: "write-offline")
+        let finalReadCount = await probe.completedTransitionCount(action: "read-offline")
+        let invalidCount = await probe.completedTransitionCount(action: "invalid-state")
+        let finalFahrenheitStarts = await probe.startedTransitionCount(unit: .fahrenheit)
+        XCTAssertEqual(finalSeedCount, 1)
+        XCTAssertEqual(finalFailureCount, 1)
+        XCTAssertEqual(finalReadCount, 3)
+        XCTAssertEqual(invalidCount, 0)
+        XCTAssertEqual(finalFahrenheitStarts, 2)
     }
 }
 

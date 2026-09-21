@@ -142,8 +142,8 @@ actor WeatherWidgetPersistenceProbe {
             return invalidResult(renderDate: fixture.now)
         }
 
-        // reuse the proven success without reseeding
-        if unit == .fahrenheit {
+        // reuse only a matching fahrenheit success
+        if unit == .fahrenheit, attempt.outcome == .success {
             guard isMatchingSuccess(existing) else {
                 return invalidResult(renderDate: fixture.now)
             }
