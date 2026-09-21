@@ -9,6 +9,9 @@ final class WeatherWebViewModel: ObservableObject {
     @Published private(set) var failureMessage: String?
     private var lastApprovedURL: URL?
     private weak var webView: WKWebView?
+    #if DEBUG
+    private let diagnosticLogger = Logger(subsystem: "farm.ballydidean.weather", category: "webview")
+    #endif
 
     // retain only the native WebKit surface
     func attach(_ webView: WKWebView) {
@@ -22,11 +25,28 @@ final class WeatherWebViewModel: ObservableObject {
 
     // navigate only within WebKit's accepted history
     func goBack() {
+        let currentWebView = webView
+        #if DEBUG
+        // correlate the attached WebKit instance without recording URLs
+        let hostID = currentWebView.map { ObjectIdentifier($0).hashValue } ?? 0
+        let liveCanGoBack = currentWebView?.canGoBack == true
+        let hasBackItem = currentWebView?.backForwardList.backItem != nil
+        diagnosticLogger.notice(
+            "native-back-action host=\(hostID, privacy: .public) attached=\(currentWebView != nil, privacy: .public) live=\(liveCanGoBack, privacy: .public) target=\(hasBackItem, privacy: .public)"
+        )
+        #endif
         // refuse a synthetic route when no accepted history exists
-        guard webView?.canGoBack == true else {
+        guard let currentWebView, currentWebView.canGoBack else {
             return
         }
-        webView?.goBack()
+        #if DEBUG
+        let navigation = currentWebView.goBack()
+        diagnosticLogger.notice(
+            "native-back-issued host=\(ObjectIdentifier(currentWebView).hashValue, privacy: .public) navigation=\(navigation != nil, privacy: .public)"
+        )
+        #else
+        currentWebView.goBack()
+        #endif
     }
 
     // retry only the last policy-approved request
@@ -208,12 +228,30 @@ struct SecureWeatherWebView: UIViewRepresentable {
         }
         #endif
 
+        // record an accepted navigation start
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            #if DEBUG
+            diagnosticLogger.notice(
+                "native-navigation did-start host=\(ObjectIdentifier(webView).hashValue, privacy: .public)"
+            )
+            #endif
+        }
+
+        // record an accepted document commit
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            #if DEBUG
+            diagnosticLogger.notice(
+                "native-navigation did-commit host=\(ObjectIdentifier(webView).hashValue, privacy: .public)"
+            )
+            #endif
+        }
+
         // record successful document completion
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             model.didFinish()
             #if DEBUG
             diagnosticLogger.notice(
-                "m0-webview-lifecycle did-finish path=\(webView.url?.path ?? "nil", privacy: .public)"
+                "m0-webview-lifecycle did-finish path=\(webView.url?.path ?? "nil", privacy: .public) host=\(ObjectIdentifier(webView).hashValue, privacy: .public)"
             )
             #endif
         }
@@ -232,7 +270,7 @@ struct SecureWeatherWebView: UIViewRepresentable {
             #if DEBUG
             let failure = error as NSError
             diagnosticLogger.notice(
-                "m0-webview-lifecycle did-fail domain=\(failure.domain, privacy: .public) code=\(failure.code, privacy: .public)"
+                "m0-webview-lifecycle did-fail domain=\(failure.domain, privacy: .public) code=\(failure.code, privacy: .public) host=\(ObjectIdentifier(webView).hashValue, privacy: .public)"
             )
             #endif
         }
@@ -251,7 +289,7 @@ struct SecureWeatherWebView: UIViewRepresentable {
             #if DEBUG
             let failure = error as NSError
             diagnosticLogger.notice(
-                "m0-webview-lifecycle provisional-fail domain=\(failure.domain, privacy: .public) code=\(failure.code, privacy: .public)"
+                "m0-webview-lifecycle provisional-fail domain=\(failure.domain, privacy: .public) code=\(failure.code, privacy: .public) host=\(ObjectIdentifier(webView).hashValue, privacy: .public)"
             )
             #endif
         }

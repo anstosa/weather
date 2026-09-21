@@ -512,6 +512,40 @@ def verify_release_reachable_sources() -> None:
     for fragment in https_ui_fragments:
         if fragment not in ui_test_source:
             fail(f"HTTPS fixture UI journey lacks {fragment}")
+    back_layout_fragments = (
+        ".frame(width: 44, height: 44)",
+        ".frame(height: webViewModel.canGoBack ? 52 : 0)",
+        "SecureWeatherWebView(",
+    )
+    # preserve one stable WebView below a touch-sized native header
+    for fragment in back_layout_fragments:
+        # reject missing native layout boundaries
+        if fragment not in app_source:
+            fail(f"native Back layout lacks {fragment}")
+    back_journey_fragments = (
+        "back.frame.width",
+        "back.frame.height",
+        "back.frame.intersects(homeNavigation.frame)",
+        "https-fixture-forecast-before-back",
+        "https-fixture-home-after-back",
+        "native Back did not return to fixture home",
+    )
+    # retain actual geometry, non-overlap, and returned-home evidence
+    for fragment in back_journey_fragments:
+        # reject missing hosted interaction assertions
+        if fragment not in ui_test_source:
+            fail(f"native Back journey lacks {fragment}")
+    back_receipt_fragments = (
+        "native-back-action",
+        "native-back-issued",
+        "native-navigation did-start",
+        "native-navigation did-commit",
+    )
+    # retain debug-only action and WebKit navigation diagnostics
+    for fragment in back_receipt_fragments:
+        # reject missing source or Release-scan markers
+        if fragment not in web_view_source or fragment not in release_scan:
+            fail(f"native Back diagnostic isolation lacks {fragment}")
     # count the identified host instead of nested WebKit AX wrappers
     if (
         "app.webViews.count" in ui_test_source

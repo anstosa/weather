@@ -254,9 +254,23 @@ final class WeatherDeepLinkUITests: XCTestCase {
         XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 15))
         webView.links["Open fixture forecast"].tap()
         XCTAssertTrue(webView.staticTexts["Fixture forecast"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["Back"].waitForExistence(timeout: 5))
-        app.buttons["Back"].tap()
-        XCTAssertTrue(webView.staticTexts["Fixture home"].waitForExistence(timeout: 10))
+        let back = app.buttons["Back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        let homeNavigation = webView.links["Fixture home navigation"]
+        XCTAssertTrue(homeNavigation.exists)
+        attachHTTPSFixtureState("https-fixture-forecast-before-back", app: app, webView: webView)
+        // require an actual touch-sized target outside the HTML navigation
+        XCTAssertGreaterThanOrEqual(back.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(back.frame.height, 44)
+        XCTAssertFalse(back.frame.intersects(homeNavigation.frame))
+        back.tap()
+        // retain failure state without waiving the ten-second home proof
+        if !webView.staticTexts["Fixture home"].waitForExistence(timeout: 10) {
+            attachHTTPSFixtureState("https-fixture-home-after-back-failure", app: app, webView: webView)
+            XCTFail("native Back did not return to fixture home")
+            return
+        }
+        attachHTTPSFixtureState("https-fixture-home-after-back", app: app, webView: webView)
         webView.links["Open fixture map in new window"].tap()
         XCTAssertTrue(webView.staticTexts["Fixture map"].waitForExistence(timeout: 10))
         assertOneHostedWebView("https-fixture-map", app: app, webView: webView)

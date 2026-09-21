@@ -55,34 +55,44 @@ struct WeatherApp: App {
     // present the hosted Weather experience
     var body: some Scene {
         WindowGroup {
-            ZStack(alignment: .topLeading) {
-                SecureWeatherWebView(
-                    route: route,
-                    usesDeterministicTestDocument: usesDeterministicTestDocument,
-                    model: webViewModel
-                )
-                // expose safe native history without inventing URLs
-                if webViewModel.canGoBack {
-                    Button("Back", systemImage: "chevron.backward") {
-                        webViewModel.goBack()
-                    }
-                    .labelStyle(.iconOnly)
-                    .accessibilityLabel("Back")
-                    .padding(8)
-                    .background(.regularMaterial, in: Circle())
-                    .padding(8)
-                }
-                // keep retry bound to the last accepted request
-                if let failureMessage = webViewModel.failureMessage {
-                    VStack(spacing: 12) {
-                        Text(failureMessage)
-                        Button("Retry") {
-                            webViewModel.retry()
+            VStack(spacing: 0) {
+                // reserve header space without replacing the hosted WebView
+                HStack {
+                    // expose safe native history without inventing URLs
+                    if webViewModel.canGoBack {
+                        Button {
+                            webViewModel.goBack()
+                        } label: {
+                            Image(systemName: "chevron.backward")
+                                .frame(width: 44, height: 44)
+                                .background(.regularMaterial, in: Circle())
+                                .contentShape(Rectangle())
                         }
+                        .accessibilityLabel("Back")
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(uiColor: .systemBackground))
-                    .accessibilityIdentifier("weather.load-error")
+                    Spacer()
+                }
+                .frame(height: webViewModel.canGoBack ? 52 : 0)
+                .padding(.horizontal, 8)
+                .background(.regularMaterial)
+                ZStack {
+                    SecureWeatherWebView(
+                        route: route,
+                        usesDeterministicTestDocument: usesDeterministicTestDocument,
+                        model: webViewModel
+                    )
+                    // keep retry bound to the last accepted request
+                    if let failureMessage = webViewModel.failureMessage {
+                        VStack(spacing: 12) {
+                            Text(failureMessage)
+                            Button("Retry") {
+                                webViewModel.retry()
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Color(uiColor: .systemBackground))
+                        .accessibilityIdentifier("weather.load-error")
+                    }
                 }
             }
             #if DEBUG
