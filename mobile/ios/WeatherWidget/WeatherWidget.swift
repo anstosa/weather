@@ -7,6 +7,21 @@ import WidgetKit
 struct WeatherWidgetProvider: AppIntentTimelineProvider {
     private let logger = Logger(subsystem: "farm.ballydidean.weather.widget", category: "timeline")
 
+    #if DEBUG
+    // bind one whole Debug artifact to one deterministic fixture
+    private var compiledFixtureSelection: (selector: String, scenario: WeatherWidgetScenario) {
+        #if WEATHER_M0_FIXTURE_NEAR_CUTOFF
+        return ("WEATHER_M0_FIXTURE_NEAR_CUTOFF", .nearCutoff)
+        #elseif WEATHER_M0_FIXTURE_BEDTIME
+        return ("WEATHER_M0_FIXTURE_BEDTIME", .bedtime)
+        #elseif WEATHER_M0_FIXTURE_MAXIMUM
+        return ("WEATHER_M0_FIXTURE_MAXIMUM", .maximumDensity)
+        #else
+        return ("WEATHER_M0_FIXTURE_DEBUG_DEFAULT", .maximumDensity)
+        #endif
+    }
+    #endif
+
     // provide a redacted placeholder
     func placeholder(in context: Context) -> WeatherWidgetEntry {
         entry(configuration: WeatherWidgetConfigurationIntent())
@@ -38,25 +53,13 @@ struct WeatherWidgetProvider: AppIntentTimelineProvider {
     // bind configuration to fixture content
     private func entry(configuration: WeatherWidgetConfigurationIntent) -> WeatherWidgetEntry {
         #if DEBUG
-        let overrideValue = ProcessInfo.processInfo.environment["WEATHER_WIDGET_FIXTURE"]
-        // parse only known fixture cases
-        let overrideScenario = overrideValue.flatMap { WeatherWidgetScenario(rawValue: $0) }
-        let overrideReceipt: String
-        // classify only the dedicated fixture override
-        switch (overrideValue, overrideScenario) {
-        case (nil, _):
-            overrideReceipt = "absent"
-        case (_, nil):
-            overrideReceipt = "invalid"
-        case (_, let scenario?):
-            overrideReceipt = scenario.rawValue
-        }
-        let fixture = WeatherWidgetFixtures.configured(configuration.fixtureScenario.scenario)
+        let selection = compiledFixtureSelection
+        let fixture = WeatherWidgetFixtures.fixture(for: selection.scenario)
         logger.notice(
-            "m0-fixture-resolution input=\(configuration.fixtureScenario.rawValue, privacy: .public) override=\(overrideReceipt, privacy: .public) resolved=\(fixture.scenario.rawValue, privacy: .public)"
+            "m0-compiled-fixture selector=\(selection.selector, privacy: .public) resolved=\(fixture.scenario.rawValue, privacy: .public) groups=\(fixture.groups.count, privacy: .public) intervals=\(fixture.intervalCount, privacy: .public)"
         )
         #else
-        let fixture = WeatherWidgetFixtures.active
+        let fixture = WeatherWidgetFixtures.fixture(for: .maximumDensity)
         #endif
         return WeatherWidgetEntry(
             date: Date(),

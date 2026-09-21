@@ -53,19 +53,6 @@ final class WidgetHostUITests: XCTestCase {
         case nearCutoff
         case bedtime
 
-        // expose the Debug AppIntent choice
-        var optionLabel: String {
-            // map every selectable fixture
-            switch self {
-            case .maximumDensity:
-                return "Maximum density M0"
-            case .nearCutoff:
-                return "Near cutoff M0"
-            case .bedtime:
-                return "Bedtime M0"
-            }
-        }
-
         // identify the actual hosted semantic surface
         var widgetLabelFragments: [String] {
             // bind each fixture to unique output
@@ -153,22 +140,6 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // query only the interactive fixture value buttons
-    private func fixtureValueButtons(in springboard: XCUIApplication) -> XCUIElementQuery {
-        let labels = [
-            MatrixScenario.maximumDensity.optionLabel,
-            MatrixScenario.nearCutoff.optionLabel,
-            MatrixScenario.bedtime.optionLabel
-        ]
-        // match every supported current value
-        let predicates = labels.map { label in
-            NSPredicate(format: "label ==[c] %@ OR identifier == %@", label, label)
-        }
-        return springboard.buttons.matching(
-            NSCompoundPredicate(orPredicateWithSubpredicates: predicates)
-        )
-    }
-
     // fail with visual selector evidence
     private func requireHittable(
         in query: XCUIElementQuery,
@@ -209,9 +180,9 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // find the tappable SpringBoard widget container
-    private func widgetHostElement(on springboard: XCUIApplication) throws -> XCUIElement {
-        let hosts = springboard.icons.matching(
+    // query the SpringBoard widget container
+    private func widgetHostQuery(on springboard: XCUIApplication) -> XCUIElementQuery {
+        springboard.icons.matching(
             NSPredicate(
                 format: "(label ==[c] %@ OR identifier == %@) AND value ==[c] %@",
                 "Weather",
@@ -219,8 +190,12 @@ final class WidgetHostUITests: XCTestCase {
                 "Widget"
             )
         )
+    }
+
+    // find the tappable SpringBoard widget container
+    private func widgetHostElement(on springboard: XCUIApplication) throws -> XCUIElement {
         return try requireHittable(
-            in: hosts,
+            in: widgetHostQuery(on: springboard),
             springboard: springboard,
             stage: "weather-widget-springboard-host",
             timeout: 10
@@ -279,18 +254,22 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // add the real WidgetKit surface through public SpringBoard controls
-    private func addMaximumWidget(on springboard: XCUIApplication) throws -> XCUIElement {
-        let widgetPredicate = NSPredicate(
-            format: "label CONTAINS[c] %@ AND label CONTAINS[c] %@",
-            "Open-Meteo",
-            "21 forecast intervals"
-        )
-        let widgets = springboard.descendants(matching: .any).matching(widgetPredicate)
+    // add one freshly installed WidgetKit artifact through public controls
+    private func addWidget(
+        on springboard: XCUIApplication,
+        scenario: MatrixScenario
+    ) throws -> XCUIElement {
+        let widgets = widgetQuery(on: springboard, scenario: scenario)
 
-        // reuse only a real existing widget
-        if let widget = firstExisting(in: widgets, timeout: 2) {
-            return widget
+        // reject stale placement across artifact replacements
+        if firstExisting(in: widgetHostQuery(on: springboard), timeout: 2) != nil ||
+            firstExisting(in: widgets, timeout: 2) != nil {
+            attachState(springboard, name: "failure-stale-widget-before-placement")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 9,
+                userInfo: [NSLocalizedDescriptionKey: "widget existed before fresh artifact placement"]
+            )
         }
 
         let weatherIcons = springboard.icons.matching(
@@ -498,117 +477,6 @@ final class WidgetHostUITests: XCTestCase {
         return (app, springboard)
     }
 
-    // select a DEBUG-only fixture through the real Edit Widget surface
-    private func configureWidget(
-        _ widget: XCUIElement,
-        to targetScenario: MatrixScenario,
-        on springboard: XCUIApplication
-    ) throws -> XCUIElement {
-        XCTAssertTrue(widget.exists)
-        let hostWidget = try widgetHostElement(on: springboard)
-        hostWidget.press(forDuration: 1.5)
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-edit-widget-context")
-
-        let editWidget = try requireHittable(
-            in: springboard.buttons.matching(
-                NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Edit Widget", "Edit Widget")
-            ),
-            springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-edit-widget"
-        )
-        editWidget.tap()
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configuration")
-
-        let fixtureValue = try requireHittable(
-            in: fixtureValueButtons(in: springboard),
-            springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-fixture-value"
-        )
-        fixtureValue.tap()
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-options")
-
-        let fixtureOption = try requireHittable(
-            in: springboard.buttons.matching(
-                NSPredicate(
-                    format: "label ==[c] %@ OR identifier == %@",
-                    targetScenario.optionLabel,
-                    targetScenario.optionLabel
-                )
-            ),
-            springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-fixture-option"
-        )
-        fixtureOption.tap()
-        let selectedFixture = try requireHittable(
-            in: springboard.buttons.matching(
-                NSPredicate(
-                    format: "label ==[c] %@ OR identifier == %@",
-                    targetScenario.optionLabel,
-                    targetScenario.optionLabel
-                )
-            ),
-            springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-fixture-selected"
-        )
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-selected")
-
-        // commit by dismissing above the captured configuration card
-        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
-        // require the configuration surface to close
-        guard selectedFixture.waitForNonExistence(timeout: 10) else {
-            attachState(springboard, name: "failure-matrix-\(targetScenario.rawValue)-configuration-dismiss")
-            throw NSError(
-                domain: "farm.ballydidean.weather.widget-host",
-                code: 7,
-                userInfo: [NSLocalizedDescriptionKey: "widget configuration did not dismiss"]
-            )
-        }
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configuration-dismissed")
-
-        let persistedHostWidget = try widgetHostElement(on: springboard)
-        persistedHostWidget.press(forDuration: 1.5)
-        let persistedEditWidget = try requireHittable(
-            in: springboard.buttons.matching(
-                NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Edit Widget", "Edit Widget")
-            ),
-            springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-persisted-edit-widget"
-        )
-        persistedEditWidget.tap()
-        let persistedFixture = try requireHittable(
-            in: springboard.buttons.matching(
-                NSPredicate(
-                    format: "label ==[c] %@ OR identifier == %@",
-                    targetScenario.optionLabel,
-                    targetScenario.optionLabel
-                )
-            ),
-            springboard: springboard,
-            stage: "matrix-\(targetScenario.rawValue)-fixture-persisted"
-        )
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-fixture-persisted")
-
-        // close the read-only persisted-value receipt
-        springboard.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
-        // require the reopened surface to close
-        guard persistedFixture.waitForNonExistence(timeout: 10) else {
-            attachState(springboard, name: "failure-matrix-\(targetScenario.rawValue)-persisted-dismiss")
-            throw NSError(
-                domain: "farm.ballydidean.weather.widget-host",
-                code: 8,
-                userInfo: [NSLocalizedDescriptionKey: "persisted widget configuration did not dismiss"]
-            )
-        }
-
-        let configuredWidget = try findWidget(
-            on: springboard,
-            scenario: targetScenario,
-            timeout: 45
-        )
-        attachState(springboard, name: "matrix-\(targetScenario.rawValue)-configured")
-        return configuredWidget
-    }
-
     // choose genuine Home Screen tinted rendering
     private func selectTintedAppearance(
         for widget: XCUIElement,
@@ -777,7 +645,7 @@ final class WidgetHostUITests: XCTestCase {
     // place and capture the baseline actual widget
     func test01MaximumLightLarge() throws {
         let host = try launchHost()
-        let widget = try addMaximumWidget(on: host.springboard)
+        let widget = try addWidget(on: host.springboard, scenario: .maximumDensity)
         try captureAndTap(
             widget,
             scenario: .maximumDensity,
@@ -813,15 +681,10 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // configure and capture the near-cutoff actual widget
+    // place and capture the compiled near-cutoff artifact
     func test04NearCutoffLightLarge() throws {
         let host = try launchHost()
-        let maximum = try findWidget(on: host.springboard, scenario: .maximumDensity)
-        let widget = try configureWidget(
-            maximum,
-            to: .nearCutoff,
-            on: host.springboard
-        )
+        let widget = try addWidget(on: host.springboard, scenario: .nearCutoff)
         try captureAndTap(
             widget,
             scenario: .nearCutoff,
@@ -831,15 +694,10 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // configure and capture the bedtime actual widget
+    // place and capture the compiled bedtime artifact
     func test05BedtimeLightLarge() throws {
         let host = try launchHost()
-        let nearCutoff = try findWidget(on: host.springboard, scenario: .nearCutoff)
-        let widget = try configureWidget(
-            nearCutoff,
-            to: .bedtime,
-            on: host.springboard
-        )
+        let widget = try addWidget(on: host.springboard, scenario: .bedtime)
         try captureAndTap(
             widget,
             scenario: .bedtime,
@@ -849,15 +707,10 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
-    // restore maximum density and capture genuine tinting
+    // place maximum density and capture genuine tinting
     func test06MaximumTintedLarge() throws {
         let host = try launchHost()
-        let bedtime = try findWidget(on: host.springboard, scenario: .bedtime)
-        let maximum = try configureWidget(
-            bedtime,
-            to: .maximumDensity,
-            on: host.springboard
-        )
+        let maximum = try addWidget(on: host.springboard, scenario: .maximumDensity)
         let widget = try selectTintedAppearance(for: maximum, on: host.springboard)
         try captureAndTap(
             widget,

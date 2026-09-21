@@ -81,7 +81,7 @@ jobs:
             if [[ ! -f "$receipt" ]]; then
               continue
             fi
-            grep -E 'm0-webview-lifecycle|m0-fixture-resolution' "$receipt" || true
+            grep -E 'm0-webview-lifecycle|m0-compiled-fixture' "$receipt" || true
           done
       - id: ios-receipt
         name: Upload bounded iOS M0 evidence

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import plistlib
 import re
+import shlex
 import sys
 from pathlib import Path
 from xml.etree import ElementTree
@@ -35,8 +36,6 @@ EXPECTED_FILES = (
 EXPECTED_SCHEMES = (
     "Weather.xcscheme",
     "WeatherWidget-Maximum.xcscheme",
-    "WeatherWidget-NearCutoff.xcscheme",
-    "WeatherWidget-Bedtime.xcscheme",
     "WeatherWidgetHostTests.xcscheme",
 )
 BANNED_SOURCE_PATTERNS = (
@@ -80,7 +79,7 @@ def verify_plists() -> None:
 
 
 def verify_schemes() -> None:
-    """parse all shared schemes and fixed scenarios"""
+    """parse all shared schemes and the real extension host"""
     for filename in EXPECTED_SCHEMES:
         path = SCHEMES / filename
         # reject missing shared schemes
@@ -88,12 +87,12 @@ def verify_schemes() -> None:
             fail(f"missing shared scheme {filename}")
         ElementTree.parse(path)
 
-    expected_scenarios = {
-        "WeatherWidget-Maximum.xcscheme": "maximumDensity",
-        "WeatherWidget-NearCutoff.xcscheme": "nearCutoff",
-        "WeatherWidget-Bedtime.xcscheme": "bedtime",
-    }
-    for filename, scenario in expected_scenarios.items():
+    for obsolete in ("WeatherWidget-NearCutoff.xcscheme", "WeatherWidget-Bedtime.xcscheme"):
+        # reject obsolete runtime fixture schemes
+        if (SCHEMES / obsolete).exists():
+            fail(f"obsolete runtime fixture scheme remains: {obsolete}")
+
+    for filename in ("WeatherWidget-Maximum.xcscheme",):
         path = SCHEMES / filename
         text = path.read_text()
         root = ElementTree.parse(path).getroot()
@@ -101,9 +100,9 @@ def verify_schemes() -> None:
         remote = launch.find("RemoteRunnable") if launch is not None else None
         macro = launch.find("MacroExpansion/BuildableReference") if launch is not None else None
 
-        # bind each run scheme to one fixed fixture
-        if f'value="{scenario}"' not in text or 'value="medium"' not in text:
-            fail(f"scheme {filename} lacks fixed medium/{scenario} settings")
+        # preserve only the product-shaped default medium run
+        if 'value="medium"' not in text or "WEATHER_WIDGET_FIXTURE" in text:
+            fail(f"scheme {filename} lacks the default medium-only contract")
         # require app-extension metadata
         if root.get("wasCreatedForAppExtension") != "YES" or root.get("version") != "2.0":
             fail(f"scheme {filename} is not marked as an app-extension scheme")
@@ -194,86 +193,70 @@ def verify_release_reachable_sources() -> None:
     view_source = (ROOT / "WeatherWidget/WeatherWidgetView.swift").read_text()
     test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
     release_scan = (ROOT / "scripts/verify-release-artifacts.sh").read_text()
-    # keep scenario overrides out of Release compilation
-    if "#if DEBUG" not in fixture_source or "WEATHER_WIDGET_FIXTURE" not in fixture_source:
-        fail("debug fixture selector is not compilation-gated")
-    selection_declaration = "enum WeatherWidgetFixtureSelection: String, AppEnum, CaseIterable"
-    selection_index = intent_source.find(selection_declaration)
-    selection_guard_index = intent_source.rfind("#if DEBUG", 0, selection_index)
-    selection_end_index = intent_source.find("#endif", selection_index)
-    parameter_declaration = "var fixtureScenario: WeatherWidgetFixtureSelection"
-    parameter_index = intent_source.find(parameter_declaration)
-    parameter_guard_index = intent_source.rfind("#if DEBUG", 0, parameter_index)
-    parameter_end_index = intent_source.find("#endif", parameter_index)
-    selection_fragments = (
-        parameter_declaration,
-        "var scenario: WeatherWidgetScenario",
-        "case .maximumDensity:\n            return .maximumDensity",
-        "case .nearCutoff:\n            return .nearCutoff",
-        "case .bedtime:\n            return .bedtime",
+    obsolete_fixture_controls = (
+        "WEATHER_WIDGET_FIXTURE",
+        "WeatherWidgetFixtureSelection",
+        "fixtureScenario",
+        'Parameter(title: "M0 fixture"',
+        "m0-fixture-resolution",
     )
-    # keep the matrix intent and direct enum metadata out of Release
-    if (
-        "#if DEBUG" not in intent_source
-        or '@Parameter(title: "M0 fixture"' not in intent_source
-        or selection_index < 0
-        or selection_guard_index < 0
-        or selection_end_index < selection_index
-        or parameter_index < 0
-        or parameter_guard_index < 0
-        or parameter_end_index < parameter_index
-        or 'TypeDisplayRepresentation(name: "M0 fixture")' not in intent_source
-        or "extension WeatherWidgetScenario: AppEnum" in model_source
-        or "import AppIntents" in model_source
-    ):
-        fail("debug AppIntent fixture configuration is not compilation-gated")
-    # require explicit test-parameter mapping
-    for fragment in selection_fragments:
-        # reject implicit or incomplete fixture mappings
-        if fragment not in intent_source:
-            fail(f"debug AppIntent fixture mapping lacks {fragment}")
+    obsolete_surface = fixture_source + intent_source + widget_source
+    # remove the disproven runtime and AppIntent fixture controls
+    for fragment in obsolete_fixture_controls:
+        # reject hidden fallback selectors
+        if fragment in obsolete_surface:
+            fail(f"obsolete fixture control remains: {fragment}")
+    if "import AppIntents" in model_source:
+        fail("fixture model still imports AppIntents")
     # preserve wrapper-owned decoding defaults
     if "init() {}" not in intent_source:
         fail("widget configuration intent does not use the empty system initializer")
-    # keep matrix-only assertions out of Release test compilation
-    fixture_assertion = "XCTAssertEqual(WeatherWidgetConfigurationIntent().fixtureScenario"
-    fixture_assertion_index = test_source.find(fixture_assertion)
-    debug_guard_index = test_source.rfind("#if DEBUG", 0, fixture_assertion_index)
-    debug_end_index = test_source.find("#endif", fixture_assertion_index)
-    if (
-        fixture_assertion_index < 0
-        or debug_guard_index < 0
-        or debug_end_index < fixture_assertion_index
-        or "WeatherWidgetFixtureSelection.allCases" not in test_source
-        or "intent.fixtureScenario.scenario" not in test_source
-    ):
-        fail("debug AppIntent fixture assertions are not compilation-gated")
-    diagnostic_marker = "m0-fixture-resolution"
+    # preserve only the product temperature parameter
+    if intent_source.count("@Parameter(") != 1 or 'title: "Temperature unit"' not in intent_source:
+        fail("widget intent does not retain the product-only temperature parameter")
+    diagnostic_marker = "m0-compiled-fixture"
     diagnostic_index = widget_source.find(diagnostic_marker)
     diagnostic_guard_index = widget_source.rfind("#if DEBUG", 0, diagnostic_index)
     diagnostic_end_index = widget_source.find("#else", diagnostic_index)
     diagnostic_fragments = (
-        'ProcessInfo.processInfo.environment["WEATHER_WIDGET_FIXTURE"]',
-        'overrideReceipt = "absent"',
-        'overrideReceipt = "invalid"',
-        "overrideReceipt = scenario.rawValue",
-        "input=\\(configuration.fixtureScenario.rawValue",
-        "override=\\(overrideReceipt",
+        "WEATHER_M0_FIXTURE_MAXIMUM",
+        "WEATHER_M0_FIXTURE_NEAR_CUTOFF",
+        "WEATHER_M0_FIXTURE_BEDTIME",
+        "WEATHER_M0_FIXTURE_DEBUG_DEFAULT",
+        "selection.selector",
         "resolved=\\(fixture.scenario.rawValue",
+        "groups=\\(fixture.groups.count",
+        "intervals=\\(fixture.intervalCount",
     )
-    # keep resolution diagnostics out of Release compilation and artifacts
+    # keep compiled fixture diagnostics out of Release artifacts
     if (
         diagnostic_index < 0
         or diagnostic_guard_index < 0
         or diagnostic_end_index < diagnostic_index
         or diagnostic_marker not in release_scan
     ):
-        fail("debug fixture resolution receipt is not Release-isolated")
-    # preserve all three diagnostic boundaries
+        fail("compiled fixture receipt is not Release-isolated")
+    # preserve selector, scenario, and density boundaries
     for fragment in diagnostic_fragments:
-        # reject incomplete fixture-resolution evidence
+        # reject incomplete compiled fixture evidence
         if fragment not in widget_source:
-            fail(f"debug fixture resolution receipt lacks {fragment}")
+            fail(f"compiled fixture receipt lacks {fragment}")
+    for fragment in (
+        diagnostic_marker,
+        "WEATHER_M0_FIXTURE_MAXIMUM",
+        "WEATHER_M0_FIXTURE_NEAR_CUTOFF",
+        "WEATHER_M0_FIXTURE_BEDTIME",
+        "WEATHER_M0_FIXTURE_DEBUG_DEFAULT",
+    ):
+        # require produced Release scans to reject fixture-selector bytes
+        if fragment not in release_scan:
+            fail(f"Release scan lacks compiled fixture ban {fragment}")
+    # preserve exhaustive fixture identity tests
+    if (
+        "testEveryFixtureScenarioResolvesItsIdentity" not in test_source
+        or "for scenario in WeatherWidgetScenario.allCases" not in test_source
+    ):
+        fail("fixture identity tests are incomplete")
     web_diagnostic_marker = "m0-webview-lifecycle"
     web_diagnostic_fragments = (
         "inline-load-request",
@@ -332,6 +315,22 @@ def verify_host_probe() -> None:
         "WeatherWidgetHostTests",
         "build-for-testing",
         "test-without-building",
+        'DERIVED_DATA_ROOT="$RESULTS/DerivedData"',
+        "build_variant",
+        'build_variant "maximumDensity"',
+        'build_variant "nearCutoff"',
+        'build_variant "bedtime"',
+        "artifact-identity.json",
+        "binaries.sha256",
+        '"compiledFixtureSelector"',
+        '"variantAppBinarySHA256"',
+        '"variantWidgetBinarySHA256"',
+        '"freshArtifactPlacement"',
+        "simctl uninstall",
+        "simctl get_app_container",
+        "artifact-reset-status.txt",
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG $selector",
+        "SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG $compiled_selector",
         "xcresulttool export attachments",
         "provider-ready.txt",
         "widget-host-test-executed.txt",
@@ -356,18 +355,10 @@ def verify_host_probe() -> None:
         '" Add Widget"',
         "springboard.cells.matching",
         'typeText("Weather")',
-        "fixtureValueButtons",
-        'stage: "matrix-\\(targetScenario.rawValue)-fixture-value"',
-        'stage: "matrix-\\(targetScenario.rawValue)-fixture-selected"',
-        'stage: "matrix-\\(targetScenario.rawValue)-fixture-persisted"',
-        'name: "matrix-\\(targetScenario.rawValue)-fixture-persisted"',
-        "persistedFixture.waitForNonExistence",
-        "coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()",
-        "selectedFixture.waitForNonExistence",
-        'name: "matrix-\\(targetScenario.rawValue)-configuration-dismissed"',
-        '"Maximum density M0"',
-        '"Near cutoff M0"',
-        '"Bedtime M0"',
+        "failure-stale-widget-before-placement",
+        "widget existed before fresh artifact placement",
+        "addWidget(on: host.springboard, scenario: .nearCutoff)",
+        "addWidget(on: host.springboard, scenario: .bedtime)",
         'labeled: ["Customize"]',
         'labeled: ["Tinted"]',
         "selectedTint.isSelected",
@@ -389,6 +380,34 @@ def verify_host_probe() -> None:
         if fragment not in combined:
             fail(f"host probe lacks {fragment}")
 
+    collapsed_probe = probe.replace("\\\n", " ")
+    case_calls = [
+        shlex.split(match.group(1))
+        for match in re.finditer(r"^run_case\s+(.+)$", collapsed_probe, re.MULTILINE)
+    ]
+    expected_case_variants = {
+        "01-maximum-light-large": ("maximumDensity", "$MAXIMUM_SELECTOR", "1"),
+        "02-maximum-dark-large": ("maximumDensity", "$MAXIMUM_SELECTOR", "0"),
+        "03-maximum-light-ax5": ("maximumDensity", "$MAXIMUM_SELECTOR", "0"),
+        "04-near-cutoff-light-large": ("nearCutoff", "$NEAR_CUTOFF_SELECTOR", "1"),
+        "05-bedtime-light-large": ("bedtime", "$BEDTIME_SELECTOR", "1"),
+        "06-maximum-tinted-large": ("maximumDensity", "$MAXIMUM_SELECTOR", "1"),
+    }
+    # bind every case to its compiled artifact and reset generation
+    if len(case_calls) != len(expected_case_variants):
+        fail("host probe does not define exactly six matrix cases")
+    for arguments in case_calls:
+        # reject malformed case invocations
+        if len(arguments) != 10 or arguments[0] not in expected_case_variants:
+            fail(f"host probe has malformed case invocation: {arguments}")
+        expected_scenario, expected_selector, expected_fresh = expected_case_variants[arguments[0]]
+        if (arguments[2], arguments[8], arguments[9]) != (
+            expected_scenario,
+            expected_selector,
+            expected_fresh,
+        ):
+            fail(f"host probe has incorrect artifact binding for {arguments[0]}")
+
     semantic_interactions = ("widget.isHittable", "widget.tap()", "widget.press(")
     for fragment in semantic_interactions:
         # keep extension semantics inspection-only
@@ -401,10 +420,13 @@ def verify_host_probe() -> None:
         "osascript",
         "CGEvent",
         "simctl add-widget",
+        "fixtureValueButtons",
+        "configureWidget(",
+        "WEATHER_WIDGET_FIXTURE",
     )
     for fragment in forbidden_fragments:
         # reject consent bypasses and private placement
-        if fragment in probe:
+        if fragment in combined:
             fail(f"host probe contains forbidden mechanism {fragment}")
 
     visual_claims = (

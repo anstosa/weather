@@ -5,10 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IOS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="$IOS_ROOT/Weather.xcodeproj"
 RESULTS="${RESULTS:-$IOS_ROOT/.artifacts/widget-host-probe}"
-DERIVED_DATA="$RESULTS/DerivedData"
+DERIVED_DATA_ROOT="$RESULTS/DerivedData"
+VARIANTS_DIR="$RESULTS/variants"
 CASES_DIR="$RESULTS/cases"
 LOG_PID=""
 PLACEMENT_METHOD=""
+APP_BUNDLE_ID="farm.ballydidean.weather"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
 mkdir -p "$RESULTS"
@@ -51,6 +53,8 @@ write_raw_manifest() {
   local appearance="$5"
   local rendering_mode="$6"
   local provider_expected="$7"
+  local compiled_selector="$8"
+  local fresh_placement="$9"
   CASE_RESULTS="$case_results" \
   CASE_ID="$case_id" \
   SCENARIO="$scenario" \
@@ -58,6 +62,8 @@ write_raw_manifest() {
   APPEARANCE="$appearance" \
   RENDERING_MODE="$rendering_mode" \
   PROVIDER_EXPECTED="$provider_expected" \
+  COMPILED_SELECTOR="$compiled_selector" \
+  FRESH_PLACEMENT="$fresh_placement" \
   PLACEMENT_METHOD="$PLACEMENT_METHOD" \
   SOURCE_COMMIT="$SOURCE_COMMIT" \
   RUNNER_IMAGE="$RUNNER_IMAGE" \
@@ -69,6 +75,18 @@ import os
 from pathlib import Path
 
 base = Path(os.environ["CASE_RESULTS"])
+identity = json.loads((base / "variant-artifact-identity.json").read_text())
+expected_identity = {
+    "sourceCommit": os.environ["SOURCE_COMMIT"],
+    "runnerImage": os.environ["RUNNER_IMAGE"],
+    "xcodeVersion": os.environ["XCODE_VERSION"],
+    "fixtureScenario": os.environ["SCENARIO"],
+    "compiledFixtureSelector": os.environ["COMPILED_SELECTOR"],
+}
+# reject a case detached from its compiled artifact
+for key, expected in expected_identity.items():
+    if identity.get(key) != expected:
+        raise SystemExit(f"variant artifact identity mismatch for {key}")
 artifacts = []
 # hash every immutable case artifact before the raw manifest
 for path in sorted(base.rglob("*")):
@@ -92,6 +110,10 @@ payload = {
     "widgetFamily": "systemMedium",
     "scheme": "WeatherWidgetHostTests",
     "fixtureScenario": os.environ["SCENARIO"],
+    "compiledFixtureSelector": os.environ["COMPILED_SELECTOR"],
+    "variantAppBinarySHA256": identity["appBinarySHA256"],
+    "variantWidgetBinarySHA256": identity["widgetBinarySHA256"],
+    "freshArtifactPlacement": os.environ["FRESH_PLACEMENT"] == "1",
     "contentSize": os.environ["CONTENT_SIZE"],
     "appearance": os.environ["APPEARANCE"],
     "renderingMode": os.environ["RENDERING_MODE"],
@@ -109,6 +131,88 @@ payload = {
 PY
 }
 
+# compile one clean deterministic widget artifact
+build_variant() {
+  local scenario="$1"
+  local selector="$2"
+  local variant_results="$VARIANTS_DIR/$scenario"
+  local derived_data="$DERIVED_DATA_ROOT/$scenario"
+  local products="$derived_data/Build/Products/Debug-iphonesimulator"
+  local app_binary="$products/Weather.app/Weather"
+  local widget_binary="$products/Weather.app/PlugIns/WeatherWidgetExtension.appex/WeatherWidgetExtension"
+
+  rm -rf "$variant_results" "$derived_data"
+  mkdir -p "$variant_results"
+  printf 'DEBUG %s\n' "$selector" > "$variant_results/compile-condition.txt"
+
+  # build one isolated app, extension, and host-test product set
+  xcodebuild \
+    -project "$PROJECT" \
+    -scheme WeatherWidgetHostTests \
+    -configuration Debug \
+    -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+    -derivedDataPath "$derived_data" \
+    -parallel-testing-enabled NO \
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG $selector" \
+    build-for-testing | tee "$variant_results/build-for-testing.log"
+
+  # record the effective compilation setting
+  xcodebuild \
+    -project "$PROJECT" \
+    -scheme WeatherWidgetHostTests \
+    -configuration Debug \
+    -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+    -derivedDataPath "$derived_data" \
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG $selector" \
+    -showBuildSettings > "$variant_results/build-settings.log"
+
+  # reject incomplete variant products
+  if [[ ! -f "$app_binary" || ! -f "$widget_binary" ]]; then
+    printf '%s\n' "compiled variant lacks app or widget binary: $scenario" > "$variant_results/blocker.txt"
+    exit 78
+  fi
+
+  local app_sha
+  app_sha="$(shasum -a 256 "$app_binary" | awk '{ print $1 }')"
+  local widget_sha
+  widget_sha="$(shasum -a 256 "$widget_binary" | awk '{ print $1 }')"
+  printf '%s  %s\n%s  %s\n' \
+    "$app_sha" \
+    "Weather.app/Weather" \
+    "$widget_sha" \
+    "Weather.app/PlugIns/WeatherWidgetExtension.appex/WeatherWidgetExtension" \
+    > "$variant_results/binaries.sha256"
+
+  # bind artifact identity without uploading DerivedData
+  VARIANT_IDENTITY="$variant_results/artifact-identity.json" \
+  VARIANT_SCENARIO="$scenario" \
+  VARIANT_SELECTOR="$selector" \
+  VARIANT_APP_SHA="$app_sha" \
+  VARIANT_WIDGET_SHA="$widget_sha" \
+  SOURCE_COMMIT="$SOURCE_COMMIT" \
+  XCODE_VERSION="$XCODE_VERSION" \
+  RUNNER_IMAGE="$RUNNER_IMAGE" \
+  python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+payload = {
+    "sourceCommit": os.environ["SOURCE_COMMIT"],
+    "runnerImage": os.environ["RUNNER_IMAGE"],
+    "xcodeVersion": os.environ["XCODE_VERSION"],
+    "fixtureScenario": os.environ["VARIANT_SCENARIO"],
+    "compiledFixtureSelector": os.environ["VARIANT_SELECTOR"],
+    "activeCompilationConditions": ["DEBUG", os.environ["VARIANT_SELECTOR"]],
+    "appBinarySHA256": os.environ["VARIANT_APP_SHA"],
+    "widgetBinarySHA256": os.environ["VARIANT_WIDGET_SHA"],
+}
+Path(os.environ["VARIANT_IDENTITY"]).write_text(
+    json.dumps(payload, indent=2, sort_keys=True) + "\n"
+)
+PY
+}
+
 # run one already-built actual-host matrix case
 run_case() {
   local case_id="$1"
@@ -118,6 +222,10 @@ run_case() {
   local appearance="$5"
   local rendering_mode="$6"
   local provider_expected="$7"
+  local derived_data="$8"
+  local compiled_selector="$9"
+  local fresh_placement="${10}"
+  local variant_identity="$VARIANTS_DIR/$scenario/artifact-identity.json"
   local case_results="$CASES_DIR/$case_id"
   local result_bundle="$case_results/WeatherWidgetHost.xcresult"
   local attachments="$case_results/attachments"
@@ -129,6 +237,32 @@ run_case() {
   local route_ready=0
 
   mkdir -p "$case_results"
+  cp "$variant_identity" "$case_results/variant-artifact-identity.json"
+
+  # reset only when replacing the compiled widget artifact
+  if [[ "$fresh_placement" == "1" ]]; then
+    PLACEMENT_METHOD=""
+    set +e
+    xcrun simctl uninstall "$SIMULATOR_UDID" "$APP_BUNDLE_ID" \
+      > "$case_results/artifact-uninstall.log" 2>&1
+    local uninstall_status=$?
+    xcrun simctl get_app_container "$SIMULATOR_UDID" "$APP_BUNDLE_ID" app \
+      > "$case_results/post-uninstall-app-container.log" 2>&1
+    local installed_status=$?
+    set -e
+    printf 'fresh_placement=1\nuninstall_status=%s\npost_uninstall_container_status=%s\n' \
+      "$uninstall_status" \
+      "$installed_status" \
+      > "$case_results/artifact-reset-status.txt"
+    # require the prior containing app and widget extension to be absent
+    if [[ "$installed_status" -eq 0 ]]; then
+      printf '%s\n' "prior app remained installed before $case_id" > "$case_results/blocker.txt"
+      exit 78
+    fi
+  else
+    printf 'fresh_placement=0\nuninstall_status=not-requested\npost_uninstall_container_status=not-requested\n' \
+      > "$case_results/artifact-reset-status.txt"
+  fi
 
   # set and read back the supported Simulator states
   set +e
@@ -184,9 +318,11 @@ run_case() {
     -scheme WeatherWidgetHostTests \
     -configuration Debug \
     -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-    -derivedDataPath "$DERIVED_DATA" \
+    -derivedDataPath "$derived_data" \
     -resultBundlePath "$result_bundle" \
     -only-testing:"WeatherUITests/WidgetHostUITests/$test_method" \
+    -parallel-testing-enabled NO \
+    "SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG $compiled_selector" \
     test-without-building | tee "$case_results/widget-host-test.log"
   host_test_status=${PIPESTATUS[0]}
   set -e
@@ -229,8 +365,8 @@ run_case() {
     else
       PLACEMENT_METHOD="unknown"
     fi
-    printf '%s\n' "$PLACEMENT_METHOD" > "$RESULTS/host-path.txt"
   fi
+  printf '%s\t%s\n' "$case_id" "$PLACEMENT_METHOD" >> "$RESULTS/host-path.txt"
   printf '%s\n' "$PLACEMENT_METHOD" > "$case_results/host-path.txt"
 
   # require the exact scenario provider and fixed tap route
@@ -300,14 +436,17 @@ run_case() {
     "$actual_content_size" \
     "$actual_appearance" \
     "$rendering_mode" \
-    "$provider_expected"
-  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$provider_expected" \
+    "$compiled_selector" \
+    "$fresh_placement"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$case_id" \
     "$scenario" \
     "$actual_content_size" \
     "$actual_appearance" \
     "$rendering_mode" \
-    >> "$RESULTS/matrix-status.tsv"
+    "$compiled_selector" \
+    "$fresh_placement" >> "$RESULTS/matrix-status.tsv"
 }
 
 "$SCRIPT_DIR/preflight.sh"
@@ -360,24 +499,28 @@ set -e
 printf '%s\n' "$SIMCTL_UI_HELP_STATUS" > "$RESULTS/simctl-ui-help-status.txt"
 printf '%s\n' "$XCRESULT_HELP_STATUS" > "$RESULTS/xcresulttool-export-attachments-help-status.txt"
 
-# reject reused matrix evidence
-if [[ -e "$CASES_DIR" ]]; then
-  printf '%s\n' "matrix evidence already exists: $CASES_DIR" > "$RESULTS/blocker.txt"
+# reject reused matrix or variant evidence
+if [[ -e "$CASES_DIR" || -e "$VARIANTS_DIR" || -e "$DERIVED_DATA_ROOT" ]]; then
+  printf '%s\n' "matrix or variant evidence already exists under $RESULTS" > "$RESULTS/blocker.txt"
   exit 78
 fi
-mkdir -p "$CASES_DIR"
+mkdir -p "$CASES_DIR" "$VARIANTS_DIR" "$DERIVED_DATA_ROOT"
 : > "$RESULTS/widget-host-test.log"
 : > "$RESULTS/provider-and-route.log"
 : > "$RESULTS/matrix-status.tsv"
+: > "$RESULTS/host-path.txt"
 
-# compile the host test products exactly once
-xcodebuild \
-  -project "$PROJECT" \
-  -scheme WeatherWidgetHostTests \
-  -configuration Debug \
-  -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
-  -derivedDataPath "$DERIVED_DATA" \
-  build-for-testing | tee "$RESULTS/widget-host-build-for-testing.log"
+# compile three clean fixture artifacts from the same source
+MAXIMUM_SELECTOR="WEATHER_M0_FIXTURE_MAXIMUM"
+NEAR_CUTOFF_SELECTOR="WEATHER_M0_FIXTURE_NEAR_CUTOFF"
+BEDTIME_SELECTOR="WEATHER_M0_FIXTURE_BEDTIME"
+build_variant "maximumDensity" "$MAXIMUM_SELECTOR"
+build_variant "nearCutoff" "$NEAR_CUTOFF_SELECTOR"
+build_variant "bedtime" "$BEDTIME_SELECTOR"
+
+MAXIMUM_DERIVED_DATA="$DERIVED_DATA_ROOT/maximumDensity"
+NEAR_CUTOFF_DERIVED_DATA="$DERIVED_DATA_ROOT/nearCutoff"
+BEDTIME_DERIVED_DATA="$DERIVED_DATA_ROOT/bedtime"
 
 # run the minimal non-cross-product actual-host matrix
 run_case \
@@ -387,7 +530,10 @@ run_case \
   "large" \
   "light" \
   "fullColor" \
-  "fixture=maximumDensity groups=7 intervals=21"
+  "m0-compiled-fixture selector=$MAXIMUM_SELECTOR resolved=maximumDensity groups=7 intervals=21" \
+  "$MAXIMUM_DERIVED_DATA" \
+  "$MAXIMUM_SELECTOR" \
+  "1"
 run_case \
   "02-maximum-dark-large" \
   "test02MaximumDarkLarge" \
@@ -395,7 +541,10 @@ run_case \
   "large" \
   "dark" \
   "fullColor" \
-  "fixture=maximumDensity groups=7 intervals=21"
+  "m0-compiled-fixture selector=$MAXIMUM_SELECTOR resolved=maximumDensity groups=7 intervals=21" \
+  "$MAXIMUM_DERIVED_DATA" \
+  "$MAXIMUM_SELECTOR" \
+  "0"
 run_case \
   "03-maximum-light-ax5" \
   "test03MaximumLightAX5" \
@@ -403,7 +552,10 @@ run_case \
   "accessibility-extra-extra-extra-large" \
   "light" \
   "fullColor" \
-  "fixture=maximumDensity groups=7 intervals=21"
+  "m0-compiled-fixture selector=$MAXIMUM_SELECTOR resolved=maximumDensity groups=7 intervals=21" \
+  "$MAXIMUM_DERIVED_DATA" \
+  "$MAXIMUM_SELECTOR" \
+  "0"
 run_case \
   "04-near-cutoff-light-large" \
   "test04NearCutoffLightLarge" \
@@ -411,7 +563,10 @@ run_case \
   "large" \
   "light" \
   "fullColor" \
-  "fixture=nearCutoff groups=1 intervals=1"
+  "m0-compiled-fixture selector=$NEAR_CUTOFF_SELECTOR resolved=nearCutoff groups=1 intervals=1" \
+  "$NEAR_CUTOFF_DERIVED_DATA" \
+  "$NEAR_CUTOFF_SELECTOR" \
+  "1"
 run_case \
   "05-bedtime-light-large" \
   "test05BedtimeLightLarge" \
@@ -419,7 +574,10 @@ run_case \
   "large" \
   "light" \
   "fullColor" \
-  "fixture=bedtime groups=0 intervals=0"
+  "m0-compiled-fixture selector=$BEDTIME_SELECTOR resolved=bedtime groups=0 intervals=0" \
+  "$BEDTIME_DERIVED_DATA" \
+  "$BEDTIME_SELECTOR" \
+  "1"
 run_case \
   "06-maximum-tinted-large" \
   "test06MaximumTintedLarge" \
@@ -427,7 +585,10 @@ run_case \
   "large" \
   "light" \
   "accented" \
-  "fixture=maximumDensity groups=7 intervals=21"
+  "m0-compiled-fixture selector=$MAXIMUM_SELECTOR resolved=maximumDensity groups=7 intervals=21" \
+  "$MAXIMUM_DERIVED_DATA" \
+  "$MAXIMUM_SELECTOR" \
+  "1"
 
 # preserve one final actual screen outside the test receipts
 xcrun simctl io "$SIMULATOR_UDID" screenshot "$RESULTS/after-widget-tap.png" \
@@ -442,6 +603,7 @@ printf '%s\n' '0' > "$RESULTS/widget-host-test-skipped.txt"
   printf 'source_commit=%s\n' "$SOURCE_COMMIT"
   printf 'host_path=%s\n' "$PLACEMENT_METHOD"
   printf 'simulator_udid=%s\n' "$SIMULATOR_UDID"
+  find "$VARIANTS_DIR" -type f -print0 | sort -z | xargs -0 shasum -a 256
   find "$CASES_DIR" -type f -print0 | sort -z | xargs -0 shasum -a 256
   shasum -a 256 "$RESULTS/after-widget-tap.png" "$RESULTS/provider-and-route.log"
 } > "$RESULTS/capture-manifest.txt"

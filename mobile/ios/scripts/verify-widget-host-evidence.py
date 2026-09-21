@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,17 @@ REQUIRED_CASES = {
         "light",
         "fullColor",
     ),
+    ("maximumDensity", "large", "light", "accented"),
+    ("nearCutoff", "large", "light", "fullColor"),
+    ("bedtime", "large", "light", "fullColor"),
+}
+SELECTORS = {
+    "maximumDensity": "WEATHER_M0_FIXTURE_MAXIMUM",
+    "nearCutoff": "WEATHER_M0_FIXTURE_NEAR_CUTOFF",
+    "bedtime": "WEATHER_M0_FIXTURE_BEDTIME",
+}
+FRESH_PLACEMENT_CASES = {
+    ("maximumDensity", "large", "light", "fullColor"),
     ("maximumDensity", "large", "light", "accented"),
     ("nearCutoff", "large", "light", "fullColor"),
     ("bedtime", "large", "light", "fullColor"),
@@ -40,7 +52,7 @@ def require_file(base: Path, relative: str, expected_hash: str) -> None:
         fail(f"hash mismatch for {relative}")
 
 
-def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
+def verify_receipt(base: Path, path: Path) -> dict[str, object]:
     """validate one host capture receipt"""
     payload = json.loads(path.read_text())
     allowed_methods = {
@@ -91,6 +103,13 @@ def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
             fail(f"{path.name} does not prove {key}")
 
     scenario = payload["fixtureScenario"]
+    selector = payload.get("compiledFixtureSelector")
+    # reject unknown compiled fixture identities
+    if scenario not in SELECTORS:
+        fail(f"{path.name} has unknown fixture scenario")
+    # bind each scenario to one explicit compile condition
+    if selector != SELECTORS[scenario]:
+        fail(f"{path.name} has incorrect compiled fixture selector")
     expected_groups = 7 if scenario == "maximumDensity" else 1 if scenario == "nearCutoff" else 0
     expected_intervals = 21 if scenario == "maximumDensity" else 1 if scenario == "nearCutoff" else 0
     # bind density counts to each fixture
@@ -198,6 +217,50 @@ def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
     if scenario in {"nearCutoff", "bedtime"} and payload.get("bedtimeText") != "go to bed":
         fail(f"{path.name} lacks exact bedtime text")
 
+    digest_pattern = re.compile(r"^[0-9a-f]{64}$")
+    for key in ("variantAppBinarySHA256", "variantWidgetBinarySHA256"):
+        # require concrete compiled binary identities
+        if not digest_pattern.fullmatch(str(payload.get(key, ""))):
+            fail(f"{path.name} lacks valid {key}")
+
+    require_file(
+        base,
+        payload.get("variantArtifactIdentity", ""),
+        payload.get("variantArtifactIdentitySHA256", ""),
+    )
+    identity = json.loads((base / payload["variantArtifactIdentity"]).read_text())
+    identity_values = {
+        "sourceCommit": payload["sourceCommit"],
+        "runnerImage": payload["runnerImage"],
+        "xcodeVersion": payload["xcodeVersion"],
+        "fixtureScenario": scenario,
+        "compiledFixtureSelector": selector,
+        "appBinarySHA256": payload["variantAppBinarySHA256"],
+        "widgetBinarySHA256": payload["variantWidgetBinarySHA256"],
+    }
+    for key, expected in identity_values.items():
+        # reject case receipts detached from their compiled artifact
+        if identity.get(key) != expected:
+            fail(f"{path.name} artifact identity mismatch for {key}")
+
+    case_key = (scenario, payload["contentSize"], payload["appearance"], payload["renderingMode"])
+    expected_fresh = case_key in FRESH_PLACEMENT_CASES
+    # require a clean install and placement at each artifact replacement
+    if payload.get("freshArtifactPlacement") is not expected_fresh:
+        fail(f"{path.name} has incorrect artifact-placement generation")
+    require_file(
+        base,
+        payload.get("artifactResetReceipt", ""),
+        payload.get("artifactResetReceiptSHA256", ""),
+    )
+    reset_receipt = (base / payload["artifactResetReceipt"]).read_text()
+    expected_reset = "fresh_placement=1" if expected_fresh else "fresh_placement=0"
+    if expected_reset not in reset_receipt:
+        fail(f"{path.name} reset receipt does not match placement generation")
+    # require absence after uninstall for each replacement
+    if expected_fresh and "post_uninstall_container_status=0" in reset_receipt:
+        fail(f"{path.name} retained the prior installed artifact")
+
     for artifact_key, hash_key in (
         ("homeScreenScreenshot", "homeScreenScreenshotSHA256"),
         ("providerLog", "providerLogSHA256"),
@@ -208,14 +271,18 @@ def verify_receipt(base: Path, path: Path) -> tuple[str, str, str, str]:
 
     provider_log = (base / payload["providerLog"]).read_text(errors="replace")
     tap_log = (base / payload["tapLog"]).read_text(errors="replace")
-    # bind provider execution to the scenario
-    if f"fixture={scenario}" not in provider_log:
-        fail(f"{path.name} provider log lacks fixture identity")
+    # bind provider execution to the compiled selector and scenario
+    expected_provider = (
+        f"m0-compiled-fixture selector={selector} resolved={scenario} "
+        f"groups={expected_groups} intervals={expected_intervals}"
+    )
+    if expected_provider not in provider_log:
+        fail(f"{path.name} provider log lacks compiled fixture identity")
     # bind the widget tap to the fixed app route
     if "route=forecast source=deep-link" not in tap_log:
         fail(f"{path.name} tap log lacks forecast route")
 
-    return scenario, payload["contentSize"], payload["appearance"], payload["renderingMode"]
+    return payload
 
 
 def main() -> None:
@@ -228,11 +295,40 @@ def main() -> None:
     if not receipts:
         fail("no host receipts found")
 
-    covered = {verify_receipt(base, receipt) for receipt in receipts}
+    payloads = [verify_receipt(base, receipt) for receipt in receipts]
+    covered = {
+        (
+            payload["fixtureScenario"],
+            payload["contentSize"],
+            payload["appearance"],
+            payload["renderingMode"],
+        )
+        for payload in payloads
+    }
     missing = sorted(REQUIRED_CASES - covered)
+    unexpected = sorted(covered - REQUIRED_CASES)
     # reject incomplete appearance and density coverage
     if missing:
         fail(f"missing host cases: {missing}")
+    # reject substituted or duplicate matrix receipts
+    if unexpected or len(payloads) != len(REQUIRED_CASES):
+        fail(f"unexpected or duplicate host cases: {unexpected}")
+    # require one source, runner, and toolchain for the complete matrix
+    for key in ("sourceCommit", "runnerImage", "xcodeVersion"):
+        if len({payload[key] for payload in payloads}) != 1:
+            fail(f"matrix spans multiple {key} values")
+    artifact_hashes: dict[str, set[str]] = {}
+    for payload in payloads:
+        # group every capture by compiled scenario
+        artifact_hashes.setdefault(str(payload["fixtureScenario"]), set()).add(
+            str(payload["variantWidgetBinarySHA256"])
+        )
+    # require one reusable binary per scenario
+    if any(len(hashes) != 1 for hashes in artifact_hashes.values()):
+        fail("one fixture scenario used multiple widget binaries")
+    # require all three compiled fixtures to be distinct artifacts
+    if len({next(iter(hashes)) for hashes in artifact_hashes.values()}) != 3:
+        fail("compiled fixture scenarios do not have distinct widget binaries")
     print(f"WidgetKit Home Screen evidence verified: {len(receipts)} receipts")
 
 
