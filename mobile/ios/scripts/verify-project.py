@@ -842,6 +842,19 @@ def verify_release_reachable_sources() -> None:
         < unit_assertion.find("captureWidgetConfiguration(")
     ):
         fail("unit proof no longer binds the observed host and reopened native switch")
+    stored_unit_section = ui_test_source.split("private func assertStoredTemperatureUnit(", 1)[-1]
+    stored_unit_section = stored_unit_section.split("private func assertTemperatureUnit(", 1)[0]
+    # retain the bounded native reread after a delayed system sheet
+    if (
+        "guard switchQuery.firstMatch.waitForExistence(timeout: 10) else {" not in stored_unit_section
+        or "reopened native switch was unavailable after 10 seconds" not in stored_unit_section
+        or "guard switchQuery.count == 1," not in stored_unit_section
+        or 'String(describing: switchQuery.firstMatch.value ?? "") == expectedValue' not in stored_unit_section
+        or stored_unit_section.count(".tap()") != 1
+        or "XCUIDevice.shared.press(.home)" not in stored_unit_section
+        or "assertObservedTarget(originalTarget," not in stored_unit_section
+    ):
+        fail("stored unit proof no longer waits for one read-only native switch")
     persistence_tests = ui_test_source.split("func test15PersistenceSeedAndFailBeforeRestart()", 1)[-1]
     if persistence_tests.count('assertStoredTemperatureUnit("celsius"') != 2:
         fail("persistence proof must reread Celsius before and after restart")

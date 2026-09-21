@@ -1269,9 +1269,17 @@ final class WidgetHostUITests: XCTestCase {
             NSPredicate(format: "label ==[c] %@", "Use Celsius")
         )
         let expectedValue = unit == "celsius" ? "1" : "0"
+        // wait for the newly presented system sheet
+        guard switchQuery.firstMatch.waitForExistence(timeout: 10) else {
+            attachState(springboard, name: "failure-\(stage)-stored-unit")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 23,
+                userInfo: [NSLocalizedDescriptionKey: "reopened native switch was unavailable after 10 seconds"]
+            )
+        }
         // require one freshly reopened public value
-        guard switchQuery.firstMatch.waitForExistence(timeout: 5),
-              switchQuery.count == 1,
+        guard switchQuery.count == 1,
               String(describing: switchQuery.firstMatch.value ?? "") == expectedValue else {
             attachState(springboard, name: "failure-\(stage)-stored-unit")
             throw NSError(
