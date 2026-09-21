@@ -153,7 +153,7 @@ The widget's primary tap is the fixed `ballydidean-weather://forecast` route. Pr
 
 ## Current native acceptance boundary
 
-Historical compiled fixture artifacts prove only M0 rendering feasibility. Current source adds mandatory probes for a real `systemMedium` widget's default Fahrenheit configuration, public **Edit Widget** Fahrenheit-to-Celsius selection, extension restart, matching visible and spoken output, return to Fahrenheit, and identity-bound last-good weather plus failed-attempt persistence across process restart. These claims count only when the exact source commit passes the pinned macOS probes and independent host-appearance review. Constructor-only tests, compiled fixture variants, unsigned build success, or source inspection do not satisfy that runtime boundary.
+Historical compiled fixture artifacts prove only M0 rendering feasibility. Current source adds mandatory probes for a real `systemMedium` widget's default Fahrenheit configuration, public **Edit Widget** **Use Celsius** switch off/on state and Fahrenheit-to-Celsius change, extension restart, matching visible and spoken output, return to Fahrenheit, and identity-bound last-good weather plus failed-attempt persistence across process restart. The Bool switch is a controlled alternative to the enum edit whose delivered provider value remained Fahrenheit, not yet a verified fix. These claims count only when the exact source commit passes the pinned macOS probes and independent host-appearance review. Constructor-only tests, compiled fixture variants, unsigned build success, or source inspection do not satisfy that runtime boundary.
 
 ## Deferred publisher work
 

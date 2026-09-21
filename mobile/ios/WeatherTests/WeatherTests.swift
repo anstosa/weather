@@ -212,13 +212,25 @@ final class WeatherWidgetFixtureTests: XCTestCase {
         XCTAssertEqual(first.temperatureLabel(unit: .fahrenheit), "27–30°F")
     }
 
-    // prove default and alternate temperature units
-    func testIntentDefaultsToFahrenheit() {
-        XCTAssertEqual(WeatherWidgetConfigurationIntent().temperatureUnit, .fahrenheit)
-        XCTAssertEqual(
-            WeatherWidgetConfigurationIntent(temperatureUnit: .celsius).temperatureUnit,
-            .celsius
-        )
+    // prove the native switch maps both units without changing the default
+    func testIntentBoolUnitMapping() {
+        let defaultIntent = WeatherWidgetConfigurationIntent()
+        XCTAssertFalse(defaultIntent.useCelsius)
+        XCTAssertEqual(defaultIntent.temperatureUnit, .fahrenheit)
+
+        let celsiusIntent = WeatherWidgetConfigurationIntent(temperatureUnit: .celsius)
+        XCTAssertTrue(celsiusIntent.useCelsius)
+        XCTAssertEqual(celsiusIntent.temperatureUnit, .celsius)
+
+        let fahrenheitIntent = WeatherWidgetConfigurationIntent(temperatureUnit: .fahrenheit)
+        XCTAssertFalse(fahrenheitIntent.useCelsius)
+        XCTAssertEqual(fahrenheitIntent.temperatureUnit, .fahrenheit)
+
+        var editedIntent = WeatherWidgetConfigurationIntent()
+        editedIntent.useCelsius = true
+        XCTAssertEqual(editedIntent.temperatureUnit, .celsius)
+        editedIntent.useCelsius = false
+        XCTAssertEqual(editedIntent.temperatureUnit, .fahrenheit)
     }
 
     // prove every compiled fixture maps to its own scenario

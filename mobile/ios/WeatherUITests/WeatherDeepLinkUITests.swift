@@ -1065,28 +1065,48 @@ final class WidgetHostUITests: XCTestCase {
         )
         editWidget.tap()
 
-        // open the observed value-side control after the edit sheet loads
-        let currentUnit = label == "Celsius" ? "Fahrenheit" : "Celsius"
-        let currentValue = try requireHittable(
-            in: springboard.buttons.matching(
-                NSPredicate(format: "label ==[c] %@", currentUnit)
-            ),
+        // require the system switch in its prior state
+        let switchQuery = springboard.switches.matching(
+            NSPredicate(format: "label ==[c] %@", "Use Celsius")
+        )
+        let unitSwitch = try requireHittable(
+            in: switchQuery,
             springboard: springboard,
-            stage: "unit-current-value-\(currentUnit.lowercased())"
+            stage: "unit-switch-before-\(label.lowercased())"
         )
         attachState(springboard, name: "unit-edit-sheet")
-        currentValue.tap()
-
-        // require a real choice after opening the system parameter picker
-        let choice = try requireHittable(
-            in: elements(in: springboard, labeled: [label]),
-            springboard: springboard,
-            stage: "unit-choice-\(label.lowercased())"
-        )
-        attachState(springboard, name: "unit-choice-open-\(label.lowercased())")
-        choice.tap()
+        let priorValue = label == "Celsius" ? "0" : "1"
+        let selectedValue = label == "Celsius" ? "1" : "0"
+        // reject a missing or ambiguous prior switch state
+        guard switchQuery.count == 1,
+              String(describing: unitSwitch.value ?? "") == priorValue else {
+            attachState(springboard, name: "failure-unit-switch-prior-state")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 21,
+                userInfo: [NSLocalizedDescriptionKey: "public temperature switch did not expose the prior 0/1 state"]
+            )
+        }
+        unitSwitch.tap()
+        // require the actual system switch state after the public tap
+        let switchDeadline = Date().addingTimeInterval(3)
+        // wait only for the existing edit-sheet transition
+        while switchQuery.firstMatch.exists,
+              String(describing: switchQuery.firstMatch.value ?? "") != selectedValue,
+              Date() < switchDeadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        }
+        guard switchQuery.firstMatch.exists,
+              String(describing: switchQuery.firstMatch.value ?? "") == selectedValue else {
+            attachState(springboard, name: "failure-unit-switch-selected-state")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 22,
+                userInfo: [NSLocalizedDescriptionKey: "public temperature switch did not expose the selected 0/1 state"]
+            )
+        }
         attachState(springboard, name: "unit-selected-\(label.lowercased())")
-        let editRow = elements(in: springboard, labeled: ["Temperature unit"])
+        let editRow = elements(in: springboard, labeled: ["Use Celsius"])
 
         // commit through the system sheet when it exposes Done
         if let done = firstHittable(
@@ -1323,12 +1343,14 @@ final class WidgetHostUITests: XCTestCase {
             stage: "unit-failure-reopen-edit-widget"
         )
         edit.tap()
-        let fahrenheit = springboard.buttons.matching(NSPredicate(format: "label ==[c] %@", "Fahrenheit"))
-        let celsius = springboard.buttons.matching(NSPredicate(format: "label ==[c] %@", "Celsius"))
-        let row = elements(in: springboard, labeled: ["Temperature unit"])
-        // observe one current row without opening its choice picker
+        let unitSwitch = springboard.switches.matching(
+            NSPredicate(format: "label ==[c] %@", "Use Celsius")
+        )
+        let row = elements(in: springboard, labeled: ["Use Celsius"])
+        // observe one current public switch without changing it
         guard row.firstMatch.waitForExistence(timeout: 5),
-              fahrenheit.count + celsius.count == 1 else {
+              unitSwitch.count == 1,
+              ["0", "1"].contains(String(describing: unitSwitch.firstMatch.value ?? "")) else {
             attachState(springboard, name: "unit-failure-reopened-row-ambiguous")
             throw NSError(
                 domain: "farm.ballydidean.weather.widget-host",
@@ -1336,8 +1358,11 @@ final class WidgetHostUITests: XCTestCase {
                 userInfo: [NSLocalizedDescriptionKey: "failed-edit stored row is missing or ambiguous"]
             )
         }
-        let observedUnit = celsius.count == 1 ? "celsius" : "fahrenheit"
-        let rowReceipt = XCTAttachment(string: "unit-failure-reopened-row unit=\(observedUnit)")
+        let observedValue = String(describing: unitSwitch.firstMatch.value ?? "")
+        let observedUnit = observedValue == "1" ? "celsius" : "fahrenheit"
+        let rowReceipt = XCTAttachment(
+            string: "unit-failure-reopened-row unit=\(observedUnit) switch=\(observedValue)"
+        )
         rowReceipt.name = "unit-failure-reopened-stored-row"
         rowReceipt.lifetime = .keepAlways
         add(rowReceipt)

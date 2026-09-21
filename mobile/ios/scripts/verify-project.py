@@ -316,9 +316,24 @@ def verify_release_reachable_sources() -> None:
     # preserve wrapper-owned decoding defaults
     if "init() {}" not in intent_source:
         fail("widget configuration intent does not use the empty system initializer")
-    # preserve only the product temperature parameter
-    if intent_source.count("@Parameter(") != 1 or 'title: "Temperature unit"' not in intent_source:
-        fail("widget intent does not retain the product-only temperature parameter")
+    bool_unit_fragments = (
+        '@Parameter(title: "Use Celsius", default: false)',
+        "var useCelsius: Bool",
+        "var temperatureUnit: TemperatureUnit",
+        "useCelsius ? .celsius : .fahrenheit",
+        "self.useCelsius = temperatureUnit == .celsius",
+        "testIntentBoolUnitMapping",
+        "XCTAssertFalse(defaultIntent.useCelsius)",
+        "XCTAssertTrue(celsiusIntent.useCelsius)",
+        "editedIntent.useCelsius = false",
+    )
+    # keep one native Bool parameter and its two-way renderer mapping
+    if (
+        intent_source.count("@Parameter(") != 1
+        or "AppEnum" in intent_source
+        or any(fragment not in intent_source + test_source for fragment in bool_unit_fragments)
+    ):
+        fail("widget intent does not retain the reviewed Bool unit parameter")
     diagnostic_marker = "m0-compiled-fixture"
     diagnostic_index = widget_source.find(diagnostic_marker)
     diagnostic_guard_index = widget_source.rfind("#if DEBUG", 0, diagnostic_index)
@@ -721,6 +736,21 @@ def verify_release_reachable_sources() -> None:
     for fragment in failure_diagnostic_fragments:
         if fragment not in ui_test_source:
             fail(f"widget failed-edit diagnosis lacks {fragment}")
+    edit_switch_section = ui_test_source.split("private func editTemperatureUnit(", 1)[-1]
+    edit_switch_section = edit_switch_section.split("private func assertTemperatureUnit(", 1)[0]
+    row_switch_section = ui_test_source.split("private func diagnoseFailedTemperatureRow(", 1)[-1]
+    row_switch_section = row_switch_section.split("private func assertPersistenceFailure(", 1)[0]
+    # require real SpringBoard switch states before and after public edits
+    if (
+        'springboard.switches.matching' not in edit_switch_section
+        or 'String(describing: unitSwitch.value ?? "") == priorValue' not in edit_switch_section
+        or 'String(describing: switchQuery.firstMatch.value ?? "") == selectedValue' not in edit_switch_section
+        or 'attachState(springboard, name: "unit-selected-' not in edit_switch_section
+        or 'springboard.switches.matching' not in row_switch_section
+        or '["0", "1"].contains' not in row_switch_section
+        or "unit-choice-" in edit_switch_section
+    ):
+        fail("product unit edit is not bound to an observed native 0/1 switch")
     diagnostic_section = ui_test_source.split("private func diagnoseFailedTemperatureConfiguration(", 1)[-1]
     diagnostic_section = diagnostic_section.split("private func assertPersistenceFailure(", 1)[0]
     if '-weather-m0-reload-widget' in diagnostic_section:

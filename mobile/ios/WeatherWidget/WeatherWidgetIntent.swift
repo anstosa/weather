@@ -1,14 +1,8 @@
 import AppIntents
 
-enum TemperatureUnit: String, AppEnum, Codable, CaseIterable {
+enum TemperatureUnit: String, Codable, CaseIterable, Hashable {
     case fahrenheit
     case celsius
-
-    static var typeDisplayRepresentation = TypeDisplayRepresentation(name: "Temperature unit")
-    static var caseDisplayRepresentations: [TemperatureUnit: DisplayRepresentation] = [
-        .fahrenheit: "Fahrenheit",
-        .celsius: "Celsius"
-    ]
 }
 
 struct WeatherWidgetConfigurationIntent: WidgetConfigurationIntent {
@@ -16,14 +10,19 @@ struct WeatherWidgetConfigurationIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource = "Weather widget"
     static var description = IntentDescription("Choose the widget temperature unit.")
 
-    @Parameter(title: "Temperature unit", default: .fahrenheit)
-    var temperatureUnit: TemperatureUnit
+    @Parameter(title: "Use Celsius", default: false)
+    var useCelsius: Bool
+
+    // map the system switch to the existing renderer unit
+    var temperatureUnit: TemperatureUnit {
+        useCelsius ? .celsius : .fahrenheit
+    }
 
     // let parameter wrappers supply system defaults
     init() {}
 
     // support explicit unit construction
     init(temperatureUnit: TemperatureUnit) {
-        self.temperatureUnit = temperatureUnit
+        self.useCelsius = temperatureUnit == .celsius
     }
 }

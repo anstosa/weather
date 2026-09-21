@@ -135,7 +135,8 @@ targets the containing app and its embedded widget extension rather than
 compiling DEBUG-only fixture tests as production artifacts.
 
 The product AppIntent probe places a real `systemMedium` widget through public
-Simulator UI, changes Fahrenheit to Celsius through the native edit sheet,
+Simulator UI, changes Fahrenheit to Celsius through the native **Use Celsius**
+switch in Edit Widget, checks the observed off/on state before and after the tap,
 requires the observed Home Screen host to render Celsius, restarts the
 Simulator extension process, verifies persisted Celsius output, and returns
 to Fahrenheit. Each phase requires one matching `kind`/`family` typed
