@@ -6,9 +6,10 @@ fixture contains the filtered forecast input (`input.json`), the projected
 public bytes (`snapshot.json`), and an independently calculated native semantic
 oracle (`expected.json`).
 
-The input is the projector boundary after the future M2 edge adapter applies
-its persisted admin filter. M1 also exercises the existing parser's switch and
-malformed-settings fail-closed behavior; it does not claim the M2 route exists.
+The input is the projector boundary after the edge adapter applies its
+persisted admin filter. The historical M1 fixture freeze also exercises the
+parser's switch and malformed-settings fail-closed behavior; its recorded hash
+does not by itself claim native or deployed route acceptance.
 
 Run `node scripts/widget-fixtures.mjs --check` after compiling `@weather/web`.
 Use `--write` only for an intentional reviewed fixture update. The check mode
@@ -54,9 +55,9 @@ never rewrites files.
   applicable clock is conservative clock skew and stale. API `freshness`,
   `validAt`, and device timezone do not participate.
 - Numeric weather expires at equality with the earlier of local `dayEnd` and
-  snapshot `receivedAt + 24 hours`. Native failed-attempt metadata is stored
-  separately in M3/M4; a known failed attempt marks cached output offline/stale
-  immediately but never replaces last-good weather.
+  snapshot `receivedAt + 24 hours`. Current native consumers store
+  failed-attempt metadata separately; a known failed attempt marks cached
+  output offline/stale immediately but never replaces last-good weather.
 - Hard numeric expiry takes presentation precedence over bedtime: render an
   unavailable/refresh-needed state, set bedtime false, and do not present the
   expired anchored day's sunset. The anchored date stays in diagnostic semantic
@@ -77,6 +78,8 @@ never rewrites files.
 
 ## Milestone boundary
 
-These fixtures freeze M1 projection and semantic behavior only. Native cache,
-persistence, process-restart, scheduler, and host-render evidence belong to
-later native milestones and are not claimed by this contract check.
+These fixtures freeze the historical M1 projection and semantic behavior only.
+Current native consumers implement cache, persistence, scheduling, and host
+rendering, but this contract check does not claim their runtime evidence. The
+native probes, exact-commit CI, and independent appearance review establish
+those acceptance boundaries separately.

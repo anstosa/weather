@@ -1311,37 +1311,74 @@ final class WeatherWidgetHTTPClientTests: XCTestCase {
     func testOverlappingFetchesDoNotOverwriteEachOther() async throws {
         let lock = NSLock()
         var requestCount = 0
+        var firstTransport: (URLRequest, StubURLProtocol)?
+        let firstStarted = expectation(description: "first transport started")
+        let secondStarted = expectation(description: "second transport started")
         StubURLProtocol.handler = { request, protocolInstance in
             lock.lock()
             requestCount += 1
             let index = requestCount
-            lock.unlock()
-            let delay = index == 1 ? 0.1 : 0.01
-            DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
-                let response = HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: "HTTP/1.1",
-                    headerFields: ["Content-Type": "application/json"]
-                )!
-                protocolInstance.client?.urlProtocol(
-                    protocolInstance,
-                    didReceive: response,
-                    cacheStoragePolicy: .notAllowed
-                )
-                protocolInstance.client?.urlProtocol(
-                    protocolInstance,
-                    didLoad: Data("response-\(index)".utf8)
-                )
-                protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
+            // retain the first request until overlap is proven
+            if index == 1 {
+                firstTransport = (request, protocolInstance)
             }
+            lock.unlock()
+
+            // expose the held first request to the test
+            if index == 1 {
+                firstStarted.fulfill()
+                return
+            }
+
+            secondStarted.fulfill()
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didReceive: response,
+                cacheStoragePolicy: .notAllowed
+            )
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didLoad: Data("response-\(index)".utf8)
+            )
+            protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
         }
         let client = client()
-        async let first = client.fetch()
-        try await Task.sleep(for: .milliseconds(20))
-        async let second = client.fetch()
-        let firstValue = try await first
-        let secondValue = try await second
+        let first = Task { try await client.fetch() }
+        await fulfillment(of: [firstStarted], timeout: 1)
+        let second = Task { try await client.fetch() }
+        await fulfillment(of: [secondStarted], timeout: 1)
+        let secondValue = try await second.value
+
+        lock.lock()
+        let retainedFirstTransport = firstTransport
+        let observedRequestCount = requestCount
+        lock.unlock()
+        let (firstRequest, firstProtocol) = try XCTUnwrap(retainedFirstTransport)
+        let firstResponse = HTTPURLResponse(
+            url: try XCTUnwrap(firstRequest.url),
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        firstProtocol.client?.urlProtocol(
+            firstProtocol,
+            didReceive: firstResponse,
+            cacheStoragePolicy: .notAllowed
+        )
+        firstProtocol.client?.urlProtocol(
+            firstProtocol,
+            didLoad: Data("response-1".utf8)
+        )
+        firstProtocol.client?.urlProtocolDidFinishLoading(firstProtocol)
+        let firstValue = try await first.value
+
+        XCTAssertEqual(observedRequestCount, 2)
         XCTAssertEqual(String(decoding: firstValue, as: UTF8.self), "response-1")
         XCTAssertEqual(String(decoding: secondValue, as: UTF8.self), "response-2")
     }
@@ -1350,6 +1387,7 @@ final class WeatherWidgetHTTPClientTests: XCTestCase {
     func testCancelledRequestCannotFinishLaterFetch() async throws {
         let lock = NSLock()
         var requestCount = 0
+        let firstStarted = expectation(description: "cancelled transport started")
         StubURLProtocol.handler = { request, protocolInstance in
             lock.lock()
             requestCount += 1
@@ -1357,6 +1395,7 @@ final class WeatherWidgetHTTPClientTests: XCTestCase {
             lock.unlock()
             // deliberately leave the cancelled first request pending
             if index == 1 {
+                firstStarted.fulfill()
                 return
             }
             let response = HTTPURLResponse(
@@ -1375,7 +1414,7 @@ final class WeatherWidgetHTTPClientTests: XCTestCase {
         }
         let client = client()
         let cancelled = Task { try await client.fetch() }
-        try await Task.sleep(for: .milliseconds(20))
+        await fulfillment(of: [firstStarted], timeout: 1)
         cancelled.cancel()
         let second = try await client.fetch()
         XCTAssertEqual(String(decoding: second, as: UTF8.self), "second")

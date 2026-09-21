@@ -1,8 +1,8 @@
-# Weather iOS M0
+# Weather iOS consumer
 
-This directory contains the credential-free iOS 17 scaffold for the Weather companion and the M0 WidgetKit feasibility spike. The app is a SwiftUI container around a persistent `WKWebView` for `https://weather.ballydidean.farm`. The extension is one configurable `systemMedium` widget using `AppIntentConfiguration`.
+This directory contains the credential-free iOS 17 Weather companion and WidgetKit consumer. The app is a SwiftUI container around a persistent `WKWebView` for `https://weather.ballydidean.farm`. The extension is one configurable `systemMedium` widget using `AppIntentConfiguration`.
 
-M0 deliberately renders deterministic fixtures. Production widget networking, cache persistence, timeline boundary entries, and the shared v1 snapshot decoder remain M4 work after the M0 native-host gate passes. No App Group, background `URLSession`, production signing credential, JavaScript bridge, transport exception, or publisher secret is present.
+Release builds fetch the fixed public widget endpoint with a bounded foreground request, decode the shared v1 snapshot, persist identity-bound last-good weather and separate attempt metadata in the extension container, and schedule semantic timeline boundaries. Historical M0 fixtures and current native acceptance probes are DEBUG-only. No App Group, background `URLSession`, production signing credential, JavaScript bridge, transport exception, or publisher secret is present.
 
 ## Toolchain
 
@@ -29,7 +29,7 @@ Official references:
 `Weather.xcodeproj` has these targets:
 
 - `Weather` — hosted SwiftUI/WKWebView companion
-- `WeatherWidgetExtension` — fixture-only M0 WidgetKit extension
+- `WeatherWidgetExtension` — production public-snapshot WidgetKit extension
 - `WeatherTests` — navigation, fixture, density, temperature, and intent tests
 - `WeatherUITests` — containing-app deep-link smoke and bounded actual-host matrix
 
@@ -39,7 +39,7 @@ Shared schemes:
 - `WeatherWidget-Maximum` — 21 intervals in seven three-hour groups, including repeated fall-back labels
 - `WeatherWidgetHostTests` — bounded public-XCUI placement, inspection, and tap
 
-The widget run scheme pins `_XCWidgetFamily=medium` and runs the product-shaped default maximum fixture. The host probe separately creates three clean Debug artifacts using exactly one of `WEATHER_M0_FIXTURE_MAXIMUM`, `WEATHER_M0_FIXTURE_NEAR_CUTOFF`, or `WEATHER_M0_FIXTURE_BEDTIME`. These provider-internal compilation conditions do not change the widget kind, family, view, semantics, or assertions. Each artifact has a source/toolchain/condition receipt plus app and extension binary hashes. Artifact replacement uninstalls the prior app and extension, verifies their absence, then re-places the actual widget through public SpringBoard UI. A Debug-only provider receipt binds the compilation condition to the resolved scenario and group/interval counts. Debug-only WebKit lifecycle receipts distinguish route updates, inline load requests, navigation completion or failure, and content-process termination when the deterministic deep-link document fails. A Debug-only containing-app launch argument requests a public `WidgetCenter` reload; provider logs, not the request itself, prove each refresh. `#if DEBUG` removes all diagnostic and fixture selectors from Release, which retains only the deterministic maximum fixture until M4 replaces fixtures with the public snapshot contract.
+The widget run scheme pins `_XCWidgetFamily=medium`. The historical M0 host probe separately creates three clean Debug artifacts using exactly one of `WEATHER_M0_FIXTURE_MAXIMUM`, `WEATHER_M0_FIXTURE_NEAR_CUTOFF`, or `WEATHER_M0_FIXTURE_BEDTIME`. These provider-internal compilation conditions do not change the widget kind, family, view, semantics, or assertions. Each artifact has a source/toolchain/condition receipt plus app and extension binary hashes. Artifact replacement uninstalls the prior app and extension, verifies their absence, then re-places the actual widget through public SpringBoard UI. A Debug-only provider receipt binds the compilation condition to the resolved scenario and group/interval counts. Debug-only WebKit lifecycle receipts distinguish route updates, inline load requests, navigation completion or failure, and content-process termination when the deterministic deep-link document fails. A Debug-only containing-app launch argument requests a public `WidgetCenter` reload; provider logs, not the request itself, prove each refresh. `#if DEBUG` removes all diagnostic, probe, and fixture selectors from Release; Release uses only the public snapshot client, decoder, store, provider, timeline, and production widget view.
 
 The widget launch actions match Apple's checked-in [Building Widgets Using WidgetKit and SwiftUI](https://developer.apple.com/documentation/widgetkit/building-widgets-using-widgetkit-and-swiftui) sample: the scheme is marked as an app-extension scheme, uses the extension PosixSpawn launcher, runs the extension as a mode-2 SpringBoard `RemoteRunnable`, expands build settings from the containing app, and requests automatic widget launch. This is Xcode scheme metadata for Apple's documented Product > Run behavior, not a production SpringBoard API or a runtime security exception.
 
@@ -151,9 +151,9 @@ The containing app:
 
 The widget's primary tap is the fixed `ballydidean-weather://forecast` route. Provider and license links are compile-time constants for Open-Meteo and CC BY 4.0; payload data never controls navigation.
 
-## M4 AppIntent lifecycle blocker
+## Current native acceptance boundary
 
-Compiled fixture artifacts prove only M0 rendering feasibility. They are not evidence that WidgetKit decodes or persists the product `temperatureUnit` AppIntent parameter. Before M4 completes, one real `systemMedium` widget must prove default Fahrenheit, public **Edit Widget** Fahrenheit-to-Celsius selection, persistence across extension or process restart, an actual Celsius provider receipt, matching visible and spoken Celsius output, and a return to Fahrenheit. Constructor-only unit tests do not satisfy that boundary.
+Historical compiled fixture artifacts prove only M0 rendering feasibility. Current source adds mandatory probes for a real `systemMedium` widget's default Fahrenheit configuration, public **Edit Widget** Fahrenheit-to-Celsius selection, extension restart, matching visible and spoken output, return to Fahrenheit, and identity-bound last-good weather plus failed-attempt persistence across process restart. These claims count only when the exact source commit passes the pinned macOS probes and independent host-appearance review. Constructor-only tests, compiled fixture variants, unsigned build success, or source inspection do not satisfy that runtime boundary.
 
 ## Deferred publisher work
 
