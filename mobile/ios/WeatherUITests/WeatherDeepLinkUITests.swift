@@ -95,23 +95,54 @@ final class WeatherDeepLinkUITests: XCTestCase {
         app: XCUIApplication,
         webView: XCUIElement
     ) throws {
-        let selector = webView.buttons["Fixture server unit"]
-        XCTAssertTrue(selector.waitForExistence(timeout: 5))
+        let selectControls = webView.otherElements.matching(
+            NSPredicate(
+                format: "label == %@ AND value == %@",
+                "Fixture server unit",
+                "Fahrenheit"
+            )
+        )
+        let selector = selectControls.firstMatch
+        // require the actual select, not its separate same-label text
+        guard selector.waitForExistence(timeout: 5), selectControls.count == 1 else {
+            attachHTTPSFixtureState("https-fixture-server-unit-before-select-failure", app: app, webView: webView)
+            XCTFail("fixture server unit select is missing or ambiguous")
+            return
+        }
         selector.tap()
         let picker = app.pickerWheels.firstMatch
         // use the standard iOS select picker when exposed
         if picker.waitForExistence(timeout: 3) {
             picker.adjust(toPickerWheelValue: unit)
             let done = app.toolbars.buttons["Done"]
-            XCTAssertTrue(done.waitForExistence(timeout: 3))
+            // require native picker confirmation before server submission
+            guard done.waitForExistence(timeout: 3) else {
+                attachHTTPSFixtureState("https-fixture-server-unit-picker-done-failure", app: app, webView: webView)
+                XCTFail("fixture server unit picker confirmation is missing")
+                return
+            }
             done.tap()
+        } else {
+            let option = app.descendants(matching: .any).matching(
+                NSPredicate(format: "label == %@", unit)
+            ).firstMatch
+            // expose the unknown native picker if no matching option appears
+            guard option.waitForExistence(timeout: 3) else {
+                attachHTTPSFixtureState("https-fixture-server-unit-picker-failure", app: app, webView: webView)
+                XCTFail("fixture server unit native option is missing")
+                return
+            }
+            option.tap()
+        }
+        let selectedControls = webView.otherElements.matching(
+            NSPredicate(format: "label == %@ AND value == %@", "Fixture server unit", unit)
+        )
+        // prove the HTML select changed before asking the server to save
+        guard selectedControls.firstMatch.waitForExistence(timeout: 5), selectedControls.count == 1 else {
+            attachHTTPSFixtureState("https-fixture-server-unit-selection-failure", app: app, webView: webView)
+            XCTFail("fixture server unit selection did not change")
             return
         }
-        let option = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label == %@", unit)
-        ).firstMatch
-        XCTAssertTrue(option.waitForExistence(timeout: 3))
-        option.tap()
     }
 
     // prove real TLS, cookie, settings, navigation, and denial journeys
