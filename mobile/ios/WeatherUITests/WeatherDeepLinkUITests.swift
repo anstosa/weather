@@ -3,19 +3,23 @@ import XCTest
 @MainActor
 final class WeatherDeepLinkUITests: XCTestCase {
     // preserve an actual loaded WebKit failure state
-    private func attachFailureState(_ app: XCUIApplication, webView: XCUIElement) {
+    private func attachFailureState(
+        _ app: XCUIApplication,
+        webView: XCUIElement,
+        name: String = "deep-link"
+    ) {
         let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "deep-link-loaded-document-failure"
+        screenshot.name = "\(name)-loaded-document-failure"
         screenshot.lifetime = .keepAlways
         add(screenshot)
 
         let hierarchy = XCTAttachment(string: app.debugDescription)
-        hierarchy.name = "deep-link-app-hierarchy"
+        hierarchy.name = "\(name)-app-hierarchy"
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
 
         let webViewState = XCTAttachment(string: webView.debugDescription)
-        webViewState.name = "deep-link-webview-hierarchy"
+        webViewState.name = "\(name)-webview-hierarchy"
         webViewState.lifetime = .keepAlways
         add(webViewState)
     }
@@ -50,7 +54,11 @@ final class WeatherDeepLinkUITests: XCTestCase {
 
         let webView = app.webViews["weather.webview"]
         XCTAssertTrue(webView.waitForExistence(timeout: 15))
-        XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
+        // retain the exact initial document proof and failed state
+        if !webView.staticTexts["Weather route /"].waitForExistence(timeout: 5) {
+            attachFailureState(app, webView: webView, name: "initial-home")
+            XCTFail("initial home route did not render the deterministic WebKit document")
+        }
 
         let forecastURL = try XCTUnwrap(URL(string: "ballydidean-weather://forecast"))
         XCUIDevice.shared.press(.home)

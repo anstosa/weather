@@ -410,6 +410,11 @@ jobs:
             ${{ runner.temp }}/weather-ios-build/test-attachments-export-status.txt
             ${{ runner.temp }}/weather-ios-build/test.log
             ${{ runner.temp }}/weather-ios-build/test-status.txt
+            ${{ runner.temp }}/weather-ios-build/simulator-udid.txt
+            ${{ runner.temp }}/weather-ios-build/test-app-lifecycle.log
+            ${{ runner.temp }}/weather-ios-build/test-app-lifecycle-start-status.txt
+            ${{ runner.temp }}/weather-ios-build/test-app-lifecycle-process-status.txt
+            ${{ runner.temp }}/weather-ios-build/test-app-lifecycle-status.txt
             ${{ runner.temp }}/weather-ios-build/release-build-analyze.log
             ${{ runner.temp }}/weather-ios-build/release-validation-passed.txt
             ${{ runner.temp }}/weather-ios-build/release-receipts/**
