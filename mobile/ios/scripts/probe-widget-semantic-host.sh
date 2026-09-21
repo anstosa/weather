@@ -6,17 +6,49 @@ IOS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="$IOS_ROOT/Weather.xcodeproj"
 RESULTS="${RESULTS:-$IOS_ROOT/.artifacts/widget-semantic-host}"
 APP_BUNDLE_ID="farm.ballydidean.weather"
+SIMULATOR_UDID=""
+SIMULATOR_BOOT_OWNED=0
+SIMULATOR_ALREADY_BOOTED=0
 LOG_PID=""
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
 
 # stop only the current bounded provider log
-cleanup() {
+stop_log_capture() {
   # flush one active semantic case
-  if [[ -n "$LOG_PID" ]] && kill -0 "$LOG_PID" 2>/dev/null; then
+  if [[ -n "$LOG_PID" ]]; then
+    # terminate only the active log process
     kill "$LOG_PID" 2>/dev/null || true
     wait "$LOG_PID" 2>/dev/null || true
+    LOG_PID=""
   fi
+}
+
+# flush logs and shut down only a self-booted simulator
+cleanup() {
+  local status=$?
+  trap - EXIT
+  stop_log_capture
+  # release only the boot owned by this probe
+  if [[ "$SIMULATOR_BOOT_OWNED" == 1 ]]; then
+    # record the exact owned shutdown outcome
+    if xcrun simctl shutdown "$SIMULATOR_UDID" > "$RESULTS/simulator-shutdown.log" 2>&1; then
+      printf 'self_booted_simulator_shutdown=%s\n' "$SIMULATOR_UDID" \
+        > "$RESULTS/simulator-cleanup.txt"
+    else
+      printf 'self_booted_simulator_shutdown_failed=%s\n' "$SIMULATOR_UDID" \
+        > "$RESULTS/simulator-cleanup.txt"
+      # retain an earlier failure instead of replacing it
+      if [[ "$status" -eq 0 ]]; then
+        status=78
+      fi
+    fi
+  # preserve a simulator already booted before this probe
+  elif [[ "$SIMULATOR_ALREADY_BOOTED" == 1 ]]; then
+    printf 'preexisting_booted_simulator_preserved=%s\n' "$SIMULATOR_UDID" \
+      > "$RESULTS/simulator-cleanup.txt"
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -68,8 +100,7 @@ run_case() {
     test-without-building | tee "$case_results/test.log"
   local test_status=${PIPESTATUS[0]}
   set -e
-  cleanup
-  LOG_PID=""
+  stop_log_capture
   printf '%s\n' "$test_status" > "$case_results/test-status.txt"
 
   mkdir -p "$attachments"
@@ -130,11 +161,14 @@ mkdir -p "$RESULTS/cases" "$RESULTS/DerivedData"
 : > "$RESULTS/semantic-host.log"
 
 # boot and pin normal visual state for semantic evidence
-if ! xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
-  # accept only an already-booted simulator
-  if ! grep -qi 'current state: Booted' "$RESULTS/simulator-boot.stderr"; then
-    exit 1
-  fi
+if xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
+  SIMULATOR_BOOT_OWNED=1
+# preserve a simulator already booted before this probe
+elif grep -qi 'current state: Booted' "$RESULTS/simulator-boot.stderr"; then
+  SIMULATOR_ALREADY_BOOTED=1
+else
+  cat "$RESULTS/simulator-boot.stderr" >&2
+  exit 1
 fi
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 xcrun simctl ui "$SIMULATOR_UDID" appearance light

@@ -177,7 +177,12 @@ final class WeatherDeepLinkUITests: XCTestCase {
         var app = try fixtureApp(path: "/admin")
         app.launch()
         var webView = app.webViews["weather.webview"]
-        XCTAssertTrue(webView.staticTexts["Fixture sign in"].waitForExistence(timeout: 15))
+        // retain the exact cold-load state without extending readiness time
+        guard webView.staticTexts["Fixture sign in"].waitForExistence(timeout: 15) else {
+            attachHTTPSFixtureState("https-fixture-initial-sign-in-failure", app: app, webView: webView)
+            XCTFail("initial fixture sign-in document did not load")
+            return
+        }
         let username = webView.textFields["Fixture username"]
         let password = webView.secureTextFields["Fixture password"]
         username.tap()

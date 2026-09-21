@@ -9,17 +9,44 @@ DERIVED_DATA="$RESULTS/DerivedData"
 ATTACHMENTS="$RESULTS/attachments"
 APP_BUNDLE_ID="farm.ballydidean.weather"
 SELECTOR="WEATHER_M0_FIXTURE_MAXIMUM"
+SIMULATOR_UDID=""
 LOG_PID=""
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
 
 # stop only this probe's active log stream
-cleanup() {
+stop_log_capture() {
   # flush the bounded provider receipt
-  if [[ -n "$LOG_PID" ]] && kill -0 "$LOG_PID" 2>/dev/null; then
+  if [[ -n "$LOG_PID" ]]; then
+    # terminate only the active log process
     kill "$LOG_PID" 2>/dev/null || true
     wait "$LOG_PID" 2>/dev/null || true
+    LOG_PID=""
   fi
+}
+
+# remove only the disposable simulator created by this probe
+cleanup() {
+  local status=$?
+  trap - EXIT
+  stop_log_capture
+  # delete only the recorded created device
+  if [[ -n "$SIMULATOR_UDID" ]]; then
+    xcrun simctl shutdown "$SIMULATOR_UDID" >/dev/null 2>&1 || true
+    # record deletion while preserving any earlier test failure
+    if xcrun simctl delete "$SIMULATOR_UDID" >/dev/null 2>&1; then
+      printf 'disposable_simulator_deleted=%s\n' "$SIMULATOR_UDID" \
+        > "$RESULTS/simulator-cleanup.txt"
+    else
+      printf 'disposable_simulator_delete_failed=%s\n' "$SIMULATOR_UDID" \
+        > "$RESULTS/simulator-cleanup.txt"
+      # fail a successful probe with a surviving container
+      if [[ "$status" -eq 0 ]]; then
+        status=78
+      fi
+    fi
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -86,27 +113,29 @@ fi
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
 
-# select the pinned simulator runtime and device
-SIMULATOR_UDID="$(xcrun simctl list devices available --json | python3 -c '
+# resolve only the pinned iPhone 17 and iOS 26.5 identifiers
+DEVICE_TYPE_IDENTIFIER="$(xcrun simctl list devicetypes --json | python3 -c '
 import json, sys
-payload = json.load(sys.stdin)
-for runtime, devices in payload["devices"].items():
-    if runtime.endswith("iOS-26-5"):
-        for device in devices:
-            if device["name"] == "iPhone 17" and device.get("isAvailable", False):
-                print(device["udid"])
-                raise SystemExit(0)
-raise SystemExit("no available iPhone 17 on iOS 26.5")
+for device in json.load(sys.stdin)["devicetypes"]:
+    if device["name"] == "iPhone 17":
+        print(device["identifier"])
+        raise SystemExit(0)
+raise SystemExit("iPhone 17 device type unavailable")
 ')"
-
-# boot only the selected simulator
-if ! xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
-  # accept only an already-booted simulator
-  if ! grep -qi 'current state: Booted' "$RESULTS/simulator-boot.stderr"; then
-    cat "$RESULTS/simulator-boot.stderr" >&2
-    exit 1
-  fi
-fi
+RUNTIME_IDENTIFIER="$(xcrun simctl list runtimes --json | python3 -c '
+import json, sys
+for runtime in json.load(sys.stdin)["runtimes"]:
+    if runtime["identifier"].endswith("iOS-26-5") and runtime.get("isAvailable", False):
+        print(runtime["identifier"])
+        raise SystemExit(0)
+raise SystemExit("iOS 26.5 runtime unavailable")
+')"
+SIMULATOR_UDID="$(xcrun simctl create \
+  "Weather Unit Probe $$" \
+  "$DEVICE_TYPE_IDENTIFIER" \
+  "$RUNTIME_IDENTIFIER")"
+printf '%s\n' "$SIMULATOR_UDID" > "$RESULTS/simulator-udid.txt"
+xcrun simctl boot "$SIMULATOR_UDID"
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
 {
@@ -135,8 +164,7 @@ xcrun simctl uninstall "$SIMULATOR_UDID" "$APP_BUNDLE_ID" \
 : > "$RESULTS/widget-unit.log"
 start_log_capture
 run_unit_test "test07TemperatureUnitEditToCelsius" "edit-to-celsius"
-cleanup
-LOG_PID=""
+stop_log_capture
 
 # force an extension-process restart without reading private state
 xcrun simctl shutdown "$SIMULATOR_UDID"
@@ -147,8 +175,7 @@ printf 'simulator-rebooted-between-unit-phases=1\n' > "$RESULTS/restart-receipt.
 # prove the persisted Celsius configuration survives before restoring Fahrenheit
 start_log_capture
 run_unit_test "test08TemperatureUnitPersistsAfterExtensionRestart" "restart-and-return-fahrenheit"
-cleanup
-LOG_PID=""
+stop_log_capture
 
 # require executed public edit, provider delivery, and both roundtrip values
 WIDGET_IDS="$(grep -oE 'widget-id=[^ ]+' "$RESULTS/widget-unit.log" || true)"

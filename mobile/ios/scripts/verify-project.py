@@ -284,6 +284,7 @@ def verify_release_reachable_sources() -> None:
     https_probe = (ROOT / "scripts/probe-webview-https.sh").read_text()
     unit_probe = (ROOT / "scripts/probe-widget-unit.sh").read_text()
     persistence_probe = (ROOT / "scripts/probe-widget-persistence.sh").read_text()
+    semantic_probe = (ROOT / "scripts/probe-widget-semantic-host.sh").read_text()
     ui_test_source = (ROOT / "WeatherUITests/WeatherDeepLinkUITests.swift").read_text()
     obsolete_fixture_controls = (
         "WEATHER_WIDGET_FIXTURE",
@@ -491,6 +492,8 @@ def verify_release_reachable_sources() -> None:
     https_ui_fragments = (
         "testHTTPSFixtureJourneys",
         "Fixture sign in",
+        'guard webView.staticTexts["Fixture sign in"].waitForExistence(timeout: 15) else',
+        'attachHTTPSFixtureState("https-fixture-initial-sign-in-failure"',
         "HttpOnly session hidden",
         "Server unit: Celsius",
         "Fixture session signed out",
@@ -632,6 +635,45 @@ def verify_release_reachable_sources() -> None:
     for fragment in unit_probe_fragments:
         if fragment not in unit_probe:
             fail(f"widget product-unit probe lacks {fragment}")
+    unit_lifecycle_fragments = (
+        'SIMULATOR_UDID=""',
+        '"Weather Unit Probe $$"',
+        'list devicetypes --json',
+        'list runtimes --json',
+        'xcrun simctl create',
+        'xcrun simctl delete "$SIMULATOR_UDID"',
+        'stop_log_capture',
+        'trap cleanup EXIT',
+    )
+    # retain a disposable product-unit Simulator and separate log flush
+    for fragment in unit_lifecycle_fragments:
+        # reject a missing ownership boundary
+        if fragment not in unit_probe:
+            fail(f"widget product-unit lifecycle lacks {fragment}")
+    # reject a borrowed destination or a mid-phase device deletion
+    if (
+        'list devices available --json' in unit_probe
+        or 'run_unit_test "test07TemperatureUnitEditToCelsius" "edit-to-celsius"\ncleanup' in unit_probe
+    ):
+        fail("widget product-unit probe reuses or prematurely deletes a Simulator")
+    # create before booting only the disposable destination
+    if unit_probe.find('xcrun simctl create') > unit_probe.find('xcrun simctl boot "$SIMULATOR_UDID"'):
+        fail("widget product-unit probe boots before creating its Simulator")
+    semantic_lifecycle_fragments = (
+        'SIMULATOR_BOOT_OWNED=0',
+        'SIMULATOR_ALREADY_BOOTED=0',
+        'SIMULATOR_BOOT_OWNED=1',
+        'SIMULATOR_ALREADY_BOOTED=1',
+        'stop_log_capture',
+        'trap cleanup EXIT',
+        'if [[ "$SIMULATOR_BOOT_OWNED" == 1 ]]; then',
+        'xcrun simctl shutdown "$SIMULATOR_UDID"',
+    )
+    # retain only self-booted semantic-host shutdown
+    for fragment in semantic_lifecycle_fragments:
+        # reject a missing semantic ownership boundary
+        if fragment not in semantic_probe:
+            fail(f"semantic host lifecycle lacks {fragment}")
     # reject evidence reuse before preflight creates the results directory
     if unit_probe.find('if [[ -e "$RESULTS" ]]') > unit_probe.find('"$SCRIPT_DIR/preflight.sh"'):
         fail("widget product-unit probe checks evidence reuse after preflight")
@@ -845,6 +887,14 @@ def verify_build_evidence() -> None:
         "-parallel-testing-enabled NO",
         'subsystem == "farm.ballydidean.weather"',
         'if [[ "$TEST_STATUS" -ne 0 ]]',
+        'SIMULATOR_BOOT_OWNED=0',
+        'SIMULATOR_ALREADY_BOOTED=0',
+        'SIMULATOR_BOOT_OWNED=1',
+        'SIMULATOR_ALREADY_BOOTED=1',
+        'trap cleanup EXIT',
+        'if [[ "$SIMULATOR_BOOT_OWNED" == 1 ]]; then',
+        'xcrun simctl shutdown "$SIMULATOR_UDID"',
+        'cat "$RESULTS/simulator-cleanup.txt"',
     )
     for fragment in required_fragments:
         # require durable stage evidence
@@ -853,6 +903,11 @@ def verify_build_evidence() -> None:
     stream_index = build.find("log stream")
     parallel_disabled_index = build.find("-parallel-testing-enabled NO")
     test_index = build.find('test | tee "$RESULTS/test.log"')
+    debug_build_index = build.find('build | tee "$RESULTS/debug-build.log"')
+    boot_index = build.find('if xcrun simctl boot "$SIMULATOR_UDID"')
+    # avoid consuming Simulator resources before the generic Debug build
+    if debug_build_index < 0 or boot_index < debug_build_index or boot_index > test_index:
+        fail("build script boots the selected Simulator outside the test phase")
     # start lifecycle capture before the test can stop the Simulator
     if test_index < 0 or stream_index > test_index:
         fail("build script starts lifecycle capture after Simulator tests")

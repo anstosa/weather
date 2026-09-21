@@ -7,6 +7,7 @@ import json
 import re
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import native_https_fixture as fixture
@@ -96,15 +97,18 @@ def verify_evidence(evidence: Path) -> None:
     events = [json.loads(line) for line in event_lines]
     allowed_event_fields = {
         "authenticated",
+        "atUtc",
         "cookieAccepted",
         "cookiePresent",
         "event",
         "method",
         "path",
+        "requestSequence",
         "sequence",
         "setting",
         "status",
     }
+    pending_admin: dict[int, dict[str, object]] = {}
     # validate every receipt shape and ordering
     for expected_sequence, event in enumerate(events, start=1):
         # reject extra fields that could retain request material
@@ -113,6 +117,50 @@ def verify_evidence(evidence: Path) -> None:
         # require contiguous server ordering
         if event.get("sequence") != expected_sequence:
             raise ValueError("fixture event sequence is not contiguous")
+        event_name = event.get("event")
+        # restrict timestamped milestones to the exact admin GET response
+        if event_name in {"unauthenticated-admin", "authenticated-admin", "admin-response-written"}:
+            at_utc = event.get("atUtc")
+            # require one parseable millisecond UTC timestamp
+            if not isinstance(at_utc, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", at_utc):
+                raise ValueError("fixture admin timestamp is malformed")
+            # parse the full calendar date
+            try:
+                datetime.strptime(at_utc, "%Y-%m-%dT%H:%M:%S.%fZ")
+            # reject calendar-invalid timestamps
+            except ValueError as error:
+                raise ValueError("fixture admin timestamp is invalid") from error
+            # require the frozen successful admin route
+            if event.get("method") != "GET" or event.get("path") != "/admin" or event.get("status") != 200:
+                raise ValueError("fixture admin milestone is not an exact successful GET")
+            signature = (event.get("authenticated"), event.get("cookiePresent"), event.get("cookieAccepted"))
+            # reject untyped session-state receipts
+            if not all(isinstance(value, bool) for value in signature):
+                raise ValueError("fixture admin milestone has untyped session state")
+            # match each completed write to an already-recorded admin request
+            if event_name == "admin-response-written":
+                request_sequence = event.get("requestSequence")
+                # require one strict earlier positive request identity
+                if type(request_sequence) is not int or not 0 < request_sequence < expected_sequence:
+                    raise ValueError("fixture admin response write has an invalid request sequence")
+                request = pending_admin.pop(request_sequence, None)
+                # reject orphan or duplicate completions
+                if request is None:
+                    raise ValueError("fixture admin response write lacks its request")
+                # preserve the exact request session state
+                if signature != (request["authenticated"], request["cookiePresent"], request["cookieAccepted"]):
+                    raise ValueError("fixture admin response write mismatches its request")
+            else:
+                # keep request references off prewrite receipts
+                if "requestSequence" in event:
+                    raise ValueError("fixture admin request has a response reference")
+                pending_admin[expected_sequence] = event
+        # prevent admin-only fields from leaking into other events
+        elif "atUtc" in event or "requestSequence" in event:
+            raise ValueError("fixture non-admin event has an admin milestone field")
+    # require all successful fixture journeys to finish admin writes
+    if any(pending_admin.values()):
+        raise ValueError("fixture admin request lacks a completed response write")
 
     serialized_events = json.dumps(events, sort_keys=True)
     # reject the known secret and raw header vocabulary

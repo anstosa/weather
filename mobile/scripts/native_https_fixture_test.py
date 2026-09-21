@@ -14,6 +14,8 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 from urllib.parse import urlencode
 
 import native_https_fixture as fixture
@@ -203,6 +205,79 @@ def exercise_client() -> int:
 class NativeHTTPSFixtureTest(unittest.TestCase):
     """Lock the shared HTTPS fixture contract."""
 
+    # require a post-write receipt only after admin response completion
+    def test_admin_response_receipt_requires_successful_write(self) -> None:
+        """Separate request arrival from completed server-side response writes."""
+        with tempfile.TemporaryDirectory(prefix="weather-fixture-admin-write-") as root:
+            events_path = Path(root) / "events.jsonl"
+            state = fixture.FixtureState(events_path)
+            handler = fixture.FixtureRequestHandler.__new__(fixture.FixtureRequestHandler)
+            handler.server = SimpleNamespace(fixture_state=state, listener_name="trusted")
+            handler.path = "/admin"
+            handler.command = "GET"
+            handler.headers = {"Host": "127.0.0.1"}
+            handler.send_response = Mock()
+            handler.send_header = Mock()
+            handler.end_headers = Mock()
+            handler.wfile = SimpleNamespace(write=Mock())
+
+            handler.do_GET()
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            self.assertEqual([event["event"] for event in events], ["unauthenticated-admin", "admin-response-written"])
+            self.assertEqual(events[0]["path"], "/admin")
+            self.assertEqual(events[1]["status"], 200)
+            self.assertEqual(events[1]["requestSequence"], events[0]["sequence"])
+            self.assertIn("atUtc", events[0])
+            self.assertIn("atUtc", events[1])
+            self.assertIn(b"Fixture sign in", handler.wfile.write.call_args.args[0])
+
+            # reset only this in-memory receipt boundary before a failed write
+            state = fixture.FixtureState(events_path)
+            handler.server = SimpleNamespace(fixture_state=state, listener_name="trusted")
+            handler.wfile = SimpleNamespace(write=Mock(side_effect=BrokenPipeError("simulated body write failure")))
+            with self.assertRaises(BrokenPipeError):
+                handler.do_GET()
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            self.assertEqual([event["event"] for event in events], ["unauthenticated-admin"])
+            handler.wfile.write.assert_called_once()
+
+    # bind interleaved same-session writes to their exact requests
+    def test_admin_response_receipts_preserve_interleaved_request_identity(self) -> None:
+        """Require per-request sequence references when completion order reverses."""
+        with tempfile.TemporaryDirectory(prefix="weather-fixture-admin-interleave-") as root:
+            events_path = Path(root) / "events.jsonl"
+            state = fixture.FixtureState(events_path)
+
+            # create only the minimal real handler methods for two GETs
+            def make_handler() -> fixture.FixtureRequestHandler:
+                handler = fixture.FixtureRequestHandler.__new__(fixture.FixtureRequestHandler)
+                handler.server = SimpleNamespace(fixture_state=state, listener_name="trusted")
+                handler.path = "/admin"
+                handler.command = "GET"
+                handler.headers = {"Host": "127.0.0.1"}
+                handler.send_response = Mock()
+                handler.send_header = Mock()
+                handler.end_headers = Mock()
+                handler.wfile = SimpleNamespace(write=Mock())
+                return handler
+
+            first = make_handler()
+            second = make_handler()
+
+            # finish the second response while the first body write is active
+            def interleave_write(_body: bytes) -> None:
+                second.do_GET()
+
+            first.wfile.write = Mock(side_effect=interleave_write)
+            first.do_GET()
+            events = [json.loads(line) for line in events_path.read_text().splitlines()]
+            self.assertEqual(
+                [event["event"] for event in events],
+                ["unauthenticated-admin", "unauthenticated-admin", "admin-response-written", "admin-response-written"],
+            )
+            self.assertEqual(events[2]["requestSequence"], events[1]["sequence"])
+            self.assertEqual(events[3]["requestSequence"], events[0]["sequence"])
+
     # verify the production-shaped cookie attributes exactly
     def test_cookie_headers_are_exact(self) -> None:
         """Require exact login and logout cookie contracts."""
@@ -368,6 +443,10 @@ class NativeHTTPSFixtureTest(unittest.TestCase):
             self.assertTrue(by_name["logout-cookie-cleared"]["cookiePresent"])
             self.assertTrue(by_name["logout-cookie-cleared"]["cookieAccepted"])
             self.assertFalse(by_name["unauthenticated-admin"]["authenticated"])
+            self.assertEqual(by_name["admin-response-written"]["path"], "/admin")
+            self.assertIn("atUtc", by_name["unauthenticated-admin"])
+            self.assertIn("atUtc", by_name["admin-response-written"])
+            self.assertGreater(by_name["admin-response-written"]["requestSequence"], 0)
             receipt_text = "\n".join(
                 path.read_text()
                 for path in evidence.iterdir()
@@ -384,6 +463,44 @@ class NativeHTTPSFixtureTest(unittest.TestCase):
                 self.assertNotIn(forbidden, receipt_text)
             self.assertFalse(any(path.name.endswith("key.pem") for path in evidence.iterdir()))
             verify_evidence(evidence)
+
+            # rewrite only disposable test receipts for verifier rejection cases
+            def write_events(receipts: list[dict[str, object]]) -> None:
+                (evidence / "events.jsonl").write_text(
+                    "".join(json.dumps(event, sort_keys=True) + "\n" for event in receipts)
+                )
+
+            # reject an impossible calendar timestamp
+            altered = [dict(event) for event in events]
+            admin_write = next(event for event in altered if event["event"] == "admin-response-written")
+            admin_write["atUtc"] = "2026-99-21T09:18:01.000Z"
+            write_events(altered)
+            with self.assertRaisesRegex(ValueError, "fixture admin timestamp is invalid"):
+                verify_evidence(evidence)
+
+            # reject a response linked to an absent request
+            altered = [dict(event) for event in events]
+            admin_write = next(event for event in altered if event["event"] == "admin-response-written")
+            admin_write["requestSequence"] = 999_999
+            write_events(altered)
+            with self.assertRaisesRegex(ValueError, "invalid request sequence"):
+                verify_evidence(evidence)
+
+            # reject reuse of an already-consumed request identity
+            altered = [dict(event) for event in events]
+            admin_writes = [event for event in altered if event["event"] == "admin-response-written"]
+            admin_writes[1]["requestSequence"] = admin_writes[0]["requestSequence"]
+            write_events(altered)
+            with self.assertRaisesRegex(ValueError, "lacks its request"):
+                verify_evidence(evidence)
+
+            # reject a write with altered session state for its exact request
+            altered = [dict(event) for event in events]
+            admin_write = next(event for event in altered if event["event"] == "admin-response-written")
+            admin_write["authenticated"] = not admin_write["authenticated"]
+            write_events(altered)
+            with self.assertRaisesRegex(ValueError, "mismatches its request"):
+                verify_evidence(evidence)
 
     # verify private evidence cannot accidentally land in the checkout
     def test_wrapper_rejects_repository_evidence_path(self) -> None:

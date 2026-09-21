@@ -19,6 +19,7 @@ import stat
 import subprocess
 import threading
 from collections import Counter
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -284,8 +285,10 @@ class FixtureState:
         cookie_accepted: bool = False,
         authenticated: bool = False,
         setting: str | None = None,
-    ) -> None:
-        """Append one sanitized JSON receipt."""
+        timestamped: bool = False,
+        request_sequence: int | None = None,
+    ) -> int:
+        """Append one sanitized JSON receipt and return its sequence."""
         with self.lock:
             self.sequence += 1
             self.event_counts[event] += 1
@@ -299,11 +302,18 @@ class FixtureState:
                 "sequence": self.sequence,
                 "status": status_code,
             }
+            # timestamp only the bounded admin request and response milestones
+            if timestamped:
+                receipt["atUtc"] = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            # bind only a completed admin write to its request
+            if request_sequence is not None:
+                receipt["requestSequence"] = request_sequence
             # retain only the two allowlisted unit values
             if setting in {"fahrenheit", "celsius"}:
                 receipt["setting"] = setting
             with self.events_path.open("a") as output:
                 output.write(json.dumps(receipt, sort_keys=True) + "\n")
+            return self.sequence
 
     # write aggregate event counts after clean server shutdown
     def write_summary(self, path: Path) -> None:
@@ -603,7 +613,7 @@ class FixtureRequestHandler(BaseHTTPRequestHandler):
             present, accepted = self.session()
             event = "authenticated-admin" if accepted else "unauthenticated-admin"
             body = administration_page(host, self.fixture_state.get_server_unit()) if accepted else login_page(host)
-            self.fixture_state.record(
+            request_sequence = self.fixture_state.record(
                 event,
                 method="GET",
                 path=parsed.path,
@@ -611,8 +621,21 @@ class FixtureRequestHandler(BaseHTTPRequestHandler):
                 cookie_present=present,
                 cookie_accepted=accepted,
                 authenticated=accepted,
+                timestamped=True,
             )
             self.respond(HTTPStatus.OK, body)
+            # record only a completed server-side write, not client receipt
+            self.fixture_state.record(
+                "admin-response-written",
+                method="GET",
+                path="/admin",
+                status_code=HTTPStatus.OK,
+                cookie_present=present,
+                cookie_accepted=accepted,
+                authenticated=accepted,
+                timestamped=True,
+                request_sequence=request_sequence,
+            )
             return
         # expose a protected machine-readable setting for integration assertions
         if parsed.path == "/admin/settings-state":

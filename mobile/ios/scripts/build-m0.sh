@@ -8,8 +8,48 @@ RESULTS="${RESULTS:-$IOS_ROOT/.artifacts}"
 DERIVED_DATA="$RESULTS/DerivedData"
 RESULT_BUNDLE="$RESULTS/Weather.xcresult"
 TEST_ATTACHMENTS="$RESULTS/test-attachments"
+SIMULATOR_UDID=""
+SIMULATOR_BOOT_OWNED=0
+SIMULATOR_ALREADY_BOOTED=0
+TEST_APP_LIFECYCLE_PID=""
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
+
+# flush diagnostics and release only this script's simulator boot
+cleanup() {
+  local status=$?
+  trap - EXIT
+  # stop a stream left active by an earlier failure
+  if [[ -n "$TEST_APP_LIFECYCLE_PID" ]]; then
+    # terminate only this script's log process
+    kill "$TEST_APP_LIFECYCLE_PID" 2>/dev/null || true
+    wait "$TEST_APP_LIFECYCLE_PID" 2>/dev/null || true
+  fi
+  # shut down only a simulator this script booted
+  if [[ "$SIMULATOR_BOOT_OWNED" == 1 ]]; then
+    # record the exact owned shutdown outcome
+    if xcrun simctl shutdown "$SIMULATOR_UDID" > "$RESULTS/simulator-shutdown.log" 2>&1; then
+      printf 'self_booted_simulator_shutdown=%s\n' "$SIMULATOR_UDID" \
+        > "$RESULTS/simulator-cleanup.txt"
+      cat "$RESULTS/simulator-cleanup.txt"
+    else
+      printf 'self_booted_simulator_shutdown_failed=%s\n' "$SIMULATOR_UDID" \
+        > "$RESULTS/simulator-cleanup.txt"
+      cat "$RESULTS/simulator-cleanup.txt"
+      # retain an earlier failure instead of replacing it
+      if [[ "$status" -eq 0 ]]; then
+        status=78
+      fi
+    fi
+  # preserve an already-booted simulator owned elsewhere
+  elif [[ "$SIMULATOR_ALREADY_BOOTED" == 1 ]]; then
+    printf 'preexisting_booted_simulator_preserved=%s\n' "$SIMULATOR_UDID" \
+      > "$RESULTS/simulator-cleanup.txt"
+    cat "$RESULTS/simulator-cleanup.txt"
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
@@ -33,17 +73,6 @@ for runtime, devices in payload["devices"].items():
 raise SystemExit("no available iPhone 17 on iOS 26.5")
 ')"
 
-# boot the selected simulator
-if ! xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
-  # accept only an already-booted simulator
-  if ! grep -qi 'current state: Booted' "$RESULTS/simulator-boot.stderr"; then
-    cat "$RESULTS/simulator-boot.stderr" >&2
-    exit 1
-  fi
-fi
-xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-printf '%s\n' "$SIMULATOR_UDID" > "$RESULTS/simulator-udid.txt"
-
 # compile the app and embedded widget without publisher signing
 xcodebuild \
   -project "$PROJECT" \
@@ -58,6 +87,19 @@ xcodebuild \
 printf 'source_commit=%s\ndebug_build=passed\n' \
   "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)" \
   > "$RESULTS/debug-build-passed.txt"
+
+# boot only after the generic Debug artifact exists
+if xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
+  SIMULATOR_BOOT_OWNED=1
+# preserve a simulator already booted before this script
+elif grep -qi 'current state: Booted' "$RESULTS/simulator-boot.stderr"; then
+  SIMULATOR_ALREADY_BOOTED=1
+else
+  cat "$RESULTS/simulator-boot.stderr" >&2
+  exit 1
+fi
+xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+printf '%s\n' "$SIMULATOR_UDID" > "$RESULTS/simulator-udid.txt"
 
 # stream diagnostics before tests can stop the Simulator
 set +e
@@ -100,6 +142,7 @@ else
   TEST_APP_LIFECYCLE_PROCESS_STATUS=$?
   TEST_APP_LIFECYCLE_STATUS=$TEST_APP_LIFECYCLE_PROCESS_STATUS
 fi
+TEST_APP_LIFECYCLE_PID=""
 set -e
 printf '%s\n' "$TEST_STATUS" > "$RESULTS/test-status.txt"
 printf '%s\n' "$TEST_ATTACHMENTS_STATUS" > "$RESULTS/test-attachments-export-status.txt"
