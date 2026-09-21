@@ -23,6 +23,7 @@ const xweatherOrigin = parseXweatherOrigin(
 const xweatherCredentials = await loadXweatherCredentials();
 const port = parsePort(process.env.PORT ?? "3000");
 const release = parseAssetRelease(process.env.WEATHER_RELEASE ?? "development");
+const productionAnalytics = process.env.NODE_ENV === "production" && release !== "development";
 const homeNetworkMatcher = new HomeNetworkMatcher();
 const forecastMapPreloadSite = await loadForecastMapPreloadSite(
   process.env.WEATHER_SITE_CONFIG_PATH ?? join(root, "config/sites/ballydidean.json"),
@@ -186,13 +187,14 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    const analyticsEnabled = productionAnalytics && isHtmlTemplate && !isAdmin;
     const source = await readFile(asset.path);
     const body = asset.template === true
-      ? Buffer.from(renderHtmlTemplate(source.toString("utf8"), requestUrl.pathname, isAdmin))
+      ? Buffer.from(renderHtmlTemplate(source.toString("utf8"), requestUrl.pathname, isAdmin, analyticsEnabled))
       : source;
     // permit only HTML documents to render across iframe origins
     if (isHtmlTemplate) {
-      setHtmlSecurityHeaders(response);
+      setHtmlSecurityHeaders(response, analyticsEnabled);
     } else {
       setSecurityHeaders(response);
     }
@@ -598,10 +600,11 @@ function redirectRemoteAgentsBrowser(response, requestUrl) {
 }
 
 // render one route-aware release template
-function renderHtmlTemplate(source, pathname, isAdmin) {
+function renderHtmlTemplate(source, pathname, isAdmin, analyticsEnabled) {
   return source
     .replaceAll("__WEATHER_ASSET_VERSION__", release)
     .replaceAll("__WEATHER_ADMIN__", String(isAdmin))
+    .replaceAll("__WEATHER_ANALYTICS__", String(analyticsEnabled))
     .replaceAll("__WEATHER_ROUTE_PRELOAD__", forecastMapPreloadLink(pathname));
 }
 
@@ -1411,10 +1414,15 @@ async function readBoundedBody(upstream, maximumBytes, description) {
 }
 
 // apply response hardening
-function setSecurityHeaders(response) {
+function setSecurityHeaders(response, analyticsEnabled = false) {
+  const analyticsScripts = analyticsEnabled ? " https://www.googletagmanager.com" : "";
+  const analyticsConnections = analyticsEnabled
+    ? " https://www.googletagmanager.com https://*.google-analytics.com https://*.google.com"
+    : "";
+  const analyticsImages = analyticsEnabled ? " https://www.googletagmanager.com https://*.google-analytics.com" : "";
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; frame-ancestors *; form-action 'self'; img-src 'self' blob: data: https://tile.openstreetmap.org https://basemap.nationalmap.gov https://imagery.nationalmap.gov; object-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'",
+    `default-src 'self'; base-uri 'none'; connect-src 'self'${analyticsConnections}; font-src 'self'; frame-ancestors *; form-action 'self'; img-src 'self' blob: data: https://tile.openstreetmap.org https://basemap.nationalmap.gov https://imagery.nationalmap.gov${analyticsImages}; object-src 'none'; script-src 'self'${analyticsScripts}; style-src 'self'; worker-src 'self'`,
   );
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -1422,8 +1430,8 @@ function setSecurityHeaders(response) {
 }
 
 // allow protected HTML documents to load in external iframes
-function setHtmlSecurityHeaders(response) {
-  setSecurityHeaders(response);
+function setHtmlSecurityHeaders(response, analyticsEnabled = false) {
+  setSecurityHeaders(response, analyticsEnabled);
   response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
 }
 

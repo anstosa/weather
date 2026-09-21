@@ -615,7 +615,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
   await mkdir(join(fixtureRoot, "config/sites"), { recursive: true });
   await writeFile(
     join(fixtureRoot, "apps/web/public/index.html"),
-    '<!doctype html><html data-weather-admin="__WEATHER_ADMIN__"><title>Weather</title><link rel="manifest" href="/manifest.webmanifest">__WEATHER_ROUTE_PRELOAD__<link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css"><script type="module" src="/assets/__WEATHER_ASSET_VERSION__/client.js"></script></html>\n',
+    '<!doctype html><html data-weather-admin="__WEATHER_ADMIN__" data-weather-analytics="__WEATHER_ANALYTICS__"><title>Weather</title><link rel="manifest" href="/manifest.webmanifest">__WEATHER_ROUTE_PRELOAD__<link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css"><script type="module" src="/assets/__WEATHER_ASSET_VERSION__/client.js"></script></html>\n',
   );
   await writeFile(
     join(fixtureRoot, "apps/web/public/admin-login.html"),
@@ -803,6 +803,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     cwd: fixtureRoot,
     env: {
       ...process.env,
+      NODE_ENV: "production",
       PORT: String(webPort),
       WEATHER_API_ORIGIN: `http://127.0.0.1:${apiPort}`,
       WEATHER_ADMIN_AUTH_PATH: adminAuthPath,
@@ -1207,6 +1208,16 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const mapBody = await map.text();
     const trendsBody = await trends.text();
     const settingsBody = await settings.text();
+    // permit analytics only in unauthenticated production page shells
+    for (const body of [homeBody, forecastBody, logsBody, mapBody, trendsBody, settingsBody]) {
+      assert.match(body, /data-weather-analytics="true"/u);
+      assert.doesNotMatch(body, /__WEATHER_ANALYTICS__/u);
+    }
+    // retain the authenticated and login privacy boundaries
+    for (const body of [authenticatedHomeBody, adminBody]) {
+      assert.match(body, /data-weather-analytics="false"/u);
+    }
+    assert.doesNotMatch(adminLoginBody, /data-weather-analytics="true"|googletagmanager/u);
     assert.match(homeBody, /<title>Weather<\/title>/u);
     assert.match(homeBody, /data-weather-admin="false"/u);
     assert.match(authenticatedHomeBody, /data-weather-admin="true"/u);
@@ -1334,6 +1345,15 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       assert.ok((xweatherStartedAt[index] ?? 0) - (xweatherStartedAt[index - 1] ?? 0) >= 100);
     }
     assert.match(home.headers.get("content-security-policy"), /default-src 'self'/u);
+    assert.match(home.headers.get("content-security-policy"), /script-src 'self' https:\/\/www\.googletagmanager\.com;/u);
+    assert.match(home.headers.get("content-security-policy"), /connect-src 'self' https:\/\/www\.googletagmanager\.com https:\/\/\*\.google-analytics\.com https:\/\/\*\.google\.com;/u);
+    assert.match(home.headers.get("content-security-policy"), /img-src [^;]* https:\/\/www\.googletagmanager\.com https:\/\/\*\.google-analytics\.com;/u);
+    assert.doesNotMatch(home.headers.get("content-security-policy"), /unsafe-inline|unsafe-eval/u);
+    // keep third-party script permissions off sensitive documents and non-html responses
+    for (const response of [adminBeforeBootstrap, admin, authenticatedHome, client, serviceWorker, manifest, viewerContext, proxied, unknown]) {
+      assert.doesNotMatch(response.headers.get("content-security-policy"), /google/u);
+      assert.match(response.headers.get("content-security-policy"), /script-src 'self';/u);
+    }
     // allow tunnel preview embedding
     assert.match(home.headers.get("content-security-policy"), /frame-ancestors \*/u);
     assert.match(
@@ -1357,6 +1377,53 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     xweather.close();
     await once(xweather, "close");
     await rm(fixtureRoot, { force: true, recursive: true });
+  }
+});
+
+// require both an immutable release and the production runtime before enabling analytics
+test("web edge excludes analytics from development and nonproduction runtimes", async () => {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "weather-analytics-edge-"));
+  try {
+    // exercise each false side of the production gate independently
+    for (const [runtime, release] of [["production", "development"], ["development", "2026.09.21-3"], ["test", "2026.09.21-3"]]) {
+      const port = await reservePort();
+      const edge = spawn(process.execPath, [join(scriptsRoot, "web-server.mjs")], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          NODE_ENV: runtime,
+          PORT: String(port),
+          WEATHER_RELEASE: release,
+          WEATHER_API_ORIGIN: "http://127.0.0.1:9",
+          WEATHER_ADMIN_AUTH_PATH: join(temporaryRoot, "auth.json"),
+          WEATHER_ADMIN_BOOTSTRAP_TOKEN_PATH: join(temporaryRoot, "absent-bootstrap"),
+          WEATHER_PROPERTY_SENSOR_LAYOUT_PATH: join(temporaryRoot, "layout.json"),
+          WEATHER_XWEATHER_CLIENT_ID_FILE: join(temporaryRoot, "absent-client-id"),
+          WEATHER_XWEATHER_CLIENT_SECRET_FILE: join(temporaryRoot, "absent-client-secret"),
+          WEATHER_XWEATHER_USAGE_PATH: join(temporaryRoot, "usage.json"),
+        },
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      const diagnostics = [];
+      // retain disposable startup errors for failed assertions
+      edge.stderr.on("data", (chunk) => diagnostics.push(String(chunk)));
+      try {
+        await waitForServer(`http://127.0.0.1:${port}/`);
+        const response = await fetch(`http://127.0.0.1:${port}/`);
+        assert.equal(response.status, 200, diagnostics.join(""));
+        assert.match(await response.text(), /data-weather-analytics="false"/u);
+        assert.doesNotMatch(response.headers.get("content-security-policy"), /google/u);
+        assert.match(response.headers.get("content-security-policy"), /connect-src 'self';/u);
+        assert.match(response.headers.get("content-security-policy"), /script-src 'self';/u);
+      } finally {
+        // stop only this disposable server before the next environment
+        const stopped = once(edge, "exit");
+        edge.kill("SIGTERM");
+        await stopped;
+      }
+    }
+  } finally {
+    await rm(temporaryRoot, { force: true, recursive: true });
   }
 });
 

@@ -989,6 +989,7 @@ async function startFixtureServer() {
                 : "",
             )
             .replaceAll("__WEATHER_ROUTE_PRELOAD__", "")
+            .replaceAll("__WEATHER_ANALYTICS__", "false")
           : source,
       );
       return;
@@ -1553,6 +1554,89 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await page.close();
   } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// enforce both the server production marker and the exact public origin
+test("google tag is production-only and initializes once without blocking navigation", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  try {
+    browser = await launchBrowser();
+    // keep real analytics traffic out of fixture validation
+    for (const { origin, enabled, admin = false, blocked = false, tracked } of [
+      { origin: "https://weather.ballydidean.farm", enabled: true, tracked: true },
+      { origin: "https://weather.ballydidean.farm", enabled: true, blocked: true, tracked: true },
+      { origin: "https://weather.ballydidean.farm", enabled: false, tracked: false },
+      { origin: "https://weather.ballydidean.farm", enabled: true, admin: true, tracked: false },
+      { origin: fixture.origin, enabled: true, tracked: false },
+      { origin: "https://preview.example", enabled: true, tracked: false },
+      { origin: "https://weather.ballydidean.farm.preview.example", enabled: true, tracked: false },
+    ]) {
+      const page = await createFixturePage(browser, { serviceWorkers: "block", viewport: { height: 900, width: 390 } });
+      const errors = [];
+      const tagRequests = [];
+      // record uncaught application failures even when the tag is blocked
+      page.on("pageerror", (error) => errors.push(error.message));
+      // serve only disposable fixture bytes under the tested origin
+      await page.route(`${origin}/**`, async (route) => {
+        const url = new URL(route.request().url());
+        const response = await route.fetch({ url: `${fixture.origin}${url.pathname}${url.search}` });
+        // model the server's HTML marker without changing other response bytes
+        if (response.headers()["content-type"]?.includes("text/html")) {
+          const body = (await response.text())
+            .replace('data-weather-analytics="false"', `data-weather-analytics="${String(enabled)}"`)
+            .replace('data-weather-admin="false"', `data-weather-admin="${String(admin)}"`);
+          await route.fulfill({ response, body });
+          return;
+        }
+        await route.fulfill({ response });
+      });
+      // stub the third-party loader so tests never send production events
+      await page.route("https://www.googletagmanager.com/**", async (route) => {
+        tagRequests.push(route.request().url());
+        // simulate an ad blocker without changing the application shell
+        if (blocked) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        await route.fulfill({ status: 200, contentType: "text/javascript", body: "" });
+      });
+      await page.goto(origin, { waitUntil: "networkidle" });
+      await page.locator(".current-conditions").waitFor();
+      assert.deepEqual(tagRequests, tracked ? ["https://www.googletagmanager.com/gtag/js?id=G-NYT2EZS8BX"] : []);
+      assert.equal(await page.locator("#weather-google-tag").count(), tracked ? 1 : 0);
+      const commands = await page.evaluate(
+        // inspect the queued bootstrap independently of the stubbed loader
+        () => (window.dataLayer ?? []).map((command) => Array.from(command)),
+      );
+      assert.equal(commands.length, tracked ? 2 : 0);
+      // require the exact requested destination and disable advertising features
+      if (tracked) {
+        assert.equal(commands[0][0], "js");
+        assert.deepEqual(commands[1], ["config", "G-NYT2EZS8BX", {
+          allow_google_signals: false,
+          allow_ad_personalization_signals: false,
+        }]);
+      }
+      await page.getByRole("link", { name: "Forecast", exact: true }).click();
+      await page.waitForURL(`${origin}/forecast`);
+      await page.locator(".forecast-panel").waitFor();
+      await page.goBack();
+      await page.locator(".current-conditions").waitFor();
+      assert.equal(tagRequests.length, tracked ? 1 : 0);
+      assert.equal(await page.evaluate(
+        // leave page-view events to enhanced measurement rather than duplicating them
+        () => window.dataLayer?.length ?? 0,
+      ), tracked ? 2 : 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    // release only the disposable fixture and browser
     await browser?.close();
     fixture.server.close();
     await once(fixture.server, "close");
