@@ -1260,6 +1260,92 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
+    // query public configuration before reopening the failed edit
+    private func diagnoseFailedTemperatureConfiguration(app: XCUIApplication) throws {
+        app.terminate()
+        app.launchArguments = ["-weather-ui-test", "-weather-widget-configuration-diagnostic"]
+        app.launch()
+        let diagnostic = app.staticTexts["weather.widget.configuration"]
+        let refresh = app.buttons["weather.widget.configuration.refresh"]
+        let deadline = Date().addingTimeInterval(10)
+        // retain any complete count and unit as observation, never acceptance
+        repeat {
+            let value = String(describing: refresh.value ?? "")
+            let currentEpoch = value.hasPrefix("epoch=") ? Int(value.dropFirst(6)) : nil
+            if diagnostic.exists,
+               let currentEpoch,
+               let summary = WidgetConfigurationReceipt(diagnostic.label),
+               summary.epoch == currentEpoch,
+               summary.status != "pending" {
+                let receipt = XCTAttachment(string: diagnostic.label)
+                receipt.name = "unit-failure-fresh-typed-observation"
+                receipt.lifetime = .keepAlways
+                add(receipt)
+                attachState(app, name: "unit-failure-fresh-typed-observation")
+                return
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        attachState(app, name: "unit-failure-fresh-typed-observation-timeout")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 20,
+            userInfo: [NSLocalizedDescriptionKey: "failed-edit typed diagnostic did not complete"]
+        )
+    }
+
+    // observe the same host's edit row after the public query
+    private func diagnoseFailedTemperatureRow(
+        springboard: XCUIApplication,
+        originalFrame: CGRect
+    ) throws {
+        XCUIDevice.shared.press(.home)
+        try requireHomeScreen(on: springboard)
+        let host = try widgetHostElement(on: springboard)
+        let frame = host.frame
+        // refuse a different placement as diagnostic evidence
+        guard abs(frame.minX - originalFrame.minX) <= 2,
+              abs(frame.minY - originalFrame.minY) <= 2,
+              abs(frame.width - originalFrame.width) <= 2,
+              abs(frame.height - originalFrame.height) <= 2 else {
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 18,
+                userInfo: [NSLocalizedDescriptionKey: "failed-edit diagnostic host differs from placed host"]
+            )
+        }
+        attachState(springboard, name: "unit-failure-target-before-reopen")
+        host.press(forDuration: 1.5)
+        let edit = try requireHittable(
+            in: elements(in: springboard, labeled: ["Edit Widget"]),
+            springboard: springboard,
+            stage: "unit-failure-reopen-edit-widget"
+        )
+        edit.tap()
+        let fahrenheit = springboard.buttons.matching(NSPredicate(format: "label ==[c] %@", "Fahrenheit"))
+        let celsius = springboard.buttons.matching(NSPredicate(format: "label ==[c] %@", "Celsius"))
+        let row = elements(in: springboard, labeled: ["Temperature unit"])
+        // observe one current row without opening its choice picker
+        guard row.firstMatch.waitForExistence(timeout: 5),
+              fahrenheit.count + celsius.count == 1 else {
+            attachState(springboard, name: "unit-failure-reopened-row-ambiguous")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 19,
+                userInfo: [NSLocalizedDescriptionKey: "failed-edit stored row is missing or ambiguous"]
+            )
+        }
+        let observedUnit = celsius.count == 1 ? "celsius" : "fahrenheit"
+        let rowReceipt = XCTAttachment(string: "unit-failure-reopened-row unit=\(observedUnit)")
+        rowReceipt.name = "unit-failure-reopened-stored-row"
+        rowReceipt.lifetime = .keepAlways
+        add(rowReceipt)
+        attachState(springboard, name: "unit-failure-reopened-stored-row")
+        // dismiss only after recording the post-query row
+        XCUIDevice.shared.press(.home)
+    }
+
     // require complete persisted failure semantics from WidgetKit
     private func assertPersistenceFailure(
         on springboard: XCUIApplication,
@@ -1477,22 +1563,52 @@ final class WidgetHostUITests: XCTestCase {
         assertConfigurationReceiptBoundaries()
         let host = try launchHost()
         _ = try addWidget(on: host.springboard, scenario: .maximumDensity)
-        try assertTemperatureUnit(
-            "fahrenheit",
-            symbol: "°F",
-            app: host.app,
-            springboard: host.springboard,
-            stage: "initial-fahrenheit"
-        )
-
-        try editTemperatureUnit(to: "Celsius", on: host.springboard)
-        try assertTemperatureUnit(
-            "celsius",
-            symbol: "°C",
-            app: host.app,
-            springboard: host.springboard,
-            stage: "celsius"
-        )
+        let placedFrame = try widgetHostElement(on: host.springboard).frame
+        // keep the original product verdict even when diagnosis fails
+        do {
+            try assertTemperatureUnit(
+                "fahrenheit",
+                symbol: "°F",
+                app: host.app,
+                springboard: host.springboard,
+                stage: "initial-fahrenheit"
+            )
+            try editTemperatureUnit(to: "Celsius", on: host.springboard)
+            try assertTemperatureUnit(
+                "celsius",
+                symbol: "°C",
+                app: host.app,
+                springboard: host.springboard,
+                stage: "celsius"
+            )
+        } catch {
+            let primaryFailure = error
+            attachState(host.springboard, name: "unit-failure-primary-state")
+            // query before any potentially committing edit-card action
+            do {
+                try diagnoseFailedTemperatureConfiguration(app: host.app)
+            } catch {
+                let diagnosticFailure = XCTAttachment(string: String(describing: error))
+                diagnosticFailure.name = "unit-failure-typed-diagnostic-error"
+                diagnosticFailure.lifetime = .keepAlways
+                add(diagnosticFailure)
+                attachState(host.app, name: "unit-failure-typed-diagnostic-state")
+            }
+            // keep post-query row failure independent of the typed result
+            do {
+                try diagnoseFailedTemperatureRow(
+                    springboard: host.springboard,
+                    originalFrame: placedFrame
+                )
+            } catch {
+                let diagnosticFailure = XCTAttachment(string: String(describing: error))
+                diagnosticFailure.name = "unit-failure-row-diagnostic-error"
+                diagnosticFailure.lifetime = .keepAlways
+                add(diagnosticFailure)
+                attachState(host.springboard, name: "unit-failure-row-diagnostic-state")
+            }
+            throw primaryFailure
+        }
 
     }
 

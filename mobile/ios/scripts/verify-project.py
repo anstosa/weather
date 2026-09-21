@@ -634,11 +634,55 @@ def verify_release_reachable_sources() -> None:
         "restart-and-return-fahrenheit-provider.log",
         "unit-celsius-after-restart-typed-widget-info",
         "unit-final-fahrenheit-visible-spoken",
+        "collect_unit_failure_diagnostics",
+        "failure_diagnostic_status=",
+        "public-system-widget.log",
+        "system-log-cap-status.txt",
+        "input_line_count=",
+        "truncated_line_count=",
+        "truncated_byte_count=",
+        "Metadata.appintents",
+        "extract.actionsdata",
+        "entry_detail_complete=",
+        "attachment_present=",
+        "log_correlation=",
+        "receipt_name.fullmatch",
+        'candidate.suffix == ".txt"',
+        "candidate.is_relative_to(attachment_dir)",
     )
     # preserve the product F-to-C-to-F restart gate
     for fragment in unit_probe_fragments:
         if fragment not in unit_probe:
             fail(f"widget product-unit probe lacks {fragment}")
+    failure_diagnostic_fragments = (
+        "diagnoseFailedTemperatureConfiguration",
+        "diagnoseFailedTemperatureRow",
+        "unit-failure-primary-state",
+        "unit-failure-reopened-stored-row",
+        "unit-failure-fresh-typed-observation",
+        "unit-failure-typed-diagnostic-error",
+        "unit-failure-row-diagnostic-error",
+        "throw primaryFailure",
+    )
+    # keep observations from replacing the original failed host verdict
+    for fragment in failure_diagnostic_fragments:
+        if fragment not in ui_test_source:
+            fail(f"widget failed-edit diagnosis lacks {fragment}")
+    diagnostic_section = ui_test_source.split("private func diagnoseFailedTemperatureConfiguration(", 1)[-1]
+    diagnostic_section = diagnostic_section.split("private func assertPersistenceFailure(", 1)[0]
+    if '-weather-m0-reload-widget' in diagnostic_section:
+        fail("failed-edit typed observation requests a widget reload")
+    failure_test_section = ui_test_source.split("func test07TemperatureUnitEditToCelsius()", 1)[-1]
+    failure_test_section = failure_test_section.split("func test08TemperatureUnitPersistsAfterExtensionRestart()", 1)[0]
+    # ensure the public query precedes any reopened edit-card observation
+    if failure_test_section.find("diagnoseFailedTemperatureConfiguration(app:") > failure_test_section.find(
+        "diagnoseFailedTemperatureRow("
+    ):
+        fail("failed-edit diagnosis reopens the edit card before the public query")
+    if unit_probe.find('collect_unit_failure_diagnostics "$phase"') > unit_probe.find(
+        'echo "iOS product temperature-unit phase failed: $phase"'
+    ):
+        fail("widget failed-phase diagnosis runs after the primary verdict")
     # reject the unsupported self-typed WidgetInfo scalar claim
     if any(
         fragment in app_source + ui_test_source + unit_probe + persistence_probe
