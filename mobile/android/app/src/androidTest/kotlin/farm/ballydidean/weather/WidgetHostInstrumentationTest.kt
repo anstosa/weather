@@ -211,7 +211,14 @@ class WidgetHostInstrumentationTest {
         }
         val activity = instrumentation.startActivitySync(intent) as FixtureHostActivity
         try {
-            val hostView = waitForHostView(activity, variant, landscape)
+            var hostView = waitForHostView(activity, variant, landscape)
+            // force one late real provider update through the flaky cutoff case
+            if (variant == FixtureVariant.NEAR_CUTOFF) {
+                val priorRestorations = activity.fixtureRestorationCount
+                instrumentation.runOnMainSync(activity::requestProviderUpdate)
+                waitForFixtureRestoration(activity, priorRestorations)
+                hostView = waitForHostView(activity, variant, landscape)
+            }
             val allViews = mutableListOf<View>()
             collectViews(hostView, allViews)
             val fixture = DebugWidgetFixtures.fixture(variant).presentation
@@ -299,19 +306,21 @@ class WidgetHostInstrumentationTest {
 
     // reject the provider's initial maximum update for alternate fixtures
     private fun matchesVariant(view: View, variant: FixtureVariant, landscape: Boolean): Boolean {
-        val allViews = mutableListOf<View>()
-        collectViews(view, allViews)
-        val text = allViews.filterIsInstance<TextView>().joinToString(" ") { it.text }
-        return when (variant) {
-            FixtureVariant.MAXIMUM -> text.contains(if (landscape) "12·1ᵃᵇ 38–41" else "12·1a·1b")
-            FixtureVariant.NEAR_CUTOFF -> text.contains(if (landscape) "6–8 48–51" else "6–8p")
-            FixtureVariant.ALL_BEDTIME -> text.contains("go to bed")
-            FixtureVariant.STALE -> text.contains("stale")
-            FixtureVariant.RAW_MIXED -> text.contains("mix")
-            FixtureVariant.RAW -> text.contains("raw")
-            FixtureVariant.UNAVAILABLE -> text.contains("refresh needed") && text.contains("unavailable")
-            FixtureVariant.CELSIUS -> text.contains("°C")
+        return FixtureHostActivity.matchesFixture(view, variant, landscape)
+    }
+
+    // await one observed late-provider correction without timer assumptions
+    private fun waitForFixtureRestoration(activity: FixtureHostActivity, priorRestorations: Int) {
+        // wait through bounded broadcast and host callbacks
+        repeat(50) {
+            instrumentation.waitForIdleSync()
+            // return only after the real host observed and repaired the overwrite
+            if (activity.fixtureRestorationCount > priorRestorations) {
+                return
+            }
+            SystemClock.sleep(100)
         }
+        fail("AppWidgetHost did not observe the late provider lifecycle update")
     }
 
     // require one sunset source for visible and spoken output

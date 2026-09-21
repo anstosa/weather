@@ -99,6 +99,23 @@ printf '%s\n' "$SIMULATOR_UDID" > "$RESULTS/simulator-udid.txt"
 xcrun simctl boot "$SIMULATOR_UDID"
 xcrun simctl bootstatus "$SIMULATOR_UDID" -b
 
+# forward only bounded fixture inputs to the Simulator test runner
+for variable in \
+  WEATHER_RUN_HTTPS_FIXTURE_TEST \
+  WEATHER_HTTPS_FIXTURE_IOS_ORIGIN \
+  WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN \
+  WEATHER_HTTPS_FIXTURE_USERNAME \
+  WEATHER_HTTPS_FIXTURE_PASSWORD; do
+  xcrun simctl spawn "$SIMULATOR_UDID" launchctl setenv "$variable" "${!variable}"
+done
+printf '%s\n' \
+  'WEATHER_RUN_HTTPS_FIXTURE_TEST' \
+  'WEATHER_HTTPS_FIXTURE_IOS_ORIGIN' \
+  'WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN' \
+  'WEATHER_HTTPS_FIXTURE_USERNAME' \
+  'WEATHER_HTTPS_FIXTURE_PASSWORD' \
+  > "$RESULTS/test-runner-environment-keys.txt"
+
 # archive the installed keychain interface and trust only the positive CA
 xcrun simctl help keychain > "$RESULTS/simctl-keychain-help.txt"
 xcrun simctl keychain "$SIMULATOR_UDID" add-root-cert "$WEATHER_HTTPS_FIXTURE_CA_PEM"

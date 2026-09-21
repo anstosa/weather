@@ -522,6 +522,65 @@ final class WidgetHostUITests: XCTestCase {
         )
     }
 
+    // find the app icon across bounded Home Screen pages
+    private func weatherIcon(on springboard: XCUIApplication) throws -> XCUIElement {
+        let weatherIcons = springboard.icons.matching(
+            NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Weather", "Weather")
+        )
+        var discoveredIcon = firstHittable(in: weatherIcons, timeout: 2)
+        // inspect the bounded Home Screen pages
+        for _ in 0..<4 where discoveredIcon == nil {
+            springboard.swipeLeft()
+            discoveredIcon = firstHittable(in: weatherIcons, timeout: 2)
+        }
+        return try requireHittable(
+            in: weatherIcons,
+            springboard: springboard,
+            stage: "weather-icon"
+        )
+    }
+
+    // use the public direct conversion when SpringBoard offers it
+    private func convertUsingDirectMediumAction(
+        on springboard: XCUIApplication,
+        widgets: XCUIElementQuery,
+        mediumConversion: XCUIElementQuery
+    ) throws -> XCUIElement? {
+        // leave gallery placement to the caller when absent
+        guard let directConversion = firstHittable(in: mediumConversion, timeout: 3) else {
+            return nil
+        }
+        attachState(springboard, name: "home-screen-medium-conversion-before")
+        directConversion.tap()
+
+        // accept only the actual hosted widget postcondition
+        if let convertedWidget = firstExisting(in: widgets, timeout: 45) {
+            attachState(springboard, name: "home-screen-medium-conversion-after")
+            return convertedWidget
+        }
+
+        // retry only when the exact action proves the first tap was ignored
+        if let retryConversion = firstHittable(in: mediumConversion, timeout: 2) {
+            attachState(springboard, name: "home-screen-medium-conversion-retry")
+            retryConversion.tap()
+            let convertedWidget = try requireExisting(
+                in: widgets,
+                springboard: springboard,
+                stage: "converted-medium-widget",
+                timeout: 45
+            )
+            attachState(springboard, name: "home-screen-medium-conversion-after")
+            return convertedWidget
+        }
+
+        attachState(springboard, name: "failure-home-screen-medium-conversion")
+        throw NSError(
+            domain: "farm.ballydidean.weather.widget-host",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "direct medium conversion did not host the widget"]
+        )
+    }
+
     // add one freshly installed WidgetKit artifact through public controls
     private func addWidget(
         on springboard: XCUIApplication,
@@ -540,56 +599,44 @@ final class WidgetHostUITests: XCTestCase {
             )
         }
 
-        let weatherIcons = springboard.icons.matching(
-            NSPredicate(format: "label ==[c] %@ OR identifier == %@", "Weather", "Weather")
-        )
-        var discoveredIcon = firstHittable(in: weatherIcons, timeout: 2)
-        // inspect the bounded Home Screen pages
-        for _ in 0..<4 where discoveredIcon == nil {
-            springboard.swipeLeft()
-            discoveredIcon = firstHittable(in: weatherIcons, timeout: 2)
-        }
-        let weatherIcon = try requireHittable(
-            in: weatherIcons,
-            springboard: springboard,
-            stage: "weather-icon"
-        )
-        weatherIcon.press(forDuration: 1.5)
+        let initialWeatherIcon = try weatherIcon(on: springboard)
+        initialWeatherIcon.press(forDuration: 1.5)
 
         let mediumConversion = springboard.buttons.matching(
             NSPredicate(format: "label ==[c] %@", "Medium-sized widget")
         )
         // prefer the evidenced direct medium conversion
-        if let directConversion = firstHittable(in: mediumConversion, timeout: 3) {
-            attachState(springboard, name: "home-screen-medium-conversion-before")
-            directConversion.tap()
+        if let convertedWidget = try convertUsingDirectMediumAction(
+            on: springboard,
+            widgets: widgets,
+            mediumConversion: mediumConversion
+        ) {
+            return convertedWidget
+        }
 
-            // accept only the actual hosted widget postcondition
-            if let convertedWidget = firstExisting(in: widgets, timeout: 45) {
-                attachState(springboard, name: "home-screen-medium-conversion-after")
-                return convertedWidget
-            }
-
-            // retry only when the exact action proves the first tap was ignored
-            if let retryConversion = firstHittable(in: mediumConversion, timeout: 2) {
-                attachState(springboard, name: "home-screen-medium-conversion-retry")
-                retryConversion.tap()
-                let convertedWidget = try requireExisting(
-                    in: widgets,
-                    springboard: springboard,
-                    stage: "converted-medium-widget",
-                    timeout: 45
-                )
-                attachState(springboard, name: "home-screen-medium-conversion-after")
-                return convertedWidget
-            }
-
-            attachState(springboard, name: "failure-home-screen-medium-conversion")
-            throw NSError(
-                domain: "farm.ballydidean.weather.widget-host",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "direct medium conversion did not host the widget"]
+        let editHomeScreen = springboard.buttons.matching(
+            NSPredicate(
+                format: "identifier == %@ AND label ==[c] %@",
+                "com.apple.springboardhome.application-shortcut-item.rearrange-icons",
+                "Edit Home Screen"
             )
+        )
+        // retry only when the icon press exposed neither public action
+        if firstHittable(in: editHomeScreen, timeout: 1) == nil {
+            attachState(springboard, name: "home-screen-menu-missing-before-recovery")
+            XCUIDevice.shared.press(.home)
+            try requireHomeScreen(on: springboard)
+            let retryWeatherIcon = try weatherIcon(on: springboard)
+            retryWeatherIcon.press(forDuration: 1.5)
+
+            // accept direct conversion exposed by the bounded retry
+            if let convertedWidget = try convertUsingDirectMediumAction(
+                on: springboard,
+                widgets: widgets,
+                mediumConversion: mediumConversion
+            ) {
+                return convertedWidget
+            }
         }
 
         // retain the public gallery as a supported fallback

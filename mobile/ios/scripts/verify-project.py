@@ -518,6 +518,8 @@ def verify_release_reachable_sources() -> None:
         "add-root-cert",
         "xcrun simctl delete",
         "WEATHER_RUN_HTTPS_FIXTURE_TEST=1",
+        'xcrun simctl spawn "$SIMULATOR_UDID" launchctl setenv',
+        "test-runner-environment-keys.txt",
         "testHTTPSFixtureJourneys",
         "did-finish path=/logs",
         "did-finish path=/trends",

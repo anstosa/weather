@@ -6,18 +6,28 @@ import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.RemoteViews
 import android.widget.TextView
 import farm.ballydidean.weather.widget.WeatherWidgetProvider
 
 class FixtureHostActivity : Activity() {
     private lateinit var widgetHost: AppWidgetHost
+    private lateinit var activeOptions: Bundle
+    private lateinit var activeVariant: FixtureVariant
     private var allocatedWidgetId: Int? = null
+    private var activeLandscape = false
+    private var acceptsHostUpdates = true
     var renderedHostView: AppWidgetHostView? = null
+        private set
+    var fixtureRestorationCount = 0
         private set
 
     // bind the real provider into a test-only host
@@ -25,7 +35,10 @@ class FixtureHostActivity : Activity() {
         super.onCreate(savedInstanceState)
         val (widthDp, heightDp) = requestedBounds()
         val variant = FixtureVariant.fromWireName(intent.getStringExtra(EXTRA_VARIANT))
-        widgetHost = AppWidgetHost(this, HOST_ID)
+        activeOptions = widgetOptions(widthDp, heightDp)
+        activeVariant = variant
+        activeLandscape = heightDp == LANDSCAPE_HEIGHT_DP
+        widgetHost = FixtureAppWidgetHost(this, HOST_ID, ::restoreFixtureAfterProviderUpdate)
         widgetHost.startListening()
         val root = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(238, 238, 238))
@@ -36,6 +49,7 @@ class FixtureHostActivity : Activity() {
 
     // release the short-lived host allocation
     override fun onDestroy() {
+        acceptsHostUpdates = false
         widgetHost.stopListening()
         allocatedWidgetId?.let(widgetHost::deleteAppWidgetId)
         super.onDestroy()
@@ -46,6 +60,9 @@ class FixtureHostActivity : Activity() {
         val appWidgetId = checkNotNull(allocatedWidgetId)
         val hostView = checkNotNull(renderedHostView)
         val options = widgetOptions(widthDp, heightDp)
+        activeOptions = options
+        activeVariant = variant
+        activeLandscape = heightDp == LANDSCAPE_HEIGHT_DP
         val density = resources.displayMetrics.density
         hostView.layoutParams = (hostView.layoutParams as FrameLayout.LayoutParams).apply {
             width = (widthDp * density).toInt()
@@ -54,7 +71,17 @@ class FixtureHostActivity : Activity() {
         AppWidgetManager.getInstance(this).updateAppWidgetOptions(appWidgetId, options)
         hostView.updateAppWidgetSize(options, widthDp, heightDp, widthDp, heightDp)
         applyFixture(appWidgetId, options, variant)
-        hostView.postDelayed({ applyFixture(appWidgetId, options, variant) }, FIXTURE_SETTLE_DELAY_MS)
+    }
+
+    // replay the real provider broadcast for lifecycle regression coverage
+    fun requestProviderUpdate() {
+        val appWidgetId = checkNotNull(allocatedWidgetId)
+        val provider = ComponentName(this, WeatherWidgetProvider::class.java)
+        sendBroadcast(
+            Intent(AppWidgetManager.ACTION_APPWIDGET_UPDATE)
+                .setComponent(provider)
+                .putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, intArrayOf(appWidgetId)),
+        )
     }
 
     // permit only approved M0 dimensions
@@ -74,9 +101,8 @@ class FixtureHostActivity : Activity() {
         val provider = ComponentName(this, WeatherWidgetProvider::class.java)
         val appWidgetId = widgetHost.allocateAppWidgetId()
         allocatedWidgetId = appWidgetId
-        val options = widgetOptions(widthDp, heightDp)
         // surface missing shell-granted bind authority
-        if (!manager.bindAppWidgetIdIfAllowed(appWidgetId, provider, options)) {
+        if (!manager.bindAppWidgetIdIfAllowed(appWidgetId, provider, activeOptions)) {
             root.addView(TextView(this).apply {
                 text = "fixture host requires: cmd appwidget grantbind --package $packageName"
                 setTextColor(Color.BLACK)
@@ -93,9 +119,18 @@ class FixtureHostActivity : Activity() {
             gravity = Gravity.CENTER
         }
         root.addView(hostView, layoutParams)
-        // apply the fixture after bind-time provider callbacks settle
-        hostView.postDelayed({ applyFixture(appWidgetId, options, variant) }, FIXTURE_UPDATE_DELAY_MS)
-        hostView.postDelayed({ applyFixture(appWidgetId, options, variant) }, FIXTURE_SETTLE_DELAY_MS)
+        applyFixture(appWidgetId, activeOptions, variant)
+    }
+
+    // restore the selected fixture after any late provider remoteviews
+    private fun restoreFixtureAfterProviderUpdate(hostView: AppWidgetHostView) {
+        // ignore teardown and already-correct fixture deliveries
+        if (!acceptsHostUpdates || matchesFixture(hostView, activeVariant, activeLandscape)) {
+            return
+        }
+        val appWidgetId = allocatedWidgetId ?: return
+        fixtureRestorationCount += 1
+        applyFixture(appWidgetId, activeOptions, activeVariant)
     }
 
     // apply deterministic content through the production renderer
@@ -129,7 +164,60 @@ class FixtureHostActivity : Activity() {
         const val LANDSCAPE_WIDTH_DP = 554
         const val LANDSCAPE_HEIGHT_DP = 51
         private const val HOST_ID = 0x57454154
-        private const val FIXTURE_UPDATE_DELAY_MS = 250L
-        private const val FIXTURE_SETTLE_DELAY_MS = 1_000L
+
+        // identify the selected fixture after production remoteviews inflation
+        internal fun matchesFixture(view: View, variant: FixtureVariant, landscape: Boolean): Boolean {
+            val text = buildList { collectText(view, this) }.joinToString(" ")
+            return when (variant) {
+                FixtureVariant.MAXIMUM -> text.contains(if (landscape) "12·1ᵃᵇ 38–41" else "12·1a·1b")
+                FixtureVariant.NEAR_CUTOFF -> text.contains(if (landscape) "6–8 48–51" else "6–8p")
+                FixtureVariant.ALL_BEDTIME -> text.contains("go to bed")
+                FixtureVariant.STALE -> text.contains("stale")
+                FixtureVariant.RAW_MIXED -> text.contains("mix")
+                FixtureVariant.RAW -> text.contains("raw")
+                FixtureVariant.UNAVAILABLE -> text.contains("refresh needed") && text.contains("unavailable")
+                FixtureVariant.CELSIUS -> text.contains("°C")
+            }
+        }
+
+        // collect every inflated remoteviews text value
+        private fun collectText(view: View, destination: MutableList<String>) {
+            // retain text nodes including hidden semantic placeholders
+            if (view is TextView) {
+                destination += view.text.toString()
+            }
+            // visit the complete remoteviews hierarchy
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    collectText(view.getChildAt(index), destination)
+                }
+            }
+        }
+    }
+}
+
+private class FixtureAppWidgetHost(
+    context: Context,
+    hostId: Int,
+    private val onRemoteViewsUpdated: (AppWidgetHostView) -> Unit,
+) : AppWidgetHost(context, hostId) {
+    // create an observing real host view
+    override fun onCreateView(
+        context: Context,
+        appWidgetId: Int,
+        appWidget: AppWidgetProviderInfo,
+    ): AppWidgetHostView {
+        return FixtureAppWidgetHostView(context, onRemoteViewsUpdated)
+    }
+}
+
+private class FixtureAppWidgetHostView(
+    context: Context,
+    private val onRemoteViewsUpdated: (AppWidgetHostView) -> Unit,
+) : AppWidgetHostView(context) {
+    // report each fully applied provider update
+    override fun updateAppWidget(remoteViews: RemoteViews?) {
+        super.updateAppWidget(remoteViews)
+        onRemoteViewsUpdated(this)
     }
 }
