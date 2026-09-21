@@ -20,9 +20,17 @@ find "${TEMP_DIR}" -type f -exec strings {} + >"${STRINGS_FILE}"
 
 # reject debug-only classes and fixture controls
 if grep -E -q \
-  'FixtureHostActivity|PinWidgetActivity|SET_FIXTURE|127\.0\.0\.1|10\.0\.2\.2|localhost|addJavascriptInterface|onReceivedSslError.*proceed' \
+  'FixtureHostActivity|DebugWidgetFixtures|FixtureVariant|PinWidgetActivity|SET_FIXTURE|127\.0\.0\.1|10\.0\.2\.2|localhost|addJavascriptInterface|onReceivedSslError.*proceed|setWebContentsDebuggingEnabled' \
   "${STRINGS_FILE}"; then
   printf 'release artifact contains a forbidden debug origin, fixture control, bridge, or tls bypass\n' >&2
+  exit 1
+fi
+
+# require the fixed cookiefree widget endpoint in release code
+if ! grep -F -q \
+  'https://weather.ballydidean.farm/api/v1/sites/ballydidean/widget-forecast' \
+  "${STRINGS_FILE}"; then
+  printf 'release artifact is missing the fixed widget endpoint\n' >&2
   exit 1
 fi
 
@@ -38,6 +46,12 @@ MANIFEST="$("${ANDROID_HOME}"/cmdline-tools/latest/bin/apkanalyzer manifest prin
 # retain the explicit cleartext denial
 if ! grep -q 'usesCleartextTraffic="false"' <<<"${MANIFEST}"; then
   printf 'release manifest does not explicitly deny cleartext traffic\n' >&2
+  exit 1
+fi
+
+# keep debug host components and protected fixture permissions out of release
+if grep -E -q 'FixtureHostActivity|FixtureControlReceiver|PinWidgetActivity|BIND_APPWIDGET' <<<"${MANIFEST}"; then
+  printf 'release manifest contains debug widget-host capabilities\n' >&2
   exit 1
 fi
 

@@ -22,6 +22,17 @@
 		A1000000000000000000000D /* WeatherWidgetFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000007 /* WeatherWidgetFixtures.swift */; };
 		A1000000000000000000000E /* WeatherDeepLinkUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1000000000000000000000A /* WeatherDeepLinkUITests.swift */; };
 		A1000000000000000000000F /* WeatherWidgetExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* WeatherWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000010 /* WeatherWidgetIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000005 /* WeatherWidgetIntent.swift */; };
+		A10000000000000000000012 /* WeatherWidgetContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* WeatherWidgetContract.swift */; };
+		A10000000000000000000013 /* WeatherWidgetPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* WeatherWidgetPresentation.swift */; };
+		A10000000000000000000014 /* WeatherWidgetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* WeatherWidgetStore.swift */; };
+		A10000000000000000000015 /* WeatherWidgetClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* WeatherWidgetClient.swift */; };
+		A10000000000000000000016 /* WeatherWidgetContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000014 /* WeatherWidgetContract.swift */; };
+		A10000000000000000000017 /* WeatherWidgetPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* WeatherWidgetPresentation.swift */; };
+		A10000000000000000000018 /* WeatherWidgetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* WeatherWidgetStore.swift */; };
+		A10000000000000000000019 /* WeatherWidgetClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* WeatherWidgetClient.swift */; };
+		A1000000000000000000001A /* WeatherWidgetDebugFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* WeatherWidgetDebugFixtures.swift */; };
+		A1000000000000000000001B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -75,6 +86,12 @@
 		B10000000000000000000011 /* WeatherWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = WeatherWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000012 /* WeatherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WeatherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B10000000000000000000013 /* WeatherUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WeatherUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000014 /* WeatherWidgetContract.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetContract.swift; sourceTree = "<group>"; };
+		B10000000000000000000015 /* WeatherWidgetPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetPresentation.swift; sourceTree = "<group>"; };
+		B10000000000000000000016 /* WeatherWidgetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000017 /* WeatherWidgetClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetClient.swift; sourceTree = "<group>"; };
+		B10000000000000000000018 /* WeatherWidgetDebugFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeatherWidgetDebugFixtures.swift; sourceTree = "<group>"; };
+		B10000000000000000000019 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -134,7 +151,10 @@
 		};
 		D2000000000000000000000A /* Resources */ = {
 			isa = PBXGroup;
-			children = (B1000000000000000000000B /* Info.plist */, );
+			children = (
+				B1000000000000000000000B /* Info.plist */,
+				B10000000000000000000019 /* Assets.xcassets */,
+			);
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -146,6 +166,11 @@
 				B10000000000000000000006 /* WeatherWidgetModel.swift */,
 				B10000000000000000000007 /* WeatherWidgetFixtures.swift */,
 				B10000000000000000000008 /* WeatherWidgetView.swift */,
+				B10000000000000000000014 /* WeatherWidgetContract.swift */,
+				B10000000000000000000015 /* WeatherWidgetPresentation.swift */,
+				B10000000000000000000016 /* WeatherWidgetStore.swift */,
+				B10000000000000000000017 /* WeatherWidgetClient.swift */,
+				B10000000000000000000018 /* WeatherWidgetDebugFixtures.swift */,
 				B1000000000000000000000C /* Info.plist */,
 			);
 			path = WeatherWidget;
@@ -273,7 +298,7 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		F40000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		F40000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (A1000000000000000000001B /* Assets.xcassets in Resources */, ); runOnlyForDeploymentPostprocessing = 0; };
 		F40000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		F40000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		F40000000000000000000004 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
@@ -287,6 +312,7 @@
 				A10000000000000000000001 /* WeatherApp.swift in Sources */,
 				A10000000000000000000002 /* SecureWeatherWebView.swift in Sources */,
 				A10000000000000000000003 /* WeatherNavigationPolicy.swift in Sources */,
+				A10000000000000000000010 /* WeatherWidgetIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -299,6 +325,11 @@
 				A10000000000000000000006 /* WeatherWidgetModel.swift in Sources */,
 				A10000000000000000000007 /* WeatherWidgetFixtures.swift in Sources */,
 				A10000000000000000000008 /* WeatherWidgetView.swift in Sources */,
+				A10000000000000000000012 /* WeatherWidgetContract.swift in Sources */,
+				A10000000000000000000013 /* WeatherWidgetPresentation.swift in Sources */,
+				A10000000000000000000014 /* WeatherWidgetStore.swift in Sources */,
+				A10000000000000000000015 /* WeatherWidgetClient.swift in Sources */,
+				A1000000000000000000001A /* WeatherWidgetDebugFixtures.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,6 +342,10 @@
 				A1000000000000000000000B /* WeatherWidgetIntent.swift in Sources */,
 				A1000000000000000000000C /* WeatherWidgetModel.swift in Sources */,
 				A1000000000000000000000D /* WeatherWidgetFixtures.swift in Sources */,
+				A10000000000000000000016 /* WeatherWidgetContract.swift in Sources */,
+				A10000000000000000000017 /* WeatherWidgetPresentation.swift in Sources */,
+				A10000000000000000000018 /* WeatherWidgetStore.swift in Sources */,
+				A10000000000000000000019 /* WeatherWidgetClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -328,8 +363,8 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		E40000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000E /* Debug.xcconfig */; buildSettings = {PRODUCT_NAME = Weather; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather; PRODUCT_MODULE_NAME = Weather; INFOPLIST_FILE = WeatherApp/Resources/Info.plist; GENERATE_INFOPLIST_FILE = NO; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 1.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); }; name = Debug; };
-		E40000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000F /* Release.xcconfig */; buildSettings = {PRODUCT_NAME = Weather; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather; PRODUCT_MODULE_NAME = Weather; INFOPLIST_FILE = WeatherApp/Resources/Info.plist; GENERATE_INFOPLIST_FILE = NO; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 1.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); }; name = Release; };
+		E40000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000E /* Debug.xcconfig */; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; PRODUCT_NAME = Weather; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather; PRODUCT_MODULE_NAME = Weather; INFOPLIST_FILE = WeatherApp/Resources/Info.plist; GENERATE_INFOPLIST_FILE = NO; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 1.0; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); }; name = Debug; };
+		E40000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000F /* Release.xcconfig */; buildSettings = {ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; PRODUCT_NAME = Weather; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather; PRODUCT_MODULE_NAME = Weather; INFOPLIST_FILE = WeatherApp/Resources/Info.plist; GENERATE_INFOPLIST_FILE = NO; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 1.0; EXCLUDED_SOURCE_FILE_NAMES = WeatherWidgetIntent.swift; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", ); }; name = Release; };
 		E40000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000E /* Debug.xcconfig */; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; PRODUCT_NAME = WeatherWidgetExtension; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather.widget; PRODUCT_MODULE_NAME = WeatherWidgetExtension; INFOPLIST_FILE = WeatherWidget/Info.plist; GENERATE_INFOPLIST_FILE = NO; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 1.0; SKIP_INSTALL = YES; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Debug; };
 		E40000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000F /* Release.xcconfig */; buildSettings = {APPLICATION_EXTENSION_API_ONLY = YES; PRODUCT_NAME = WeatherWidgetExtension; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather.widget; PRODUCT_MODULE_NAME = WeatherWidgetExtension; INFOPLIST_FILE = WeatherWidget/Info.plist; GENERATE_INFOPLIST_FILE = NO; CURRENT_PROJECT_VERSION = 1; MARKETING_VERSION = 1.0; SKIP_INSTALL = YES; LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks", ); }; name = Release; };
 		E40000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = B1000000000000000000000E /* Debug.xcconfig */; buildSettings = {PRODUCT_NAME = WeatherTests; PRODUCT_BUNDLE_IDENTIFIER = farm.ballydidean.weather.tests; PRODUCT_MODULE_NAME = WeatherTests; GENERATE_INFOPLIST_FILE = YES; }; name = Debug; };

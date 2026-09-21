@@ -12,7 +12,6 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
-import farm.ballydidean.weather.widget.FixtureVariant
 import farm.ballydidean.weather.widget.WeatherWidgetProvider
 
 class FixtureHostActivity : Activity() {
@@ -86,7 +85,7 @@ class FixtureHostActivity : Activity() {
         root.addView(hostView, layoutParams)
         // apply the fixture after bind-time provider callbacks settle
         hostView.postDelayed({
-            WeatherWidgetProvider.updateWidget(this, manager, appWidgetId, options, variant)
+            WeatherWidgetProvider.updateWidget(this, manager, appWidgetId, options, DebugWidgetFixtures.fixture(variant).presentation)
         }, FIXTURE_UPDATE_DELAY_MS)
     }
 

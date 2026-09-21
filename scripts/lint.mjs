@@ -3,20 +3,37 @@ import { basename, extname, join, relative, resolve } from "node:path";
 
 const root = process.cwd();
 const ignoredDirectories = new Set([
+  ".artifacts",
   ".git",
+  ".gradle",
   ".omx",
+  "DerivedData",
+  "build",
   "coverage",
   "dist",
+  "host-evidence",
   "node_modules",
 ]);
 const textExtensions = new Set([
   "",
   ".css",
   ".html",
+  ".java",
   ".json",
+  ".kt",
+  ".kts",
   ".md",
   ".mjs",
+  ".plist",
+  ".pro",
+  ".properties",
+  ".py",
+  ".sh",
+  ".swift",
   ".ts",
+  ".xcconfig",
+  ".xcscheme",
+  ".xml",
   ".yml",
   ".yaml",
 ]);

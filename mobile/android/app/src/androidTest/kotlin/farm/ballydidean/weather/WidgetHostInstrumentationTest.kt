@@ -15,10 +15,13 @@ import android.view.ViewGroup
 import android.view.View.MeasureSpec
 import android.widget.TextView
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.WorkManager
 import farm.ballydidean.weather.debug.FixtureHostActivity
-import farm.ballydidean.weather.widget.FixtureVariant
+import farm.ballydidean.weather.debug.FixtureVariant
+import farm.ballydidean.weather.debug.DebugWidgetFixtures
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -157,10 +160,10 @@ class WidgetHostInstrumentationTest {
             assertEquals((widthDp * density).toInt(), hostView.width)
             assertEquals((heightDp * density).toInt(), hostView.height)
             val groupDescriptions = allViews.mapNotNull { it.contentDescription?.toString() }
-                .filter { it.contains("through") || it.contains("repeated") }
+                .filter { (it.contains("through") || it.contains("repeated")) && !it.contains(';') }
             assertEquals(expectedGroups, groupDescriptions.size)
             // match the size-specific visible interval labels
-            val expectedHourLabels = farm.ballydidean.weather.widget.WidgetFixture.forVariant(variant)
+            val expectedHourLabels = DebugWidgetFixtures.fixture(variant).presentation
                 .groups.map { if (landscape) it.landscapeLabel else it.hourLabel }.toSet()
             val visibleHourLabels = allViews.filterIsInstance<TextView>().map { it.text.toString() }
                 .filter { it in expectedHourLabels }.toSet()
@@ -181,6 +184,23 @@ class WidgetHostInstrumentationTest {
             val appearance = if (nightMode == Configuration.UI_MODE_NIGHT_YES) "dark" else "light"
             captureScreenshot(activity, "${variant.name.lowercase()}-${widthDp}x${heightDp}-font${fontScale}-${appearance}")
             assertNoTextClipping(allViews)
+            // prove update entrypoints coalesce named refresh work
+            if (variant == FixtureVariant.MAXIMUM && !landscape) {
+                assertEquals(
+                    1,
+                    WorkManager.getInstance(activity)
+                        .getWorkInfosForUniqueWork("weather-widget-periodic-v1")
+                        .get(5, TimeUnit.SECONDS)
+                        .size,
+                )
+                assertEquals(
+                    1,
+                    WorkManager.getInstance(activity)
+                        .getWorkInfosForUniqueWork("weather-widget-immediate-v1")
+                        .get(5, TimeUnit.SECONDS)
+                        .size,
+                )
+            }
         } finally {
             // release the host allocation between cases
             instrumentation.runOnMainSync(activity::finish)
@@ -226,7 +246,7 @@ class WidgetHostInstrumentationTest {
             FixtureVariant.NEAR_CUTOFF -> text.contains(if (landscape) "6–8 48–51" else "6–8p")
             FixtureVariant.ALL_BEDTIME -> text.contains("go to bed")
             FixtureVariant.STALE -> text.contains("stale")
-            FixtureVariant.RAW_MIXED -> text.contains("mixed")
+            FixtureVariant.RAW_MIXED -> text.contains("mix")
             FixtureVariant.CELSIUS -> text.contains("°C")
         }
     }

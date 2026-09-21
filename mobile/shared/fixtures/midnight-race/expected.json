@@ -1,0 +1,18 @@
+{
+  "bedtime": false,
+  "date": "2026-09-11",
+  "footer": {
+    "attribution": "Open-Meteo · CC BY 4.0",
+    "generatedAt": "2026-09-12T06:59:59.000Z",
+    "status": "unavailable",
+    "sunset": null
+  },
+  "groups": [],
+  "hardExpired": true,
+  "now": "2026-09-12T07:00:01.000Z",
+  "presentation": "unavailable",
+  "schemaVersion": "weather-widget-semantic/v1",
+  "stale": false,
+  "status": "unavailable",
+  "unit": "fahrenheit"
+}

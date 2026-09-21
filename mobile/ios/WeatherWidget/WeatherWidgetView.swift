@@ -3,8 +3,7 @@ import WidgetKit
 
 struct WeatherWidgetEntry: TimelineEntry {
     let date: Date
-    let configuration: WeatherWidgetConfigurationIntent
-    let fixture: WeatherWidgetFixture
+    let display: WeatherWidgetDisplay
 }
 
 struct WeatherWidgetEntryView: View {
@@ -23,7 +22,7 @@ struct WeatherWidgetEntryView: View {
             forecast
 
             // show credit whenever weather appears
-            if entry.fixture.showsWeather {
+            if entry.display.showsWeather {
                 attribution
             }
         }
@@ -35,17 +34,20 @@ struct WeatherWidgetEntryView: View {
         }
         .widgetURL(Self.forecastURL)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(Text(entry.fixture.accessibilitySummary(unit: entry.configuration.temperatureUnit)))
+        .accessibilityLabel(Text(entry.display.accessibilitySummary))
     }
 
     // keep state and sunset visible
     private var header: some View {
         HStack(spacing: 6) {
-            Text(entry.fixture.statusLabel)
+            Text(entry.display.statusLabel)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
-            Text(entry.fixture.sunsetLabel)
-                .fixedSize(horizontal: false, vertical: true)
+            // retain sunset only while the cached day is valid
+            if let sunsetLabel = entry.display.sunsetLabel {
+                Text(sunsetLabel)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .font(compactFont(weight: .medium))
     }
@@ -53,14 +55,18 @@ struct WeatherWidgetEntryView: View {
     // choose the density-specific arrangement
     @ViewBuilder
     private var forecast: some View {
-        // use both rows for maximum density
-        if entry.fixture.groups.count == WeatherWidgetFixture.slotCapacity {
-            maximumDensityGrid
+        // use both rows for dense forecasts
+        if entry.display.groups.count >= 4 {
+            denseForecastGrid
         } else {
             // fill all post-cutoff space
-            if let bedtimeMessage = entry.fixture.bedtimeMessage {
+            if let unavailableMessage = entry.display.unavailableMessage {
+                Text(unavailableMessage)
+                    .font(compactFont(weight: .bold))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let bedtimeMessage = entry.display.bedtimeMessage {
                 HStack(spacing: 5) {
-                    ForEach(entry.fixture.groups) { group in
+                    ForEach(entry.display.groups) { group in
                         groupTile(group)
                             .frame(width: 72)
                     }
@@ -76,17 +82,24 @@ struct WeatherWidgetEntryView: View {
         }
     }
 
-    // place all seven groups without scrolling
-    private var maximumDensityGrid: some View {
+    // place every dense group without scrolling
+    private var denseForecastGrid: some View {
         VStack(spacing: 3) {
             HStack(spacing: 4) {
-                ForEach(Array(entry.fixture.groups.prefix(4))) { group in
+                ForEach(Array(entry.display.groups.prefix(4))) { group in
                     groupTile(group)
                 }
             }
             HStack(spacing: 4) {
-                ForEach(Array(entry.fixture.groups.dropFirst(4))) { group in
+                ForEach(Array(entry.display.groups.dropFirst(4))) { group in
                     groupTile(group)
+                }
+                // fill the approved spare slot with the exact message
+                if let bedtimeMessage = entry.display.bedtimeMessage {
+                    Text(bedtimeMessage)
+                        .font(compactFont(weight: .bold))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityLabel(Text(bedtimeMessage))
                 }
                 Spacer(minLength: 0)
             }
@@ -95,14 +108,14 @@ struct WeatherWidgetEntryView: View {
     }
 
     // show range and wettest icon
-    private func groupTile(_ group: WeatherHourGroup) -> some View {
+    private func groupTile(_ group: WeatherWidgetDisplayGroup) -> some View {
         VStack(spacing: 1) {
             Text(group.timeLabel)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 2) {
                 Image(systemName: group.condition.symbolName)
                     .imageScale(.small)
-                Text(group.temperatureLabel(unit: entry.configuration.temperatureUnit))
+                Text(group.temperatureLabel)
                     .fontWeight(.semibold)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -112,7 +125,7 @@ struct WeatherWidgetEntryView: View {
         .padding(.horizontal, 2)
         .background(tileBackground, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(group.accessibilityLabel(unit: entry.configuration.temperatureUnit)))
+        .accessibilityLabel(Text(group.accessibilityLabel))
     }
 
     // expose compile-time provider destinations
@@ -132,7 +145,7 @@ struct WeatherWidgetEntryView: View {
     // preserve the reviewed dense visual size
     private func compactFont(weight: Font.Weight = .regular) -> Font {
         .system(
-            size: CGFloat(WeatherWidgetFixture.widgetVisualFontSize),
+            size: CGFloat(WeatherWidgetContract.widgetVisualFontSize),
             weight: weight,
             design: .rounded
         )

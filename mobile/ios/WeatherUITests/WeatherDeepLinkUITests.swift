@@ -44,6 +44,54 @@ final class WeatherDeepLinkUITests: XCTestCase {
             XCTFail("forecast deep link did not render the deterministic WebKit document")
         }
     }
+
+    // prove same-WebView popup handling and native back navigation
+    func testHistoryAndPopupRemainInTheHostedSurface() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-weather-ui-test"]
+        app.launch()
+        let webView = app.webViews["weather.webview"]
+        XCTAssertTrue(webView.waitForExistence(timeout: 15))
+
+        webView.links["History fixture"].tap()
+        let back = app.buttons["Back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
+
+        webView.links["Popup fixture"].tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.tap()
+        XCTAssertTrue(webView.staticTexts["Weather route /"].waitForExistence(timeout: 5))
+    }
+
+    // prove error UI retries the last accepted document
+    func testErrorStateRetriesWithoutChangingOrigin() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-weather-ui-test", "-weather-ui-test-error"]
+        app.launch()
+        let retry = app.buttons["Retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        retry.tap()
+        XCTAssertTrue(
+            app.webViews["weather.webview"].staticTexts["Weather route /"].waitForExistence(timeout: 5)
+        )
+    }
+
+    // prove production-shaped WebKit cookies survive app process restart
+    func testPersistentSecureHTTPOnlyCookieSurvivesRestart() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-weather-ui-test", "-weather-ui-test-cookie-set"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["weather.cookie.diagnostic"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["weather.cookie.diagnostic"].label, "cookie-persisted")
+
+        app.terminate()
+        app.launchArguments = ["-weather-ui-test", "-weather-ui-test-cookie-read"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["weather.cookie.diagnostic"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.staticTexts["weather.cookie.diagnostic"].label, "cookie-persisted")
+    }
 }
 
 @MainActor
@@ -52,6 +100,12 @@ final class WidgetHostUITests: XCTestCase {
         case maximumDensity
         case nearCutoff
         case bedtime
+        case adjustedStandard
+        case fallBack
+        case midnightRace
+        case missingRawAtExpiry
+        case springForward
+        case staleOldSource
 
         // identify the actual hosted semantic surface
         var widgetLabelFragments: [String] {
@@ -63,7 +117,29 @@ final class WidgetHostUITests: XCTestCase {
                 return ["1 forecast intervals", "Open-Meteo", "go to bed"]
             case .bedtime:
                 return ["0 forecast intervals", "go to bed", "day complete"]
+            case .adjustedStandard:
+                return ["Updated, adjusted", "60–63°F", "Open-Meteo"]
+            case .fallBack:
+                return ["Updated, raw", "50°F", "Open-Meteo"]
+            case .midnightRace:
+                return ["weather unavailable"]
+            case .missingRawAtExpiry:
+                return ["Updated, mixed", "11°C", "go to bed", "Open-Meteo"]
+            case .springForward:
+                return ["Updated, raw", "10°C", "Open-Meteo"]
+            case .staleOldSource:
+                return ["Stale, raw", "50°F", "Open-Meteo"]
             }
+        }
+
+        // identify whether licensed numeric weather is present
+        var showsWeather: Bool {
+            self != .bedtime && self != .midnightRace
+        }
+
+        // identify the exact spare/cutoff message cases
+        var showsBedtime: Bool {
+            [.nearCutoff, .bedtime, .missingRawAtExpiry].contains(self)
         }
     }
 
@@ -565,6 +641,88 @@ final class WidgetHostUITests: XCTestCase {
         return try findWidget(on: springboard, scenario: .maximumDensity, timeout: 20)
     }
 
+    // edit the product temperature unit through the public widget sheet
+    private func editTemperatureUnit(
+        to label: String,
+        on springboard: XCUIApplication
+    ) throws {
+        let hostWidget = try widgetHostElement(on: springboard)
+        hostWidget.press(forDuration: 1.5)
+        let editWidget = try requireHittable(
+            in: elements(in: springboard, labeled: ["Edit Widget"]),
+            springboard: springboard,
+            stage: "unit-edit-widget"
+        )
+        editWidget.tap()
+        attachState(springboard, name: "unit-edit-sheet")
+
+        let target = elements(in: springboard, labeled: [label])
+        // open the parameter choice when the value is not directly actionable
+        if firstHittable(in: target, timeout: 2) == nil {
+            let parameter = try requireHittable(
+                in: elements(in: springboard, labeled: ["Temperature unit", "Temperature Unit"]),
+                springboard: springboard,
+                stage: "unit-parameter"
+            )
+            parameter.tap()
+        }
+        let choice = try requireHittable(
+            in: target,
+            springboard: springboard,
+            stage: "unit-choice-\(label.lowercased())"
+        )
+        choice.tap()
+        attachState(springboard, name: "unit-selected-\(label.lowercased())")
+
+        // commit through the system sheet when it exposes Done
+        if let done = firstHittable(
+            in: elements(in: springboard, labeled: ["Done"]),
+            timeout: 3
+        ) {
+            done.tap()
+        } else {
+            XCUIDevice.shared.press(.home)
+        }
+        try requireHomeScreen(on: springboard)
+    }
+
+    // prove the typed persisted unit and visible spoken rerender
+    private func assertTemperatureUnit(
+        _ unit: String,
+        symbol: String,
+        app: XCUIApplication,
+        springboard: XCUIApplication,
+        stage: String
+    ) throws {
+        app.terminate()
+        app.launchArguments = [
+            "-weather-ui-test",
+            "-weather-m0-reload-widget",
+            "-weather-widget-configuration-diagnostic"
+        ]
+        app.launch()
+        let diagnostic = app.staticTexts["weather.widget.configuration"]
+        XCTAssertTrue(diagnostic.waitForExistence(timeout: 15))
+        XCTAssertTrue(diagnostic.label.contains("unit=\(unit)"), diagnostic.label)
+        attachState(app, name: "unit-\(stage)-typed-widget-info")
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(springboard.wait(for: .runningForeground, timeout: 10))
+        try requireHomeScreen(on: springboard)
+        let unitSemantics = springboard.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS[c] %@", symbol)
+        )
+        let widget = try requireExisting(
+            in: unitSemantics,
+            springboard: springboard,
+            stage: "unit-\(stage)-visible-spoken",
+            timeout: 45
+        )
+        XCTAssertTrue(widget.label.contains(symbol))
+        XCTAssertTrue(widget.label.contains("adjusted air temperature"))
+        attachState(springboard, name: "unit-\(stage)-visible-spoken")
+    }
+
     // locate the actual fixed Home Screen host frame
     private func systemMediumHostFrame(on springboard: XCUIApplication) throws -> CGRect {
         let candidates = springboard.scrollViews
@@ -621,16 +779,21 @@ final class WidgetHostUITests: XCTestCase {
     ) throws {
         attachState(springboard, name: "matrix-\(caseID)-home-screen")
         XCTAssertTrue(widget.exists)
-        XCTAssertTrue(widget.label.contains("Sunset"))
+        // hard expiry must remove yesterday's sunset
+        if scenario == .midnightRace {
+            XCTAssertFalse(widget.label.contains("Sunset"))
+        } else {
+            XCTAssertTrue(widget.label.contains("Sunset"))
+        }
         // require weather-only content and credit
-        if scenario != .bedtime {
-            XCTAssertTrue(widget.label.contains("adjusted air temperature"))
+        if scenario.showsWeather {
+            XCTAssertTrue(widget.label.contains("air temperature"))
             XCTAssertTrue(widget.label.contains("CC BY 4.0"))
         } else {
             XCTAssertFalse(widget.label.contains("Open-Meteo"))
         }
         // require exact cutoff copy
-        if scenario != .maximumDensity {
+        if scenario.showsBedtime {
             XCTAssertTrue(widget.label.contains("go to bed"))
         }
         let outerHostFrame = try systemMediumHostFrame(on: springboard)
@@ -748,6 +911,129 @@ final class WidgetHostUITests: XCTestCase {
             widget,
             scenario: .maximumDensity,
             caseID: "06-maximum-tinted-large",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // leave one publicly edited Celsius configuration for the restart probe
+    func test07TemperatureUnitEditToCelsius() throws {
+        let host = try launchHost()
+        _ = try addWidget(on: host.springboard, scenario: .maximumDensity)
+        try assertTemperatureUnit(
+            "fahrenheit",
+            symbol: "°F",
+            app: host.app,
+            springboard: host.springboard,
+            stage: "initial-fahrenheit"
+        )
+
+        try editTemperatureUnit(to: "Celsius", on: host.springboard)
+        try assertTemperatureUnit(
+            "celsius",
+            symbol: "°C",
+            app: host.app,
+            springboard: host.springboard,
+            stage: "celsius"
+        )
+
+    }
+
+    // prove Celsius survived extension restart before restoring Fahrenheit
+    func test08TemperatureUnitPersistsAfterExtensionRestart() throws {
+        let host = try launchHost()
+        _ = try findWidget(on: host.springboard, scenario: .maximumDensity, timeout: 45)
+        try assertTemperatureUnit(
+            "celsius",
+            symbol: "°C",
+            app: host.app,
+            springboard: host.springboard,
+            stage: "celsius-after-restart"
+        )
+
+        try editTemperatureUnit(to: "Fahrenheit", on: host.springboard)
+        try assertTemperatureUnit(
+            "fahrenheit",
+            symbol: "°F",
+            app: host.app,
+            springboard: host.springboard,
+            stage: "final-fahrenheit"
+        )
+    }
+
+    // capture decoded adjusted shared semantics in the real host
+    func test09AdjustedStandardSemanticHost() throws {
+        let host = try launchHost()
+        let widget = try addWidget(on: host.springboard, scenario: .adjustedStandard)
+        try captureAndTap(
+            widget,
+            scenario: .adjustedStandard,
+            caseID: "09-adjusted-standard",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture decoded fall-back grouping in the real host
+    func test10FallBackSemanticHost() throws {
+        let host = try launchHost()
+        let widget = try addWidget(on: host.springboard, scenario: .fallBack)
+        try captureAndTap(
+            widget,
+            scenario: .fallBack,
+            caseID: "10-fall-back",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture hard-expired unavailable semantics in the real host
+    func test11MidnightRaceSemanticHost() throws {
+        let host = try launchHost()
+        let widget = try addWidget(on: host.springboard, scenario: .midnightRace)
+        try captureAndTap(
+            widget,
+            scenario: .midnightRace,
+            caseID: "11-midnight-race",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture mixed raw fallback and Celsius semantics in the real host
+    func test12MissingRawSemanticHost() throws {
+        let host = try launchHost()
+        let widget = try addWidget(on: host.springboard, scenario: .missingRawAtExpiry)
+        try captureAndTap(
+            widget,
+            scenario: .missingRawAtExpiry,
+            caseID: "12-missing-raw-at-expiry",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture spring-forward raw Celsius semantics in the real host
+    func test13SpringForwardSemanticHost() throws {
+        let host = try launchHost()
+        let widget = try addWidget(on: host.springboard, scenario: .springForward)
+        try captureAndTap(
+            widget,
+            scenario: .springForward,
+            caseID: "13-spring-forward",
+            app: host.app,
+            springboard: host.springboard
+        )
+    }
+
+    // capture stale old-source semantics in the real host
+    func test14StaleOldSourceSemanticHost() throws {
+        let host = try launchHost()
+        let widget = try addWidget(on: host.springboard, scenario: .staleOldSource)
+        try captureAndTap(
+            widget,
+            scenario: .staleOldSource,
+            caseID: "14-stale-old-source",
             app: host.app,
             springboard: host.springboard
         )

@@ -1,6 +1,6 @@
 import AppIntents
 
-enum TemperatureUnit: String, AppEnum, CaseIterable {
+enum TemperatureUnit: String, AppEnum, Codable, CaseIterable {
     case fahrenheit
     case celsius
 
@@ -12,6 +12,7 @@ enum TemperatureUnit: String, AppEnum, CaseIterable {
 }
 
 struct WeatherWidgetConfigurationIntent: WidgetConfigurationIntent {
+    static let widgetKind = "farm.ballydidean.weather.forecast"
     static var title: LocalizedStringResource = "Weather widget"
     static var description = IntentDescription("Choose the widget temperature unit.")
 

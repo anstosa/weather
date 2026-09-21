@@ -1800,7 +1800,7 @@ test("deployment workflows run static checks once and scope expensive integratio
   const publish = read(".github/workflows/publish-images.yml");
   assert.equal((check.match(/run: deploy\/scripts\/verify-static\.sh/gu) ?? []).length, 1);
   assert.doesNotMatch(check, /run: npm run test:deploy/u);
-  assert.match(check, /if: steps\.changes\.outputs\.deploy_integration == 'true'/u);
+  assert.match(check, /if: needs\.change-selection\.outputs\.deploy_integration == 'true'/u);
   assert.match(check, /run: WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy\/test\/\*\.integration\.test\.mjs/u);
   assert.doesNotMatch(check, /^\s+WEATHER_RUN_DEPLOY_INTEGRATION:/mu);
   assert.doesNotMatch(publish, /verify-static\.sh|npm run (?:check|test:deploy|test:integration|test:e2e)/u);

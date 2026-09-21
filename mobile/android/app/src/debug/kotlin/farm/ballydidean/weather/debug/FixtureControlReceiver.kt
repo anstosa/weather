@@ -3,7 +3,6 @@ package farm.ballydidean.weather.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import farm.ballydidean.weather.widget.FixtureVariant
 import farm.ballydidean.weather.widget.WeatherWidgetProvider
 
 class FixtureControlReceiver : BroadcastReceiver() {
@@ -14,7 +13,7 @@ class FixtureControlReceiver : BroadcastReceiver() {
             return
         }
         val variant = FixtureVariant.fromWireName(intent.getStringExtra(EXTRA_VARIANT))
-        WeatherWidgetProvider.updateAll(context, variant)
+        WeatherWidgetProvider.updateAll(context, DebugWidgetFixtures.fixture(variant).presentation)
     }
 
     companion object {

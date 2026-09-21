@@ -20,6 +20,15 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    sourceSets {
+        getByName("test").resources.srcDir("../../shared")
+        getByName("androidTest").assets.srcDir("../../shared")
+    }
+
+    buildFeatures {
+        buildConfig = true
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
@@ -44,6 +53,7 @@ android {
                     device = "Pixel 4"
                     apiLevel = 36
                     systemImageSource = "aosp"
+                    testedAbi = "x86_64"
                 }
             }
         }
@@ -51,6 +61,8 @@ android {
 }
 
 dependencies {
+    implementation("androidx.work:work-runtime:2.11.2")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.7.0")
+    androidTestImplementation("androidx.work:work-testing:2.11.2")
 }

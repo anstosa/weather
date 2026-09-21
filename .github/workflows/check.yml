@@ -14,23 +14,26 @@ permissions:
   actions: read
 
 jobs:
-  quality-gates:
+  change-selection:
     runs-on: ubuntu-latest
+    outputs:
+      deploy_integration: ${{ steps.changes.outputs.deploy_integration }}
+      full_browser: ${{ steps.changes.outputs.full_browser }}
+      full_tests: ${{ steps.changes.outputs.full_tests }}
+      integration: ${{ steps.changes.outputs.integration }}
+      native_android: ${{ steps.changes.outputs.native_android }}
+      native_ios: ${{ steps.changes.outputs.native_ios }}
     steps:
-      - name: Check out repository
+      - name: Check out exact workflow commit
         uses: actions/checkout@v4
         with:
           # retain the merge base and historical deployment tags
           fetch-depth: 0
+          ref: ${{ github.sha }}
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          cache: npm
           node-version-file: .nvmrc
-      - name: Install dependencies
-        run: npm ci
-      - name: Install deployment validators
-        run: sudo apt-get update && sudo apt-get install --yes age shellcheck
       - id: baseline
         name: Resolve comparison baseline
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -63,13 +66,36 @@ jobs:
           CI_BASE_VERIFIED: ${{ steps.trusted-baseline.outputs.baseline_verified }}
           CI_HEAD_SHA: ${{ github.sha }}
         run: node scripts/ci-changes.mjs
+
+  quality-gates:
+    needs: change-selection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact selected commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install dependencies
+        run: npm ci
+      - name: Install deployment validators
+        run: sudo apt-get update && sudo apt-get install --yes age shellcheck
       - name: Lint repository
         run: npm run lint
+      - name: Verify native project structure
+        run: npm run verify:mobile-static
       - name: Build and typecheck once
         run: npm run build
+      - name: Verify the shared widget contract
+        run: npm run test:mobile-shared:compiled
       - name: Run compiled unit tests
         env:
-          FULL_TESTS: ${{ steps.changes.outputs.full_tests }}
+          FULL_TESTS: ${{ needs.change-selection.outputs.full_tests }}
         shell: bash
         run: |
           set -euo pipefail
@@ -79,11 +105,11 @@ jobs:
             npm run test:fast:compiled
           fi
       - name: Run PostgreSQL integration gates
-        if: steps.changes.outputs.integration == 'true'
+        if: needs.change-selection.outputs.integration == 'true'
         run: npm run test:integration:compiled
       - name: Run browser gates
         env:
-          FULL_BROWSER: ${{ steps.changes.outputs.full_browser }}
+          FULL_BROWSER: ${{ needs.change-selection.outputs.full_browser }}
         shell: bash
         run: |
           set -euo pipefail
@@ -95,5 +121,229 @@ jobs:
       - name: Verify static deployment contracts once
         run: deploy/scripts/verify-static.sh
       - name: Run deployment and recovery rehearsal
-        if: steps.changes.outputs.deploy_integration == 'true'
+        if: needs.change-selection.outputs.deploy_integration == 'true'
         run: WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy/test/*.integration.test.mjs
+
+  native-android:
+    name: Native Android
+    needs: change-selection
+    if: needs.change-selection.outputs.native_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Check out exact selected commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          cache: gradle
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install pinned Android packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            'platform-tools' \
+            'emulator' \
+            'platforms;android-36' \
+            'platforms;android-37' \
+            'build-tools;36.0.0' \
+            'system-images;android-36;default;x86_64'
+          sudo chmod 0666 /dev/kvm
+      - name: Verify wrapper and toolchain pins
+        env:
+          RESULTS: ${{ runner.temp }}/weather-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RESULTS}"
+          mobile/android/scripts/verify-wrapper.sh | tee "${RESULTS}/wrapper.txt"
+          mobile/android/scripts/toolchain-receipt.sh | tee "${RESULTS}/toolchain.txt"
+          java mobile/android/scripts/GenerateBrandAssets.java --check \
+            | tee "${RESULTS}/brand-assets.txt"
+      - name: Build test lint and exercise the Android widget host
+        shell: bash
+        run: |
+          set -euo pipefail
+          source mobile/android/scripts/android-env.sh
+          mobile/android/gradlew -p mobile/android --no-daemon \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleDebug \
+            :app:lintRelease \
+            :app:assembleRelease \
+            widgetPhoneDebugAndroidTest
+      - name: Verify unsigned Android Release isolation
+        env:
+          RESULTS: ${{ runner.temp }}/weather-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          source mobile/android/scripts/android-env.sh
+          mobile/android/scripts/verify-release-artifact.sh | tee "${RESULTS}/release-scan.txt"
+          test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          test -f mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          sha256sum \
+            mobile/android/app/build/outputs/apk/debug/app-debug.apk \
+            mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            > "${RESULTS}/apk-sha256.txt"
+          test -s \
+            mobile/android/app/build/outputs/androidTest-results/managedDevice/debug/widgetPhone/TEST-widgetPhone.xml
+          test -d mobile/android/app/build/reports/androidTests/managedDevice
+      - name: Retain Android build and host evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: native-android-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/weather-android/**
+            mobile/android/app/build/outputs/apk/**
+            mobile/android/app/build/outputs/androidTest-results/**
+            mobile/android/app/build/outputs/managed_device_android_test_additional_output/**
+            mobile/android/app/build/reports/**
+            mobile/android/app/build/test-results/**
+          retention-days: 14
+
+  native-ios:
+    name: Native iOS
+    needs: change-selection
+    if: needs.change-selection.outputs.native_ios == 'true'
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out exact selected commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Build test and scan unsigned iOS artifacts
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-build
+        run: mobile/ios/scripts/build-m0.sh
+      - name: Verify mandatory iOS build receipts
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "source_commit=${GITHUB_SHA}" "${RESULTS}/debug-build-passed.txt"
+          test "$(cat "${RESULTS}/test-status.txt")" = '0'
+          grep -Fq 'release_artifact_isolation=passed' \
+            "${RESULTS}/release-validation-passed.txt"
+          test -s "${RESULTS}/release-receipts/release-sha256.txt"
+      - name: Archive only the produced iOS app bundles
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          retained="${RESULTS}/retained-apps"
+          mkdir -p "${retained}"
+          # retain only the bounded simulator app products
+          for configuration in Debug Release; do
+            products="${RESULTS}/DerivedData/Build/Products/${configuration}-iphonesimulator"
+            test -d "${products}/Weather.app"
+            COPYFILE_DISABLE=1 tar -C "${products}" -cf \
+              "${retained}/Weather-${configuration}-iphonesimulator.app.tar" Weather.app
+          done
+          (cd "${retained}" && shasum -a 256 ./*.tar > app-bundles.sha256)
+      - name: Exercise the product AppIntent host lifecycle
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-widget-unit
+        run: mobile/ios/scripts/probe-widget-unit.sh
+      - name: Verify mandatory iOS host receipts
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-widget-unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${RESULTS}/widget-unit.log"
+          test -s "${RESULTS}/evidence.sha256"
+          test "$(cat "${RESULTS}/edit-to-celsius-status.txt")" = '0'
+          test "$(cat "${RESULTS}/restart-and-return-fahrenheit-status.txt")" = '0'
+      - name: Exercise shared fixtures through the WidgetKit host
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-semantic-host
+        run: mobile/ios/scripts/probe-widget-semantic-host.sh
+      - name: Verify mandatory iOS semantic host receipts
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios-semantic-host
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(wc -l < "${RESULTS}/cases.tsv" | tr -d ' ')" = '6'
+          test "$(wc -l < "${RESULTS}/semantic-host.log" | tr -d ' ')" = '6'
+          grep -Fxq 'semantic_host_cases=6' "${RESULTS}/semantic-host-passed.txt"
+          grep -Fxq 'semantic_host_assertions=passed' "${RESULTS}/semantic-host-passed.txt"
+          grep -Fq 'independent clipping, contrast, and text-visibility review remains required' \
+            "${RESULTS}/visual-review-required.txt"
+          test -s "${RESULTS}/evidence.sha256"
+          statuses=("${RESULTS}"/cases/*/test-status.txt)
+          test "${#statuses[@]}" = '6'
+          # require every isolated host case to execute successfully
+          for status in "${statuses[@]}"; do
+            test "$(cat "${status}")" = '0'
+          done
+      - name: Retain iOS build and host evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: native-ios-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/weather-ios-build/toolchain.txt
+            ${{ runner.temp }}/weather-ios-build/debug-build-passed.txt
+            ${{ runner.temp }}/weather-ios-build/project-list.json
+            ${{ runner.temp }}/weather-ios-build/debug-build.log
+            ${{ runner.temp }}/weather-ios-build/Weather.xcresult
+            ${{ runner.temp }}/weather-ios-build/test-attachments/**
+            ${{ runner.temp }}/weather-ios-build/test-attachments-export-status.txt
+            ${{ runner.temp }}/weather-ios-build/test.log
+            ${{ runner.temp }}/weather-ios-build/test-status.txt
+            ${{ runner.temp }}/weather-ios-build/release-build-analyze.log
+            ${{ runner.temp }}/weather-ios-build/release-validation-passed.txt
+            ${{ runner.temp }}/weather-ios-build/release-receipts/**
+            ${{ runner.temp }}/weather-ios-build/retained-apps/**
+            ${{ runner.temp }}/weather-ios-widget-unit/**
+            !${{ runner.temp }}/weather-ios-widget-unit/DerivedData/**
+            ${{ runner.temp }}/weather-ios-semantic-host/**
+            !${{ runner.temp }}/weather-ios-semantic-host/DerivedData/**
+          retention-days: 14
+
+  check-complete:
+    name: Required Check jobs
+    if: always()
+    needs:
+      - change-selection
+      - quality-gates
+      - native-android
+      - native-ios
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact workflow commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enforce selected job results
+        env:
+          CI_CHANGES_MODE: aggregate
+          CI_CHANGE_SELECTION_RESULT: ${{ needs.change-selection.result }}
+          CI_NATIVE_ANDROID: ${{ needs.change-selection.outputs.native_android }}
+          CI_NATIVE_ANDROID_RESULT: ${{ needs.native-android.result }}
+          CI_NATIVE_IOS: ${{ needs.change-selection.outputs.native_ios }}
+          CI_NATIVE_IOS_RESULT: ${{ needs.native-ios.result }}
+          CI_QUALITY_GATES_RESULT: ${{ needs.quality-gates.result }}
+        run: node scripts/ci-changes.mjs

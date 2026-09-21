@@ -1,12 +1,6 @@
-name: Mobile M0 Preflight
+name: Manual Mobile M0 Preflight
 
 on:
-  push:
-    branches:
-      - feat/mobile-weather-prep
-    paths:
-      - .github/workflows/mobile-preflight.yml
-      - mobile/**
   workflow_dispatch:
 
 permissions:

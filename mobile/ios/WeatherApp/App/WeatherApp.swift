@@ -7,10 +7,17 @@ import WidgetKit
 @main
 struct WeatherApp: App {
     @State private var route: WeatherRoute = .home
+    @StateObject private var webViewModel = WeatherWebViewModel()
+    #if DEBUG
+    @State private var widgetConfigurationDiagnostic = "Widget configuration pending"
+    #endif
     private let logger = Logger(subsystem: "farm.ballydidean.weather", category: "route")
 
     #if DEBUG
     private let usesDeterministicTestDocument = ProcessInfo.processInfo.arguments.contains("-weather-ui-test")
+    private let showsWidgetConfigurationDiagnostic = ProcessInfo.processInfo.arguments.contains(
+        "-weather-widget-configuration-diagnostic"
+    )
     #else
     private let usesDeterministicTestDocument = false
     #endif
@@ -48,10 +55,60 @@ struct WeatherApp: App {
     // present the hosted Weather experience
     var body: some Scene {
         WindowGroup {
-            SecureWeatherWebView(
-                route: route,
-                usesDeterministicTestDocument: usesDeterministicTestDocument
-            )
+            ZStack(alignment: .topLeading) {
+                SecureWeatherWebView(
+                    route: route,
+                    usesDeterministicTestDocument: usesDeterministicTestDocument,
+                    model: webViewModel
+                )
+                // expose safe native history without inventing URLs
+                if webViewModel.canGoBack {
+                    Button("Back", systemImage: "chevron.backward") {
+                        webViewModel.goBack()
+                    }
+                    .labelStyle(.iconOnly)
+                    .accessibilityLabel("Back")
+                    .padding(8)
+                    .background(.regularMaterial, in: Circle())
+                    .padding(8)
+                }
+                // keep retry bound to the last accepted request
+                if let failureMessage = webViewModel.failureMessage {
+                    VStack(spacing: 12) {
+                        Text(failureMessage)
+                        Button("Retry") {
+                            webViewModel.retry()
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(uiColor: .systemBackground))
+                    .accessibilityIdentifier("weather.load-error")
+                }
+            }
+            #if DEBUG
+            .overlay(alignment: .top) {
+                // expose only the supported typed WidgetInfo receipt
+                if showsWidgetConfigurationDiagnostic {
+                    Text(widgetConfigurationDiagnostic)
+                        .accessibilityIdentifier("weather.widget.configuration")
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                // expose only the deterministic WebKit cookie receipt
+                if let cookieDiagnostic = webViewModel.cookieDiagnostic {
+                    Text(cookieDiagnostic)
+                        .accessibilityIdentifier("weather.cookie.diagnostic")
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
+            .task {
+                // inspect only when the bounded host test requests it
+                if showsWidgetConfigurationDiagnostic {
+                    readWidgetConfigurationDiagnostic()
+                }
+            }
+            #endif
             .id(webViewIdentity)
             .ignoresSafeArea(.container, edges: .bottom)
             .onOpenURL { url in
@@ -68,4 +125,35 @@ struct WeatherApp: App {
             }
         }
     }
+
+    #if DEBUG
+    // read the persisted product unit through WidgetKit's public typed API
+    private func readWidgetConfigurationDiagnostic() {
+        WidgetCenter.shared.getCurrentConfigurations { result in
+            let diagnostic: String
+            switch result {
+            case .success(let configurations):
+                let weather = configurations.filter { configuration in
+                    configuration.kind == WeatherWidgetConfigurationIntent.widgetKind &&
+                        configuration.family == .systemMedium
+                }
+                // require one test-owned widget instead of guessing first
+                if weather.count == 1,
+                   let configuration = weather[0].widgetConfigurationIntent(
+                       of: WeatherWidgetConfigurationIntent.self
+                   ) {
+                    diagnostic = "widget-id=\(weather[0].id) unit=\(configuration.temperatureUnit.rawValue)"
+                } else {
+                    diagnostic = "widget-configuration-unavailable count=\(weather.count)"
+                }
+            case .failure:
+                diagnostic = "widget-configuration-query-failed"
+            }
+            Task { @MainActor in
+                widgetConfigurationDiagnostic = diagnostic
+                logger.notice("widget-info \(diagnostic, privacy: .public)")
+            }
+        }
+    }
+    #endif
 }

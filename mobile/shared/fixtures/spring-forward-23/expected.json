@@ -1,0 +1,110 @@
+{
+  "bedtime": false,
+  "date": "2026-03-08",
+  "footer": {
+    "attribution": "Open-Meteo · CC BY 4.0",
+    "generatedAt": "2026-03-08T08:00:00.000Z",
+    "status": "raw",
+    "sunset": "2026-03-09T02:05:06.013Z"
+  },
+  "groups": [
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-08T11:00:00.000Z",
+      "hourCount": 3,
+      "isNow": true,
+      "start": "2026-03-08T08:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "10",
+        "maximum": 10,
+        "minimum": 10
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-08T14:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-03-08T11:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "10–11",
+        "maximum": 11,
+        "minimum": 10
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-08T17:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-03-08T14:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "11",
+        "maximum": 11,
+        "minimum": 11
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-08T20:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-03-08T17:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "11",
+        "maximum": 11,
+        "minimum": 11
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-08T23:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-03-08T20:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "11",
+        "maximum": 11,
+        "minimum": 11
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-09T02:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-03-08T23:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "12",
+        "maximum": 12,
+        "minimum": 12
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-03-09T03:00:00.000Z",
+      "hourCount": 1,
+      "isNow": false,
+      "start": "2026-03-09T02:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "12",
+        "maximum": 12,
+        "minimum": 12
+      }
+    }
+  ],
+  "hardExpired": false,
+  "now": "2026-03-08T08:15:00.000Z",
+  "presentation": "weather",
+  "schemaVersion": "weather-widget-semantic/v1",
+  "stale": false,
+  "status": "raw",
+  "unit": "celsius"
+}

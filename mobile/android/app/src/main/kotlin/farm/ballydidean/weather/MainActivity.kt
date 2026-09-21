@@ -4,36 +4,69 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
-import android.window.OnBackInvokedDispatcher
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import farm.ballydidean.weather.widget.WidgetController
+import farm.ballydidean.weather.widget.WidgetWorkScheduler
+import java.time.Instant
 
 class MainActivity : Activity() {
     private lateinit var webView: WebView
-    private lateinit var canonicalOrigin: Uri
+    private lateinit var errorView: View
+    private lateinit var canonicalOrigin: String
 
-    // configure the hosted shell
+    // configure the persistent hosted shell
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        canonicalOrigin = Uri.parse(getString(R.string.canonical_weather_origin))
+        canonicalOrigin = getString(R.string.canonical_weather_origin)
         webView = WebView(this)
         configureWebView(webView)
-        setContentView(webView)
-        webView.loadUrl(startUrl(intent))
+        setContentView(shellView())
+        // restore navigation without duplicating history
+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
+            webView.loadUrl(startUrl(intent))
+        }
+        recomputeWidgets()
         // register predictive back on modern android
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(
-                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
                 ::navigateBack,
             )
         }
+    }
+
+    // route a new immutable widget intent
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        webView.loadUrl(startUrl(intent))
+        recomputeWidgets()
+    }
+
+    // preserve web history across recreation
+    override fun onSaveInstanceState(outState: Bundle) {
+        webView.saveState(outState)
+        super.onSaveInstanceState(outState)
     }
 
     // preserve in-site browser history
@@ -60,30 +93,107 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    // construct the retry shell
+    private fun shellView(): View {
+        errorView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            setBackgroundColor(Color.WHITE)
+            addView(TextView(this@MainActivity).apply {
+                text = getString(R.string.hosted_error)
+                textSize = 18f
+                setTextColor(Color.BLACK)
+            })
+            addView(Button(this@MainActivity).apply {
+                text = getString(R.string.hosted_retry)
+                // retry only the current canonical page
+                setOnClickListener {
+                    errorView.visibility = View.GONE
+                    webView.visibility = View.VISIBLE
+                    val current = webView.url
+                    webView.loadUrl(if (current != null && HostedNavigationPolicy.isCanonical(current)) current else canonicalOrigin)
+                }
+            })
+        }
+        return FrameLayout(this).apply {
+            addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(errorView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+    }
+
     // apply the production web boundary
+    @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebView(view: WebView) {
         view.settings.javaScriptEnabled = true
+        view.settings.domStorageEnabled = true
         view.settings.allowFileAccess = false
         view.settings.allowContentAccess = false
         view.settings.setSupportMultipleWindows(false)
+        view.settings.javaScriptCanOpenWindowsAutomatically = false
         view.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(view, false)
+        view.webChromeClient = object : WebChromeClient() {
+            // reject popup windows without a trusted target url
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?,
+            ): Boolean = false
+        }
         view.webViewClient = object : WebViewClient() {
             // route modern navigation
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest): Boolean {
-                return handleNavigation(request.url)
+                return handleNavigation(request.url.toString())
             }
 
             // route legacy navigation
             @Suppress("DEPRECATION")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String): Boolean {
-                return handleNavigation(Uri.parse(url))
+                return handleNavigation(url)
             }
 
             // retain ordinary certificate validation
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler, error: SslError?) {
                 handler.cancel()
+                showError()
+            }
+
+            // show main-frame transport failures only
+            override fun onReceivedError(view: WebView?, request: WebResourceRequest, error: WebResourceError) {
+                // ignore subresource failures
+                if (request.isForMainFrame) {
+                    showError()
+                }
+            }
+
+            // show main-frame http failures only
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse,
+            ) {
+                // ignore subresource failures
+                if (request.isForMainFrame && errorResponse.statusCode >= 400) {
+                    showError()
+                }
+            }
+
+            // clear retry state after a trusted page succeeds
+            override fun onPageFinished(view: WebView?, url: String?) {
+                // reveal only exact-origin pages
+                if (url != null && HostedNavigationPolicy.isCanonical(url)) {
+                    errorView.visibility = View.GONE
+                    webView.visibility = View.VISIBLE
+                }
+            }
+
+            // stop after a renderer crash
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                showError()
+                return true
             }
         }
     }
@@ -93,42 +203,38 @@ class MainActivity : Activity() {
         val route = intent?.getStringExtra(EXTRA_ROUTE)
         // accept the enum-like forecast route only
         if (route == ROUTE_FORECAST) {
-            return canonicalOrigin.buildUpon().path("/forecast").build().toString()
+            return "$canonicalOrigin/forecast"
         }
-        return canonicalOrigin.toString()
+        return canonicalOrigin
     }
 
-    // enforce the exact hosted origin
-    private fun handleNavigation(uri: Uri): Boolean {
-        // keep exact-origin links in the web view
-        if (isCanonicalWeatherUri(uri)) {
+    // enforce hosted and external navigation policy
+    private fun handleNavigation(value: String): Boolean {
+        // keep exact-origin links in the webview
+        if (HostedNavigationPolicy.isCanonical(value)) {
             return false
         }
         // send other safe web links outside the app
-        if (isSafeExternalUri(uri)) {
+        if (HostedNavigationPolicy.isSafeExternal(value)) {
             try {
-                startActivity(Intent(Intent.ACTION_VIEW, uri))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(value)))
             } catch (_: ActivityNotFoundException) {
-                // reject when no browser exists
+                showError()
             }
         }
         return true
     }
 
-    // match scheme host credentials and port
-    private fun isCanonicalWeatherUri(uri: Uri): Boolean {
-        return uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host.equals(canonicalOrigin.host, ignoreCase = true) &&
-            uri.userInfo == null &&
-            (uri.port == -1 || uri.port == 443)
+    // reveal the local bounded error state
+    private fun showError() {
+        webView.visibility = View.GONE
+        errorView.visibility = View.VISIBLE
     }
 
-    // allow credential-free external https only
-    private fun isSafeExternalUri(uri: Uri): Boolean {
-        return uri.scheme.equals("https", ignoreCase = true) &&
-            uri.host != null &&
-            uri.userInfo == null &&
-            (uri.port == -1 || uri.port == 443)
+    // recompute cached widgets on tap entrypoints
+    private fun recomputeWidgets() {
+        WidgetController.updateAll(this, Instant.now())
+        WidgetWorkScheduler.ensure(this)
     }
 
     companion object {

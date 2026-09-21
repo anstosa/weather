@@ -59,6 +59,7 @@ The public same-origin API exposes only these routes:
 GET|HEAD /api/v1/sites
 GET|HEAD /api/v1/sites/:siteSlug/current
 GET|HEAD /api/v1/sites/:siteSlug/forecast
+GET|HEAD /api/v1/sites/ballydidean/widget-forecast
 GET|HEAD /api/v1/sites/:siteSlug/trends
 GET|HEAD /api/v1/sites/:siteSlug/history
 GET|HEAD /api/v1/health
@@ -138,6 +139,23 @@ and atomically replaces the prior local backup only after verification. A user
 systemd timer runs that same command nightly at 02:30.
 
 The current Weather tunnel origin is <https://weather.ballydidean.farm>.
+
+## Native companions
+
+`mobile/android/` and `mobile/ios/` contain credential-free native companions
+for the hosted Weather site and one platform-native forecast widget. Both
+widgets validate the same closed public snapshot and shared deterministic
+fixtures; platform cache, scheduling, grouping, and rendering adapters remain
+native. Android builds with the checked Gradle wrapper and JDK 17. iOS builds
+with the pinned Xcode and Simulator matrix without production signing.
+
+Native Debug and unsigned Release builds are test artifacts, not
+store-submittable binaries. Genuine host evidence and independent visual
+review remain separate from compilation, and OS refresh timing is explicitly
+inexact. See the
+[`mobile build and release-preparation runbook`](docs/operations/mobile.md) for
+the pinned toolchains, commands, CI selection, evidence, cache behavior, and
+deferred publisher prerequisites.
 
 ## Open-Meteo forecast adjustment
 

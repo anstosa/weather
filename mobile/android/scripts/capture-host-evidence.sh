@@ -62,12 +62,12 @@ fi
 # run genuine appwidgethost checks at normal font scale
 "${ADB}" shell settings put system font_scale 1.0
 "${ADB}" shell cmd uimode night no >/dev/null
-run_instrumentation normal 8 "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
+run_instrumentation normal 14 "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
 
 # run every fixture and the clipping oracle at large text
 "${ADB}" shell settings put system font_scale 1.3
 "${ADB}" shell am force-stop "${PACKAGE}"
-run_instrumentation large 8 "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
+run_instrumentation large 14 "${TEST_PACKAGE}/androidx.test.runner.AndroidJUnitRunner" || RESULT=1
 
 # capture the same fixture under the dark resource set
 "${ADB}" shell settings put system font_scale 1.0
@@ -116,6 +116,12 @@ else
   "${ADB}" shell input tap "${BUTTON_X}" "${BUTTON_Y}"
   sleep 2
   "${ADB}" shell input keyevent KEYCODE_HOME
+  sleep 1
+  # apply deterministic debug data after real launcher placement
+  "${ADB}" shell am broadcast \
+    -n "${PACKAGE}/farm.ballydidean.weather.debug.FixtureControlReceiver" \
+    -a 'farm.ballydidean.weather.debug.SET_FIXTURE' \
+    --es variant MAXIMUM >/dev/null
   sleep 1
   "${ADB}" shell dumpsys appwidget >"${EVIDENCE}/large-launcher-appwidget.txt"
   AFTER_LAUNCHER_WIDGETS="$(grep -c \

@@ -1,0 +1,1327 @@
+{
+  "receivedAt": "2026-03-08T08:00:01.000Z",
+  "response": {
+    "data": [
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-00",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T08:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-01",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.01,
+          "precipitationRateMmPerHour": 0.01,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.1,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T09:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-02",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.02,
+          "precipitationRateMmPerHour": 0.02,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.2,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T10:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-03",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.03,
+          "precipitationRateMmPerHour": 0.03,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.3,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T11:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-04",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.04,
+          "precipitationRateMmPerHour": 0.04,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.4,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T12:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-05",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.5,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T13:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-06",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.06,
+          "precipitationRateMmPerHour": 0.06,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.6,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T14:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-07",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.07,
+          "precipitationRateMmPerHour": 0.07,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.7,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T15:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-08",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.08,
+          "precipitationRateMmPerHour": 0.08,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.8,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T16:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-09",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.09,
+          "precipitationRateMmPerHour": 0.09,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.9,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T17:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-10",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T18:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-11",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.11,
+          "precipitationRateMmPerHour": 0.11,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.1,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T19:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-12",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.12,
+          "precipitationRateMmPerHour": 0.12,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.2,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T20:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-13",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.13,
+          "precipitationRateMmPerHour": 0.13,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.3,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T21:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-14",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.14,
+          "precipitationRateMmPerHour": 0.14,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.4,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T22:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-15",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.5,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-08T23:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-16",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.16,
+          "precipitationRateMmPerHour": 0.16,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.6,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T00:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-17",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.17,
+          "precipitationRateMmPerHour": 0.17,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.7,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T01:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-18",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.18,
+          "precipitationRateMmPerHour": 0.18,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.8,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T02:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-19",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.19,
+          "precipitationRateMmPerHour": 0.19,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.9,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T03:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-20",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T04:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-21",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.21,
+          "precipitationRateMmPerHour": 0.21,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12.1,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T05:00:00.000Z"
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-22",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.22,
+          "precipitationRateMmPerHour": 0.22,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12.2,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-03-08T02:00:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-03-08T07:55:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-03-09T06:00:00.000Z"
+      }
+    ],
+    "generatedAt": "2026-03-08T08:00:00.000Z",
+    "site": {
+      "latitude": 47.950429954185445,
+      "longitude": -122.42797012608193,
+      "name": "Ballydidean",
+      "slug": "ballydidean",
+      "stations": [],
+      "timezone": "America/Los_Angeles"
+    }
+  }
+}

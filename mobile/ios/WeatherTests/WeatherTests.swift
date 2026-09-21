@@ -143,3 +143,708 @@ final class WeatherWidgetFixtureTests: XCTestCase {
         XCTAssertEqual([WeatherCondition.dry, .rain, .sprinkle].max(), .rain)
     }
 }
+
+final class WeatherWidgetContractTests: XCTestCase {
+    private let decoder = WeatherWidgetSnapshotDecoder()
+    private let renderer = WeatherWidgetRenderer()
+
+    // decode every frozen snapshot and match its independent semantic golden
+    func testSharedFixtureParity() throws {
+        let names = [
+            "adjusted-standard",
+            "fall-back-25",
+            "midnight-race",
+            "missing-raw-at-expiry",
+            "spring-forward-23",
+            "stale-old-source"
+        ]
+        // compare every frozen shared case
+        for name in names {
+            let snapshot = try decoder.decode(fixtureData(name, file: "snapshot.json"))
+            let expected = try WeatherWidgetDateCodec.decoder().decode(
+                WeatherWidgetPresentation.self,
+                from: fixtureData(name, file: "expected.json")
+            )
+            let attempt = WeatherWidgetAttempt(
+                attemptedAt: snapshot.receivedAt,
+                outcome: .success,
+                schemaVersion: WeatherWidgetStore.attemptSchemaVersion
+            )
+            let actual = renderer.render(
+                snapshot: snapshot,
+                acquiredAt: snapshot.receivedAt,
+                attempt: attempt,
+                now: expected.now,
+                unit: expected.unit
+            )
+            XCTAssertEqual(actual, expected, name)
+        }
+    }
+
+    // reject unknown fields before Codable can ignore them
+    func testDecoderRejectsUnknownFields() throws {
+        var payload = try fixtureObject("adjusted-standard")
+        payload["unexpected"] = true
+        XCTAssertThrowsError(try decoder.decode(try JSONSerialization.data(withJSONObject: payload)))
+    }
+
+    // reject site and generated-calendar mismatches
+    func testDecoderRejectsSiteAndCalendarMismatch() throws {
+        var sitePayload = try fixtureObject("adjusted-standard")
+        var site = try XCTUnwrap(sitePayload["site"] as? [String: Any])
+        site["slug"] = "other"
+        sitePayload["site"] = site
+        XCTAssertThrowsError(
+            try decoder.decode(try JSONSerialization.data(withJSONObject: sitePayload))
+        )
+
+        var calendarPayload = try fixtureObject("adjusted-standard")
+        var calendar = try XCTUnwrap(calendarPayload["calendar"] as? [String: Any])
+        calendar["date"] = "2026-09-11"
+        calendarPayload["calendar"] = calendar
+        XCTAssertThrowsError(
+            try decoder.decode(try JSONSerialization.data(withJSONObject: calendarPayload))
+        )
+    }
+
+    // reject reversed causal clocks and extended adjustment deadlines
+    func testDecoderRejectsCausalClockViolations() throws {
+        var receiptPayload = try fixtureObject("adjusted-standard")
+        receiptPayload["receivedAt"] = "2026-09-12T06:59:59.999Z"
+        XCTAssertThrowsError(
+            try decoder.decode(try JSONSerialization.data(withJSONObject: receiptPayload))
+        )
+
+        var sourcePayload = try fixtureObject("adjusted-standard")
+        var hours = try XCTUnwrap(sourcePayload["hours"] as? [[String: Any]])
+        var first = hours[0]
+        var temperature = try XCTUnwrap(first["temperatureC"] as? [String: Any])
+        var rawSource = try XCTUnwrap(temperature["rawSource"] as? [String: Any])
+        rawSource["receivedAt"] = sourcePayload["receivedAt"]
+        temperature["rawSource"] = rawSource
+        first["temperatureC"] = temperature
+        hours[0] = first
+        sourcePayload["hours"] = hours
+        XCTAssertThrowsError(
+            try decoder.decode(try JSONSerialization.data(withJSONObject: sourcePayload))
+        )
+
+        var deadlinePayload = try fixtureObject("adjusted-standard")
+        hours = try XCTUnwrap(deadlinePayload["hours"] as? [[String: Any]])
+        first = hours[0]
+        temperature = try XCTUnwrap(first["temperatureC"] as? [String: Any])
+        temperature["selectedUntil"] = "2026-09-12T08:30:00.001Z"
+        first["temperatureC"] = temperature
+        hours[0] = first
+        deadlinePayload["hours"] = hours
+        XCTAssertThrowsError(
+            try decoder.decode(try JSONSerialization.data(withJSONObject: deadlinePayload))
+        )
+    }
+
+    // reject incomplete grids and physical numeric violations
+    func testDecoderRejectsGridAndNumericViolations() throws {
+        var gridPayload = try fixtureObject("adjusted-standard")
+        var hours = try XCTUnwrap(gridPayload["hours"] as? [[String: Any]])
+        hours.removeLast()
+        gridPayload["hours"] = hours
+        XCTAssertThrowsError(try decoder.decode(try JSONSerialization.data(withJSONObject: gridPayload)))
+
+        var temperaturePayload = try fixtureObject("adjusted-standard")
+        hours = try XCTUnwrap(temperaturePayload["hours"] as? [[String: Any]])
+        var first = hours[0]
+        var temperature = try XCTUnwrap(first["temperatureC"] as? [String: Any])
+        temperature["selected"] = -100.01
+        first["temperatureC"] = temperature
+        hours[0] = first
+        temperaturePayload["hours"] = hours
+        XCTAssertThrowsError(
+            try decoder.decode(try JSONSerialization.data(withJSONObject: temperaturePayload))
+        )
+
+        var rainPayload = try fixtureObject("adjusted-standard")
+        hours = try XCTUnwrap(rainPayload["hours"] as? [[String: Any]])
+        first = hours[0]
+        var rain = try XCTUnwrap(first["rainMmPerHour"] as? [String: Any])
+        rain["raw"] = -0.01
+        first["rainMmPerHour"] = rain
+        hours[0] = first
+        rainPayload["hours"] = hours
+        XCTAssertThrowsError(try decoder.decode(try JSONSerialization.data(withJSONObject: rainPayload)))
+    }
+
+    // demote adjustments exactly at their deadline
+    func testCorrectionDeadlineEqualityDemotesToRawSource() throws {
+        let snapshot = try decoder.decode(fixtureData("adjusted-standard", file: "snapshot.json"))
+        let field = snapshot.hours[0].temperatureC
+        let deadline = try XCTUnwrap(field.selectedUntil)
+        let resolved = renderer.resolve(field, now: deadline)
+        XCTAssertEqual(resolved.mode, .raw)
+        XCTAssertEqual(resolved.value, field.raw)
+        XCTAssertEqual(resolved.sourceClock, field.rawSource?.runAt)
+    }
+
+    // preserve strict stale and hard-expiry equality contracts
+    func testFreshnessBoundaryEqualityAndHardExpiry() throws {
+        let snapshot = try decoder.decode(fixtureData("adjusted-standard", file: "snapshot.json"))
+        let acquisitionStaleBoundary = snapshot.receivedAt.addingTimeInterval(90 * 60)
+        let atStaleBoundary = renderer.render(
+            snapshot: snapshot,
+            acquiredAt: snapshot.receivedAt,
+            attempt: nil,
+            now: acquisitionStaleBoundary,
+            unit: .fahrenheit
+        )
+        XCTAssertFalse(atStaleBoundary.stale)
+
+        let atHardExpiry = renderer.render(
+            snapshot: snapshot,
+            acquiredAt: snapshot.receivedAt,
+            attempt: nil,
+            now: snapshot.calendar.dayEnd,
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(atHardExpiry.hardExpired)
+        XCTAssertEqual(atHardExpiry.presentation, .unavailable)
+        XCTAssertTrue(atHardExpiry.groups.isEmpty)
+        XCTAssertNil(atHardExpiry.footer.sunset)
+        XCTAssertFalse(atHardExpiry.bedtime)
+
+        let afterStaleBoundary = renderer.render(
+            snapshot: snapshot,
+            acquiredAt: snapshot.receivedAt,
+            attempt: nil,
+            now: acquisitionStaleBoundary.addingTimeInterval(0.001),
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(afterStaleBoundary.stale)
+    }
+
+    // treat rollback clocks as stale and preserve bedtime status before expiry
+    func testFutureClockIsStaleAndCutoffUsesBedtime() throws {
+        let snapshot = try decoder.decode(fixtureData("adjusted-standard", file: "snapshot.json"))
+        let beforeReceipt = renderer.render(
+            snapshot: snapshot,
+            acquiredAt: snapshot.receivedAt.addingTimeInterval(60),
+            attempt: nil,
+            now: snapshot.receivedAt,
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(beforeReceipt.stale)
+
+        let cutoff = renderer.render(
+            snapshot: snapshot,
+            acquiredAt: snapshot.receivedAt,
+            attempt: nil,
+            now: snapshot.calendar.cutoff,
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(cutoff.groups.isEmpty)
+        XCTAssertTrue(cutoff.bedtime)
+        XCTAssertEqual(cutoff.presentation, .bedtime)
+        XCTAssertEqual(cutoff.status, snapshot.status)
+        XCTAssertFalse(cutoff.hardExpired)
+    }
+
+    // make known failure stale immediately without dropping good values
+    func testKnownFailureMarksRecentSnapshotStale() throws {
+        let snapshot = try decoder.decode(fixtureData("adjusted-standard", file: "snapshot.json"))
+        let failure = WeatherWidgetAttempt(
+            attemptedAt: snapshot.receivedAt.addingTimeInterval(1),
+            outcome: .offline,
+            schemaVersion: WeatherWidgetStore.attemptSchemaVersion
+        )
+        let presentation = renderer.render(
+            snapshot: snapshot,
+            acquiredAt: snapshot.receivedAt,
+            attempt: failure,
+            now: failure.attemptedAt,
+            unit: .fahrenheit
+        )
+        XCTAssertTrue(presentation.stale)
+        XCTAssertFalse(presentation.groups.isEmpty)
+    }
+
+    // retain terminal boundaries beyond a dense distinct-clock timeline
+    func testTimelineRetainsExpiryBeyondSixtyFourDistinctBoundaries() throws {
+        let snapshot = try decoder.decode(fixtureData("fall-back-25", file: "snapshot.json"))
+        // give every field distinct correction and source transitions
+        let hours = snapshot.hours.enumerated().map { index, hour in
+            let offset = TimeInterval(index * 4)
+            let temperatureRawSource = WeatherWidgetSource(
+                receivedAt: snapshot.receivedAt,
+                runAt: snapshot.calendar.dayStart.addingTimeInterval(offset + 1)
+            )
+            let temperatureSelectedSource = WeatherWidgetSource(
+                receivedAt: snapshot.receivedAt,
+                runAt: snapshot.calendar.dayStart.addingTimeInterval(offset + 2)
+            )
+            let rainRawSource = WeatherWidgetSource(
+                receivedAt: snapshot.receivedAt,
+                runAt: snapshot.calendar.dayStart.addingTimeInterval(offset + 3)
+            )
+            let rainSelectedSource = WeatherWidgetSource(
+                receivedAt: snapshot.receivedAt,
+                runAt: snapshot.calendar.dayStart.addingTimeInterval(offset + 4)
+            )
+            return WeatherWidgetHour(
+                end: hour.end,
+                rainMmPerHour: WeatherWidgetValue(
+                    mode: .adjusted,
+                    raw: hour.rainMmPerHour.raw,
+                    rawSource: rainRawSource,
+                    reason: .rainAdjustment,
+                    selected: hour.rainMmPerHour.selected,
+                    selectedSource: rainSelectedSource,
+                    selectedUntil: snapshot.calendar.dayStart.addingTimeInterval(1_000 + offset)
+                ),
+                start: hour.start,
+                temperatureC: WeatherWidgetValue(
+                    mode: .adjusted,
+                    raw: hour.temperatureC.raw,
+                    rawSource: temperatureRawSource,
+                    reason: .genericAdjustment,
+                    selected: hour.temperatureC.selected,
+                    selectedSource: temperatureSelectedSource,
+                    selectedUntil: snapshot.calendar.dayStart.addingTimeInterval(2_000 + offset)
+                )
+            )
+        }
+        let denseSnapshot = WeatherWidgetSnapshot(
+            attribution: snapshot.attribution,
+            calendar: snapshot.calendar,
+            generatedAt: snapshot.generatedAt,
+            hours: hours,
+            receivedAt: snapshot.receivedAt,
+            schemaVersion: snapshot.schemaVersion,
+            site: snapshot.site,
+            status: .adjusted
+        )
+        let acquiredAt = snapshot.receivedAt.addingTimeInterval(7)
+        let dates = renderer.transitionDates(
+            snapshot: denseSnapshot,
+            acquiredAt: acquiredAt,
+            after: snapshot.calendar.dayStart.addingTimeInterval(-1)
+        )
+        XCTAssertGreaterThan(dates.count, 64)
+        XCTAssertTrue(dates.contains(snapshot.calendar.cutoff))
+        XCTAssertTrue(dates.contains(snapshot.calendar.dayEnd))
+        XCTAssertTrue(dates.contains(snapshot.receivedAt.addingTimeInterval(24 * 60 * 60)))
+        XCTAssertTrue(dates.contains(acquiredAt.addingTimeInterval(24 * 60 * 60)))
+        XCTAssertEqual(dates, Array(Set(dates)).sorted())
+    }
+
+    // preserve rounded air range and wettest-hour rain boundaries
+    func testTemperatureRangeAndRainThresholds() throws {
+        let sprinkle = try snapshotWithFirstRainValues([0, 0.000_001, 2.5])
+        let sprinklePresentation = renderer.render(
+            snapshot: sprinkle,
+            acquiredAt: sprinkle.receivedAt,
+            attempt: nil,
+            now: sprinkle.receivedAt,
+            unit: .fahrenheit
+        )
+        XCTAssertEqual(sprinklePresentation.groups[0].temperature?.label, "60–63")
+        XCTAssertEqual(sprinklePresentation.groups[0].condition, .sprinkle)
+
+        let rain = try snapshotWithFirstRainValues([0, 2.5, 2.500_001])
+        let rainPresentation = renderer.render(
+            snapshot: rain,
+            acquiredAt: rain.receivedAt,
+            attempt: nil,
+            now: rain.receivedAt,
+            unit: .fahrenheit
+        )
+        XCTAssertEqual(rainPresentation.groups[0].condition, .rain)
+    }
+
+    // keep partial groups unavailable and round negative midpoint ties away
+    func testPartialGroupAndNegativeMidpointSemantics() throws {
+        var partialPayload = try fixtureObject("adjusted-standard")
+        var hours = try XCTUnwrap(partialPayload["hours"] as? [[String: Any]])
+        var first = hours[0]
+        first["temperatureC"] = unavailableValueObject()
+        first["rainMmPerHour"] = unavailableValueObject()
+        hours[0] = first
+        partialPayload["hours"] = hours
+        partialPayload["status"] = "mixed"
+        let partial = try decoder.decode(try JSONSerialization.data(withJSONObject: partialPayload))
+        let partialPresentation = renderer.render(
+            snapshot: partial,
+            acquiredAt: partial.receivedAt,
+            attempt: nil,
+            now: partial.receivedAt,
+            unit: .celsius
+        )
+        XCTAssertNil(partialPresentation.groups[0].temperature)
+        XCTAssertEqual(partialPresentation.groups[0].condition, .unavailable)
+
+        var roundingPayload = try fixtureObject("adjusted-standard")
+        hours = try XCTUnwrap(roundingPayload["hours"] as? [[String: Any]])
+        // set one complete group to negative and positive midpoint ties
+        for (index, value) in [-1.5, -0.5, 0.5].enumerated() {
+            var hour = hours[index]
+            var temperature = try XCTUnwrap(hour["temperatureC"] as? [String: Any])
+            temperature["selected"] = value
+            hour["temperatureC"] = temperature
+            hours[index] = hour
+        }
+        roundingPayload["hours"] = hours
+        let rounding = try decoder.decode(try JSONSerialization.data(withJSONObject: roundingPayload))
+        let roundingPresentation = renderer.render(
+            snapshot: rounding,
+            acquiredAt: rounding.receivedAt,
+            attempt: nil,
+            now: rounding.receivedAt,
+            unit: .celsius
+        )
+        XCTAssertEqual(roundingPresentation.groups[0].temperature?.label, "-2–1")
+    }
+
+    // load one immutable shared fixture file
+    private func fixtureData(_ name: String, file: String) throws -> Data {
+        try Data(contentsOf: fixtureURL(name, file: file))
+    }
+
+    // locate the repository-owned frozen shared fixtures
+    private func fixtureURL(_ name: String, file: String) -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "shared/fixtures/\(name)/\(file)")
+    }
+
+    // deserialize one mutable fixture object
+    private func fixtureObject(_ name: String) throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: fixtureData(name, file: "snapshot.json")
+            ) as? [String: Any]
+        )
+    }
+
+    // create one schema-valid explicit unavailable field
+    private func unavailableValueObject() -> [String: Any] {
+        [
+            "mode": "unavailable",
+            "raw": NSNull(),
+            "rawSource": NSNull(),
+            "reason": "missing",
+            "selected": NSNull(),
+            "selectedSource": NSNull(),
+            "selectedUntil": NSNull()
+        ]
+    }
+
+    // create one valid snapshot with exact first-group rain values
+    private func snapshotWithFirstRainValues(_ values: [Double]) throws -> WeatherWidgetSnapshot {
+        var payload = try fixtureObject("adjusted-standard")
+        var hours = try XCTUnwrap(payload["hours"] as? [[String: Any]])
+        // update only the first three adjusted selected values
+        for (index, value) in values.enumerated() {
+            var hour = hours[index]
+            var rain = try XCTUnwrap(hour["rainMmPerHour"] as? [String: Any])
+            rain["selected"] = value
+            hour["rainMmPerHour"] = rain
+            hours[index] = hour
+        }
+        payload["hours"] = hours
+        return try decoder.decode(try JSONSerialization.data(withJSONObject: payload))
+    }
+}
+
+final class WeatherWidgetPersistenceTests: XCTestCase {
+    private var directory: URL!
+
+    // create one isolated extension-container substitute
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+    }
+
+    // remove only this test's temporary container
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    // retain good weather while persisting a failed attempt across restart
+    func testFailedAttemptDoesNotClobberSnapshotAcrossRestart() async throws {
+        let data = try fixtureData("adjusted-standard")
+        let now = try XCTUnwrap(WeatherWidgetDateCodec.date(from: "2026-09-12T07:00:01.000Z"))
+        let store = WeatherWidgetStore(directory: directory)
+        let successful = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .success(data)),
+            store: store
+        )
+        let first = await successful.refresh(now: now)
+        XCTAssertNotNil(first.cached)
+        XCTAssertEqual(first.attempt?.outcome, .success)
+
+        let failed = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: WeatherWidgetStore(directory: directory)
+        )
+        let second = await failed.refresh(now: now.addingTimeInterval(60))
+        XCTAssertEqual(second.cached?.snapshot, first.cached?.snapshot)
+        XCTAssertEqual(second.attempt?.outcome, .offline)
+
+        let restarted = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: WeatherWidgetStore(directory: directory)
+        )
+        let persisted = await restarted.cachedState()
+        XCTAssertEqual(persisted.cached?.snapshot, first.cached?.snapshot)
+        XCTAssertEqual(persisted.attempt?.outcome, .offline)
+    }
+
+    // corrupt attempt metadata cannot assert a newer success
+    func testCorruptAttemptMetadataDoesNotClobberGoodWeather() async throws {
+        let store = WeatherWidgetStore(directory: directory)
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
+        try store.saveSnapshot(
+            WeatherWidgetCachedSnapshot(
+                acquiredAt: snapshot.receivedAt,
+                schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+                snapshot: snapshot
+            )
+        )
+        try Data(#"{"schemaVersion":"weather-widget-attempt/v1","outcome":"success"}"#.utf8)
+            .write(to: directory.appending(path: "last-attempt.json"), options: .atomic)
+        XCTAssertNotNil(store.loadSnapshot())
+        XCTAssertNil(store.loadAttempt())
+    }
+
+    // reject corrupt and oversized snapshot files on read
+    func testCorruptAndOversizedSnapshotFilesAreRejected() throws {
+        let snapshotURL = directory.appending(path: "last-good.json")
+        try Data("not-json".utf8).write(to: snapshotURL)
+        XCTAssertNil(WeatherWidgetStore(directory: directory).loadSnapshot())
+
+        let oversized = Data(
+            repeating: 0x20,
+            count: WeatherWidgetContract.maximumPayloadBytes + 8_193
+        )
+        try oversized.write(to: snapshotURL)
+        XCTAssertNil(WeatherWidgetStore(directory: directory).loadSnapshot())
+    }
+
+    // retain the current failure when its metadata write fails
+    func testAttemptWriteFailureCannotReuseOlderSuccess() async throws {
+        let snapshot = try WeatherWidgetSnapshotDecoder().decode(fixtureData("adjusted-standard"))
+        let cached = WeatherWidgetCachedSnapshot(
+            acquiredAt: snapshot.receivedAt,
+            schemaVersion: WeatherWidgetStore.storageSchemaVersion,
+            snapshot: snapshot
+        )
+        let oldSuccess = WeatherWidgetAttempt(
+            attemptedAt: snapshot.receivedAt,
+            outcome: .success,
+            schemaVersion: WeatherWidgetStore.attemptSchemaVersion
+        )
+        let store = FailingAttemptStore(cached: cached, attempt: oldSuccess)
+        let controller = WeatherWidgetDataController(
+            fetcher: StubFetcher(result: .failure(WeatherWidgetFetchError.offline)),
+            store: store
+        )
+        let state = await controller.refresh(now: snapshot.receivedAt.addingTimeInterval(60))
+        XCTAssertEqual(state.cached, cached)
+        XCTAssertEqual(state.attempt?.outcome, .offline)
+    }
+
+    // load one immutable shared snapshot
+    private func fixtureData(_ name: String) throws -> Data {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "shared/fixtures/\(name)/snapshot.json")
+        return try Data(contentsOf: url)
+    }
+}
+
+final class WeatherWidgetHTTPClientTests: XCTestCase {
+    // reset request interception after every transport test
+    override func tearDown() {
+        StubURLProtocol.handler = nil
+        super.tearDown()
+    }
+
+    // reject redirects from the fixed public endpoint
+    func testRedirectIsRejected() async throws {
+        StubURLProtocol.handler = { request, protocolInstance in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 302,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Location": "https://example.com/other"]
+            )!
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                wasRedirectedTo: URLRequest(url: URL(string: "https://example.com/other")!),
+                redirectResponse: response
+            )
+        }
+        do {
+            _ = try await client().fetch()
+            XCTFail("redirect unexpectedly succeeded")
+        } catch let error as WeatherWidgetFetchError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+    }
+
+    // keep overlapping requests isolated on one reusable client value
+    func testOverlappingFetchesDoNotOverwriteEachOther() async throws {
+        let lock = NSLock()
+        var requestCount = 0
+        StubURLProtocol.handler = { request, protocolInstance in
+            lock.lock()
+            requestCount += 1
+            let index = requestCount
+            lock.unlock()
+            let delay = index == 1 ? 0.1 : 0.01
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay) {
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                protocolInstance.client?.urlProtocol(
+                    protocolInstance,
+                    didReceive: response,
+                    cacheStoragePolicy: .notAllowed
+                )
+                protocolInstance.client?.urlProtocol(
+                    protocolInstance,
+                    didLoad: Data("response-\(index)".utf8)
+                )
+                protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
+            }
+        }
+        let client = client()
+        async let first = client.fetch()
+        try await Task.sleep(for: .milliseconds(20))
+        async let second = client.fetch()
+        let firstValue = try await first
+        let secondValue = try await second
+        XCTAssertEqual(String(decoding: firstValue, as: UTF8.self), "response-1")
+        XCTAssertEqual(String(decoding: secondValue, as: UTF8.self), "response-2")
+    }
+
+    // canceling one request cannot finish a later request
+    func testCancelledRequestCannotFinishLaterFetch() async throws {
+        let lock = NSLock()
+        var requestCount = 0
+        StubURLProtocol.handler = { request, protocolInstance in
+            lock.lock()
+            requestCount += 1
+            let index = requestCount
+            lock.unlock()
+            // deliberately leave the cancelled first request pending
+            if index == 1 {
+                return
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            protocolInstance.client?.urlProtocol(
+                protocolInstance,
+                didReceive: response,
+                cacheStoragePolicy: .notAllowed
+            )
+            protocolInstance.client?.urlProtocol(protocolInstance, didLoad: Data("second".utf8))
+            protocolInstance.client?.urlProtocolDidFinishLoading(protocolInstance)
+        }
+        let client = client()
+        let cancelled = Task { try await client.fetch() }
+        try await Task.sleep(for: .milliseconds(20))
+        cancelled.cancel()
+        let second = try await client.fetch()
+        XCTAssertEqual(String(decoding: second, as: UTF8.self), "second")
+        do {
+            _ = try await cancelled.value
+            XCTFail("cancelled fetch unexpectedly succeeded")
+        } catch let error as WeatherWidgetFetchError {
+            XCTAssertEqual(error, .cancelled)
+        }
+    }
+
+    // build one intercepted ephemeral client
+    private func client() -> WeatherWidgetHTTPClient {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubURLProtocol.self]
+        return WeatherWidgetHTTPClient(configuration: configuration)
+    }
+}
+
+private struct StubFetcher: WeatherWidgetFetching {
+    let result: Result<Data, Error>
+
+    // return one deterministic transport result
+    func fetch() async throws -> Data {
+        try result.get()
+    }
+}
+
+private final class FailingAttemptStore: WeatherWidgetStoring {
+    private let cached: WeatherWidgetCachedSnapshot?
+    private let attempt: WeatherWidgetAttempt?
+
+    // retain one deterministic old state
+    init(cached: WeatherWidgetCachedSnapshot?, attempt: WeatherWidgetAttempt?) {
+        self.cached = cached
+        self.attempt = attempt
+    }
+
+    // return the prior good snapshot
+    func loadSnapshot() -> WeatherWidgetCachedSnapshot? {
+        cached
+    }
+
+    // return the prior successful attempt
+    func loadAttempt() -> WeatherWidgetAttempt? {
+        attempt
+    }
+
+    // keep snapshot writes unused in this failure test
+    func saveSnapshot(_ snapshot: WeatherWidgetCachedSnapshot) throws {}
+
+    // simulate an atomic metadata write failure
+    func saveAttempt(_ attempt: WeatherWidgetAttempt) throws {
+        throw CocoaError(.fileWriteUnknown)
+    }
+}
+
+private final class StubURLProtocol: URLProtocol {
+    static var handler: ((URLRequest, StubURLProtocol) -> Void)?
+
+    // intercept only this test configuration
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    // preserve the request unchanged
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    // dispatch one installed deterministic handler
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        handler(request, self)
+    }
+
+    // require no cleanup outside request-local cancellation
+    override func stopLoading() {}
+}

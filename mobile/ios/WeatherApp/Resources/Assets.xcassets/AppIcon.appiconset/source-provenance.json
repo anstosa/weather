@@ -1,0 +1,7 @@
+{
+  "background": "#fbf2f8",
+  "generator": "mobile/ios/scripts/generate-assets.py",
+  "output": "AppIcon-1024.png",
+  "source": "apps/web/public/brand/weather-app-icon-master.png",
+  "sourceSha256": "4871810f45b233e384852af995dbb510a3c1765acc6410a0035396a847ddb568"
+}

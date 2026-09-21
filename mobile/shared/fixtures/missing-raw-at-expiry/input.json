@@ -1,0 +1,2024 @@
+{
+  "receivedAt": "2026-09-12T15:15:01.000Z",
+  "response": {
+    "data": [
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-00",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T07:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10,
+          "rawBestMatchTemperatureC": 10,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T01:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T00:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T07:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-01",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.01,
+          "precipitationRateMmPerHour": 0.01,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.1,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T08:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.1,
+          "rawBestMatchTemperatureC": 10.1,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T02:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.1,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T01:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T08:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-02",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.02,
+          "precipitationRateMmPerHour": 0.02,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.2,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T09:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.2,
+          "rawBestMatchTemperatureC": 10.2,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T03:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.2,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T02:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T09:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-03",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.03,
+          "precipitationRateMmPerHour": 0.03,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.3,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T10:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.3,
+          "rawBestMatchTemperatureC": 10.3,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T04:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.3,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T03:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T10:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-04",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.04,
+          "precipitationRateMmPerHour": 0.04,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.4,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T11:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.4,
+          "rawBestMatchTemperatureC": 10.4,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T05:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.4,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T04:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T11:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-05",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.5,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T12:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.5,
+          "rawBestMatchTemperatureC": 10.5,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T06:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.5,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T05:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T12:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-06",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.06,
+          "precipitationRateMmPerHour": 0.06,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.6,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T13:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.6,
+          "rawBestMatchTemperatureC": 10.6,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T07:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.6,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T06:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T13:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-07",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.07,
+          "precipitationRateMmPerHour": 0.07,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.7,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T14:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.7,
+          "rawBestMatchTemperatureC": 10.7,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T08:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.7,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T07:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T14:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-08",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.08,
+          "precipitationRateMmPerHour": 0.08,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 10.8,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T15:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10.8,
+          "rawBestMatchTemperatureC": 10.8,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T09:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10.8,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T08:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T15:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-09",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.09,
+          "precipitationRateMmPerHour": 0.09,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": null,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T16:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 10,
+          "rawBestMatchTemperatureC": null,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T10:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 10,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T09:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T16:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-10",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T17:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11,
+          "rawBestMatchTemperatureC": 11,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T11:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T10:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T17:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-11",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.11,
+          "precipitationRateMmPerHour": 0.11,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.1,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T18:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.1,
+          "rawBestMatchTemperatureC": 11.1,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T12:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.1,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T11:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T18:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-12",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.12,
+          "precipitationRateMmPerHour": 0.12,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.2,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T19:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.2,
+          "rawBestMatchTemperatureC": 11.2,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T13:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.2,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T12:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T19:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-13",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.13,
+          "precipitationRateMmPerHour": 0.13,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.3,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T20:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.3,
+          "rawBestMatchTemperatureC": 11.3,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T14:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.3,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T13:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T20:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-14",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.14,
+          "precipitationRateMmPerHour": 0.14,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.4,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T21:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.4,
+          "rawBestMatchTemperatureC": 11.4,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 7,
+            "operationalHorizonHours": 1,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.4,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T21:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-15",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.5,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T22:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.5,
+          "rawBestMatchTemperatureC": 11.5,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 8,
+            "operationalHorizonHours": 2,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.5,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T22:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-16",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.16,
+          "precipitationRateMmPerHour": 0.16,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.6,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-12T23:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.6,
+          "rawBestMatchTemperatureC": 11.6,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 9,
+            "operationalHorizonHours": 3,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.6,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-12T23:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-17",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.17,
+          "precipitationRateMmPerHour": 0.17,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.7,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T00:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.7,
+          "rawBestMatchTemperatureC": 11.7,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 10,
+            "operationalHorizonHours": 4,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.7,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T00:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-18",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.18,
+          "precipitationRateMmPerHour": 0.18,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.8,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T01:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.8,
+          "rawBestMatchTemperatureC": 11.8,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 11,
+            "operationalHorizonHours": 5,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.8,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T01:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-19",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.19,
+          "precipitationRateMmPerHour": 0.19,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 11.9,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T02:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 11.9,
+          "rawBestMatchTemperatureC": 11.9,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 12,
+            "operationalHorizonHours": 6,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 11.9,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T02:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-20",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0,
+          "precipitationRateMmPerHour": 0,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T03:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 12,
+          "rawBestMatchTemperatureC": 12,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 13,
+            "operationalHorizonHours": 7,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 12,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T03:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-21",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.21,
+          "precipitationRateMmPerHour": 0.21,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12.1,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T04:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 12.1,
+          "rawBestMatchTemperatureC": 12.1,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 14,
+            "operationalHorizonHours": 8,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 12.1,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T04:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-22",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.22,
+          "precipitationRateMmPerHour": 0.22,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12.2,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T05:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 12.2,
+          "rawBestMatchTemperatureC": 12.2,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 15,
+            "operationalHorizonHours": 9,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 12.2,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T05:00:00.000Z"
+          },
+          "state": "active"
+        }
+      },
+      {
+        "freshness": {
+          "ageSeconds": 0,
+          "label": "Forecast hour",
+          "status": "fresh"
+        },
+        "id": "fixture-23",
+        "metadata": {
+          "device": null,
+          "provider": {
+            "dataset": "forecast",
+            "elevationM": null,
+            "gridCell": null,
+            "propertySensors": null
+          },
+          "quality": null,
+          "upstream": {
+            "model": "best_match",
+            "timezone": "America/Los_Angeles"
+          }
+        },
+        "metrics": {
+          "apparentTemperatureC": null,
+          "blackGlobeTemperatureC": null,
+          "cloudCoverPercent": null,
+          "pm25MicrogramsPerCubicMeter": null,
+          "precipitationMm": 0.23,
+          "precipitationRateMmPerHour": 0.23,
+          "pressureHpa": null,
+          "relativeHumidityPercent": 70,
+          "soilElectricalConductivityMicrosiemensPerCm": null,
+          "soilMoisturePercent": null,
+          "solarRadiationWm2": null,
+          "temperatureC": 12.3,
+          "uvIndex": null,
+          "wetBulbGlobeTemperatureC": null,
+          "windDirectionDegrees": null,
+          "windGustMps": null,
+          "windSpeedMps": null
+        },
+        "productRunAt": "2026-09-12T09:15:00.000Z",
+        "provenance": {
+          "attribution": {
+            "label": "Weather data by Open-Meteo",
+            "url": "https://open-meteo.com/"
+          },
+          "label": "hourly forecast",
+          "providerKey": "open-meteo",
+          "sourceId": "fixture-private-source",
+          "sourceKey": "open-meteo-forecast-v4",
+          "sourceKind": "forecast",
+          "stationSlug": "open-meteo-virtual"
+        },
+        "receivedAt": "2026-09-12T15:10:00.000Z",
+        "revisionCount": 0,
+        "validAt": "2026-09-13T06:00:00.000Z",
+        "temperatureAdjustment": {
+          "branch": "direct",
+          "bundleSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "contractVersion": "forecast-temperature-canary-decision/v1",
+          "correctedTemperatureC": 12.3,
+          "rawBestMatchTemperatureC": 12.3,
+          "reasonCode": null,
+          "recentErrorStateSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+          "sourceForecast": {
+            "adapterVersion": "open-meteo-ecmwf-single-run/v1",
+            "dataset": "single_run",
+            "firstReceivedAt": "2026-09-12T15:00:00.000Z",
+            "modelCycle": "50r1",
+            "modelLeadHours": 16,
+            "operationalHorizonHours": 10,
+            "providerKey": "open-meteo",
+            "providerResponseSha256": "7777777777777777777777777777777777777777777777777777777777777777",
+            "rawRelativeHumidityPercent": 70,
+            "rawTemperatureC": 12.3,
+            "rawWindSpeedMps": 2,
+            "runInitializedAt": "2026-09-12T14:00:00.000Z",
+            "upstreamModel": "ecmwf_ifs",
+            "validAt": "2026-09-13T06:00:00.000Z"
+          },
+          "state": "active"
+        }
+      }
+    ],
+    "generatedAt": "2026-09-12T15:15:00.000Z",
+    "site": {
+      "latitude": 47.950429954185445,
+      "longitude": -122.42797012608193,
+      "name": "Ballydidean",
+      "slug": "ballydidean",
+      "stations": [],
+      "timezone": "America/Los_Angeles"
+    },
+    "temperatureAdjustmentRuntime": {
+      "activeBundle": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "authorizationSha256": "9999999999999999999999999999999999999999999999999999999999999999",
+      "expiresAt": "2026-09-12T16:00:00.000Z",
+      "loadedAt": "2026-09-12T14:00:00.000Z",
+      "reasonCode": null,
+      "source": {
+        "adaptiveReady": false,
+        "firstReceivedAt": "2026-09-12T06:00:00.000Z",
+        "hourCount": 19,
+        "latestRunInitializedAt": "2026-09-12T00:00:00.000Z",
+        "stateReason": "cold_start",
+        "stateStatus": "cold"
+      },
+      "state": "active"
+    }
+  }
+}

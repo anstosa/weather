@@ -1,0 +1,110 @@
+{
+  "bedtime": false,
+  "date": "2026-09-12",
+  "footer": {
+    "attribution": "Open-Meteo · CC BY 4.0",
+    "generatedAt": "2026-09-12T07:00:00.000Z",
+    "status": "adjusted",
+    "sunset": "2026-09-13T02:27:49.262Z"
+  },
+  "groups": [
+    {
+      "condition": "rain",
+      "end": "2026-09-12T10:00:00.000Z",
+      "hourCount": 3,
+      "isNow": true,
+      "start": "2026-09-12T07:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "60–63",
+        "maximum": 63,
+        "minimum": 60
+      }
+    },
+    {
+      "condition": "rain",
+      "end": "2026-09-12T13:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-09-12T10:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "29–35",
+        "maximum": 35,
+        "minimum": 29
+      }
+    },
+    {
+      "condition": "rain",
+      "end": "2026-09-12T16:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-09-12T13:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "29–35",
+        "maximum": 35,
+        "minimum": 29
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-12T19:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-09-12T16:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "31–35",
+        "maximum": 35,
+        "minimum": 31
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-12T22:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-09-12T19:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "29–33",
+        "maximum": 33,
+        "minimum": 29
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-13T01:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-09-12T22:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "29–35",
+        "maximum": 35,
+        "minimum": 29
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-13T03:00:00.000Z",
+      "hourCount": 2,
+      "isNow": false,
+      "start": "2026-09-13T01:00:00.000Z",
+      "status": "adjusted",
+      "temperature": {
+        "label": "37–38",
+        "maximum": 38,
+        "minimum": 37
+      }
+    }
+  ],
+  "hardExpired": false,
+  "now": "2026-09-12T07:00:01.000Z",
+  "presentation": "weather",
+  "schemaVersion": "weather-widget-semantic/v1",
+  "stale": false,
+  "status": "adjusted",
+  "unit": "fahrenheit"
+}

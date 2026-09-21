@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import plistlib
+import json
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from xml.etree import ElementTree
@@ -22,16 +24,28 @@ EXPECTED_FILES = (
     "WeatherApp/Web/SecureWeatherWebView.swift",
     "WeatherApp/Web/WeatherNavigationPolicy.swift",
     "WeatherApp/Resources/Info.plist",
+    "WeatherApp/Resources/Assets.xcassets/Contents.json",
+    "WeatherApp/Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
+    "WeatherApp/Resources/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+    "WeatherApp/Resources/Assets.xcassets/AppIcon.appiconset/source-provenance.json",
     "WeatherWidget/WeatherWidget.swift",
     "WeatherWidget/WeatherWidgetIntent.swift",
     "WeatherWidget/WeatherWidgetModel.swift",
     "WeatherWidget/WeatherWidgetFixtures.swift",
     "WeatherWidget/WeatherWidgetView.swift",
+    "WeatherWidget/WeatherWidgetContract.swift",
+    "WeatherWidget/WeatherWidgetPresentation.swift",
+    "WeatherWidget/WeatherWidgetStore.swift",
+    "WeatherWidget/WeatherWidgetClient.swift",
+    "WeatherWidget/WeatherWidgetDebugFixtures.swift",
     "WeatherWidget/Info.plist",
     "WeatherTests/WeatherTests.swift",
     "WeatherUITests/WeatherDeepLinkUITests.swift",
     "scripts/build-m0.sh",
+    "scripts/generate-assets.py",
     "scripts/probe-widget-host.sh",
+    "scripts/probe-widget-unit.sh",
+    "scripts/probe-widget-semantic-host.sh",
 )
 EXPECTED_SCHEMES = (
     "Weather.xcscheme",
@@ -76,6 +90,19 @@ def verify_plists() -> None:
         # reject unsupported shared storage
         if "com.apple.security.application-groups" in str(payload):
             fail(f"unexpected App Group in {relative}")
+
+
+def verify_assets() -> None:
+    """verify exact generated app-icon bytes and provenance"""
+    result = subprocess.run(
+        [str(ROOT / "scripts/generate-assets.py"), "--check"],
+        cwd=ROOT.parents[1],
+        capture_output=True,
+        text=True,
+    )
+    # reject catalog, dimension, alpha, or source-provenance drift
+    if result.returncode != 0:
+        fail(result.stderr.strip() or "generated app icon drifted")
 
 
 def verify_schemes() -> None:
@@ -160,6 +187,8 @@ def verify_project_graph() -> None:
         fail(f"dangling PBX identifiers: {', '.join(missing)}")
 
     required_fragments = (
+        "ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon",
+        "Assets.xcassets in Resources",
         "IPHONEOS_DEPLOYMENT_TARGET = 17.0",
         "farm.ballydidean.weather.widget",
         "com.apple.product-type.app-extension",
@@ -193,6 +222,7 @@ def verify_release_reachable_sources() -> None:
     view_source = (ROOT / "WeatherWidget/WeatherWidgetView.swift").read_text()
     test_source = (ROOT / "WeatherTests/WeatherTests.swift").read_text()
     release_scan = (ROOT / "scripts/verify-release-artifacts.sh").read_text()
+    debug_fixtures = (ROOT / "WeatherWidget/WeatherWidgetDebugFixtures.swift").read_text()
     obsolete_fixture_controls = (
         "WEATHER_WIDGET_FIXTURE",
         "WeatherWidgetFixtureSelection",
@@ -208,6 +238,18 @@ def verify_release_reachable_sources() -> None:
             fail(f"obsolete fixture control remains: {fragment}")
     if "import AppIntents" in model_source:
         fail("fixture model still imports AppIntents")
+    # keep embedded semantic fixtures byte-identical to frozen shared inputs
+    shared_fixtures = ROOT.parent / "shared" / "fixtures"
+    for directory in sorted(shared_fixtures.iterdir()):
+        # inspect only frozen fixture directories
+        if not directory.is_dir():
+            continue
+        snapshot = (directory / "snapshot.json").read_text().rstrip("\n")
+        expected = json.loads((directory / "expected.json").read_text())
+        if snapshot not in debug_fixtures:
+            fail(f"embedded semantic fixture drifted: {directory.name}")
+        if expected["now"] not in debug_fixtures or f'.{expected["unit"]}' not in debug_fixtures:
+            fail(f"embedded semantic expectation drifted: {directory.name}")
     # preserve wrapper-owned decoding defaults
     if "init() {}" not in intent_source:
         fail("widget configuration intent does not use the empty system initializer")
@@ -217,12 +259,11 @@ def verify_release_reachable_sources() -> None:
     diagnostic_marker = "m0-compiled-fixture"
     diagnostic_index = widget_source.find(diagnostic_marker)
     diagnostic_guard_index = widget_source.rfind("#if DEBUG", 0, diagnostic_index)
-    diagnostic_end_index = widget_source.find("#else", diagnostic_index)
+    diagnostic_end_index = widget_source.find("#endif", diagnostic_index)
     diagnostic_fragments = (
         "WEATHER_M0_FIXTURE_MAXIMUM",
         "WEATHER_M0_FIXTURE_NEAR_CUTOFF",
         "WEATHER_M0_FIXTURE_BEDTIME",
-        "WEATHER_M0_FIXTURE_DEBUG_DEFAULT",
         "selection.selector",
         "resolved=\\(fixture.scenario.rawValue",
         "groups=\\(fixture.groups.count",
@@ -233,6 +274,7 @@ def verify_release_reachable_sources() -> None:
         diagnostic_index < 0
         or diagnostic_guard_index < 0
         or diagnostic_end_index < diagnostic_index
+        or not fixture_source.startswith("import Foundation\n\n#if DEBUG")
         or diagnostic_marker not in release_scan
     ):
         fail("compiled fixture receipt is not Release-isolated")
@@ -285,21 +327,26 @@ def verify_release_reachable_sources() -> None:
     ):
         fail("debug widget reload request is not compilation-gated")
     # enforce the selected widget-only visual type policy
-    if "static let widgetVisualFontSize: Double = 12" not in model_source:
+    contract_source = (ROOT / "WeatherWidget/WeatherWidgetContract.swift").read_text()
+    if "static let widgetVisualFontSize: Double = 12" not in contract_source:
         fail("widget visual type is not fixed at the reviewed 12-point size")
     # reject renewed visual Dynamic Type expansion
     if "@ScaledMetric" in view_source:
         fail("widget visual type unexpectedly uses uncapped scaling")
     # preserve the fixed type policy at every widget label
-    if "WeatherWidgetFixture.widgetVisualFontSize" not in view_source:
+    if "WeatherWidgetContract.widgetVisualFontSize" not in view_source:
         fail("widget view does not use the fixed visual type policy")
+    # reject arbitrary timeline truncation that can omit terminal expiry
+    if ".prefix(64)" in widget_source:
+        fail("widget timeline still truncates semantic boundaries")
     # preserve complete spoken detail outside the visual cap
-    if "entry.fixture.accessibilitySummary" not in view_source:
+    if "entry.display.accessibilitySummary" not in view_source:
         fail("widget view lacks the complete VoiceOver summary")
     # preserve focused policy regressions
     for test_name in (
         "testWidgetVisualTypeUsesReviewedTwelvePoints",
         "testVoiceOverSummaryRetainsEveryForecastGroup",
+        "testTimelineRetainsExpiryBeyondSixtyFourDistinctBoundaries",
     ):
         # reject removal of either policy test
         if test_name not in test_source:
@@ -483,6 +530,7 @@ def main() -> None:
     """run deterministic structural checks"""
     verify_files()
     verify_plists()
+    verify_assets()
     verify_schemes()
     verify_project_graph()
     verify_release_reachable_sources()

@@ -1,18 +1,35 @@
 import Foundation
 
-enum WeatherCondition: Int, CaseIterable, Comparable {
-    case dry = 0
-    case sprinkle = 1
-    case rain = 2
+enum WeatherCondition: String, Codable, CaseIterable, Comparable {
+    case unavailable
+    case dry
+    case sprinkle
+    case rain
 
     // choose the wettest hour
     static func < (lhs: WeatherCondition, rhs: WeatherCondition) -> Bool {
-        lhs.rawValue < rhs.rawValue
+        lhs.rank < rhs.rank
+    }
+
+    // order conditions by wetness
+    private var rank: Int {
+        switch self {
+        case .unavailable:
+            return -1
+        case .dry:
+            return 0
+        case .sprinkle:
+            return 1
+        case .rain:
+            return 2
+        }
     }
 
     // map the display symbol
     var symbolName: String {
         switch self {
+        case .unavailable:
+            return "questionmark.circle.fill"
         case .dry:
             return "sun.max.fill"
         case .sprinkle:
@@ -25,6 +42,8 @@ enum WeatherCondition: Int, CaseIterable, Comparable {
     // name the accessible condition
     var accessibilityName: String {
         switch self {
+        case .unavailable:
+            return "weather unavailable"
         case .dry:
             return "dry"
         case .sprinkle:
@@ -35,6 +54,7 @@ enum WeatherCondition: Int, CaseIterable, Comparable {
     }
 }
 
+#if DEBUG
 struct WeatherHourGroup: Identifiable, Equatable {
     let id: Int
     let intervalIndexes: [Int]
@@ -124,3 +144,4 @@ struct WeatherWidgetFixture: Equatable {
         return parts.joined(separator: ". ")
     }
 }
+#endif

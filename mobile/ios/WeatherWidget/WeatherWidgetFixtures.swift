@@ -1,5 +1,6 @@
 import Foundation
 
+#if DEBUG
 enum WeatherWidgetFixtures {
     // return the requested deterministic scenario
     static func fixture(for scenario: WeatherWidgetScenario) -> WeatherWidgetFixture {
@@ -76,3 +77,4 @@ enum WeatherWidgetFixtures {
         ISO8601DateFormatter().date(from: value)!
     }
 }
+#endif
