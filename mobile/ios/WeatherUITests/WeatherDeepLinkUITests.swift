@@ -1087,7 +1087,8 @@ final class WidgetHostUITests: XCTestCase {
                 userInfo: [NSLocalizedDescriptionKey: "public temperature switch did not expose the prior 0/1 state"]
             )
         }
-        unitSwitch.tap()
+        // tap the visible switch track inside the full-width row
+        unitSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
         // require the actual system switch state after the public tap
         let switchDeadline = Date().addingTimeInterval(3)
         // wait only for the existing edit-sheet transition

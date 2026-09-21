@@ -746,6 +746,8 @@ def verify_release_reachable_sources() -> None:
         or 'String(describing: unitSwitch.value ?? "") == priorValue' not in edit_switch_section
         or 'String(describing: switchQuery.firstMatch.value ?? "") == selectedValue' not in edit_switch_section
         or 'attachState(springboard, name: "unit-selected-' not in edit_switch_section
+        or 'unitSwitch.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()' not in edit_switch_section
+        or 'unitSwitch.tap()' in edit_switch_section
         or 'springboard.switches.matching' not in row_switch_section
         or '["0", "1"].contains' not in row_switch_section
         or "unit-choice-" in edit_switch_section
