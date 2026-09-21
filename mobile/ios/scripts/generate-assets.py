@@ -168,9 +168,26 @@ def encode_rgb(rows: list[bytes]) -> bytes:
             + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
         )
 
+    # avoid platform-dependent zlib compression decisions
+    def stored_deflate(payload: bytes) -> bytes:
+        """encode a deterministic zlib stream with stored DEFLATE blocks"""
+        blocks = bytearray(b"\x78\x01")
+        cursor = 0
+        # emit fixed-size stored blocks
+        while cursor < len(payload):
+            block = payload[cursor : cursor + 65_535]
+            cursor += len(block)
+            final = cursor == len(payload)
+            length = len(block)
+            blocks.append(1 if final else 0)
+            blocks.extend(struct.pack("<HH", length, length ^ 0xFFFF))
+            blocks.extend(block)
+        blocks.extend(struct.pack(">I", zlib.adler32(payload) & 0xFFFFFFFF))
+        return bytes(blocks)
+
     raw = b"".join(b"\x00" + row for row in rows)
     header = struct.pack(">IIBBBBB", TARGET_SIZE, TARGET_SIZE, 8, 2, 0, 0, 0)
-    return PNG_SIGNATURE + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+    return PNG_SIGNATURE + chunk(b"IHDR", header) + chunk(b"IDAT", stored_deflate(raw)) + chunk(b"IEND", b"")
 
 
 # build every deterministic asset-catalog byte

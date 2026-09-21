@@ -234,6 +234,10 @@ test("Check workflow binds selected native jobs to the exact commit", async () =
   assert.match(ios, /needs: change-selection/u);
   assert.match(android, /if: needs\.change-selection\.outputs\.native_android == 'true'/u);
   assert.match(ios, /if: needs\.change-selection\.outputs\.native_ios == 'true'/u);
+  assert.match(
+    android,
+    /android-actions\/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407[\s\S]*packages: platform-tools/u,
+  );
   assert.match(android, /GenerateBrandAssets\.java --check/u);
   assert.match(android, /managedDevice\/debug\/widgetPhone\/TEST-widgetPhone\.xml/u);
   assert.match(ios, /timeout-minutes: 180/u);
