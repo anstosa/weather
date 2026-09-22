@@ -6,6 +6,7 @@ import {
   projectWidgetForecast,
   WIDGET_FORECAST_MAX_BYTES,
 } from "../../apps/web/dist/widget-forecast.js";
+import { projectWidgetForecastV2 } from "../../apps/web/dist/widget-forecast-v2.js";
 import { XweatherTileMemoryCache } from "./xweather-tile-cache.mjs";
 import { XweatherUsageBudget } from "./xweather-usage-budget.mjs";
 import { WeatherAdminStore } from "./weather-admin-store.mjs";
@@ -18,6 +19,7 @@ const adminLoginPath = join(publicRoot, "admin-login.html");
 const adminSessionCookieName = "weather_admin_session";
 const maximumApiBytes = 1024 * 1024;
 const widgetForecastPath = "/api/v1/sites/ballydidean/widget-forecast";
+const widgetForecastV2Path = "/api/v2/sites/ballydidean/widget-forecast";
 // allow the complete daily trends history
 const maximumTrendsApiBytes = 2 * 1024 * 1024;
 const maximumMapBytes = 4 * 1024 * 1024;
@@ -233,13 +235,23 @@ server.listen(port, "0.0.0.0");
 function isWidgetForecastPath(pathname) {
   return pathname === widgetForecastPath ||
     pathname.startsWith(`${widgetForecastPath}/`) ||
-    /^\/api\/v1\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname);
+    /^\/api\/v1\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname) ||
+    pathname === widgetForecastV2Path ||
+    pathname.startsWith(`${widgetForecastV2Path}/`) ||
+    /^\/api\/v2\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname);
 }
 
 // serve one bounded public widget snapshot
 async function serveWidgetForecast(request, response, requestUrl) {
+  // select only one reviewed versioned projection
+  const projector = requestUrl.pathname === widgetForecastPath
+    ? projectWidgetForecast
+    : requestUrl.pathname === widgetForecastV2Path
+      ? projectWidgetForecastV2
+      : null;
+
   // reject every site and path outside the fixed public contract
-  if (requestUrl.pathname !== widgetForecastPath) {
+  if (projector === null) {
     sendText(response, 404, "not found\n");
     return;
   }
@@ -275,7 +287,7 @@ async function serveWidgetForecast(request, response, requestUrl) {
     const sourceBody = await readBoundedBody(upstream, maximumApiBytes, "API");
     const filteredBody = filterForecastResponse(sourceBody, settings);
     const filtered = JSON.parse(filteredBody.toString("utf8"));
-    const snapshot = projectWidgetForecast(filtered, new Date().toISOString());
+    const snapshot = projector(filtered, new Date().toISOString());
     const body = Buffer.from(`${JSON.stringify(snapshot)}\n`);
 
     // enforce the serialized edge response ceiling including its newline
