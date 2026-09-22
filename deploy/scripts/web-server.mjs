@@ -2,6 +2,10 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 
+import {
+  projectWidgetForecast,
+  WIDGET_FORECAST_MAX_BYTES,
+} from "../../apps/web/dist/widget-forecast.js";
 import { XweatherTileMemoryCache } from "./xweather-tile-cache.mjs";
 import { XweatherUsageBudget } from "./xweather-usage-budget.mjs";
 import { WeatherAdminStore } from "./weather-admin-store.mjs";
@@ -13,6 +17,7 @@ const compiledRoot = join(root, "apps/web/dist");
 const adminLoginPath = join(publicRoot, "admin-login.html");
 const adminSessionCookieName = "weather_admin_session";
 const maximumApiBytes = 1024 * 1024;
+const widgetForecastPath = "/api/v1/sites/ballydidean/widget-forecast";
 // allow the complete daily trends history
 const maximumTrendsApiBytes = 2 * 1024 * 1024;
 const maximumMapBytes = 4 * 1024 * 1024;
@@ -138,6 +143,12 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    // isolate the closed widget route before the general api proxy
+    if (isWidgetForecastPath(requestUrl.pathname)) {
+      await serveWidgetForecast(request, response, requestUrl);
+      return;
+    }
+
     // proxy only the same-origin API namespace
     if (requestUrl.pathname.startsWith("/api/v1/")) {
       await proxyApi(request, response, requestUrl);
@@ -217,6 +228,72 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0");
+
+// identify the exact widget route and its rejected near-matches
+function isWidgetForecastPath(pathname) {
+  return pathname === widgetForecastPath ||
+    pathname.startsWith(`${widgetForecastPath}/`) ||
+    /^\/api\/v1\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname);
+}
+
+// serve one bounded public widget snapshot
+async function serveWidgetForecast(request, response, requestUrl) {
+  // reject every site and path outside the fixed public contract
+  if (requestUrl.pathname !== widgetForecastPath) {
+    sendText(response, 404, "not found\n");
+    return;
+  }
+
+  // reject caller-controlled projection inputs
+  if (requestUrl.search !== "") {
+    sendText(response, 400, "bad request\n");
+    return;
+  }
+
+  // keep the public projection read-only
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    sendText(response, 405, "method not allowed\n", { Allow: "GET, HEAD" });
+    return;
+  }
+
+  try {
+    const settings = (await adminStore.readAdjustmentSettingsStatus()).settings;
+    const target = new URL("/api/v1/sites/ballydidean/forecast?days=1", apiOrigin);
+    const upstream = await fetch(target, {
+      headers: { Accept: "application/json" },
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(apiRequestTimeoutMs(target.pathname)),
+    });
+
+    // expose only a successfully validated upstream forecast
+    if (!upstream.ok) {
+      await upstream.body?.cancel();
+      throw new Error("widget forecast upstream failed");
+    }
+
+    const sourceBody = await readBoundedBody(upstream, maximumApiBytes, "API");
+    const filteredBody = filterForecastResponse(sourceBody, settings);
+    const filtered = JSON.parse(filteredBody.toString("utf8"));
+    const snapshot = projectWidgetForecast(filtered, new Date().toISOString());
+    const body = Buffer.from(`${JSON.stringify(snapshot)}\n`);
+
+    // enforce the serialized edge response ceiling including its newline
+    if (body.byteLength > WIDGET_FORECAST_MAX_BYTES) {
+      throw new Error("widget forecast response exceeded the edge limit");
+    }
+
+    setSecurityHeaders(response);
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Length": String(body.byteLength),
+      "Content-Type": "application/json; charset=utf-8",
+    });
+    response.end(request.method === "HEAD" ? undefined : body);
+  } catch {
+    sendText(response, 502, "upstream unavailable\n");
+  }
+}
 
 // create one administrator browser session
 async function loginAdmin(request, response) {
