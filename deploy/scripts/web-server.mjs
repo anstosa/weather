@@ -61,6 +61,9 @@ const assets = new Map([
   ["/trends/", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
   ["/settings", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
   ["/settings/", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
+  // keep the public policy readable without the application or analytics
+  ["/privacy", { analytics: false, cache: "no-cache", path: join(publicRoot, "privacy.html"), template: true, type: "text/html; charset=utf-8" }],
+  ["/privacy/", { analytics: false, cache: "no-cache", path: join(publicRoot, "privacy.html"), template: true, type: "text/html; charset=utf-8" }],
   ["/manifest.webmanifest", { cache: "no-cache", path: join(publicRoot, "manifest.webmanifest"), type: "application/manifest+json; charset=utf-8" }],
   ["/service-worker.js", { cache: "no-store", path: join(publicRoot, "service-worker.js"), template: true, type: "text/javascript; charset=utf-8" }],
   ["/brand/ballydidean-wide.svg", { cache: "public, max-age=86400", path: join(publicRoot, "brand/ballydidean-wide.svg"), type: "image/svg+xml" }],
@@ -202,7 +205,8 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    const analyticsEnabled = productionAnalytics && isHtmlTemplate && !isAdmin;
+    // exclude standalone policies even on the production origin
+    const analyticsEnabled = productionAnalytics && isHtmlTemplate && !isAdmin && asset.analytics !== false;
     const source = await readFile(asset.path);
     const body = asset.template === true
       ? Buffer.from(renderHtmlTemplate(source.toString("utf8"), requestUrl.pathname, isAdmin, analyticsEnabled))

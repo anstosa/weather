@@ -929,6 +929,8 @@ async function startFixtureServer() {
       ["/trends/", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
       ["/settings", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
       ["/settings/", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
+      ["/privacy", [join(publicRoot, "privacy.html"), "text/html; charset=utf-8"]],
+      ["/privacy/", [join(publicRoot, "privacy.html"), "text/html; charset=utf-8"]],
       ["/manifest.webmanifest", [join(publicRoot, "manifest.webmanifest"), "application/manifest+json; charset=utf-8"]],
       ["/service-worker.js", [join(publicRoot, "service-worker.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/styles.css`, [join(publicRoot, "styles.css"), "text/css; charset=utf-8"]],
@@ -976,6 +978,8 @@ async function startFixtureServer() {
           url.pathname === "/trends/" ||
           url.pathname === "/settings" ||
           url.pathname === "/settings/" ||
+          url.pathname === "/privacy" ||
+          url.pathname === "/privacy/" ||
           url.pathname === "/service-worker.js"
           ? source.toString("utf8").replaceAll("__WEATHER_ASSET_VERSION__", fixtureAssetVersion)
             .replaceAll(
@@ -1117,6 +1121,91 @@ test("manifest and service worker provide an installable application shell", { t
       200,
     );
     await page.context().setOffline(false);
+  } finally {
+    // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// verify the privacy policy as a static offline document
+test("settings opens a readable no-script privacy policy that remains available offline", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 780, width: 390 },
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.getByRole("link", { name: "Settings" }).click();
+    await page.waitForURL(`${fixture.origin}/settings`);
+    const privacyLink = page.getByRole("link", { name: "Privacy policy" });
+    assert.equal(await privacyLink.getAttribute("href"), "/privacy");
+    assert.equal(await privacyLink.getAttribute("data-weather-route"), null);
+    const privacyDocument = page.waitForResponse(
+      // require a full static document request
+      (response) => response.url() === `${fixture.origin}/privacy` &&
+        response.request().resourceType() === "document",
+    );
+    await privacyLink.click();
+    assert.equal((await privacyDocument).status(), 200);
+    await page.waitForURL(`${fixture.origin}/privacy`);
+    assert.equal(await page.getByRole("heading", { level: 1, name: "Privacy policy" }).isVisible(), true);
+    assert.equal(await page.getByRole("link", { name: "Back to weather" }).getAttribute("href"), "/");
+    assert.equal(await page.locator('a[href^="mailto:"]').getAttribute("href"), "mailto:sanctuary@ballydidean.farm");
+    assert.equal(await page.locator("script").count(), 0);
+    const readability = await page.locator("main").evaluate(
+      // measure rendered mobile readability
+      (main) => {
+        const style = getComputedStyle(main);
+        return {
+          fontSize: Number.parseFloat(style.fontSize),
+          horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          lineHeight: Number.parseFloat(style.lineHeight),
+          visibleWidth: main.getBoundingClientRect().width,
+        };
+      },
+    );
+    assert.equal(readability.horizontalOverflow, 0);
+    assert.equal(readability.fontSize >= 16, true);
+    assert.equal(readability.lineHeight / readability.fontSize >= 1.4, true);
+    assert.equal(readability.visibleWidth <= 390 && readability.visibleWidth >= 280, true);
+    assert.equal(
+      await page.evaluate(
+        // require one active shell worker before disconnecting
+        async () => (await navigator.serviceWorker.ready).active?.state === "activated",
+      ),
+      true,
+    );
+    await page.context().setOffline(true);
+
+    // require both canonical privacy paths offline
+    for (const pathname of ["/privacy", "/privacy/"]) {
+      const response = await page.goto(`${fixture.origin}${pathname}`, { waitUntil: "domcontentloaded" });
+      assert.equal(response?.status(), 200);
+      assert.equal(await page.getByRole("heading", { level: 1, name: "Privacy policy" }).isVisible(), true);
+    }
+
+    await page.context().setOffline(false);
+    const noScriptPage = await browser.newPage({
+      javaScriptEnabled: false,
+      viewport: { height: 780, width: 320 },
+    });
+    await noScriptPage.goto(`${fixture.origin}/privacy/`, { waitUntil: "load" });
+    assert.equal(await noScriptPage.getByRole("heading", { level: 1, name: "Privacy policy" }).isVisible(), true);
+    assert.equal(await noScriptPage.locator("script").count(), 0);
+    assert.equal(
+      await noScriptPage.evaluate(
+        // prohibit narrow-page overflow without JavaScript
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+      0,
+    );
+    await noScriptPage.close();
   } finally {
     // close only disposable browser resources
     await browser?.close();

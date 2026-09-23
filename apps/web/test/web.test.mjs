@@ -2042,6 +2042,8 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(settingsHtml, /class="settings-logs-link" href="\/logs" data-weather-route aria-label="Logs">[\s\S]*?>history<\/span>[\s\S]*?<strong>Logs<\/strong>/u);
   assert.match(settingsHtml, /href="\/admin" aria-label="Admin">[\s\S]*?>settings<\/span>[\s\S]*?<strong>Admin<\/strong>/u);
   assert.doesNotMatch(settingsHtml, /href="\/admin" data-weather-route/u);
+  assert.match(settingsHtml, /href="\/privacy" aria-label="Privacy policy">[\s\S]*?<strong>Privacy policy<\/strong>/u);
+  assert.doesNotMatch(settingsHtml, /<a[^>]*href="\/privacy"[^>]*data-weather-route/u);
   assert.doesNotMatch(settingsHtml, /Property sensors<\/strong>|Name and place/u);
   assert.match(settingsHtml, /data-unit-settings-form/u);
   assert.doesNotMatch(settingsHtml, /<dialog|data-unit-settings-open|data-unit-settings-close/u);

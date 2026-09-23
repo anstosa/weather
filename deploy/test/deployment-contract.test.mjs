@@ -622,6 +622,10 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     '<!doctype html><title>Admin sign in</title>__WEATHER_ADMIN_LOGIN_ERROR__<form action="/admin/login" method="post"><input name="username"><input name="password" type="password"><button>Sign in</button></form><link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">\n',
   );
   await writeFile(
+    join(fixtureRoot, "apps/web/public/privacy.html"),
+    await readFile(join(repoRoot, "apps/web/public/privacy.html")),
+  );
+  await writeFile(
     join(fixtureRoot, "apps/web/public/manifest.webmanifest"),
     JSON.stringify({ display: "standalone", icons: [], name: "Weather", start_url: "/" }),
   );
@@ -832,6 +836,25 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const map = await fetch(`http://127.0.0.1:${webPort}/map`);
     const trends = await fetch(`http://127.0.0.1:${webPort}/trends`);
     const settings = await fetch(`http://127.0.0.1:${webPort}/settings`);
+    // require a public policy independent of login and application scripts
+    for (const pathname of ["/privacy", "/privacy/"]) {
+      const privacy = await fetch(`http://127.0.0.1:${webPort}${pathname}`);
+      const policy = await privacy.text();
+      assert.equal(privacy.status, 200);
+      assert.equal(privacy.headers.get("content-type"), "text/html; charset=utf-8");
+      assert.equal(privacy.headers.get("cache-control"), "no-cache");
+      assert.equal(privacy.headers.get("set-cookie"), null);
+      assert.doesNotMatch(privacy.headers.get("content-security-policy"), /google-analytics|googletagmanager/u);
+      assert.match(policy, /<h1>Privacy policy<\/h1>/u);
+      assert.match(policy, /href="mailto:sanctuary@ballydidean\.farm"/u);
+      assert.match(policy, /Google Analytics 4/u);
+      assert.match(policy, /href="\/assets\/2026\.08\.25-7\/styles\.css"/u);
+      assert.doesNotMatch(policy, /<script\b|__WEATHER_|id="weather-app"/u);
+      const head = await fetch(`http://127.0.0.1:${webPort}${pathname}`, { method: "HEAD" });
+      assert.equal(head.status, 200);
+      assert.equal(head.headers.get("content-length"), privacy.headers.get("content-length"));
+      assert.equal(await head.text(), "");
+    }
     const remoteAgentsPreview = await fetch(
       `http://127.0.0.1:${webPort}/__rac/browser-device?mode=desktop&location=%2Ftrends%3Fpreview%3D1`,
       { redirect: "manual" },

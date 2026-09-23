@@ -8,6 +8,8 @@ const shellPaths = [
   "/forecast",
   "/trends",
   "/settings",
+  "/privacy",
+  "/privacy/",
   "/manifest.webmanifest",
   "/brand/ballydidean-weather-icon-192.png",
   "/brand/ballydidean-weather-icon-512.png",

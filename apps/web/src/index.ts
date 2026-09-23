@@ -3233,7 +3233,7 @@ function renderSectionNavigation(view: WeatherView): string {
   `;
 }
 
-// render the browser-persisted measurement unit page
+// render local preferences and full-page policy access
 function renderUnitSettings(units: UnitPreferences): string {
   return `
     <div class="settings-page">
@@ -3245,6 +3245,10 @@ function renderUnitSettings(units: UnitPreferences): string {
         <a class="settings-logs-link" href="/admin" aria-label="Admin">
           <span class="settings-destination-icon">${renderMaterialIcon("settings")}</span>
           <span><strong>Admin</strong></span>
+        </a>
+        <a class="settings-logs-link" href="/privacy" aria-label="Privacy policy">
+          <span class="settings-destination-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6Z"/><path d="m8 12 3 3 5-6"/></svg></span>
+          <span><strong>Privacy policy</strong><small>What happens to your data</small></span>
         </a>
       </nav>
       <section class="unit-settings-page" aria-labelledby="unit-settings-heading">
