@@ -6343,6 +6343,8 @@ test("real browser configures and persists every measurement unit preference", {
     await settings.getByRole("button", { name: "Save units" }).click();
     await page.getByRole("link", { name: "Now" }).click();
     await page.waitForURL(`${fixture.origin}/`);
+    await page.locator(".current-conditions:not(.skeleton-region)").waitFor();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
 
     assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /16\s*°C/u);
     assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*16\s*°C/u);
@@ -6388,10 +6390,13 @@ test("real browser configures and persists every measurement unit preference", {
     await page.waitForURL(`${fixture.origin}/settings`);
     await page.getByRole("link", { name: "Logs", exact: true }).click();
     await page.waitForURL(`${fixture.origin}/logs`);
-    await page.waitForLoadState("networkidle");
+    await page.locator("tbody tr:not(.skeleton-history-row)").first().waitFor();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
     assert.equal(await page.getByRole("columnheader", { name: "Temperature (°C)" }).isVisible(), true);
     assert.equal(await page.getByText("16.2").first().isVisible(), true);
     await page.reload({ waitUntil: "networkidle" });
+    await page.locator("tbody tr:not(.skeleton-history-row)").first().waitFor();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
     assert.equal(await page.getByRole("columnheader", { name: "Temperature (°C)" }).isVisible(), true);
     await page.getByRole("link", { name: "Settings" }).click();
     await page.waitForURL(`${fixture.origin}/settings`);
