@@ -782,7 +782,7 @@ test("forecast adjustment boundary preserves raw and validates active metadata",
   );
   assert.match(html, /data-forecast-adjustment-available="true"/u);
   assert.match(html, /aria-checked="true"\s+aria-label="Adjusted"/u);
-  assert.match(html, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(html, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.doesNotMatch(html, /data-forecast-adjustment-status|Raw and adjusted source details/u);
 
   const rawHtml = renderWeatherDashboard(
@@ -794,8 +794,34 @@ test("forecast adjustment boundary preserves raw and validates active metadata",
   );
   assert.match(rawHtml, /class="forecast-adjustment-toggle"[\s\S]*aria-checked="false"[\s\S]*data-forecast-adjustment-toggle/u);
   assert.match(rawHtml, /aria-label="Adjusted"/u);
-  assert.match(rawHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(rawHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gray"/u);
   assert.doesNotMatch(rawHtml, /data-forecast-adjustment-status|Local adjustment turned off/u);
+});
+
+// retain accessible switch state without a visible label or separate chip content
+test("sparkle adjustment switch exposes both preferences without visible text", () => {
+  // use the same control on both forecast-bearing routes
+  for (const view of ["home", "forecast"]) {
+    // retain the persisted preference even when corrections are temporarily unavailable
+    for (const mode of ["adjusted", "raw"]) {
+      const html = renderWeatherDashboard({
+        ...forecastState([], null),
+        forecastAdjustmentMode: mode,
+      }, view);
+      const toggle = html.match(/<button\s+type="button"\s+class="forecast-adjustment-toggle"[\s\S]*?<\/button>/u)?.[0];
+      assert.ok(toggle);
+      assert.match(toggle, /role="switch"/u);
+      assert.match(toggle, /aria-label="Adjusted"/u);
+      assert.ok(toggle.includes(`aria-checked="${String(mode === "adjusted")}"`));
+      assert.equal(toggle.replace(/<[^>]+>/gu, "").trim(), "");
+      assert.doesNotMatch(toggle, /forecast-adjustment-toggle-mode/u);
+      assert.match(toggle, /class="forecast-adjustment-toggle-thumb"[\s\S]*class="forecast-adjustment-sparkle"/u);
+      assert.ok(toggle.includes(`data-sparkle-tone="${mode === "adjusted" ? "gold" : "gray"}"`));
+      assert.ok(toggle.includes(`fill="${mode === "adjusted" ? "url(#forecast-adjustment-gold)" : "currentColor"}"`));
+      assert.match(toggle, /<linearGradient id="forecast-adjustment-gold"[\s\S]*?<stop[^>]*stop-color=/u);
+      assert.match(toggle, /class="forecast-adjustment-toggle-track" aria-hidden="true"/u);
+    }
+  }
 });
 
 // keep ECMWF temperature explicit, opt-in, and independent from wind metadata
@@ -906,10 +932,10 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
   assert.equal(forecastMetricValue(parsed.data[0], "relativeHumidityPercent"), raw.metrics.relativeHumidityPercent);
   assert.notEqual(forecastMetricValue(parsed.data[0], "windSpeedMps"), raw.metrics.windSpeedMps);
   assert.match(adjustedHtml, /aria-checked="true"\s+aria-label="Adjusted"/u);
-  assert.match(adjustedHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(adjustedHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.match(adjustedHtml, /High wind/u);
   assert.match(regionalHtml, /aria-checked="false"\s+aria-label="Adjusted"/u);
-  assert.match(regionalHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(regionalHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gray"/u);
   assert.doesNotMatch(regionalHtml, /data-forecast-adjustment-status|Canary expires|Wind canary turned off/u);
 
   const invalid = parseForecastRecordsResponse({
@@ -946,7 +972,7 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
   );
   assert.doesNotMatch(inactiveHtml, /\sdisabled(?:\s|>)/u);
   assert.match(inactiveHtml, /aria-label="Adjusted"/u);
-  assert.match(inactiveHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(inactiveHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.doesNotMatch(inactiveHtml, /data-forecast-adjustment-status|Regional fallback/u);
 
   const invalid = parseForecastRecordsResponse({
@@ -969,7 +995,7 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
     "forecast",
   );
   assert.match(invalidHtml, /aria-label="Adjusted"/u);
-  assert.match(invalidHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(invalidHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.match(invalidHtml, /data-forecast-charts/u);
   assert.doesNotMatch(invalidHtml, /data-forecast-adjustment-status|Local adjustment unavailable/u);
 

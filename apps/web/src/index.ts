@@ -3020,7 +3020,7 @@ function bindHomepageTitleSize(root: HTMLElement): void {
   void document.fonts.ready.then(() => fitHomepageTitle(root));
 }
 
-// use two smaller lines only when the full-sized title would clip
+// retain one complete title line at the largest size that fits beside the switch
 function fitHomepageTitle(root: HTMLElement): void {
   const heading = root.querySelector<HTMLElement>(".home-masthead h1");
   const text = heading?.querySelector<HTMLElement>(".masthead-title-text");
@@ -3028,17 +3028,11 @@ function fitHomepageTitle(root: HTMLElement): void {
   if (heading == null || text == null || !root.isConnected) {
     return;
   }
-  heading.classList.remove("masthead-title-wrapped");
   heading.style.removeProperty("font-size");
-  // retain the original single-line size wherever it fits
-  if (text.scrollWidth <= text.clientWidth) {
-    return;
-  }
-  heading.classList.add("masthead-title-wrapped");
-  // fit the longest word at unusually narrow widths or enlarged text settings
+  // shrink only at unusually narrow widths or enlarged text settings
   if (text.scrollWidth > text.clientWidth && text.clientWidth > 0) {
     const size = Number.parseFloat(getComputedStyle(heading).fontSize);
-    heading.style.fontSize = `${size * text.clientWidth / text.scrollWidth}px`;
+    heading.style.fontSize = `${size * (text.clientWidth - 1) / text.scrollWidth}px`;
   }
 }
 
@@ -3209,7 +3203,7 @@ function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): stri
   return `<img class="masthead-weather-icon" src="/weather-icons/${icon.name}.svg" alt="Current weather: ${escapeHtml(icon.label)}" width="56" height="56">`;
 }
 
-// keep the adjustment label stable across modes
+// keep adjustment semantics accessible while the thumb alone shows the preference
 function renderForecastAdjustmentToggle(
   state: DashboardState,
   view: WeatherView,
@@ -3245,8 +3239,14 @@ function renderForecastAdjustmentToggle(
       data-forecast-adjustment-available="${String(available)}"
       data-forecast-adjustment-fallback="${String(!available && adjusted)}"
     >
-      <span class="forecast-adjustment-toggle-mode">Adjusted</span>
-      <span class="forecast-adjustment-toggle-track" aria-hidden="true"><span></span></span>
+      <span class="forecast-adjustment-toggle-track" aria-hidden="true">
+        <span class="forecast-adjustment-toggle-thumb">
+          <svg class="forecast-adjustment-sparkle" data-sparkle-tone="${adjusted ? "gold" : "gray"}" viewBox="0 0 24 24" focusable="false">
+            <defs><linearGradient id="forecast-adjustment-gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff3b5"/><stop offset="0.3" stop-color="#eeb828"/><stop offset="0.5" stop-color="#fff6cb"/><stop offset="0.62" stop-color="#d79b08"/><stop offset="1" stop-color="#b97500"/></linearGradient></defs>
+            <path class="forecast-adjustment-sparkle-ink" fill="${adjusted ? "url(#forecast-adjustment-gold)" : "currentColor"}" stroke="${adjusted ? "#a16e12" : "currentColor"}" stroke-width="0.45" stroke-linejoin="round" d="m10 3.5 2.1 6.4 6.4 2.1-6.4 2.1-2.1 6.4-2.1-6.4L1.5 12l6.4-2.1L10 3.5Zm8.5-2 .9 2.6L22 5l-2.6.9-.9 2.6-.9-2.6L15 5l2.6-.9.9-2.6Z"/>
+          </svg>
+        </span>
+      </span>
     </button>
   `;
 }

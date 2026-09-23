@@ -1146,8 +1146,8 @@ test("manifest and service worker provide an installable application shell", { t
   }
 });
 
-// keep the live condition identity readable without changing masthead height
-test("homepage masthead keeps its weather icon and full title through responsive rerenders", { timeout: 60_000 }, async () => {
+// keep the live condition identity and full title on one fixed-height row
+test("homepage masthead keeps its weather icon and one-line title through responsive rerenders", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1189,6 +1189,8 @@ test("homepage masthead keeps its weather icon and full title through responsive
       [320, 20],
       [360, 22.5],
       [412, 25.75],
+      [768, 38.4],
+      [1280, 56],
     ]);
     const captureMasthead = async () => {
       const icon = page.locator("img.masthead-weather-icon");
@@ -1337,23 +1339,17 @@ test("homepage masthead keeps its weather icon and full title through responsive
       assert.equal(layout.titleClippedHorizontally, false, JSON.stringify({ width, layout }));
       assert.equal(layout.titleClippedVertically, false, JSON.stringify({ width, layout }));
       assert.equal(layout.titleText, "Ballydídean Weather");
+      const baselineTitleSize = baselineTitleSizes.get(width);
 
-      // wrap only the three phone widths that cannot fit the new brand row
-      if (width <= 412) {
-        const baselineTitleSize = baselineTitleSizes.get(width);
-
-        // require the previous single-line font size for comparison
-        if (baselineTitleSize === undefined) {
-          throw new Error(`missing title baseline for ${String(width)}px`);
-        }
-
-        assert.equal(layout.fontSize < baselineTitleSize, true, JSON.stringify({ width, layout }));
-        assert.equal(layout.lineCount, 2);
-        assert.equal(layout.wrappedClass, true);
-      } else {
-        assert.equal(layout.lineCount, 1);
-        assert.equal(layout.wrappedClass, false);
+      // keep the largest useful one-line scale after removing the visible switch label
+      if (baselineTitleSize === undefined) {
+        throw new Error(`missing title baseline for ${String(width)}px`);
       }
+
+      assert.equal(layout.fontSize <= baselineTitleSize + 0.1, true, JSON.stringify({ width, layout }));
+      assert.equal(layout.fontSize >= baselineTitleSize * 0.85, true, JSON.stringify({ width, layout }));
+      assert.equal(layout.lineCount, 1);
+      assert.equal(layout.wrappedClass, false);
     }
 
     await page.setViewportSize({ height: 900, width: 320 });
@@ -1376,10 +1372,10 @@ test("homepage masthead keeps its weather icon and full title through responsive
     const rerenderedLayout = await captureMasthead();
     assert.equal(Math.abs(rerenderedLayout.header.height - 51.96875) < 1, true);
     assert.equal(rerenderedLayout.alt, "Current weather: Partly cloudy");
-    assert.equal(rerenderedLayout.lineCount, 2);
+    assert.equal(rerenderedLayout.lineCount, 1);
     assert.equal(rerenderedLayout.titleClippedHorizontally, false);
     assert.equal(rerenderedLayout.titleClippedVertically, false);
-    assert.equal(rerenderedLayout.wrappedClass, true);
+    assert.equal(rerenderedLayout.wrappedClass, false);
 
     await page.getByRole("link", { name: "Forecast", exact: true }).click();
     await page.waitForURL(`${fixture.origin}/forecast`);
@@ -1391,9 +1387,201 @@ test("homepage masthead keeps its weather icon and full title through responsive
     assert.equal(await nowLink.getAttribute("aria-current"), null);
     await nowLink.click();
     await page.waitForURL(`${fixture.origin}/`);
-    assert.equal((await captureMasthead()).lineCount, 2);
+    assert.equal((await captureMasthead()).lineCount, 1);
   } finally {
     // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// render one larger standalone switch with a stateful moving sparkle
+test("adjustment switch moves a gold and gray sparkle without chip chrome", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "active";
+    const page = await createFixturePage(browser, {
+      hasTouch: true,
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 844, width: 320 },
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    // capture the switch after each input-driven rerender
+    const captureSwitch = async () => await toggle.evaluate(
+      // measure the visible control and its complete artwork contract
+      (button) => {
+        const track = button.querySelector(".forecast-adjustment-toggle-track");
+        const thumb = track?.querySelector(".forecast-adjustment-toggle-thumb");
+        const sparkle = thumb?.querySelector("svg.forecast-adjustment-sparkle");
+        const ink = sparkle?.querySelector(".forecast-adjustment-sparkle-ink");
+        const gradient = sparkle?.querySelector("#forecast-adjustment-gold");
+
+        // require every switch layer
+        if (
+          !(track instanceof HTMLElement) ||
+          !(thumb instanceof HTMLElement) ||
+          !(sparkle instanceof SVGElement) ||
+          !(ink instanceof SVGElement)
+        ) {
+          throw new Error("adjustment sparkle switch is incomplete");
+        }
+
+        // compare the nested artwork bounds
+        const bounds = (element) => {
+          const rectangle = element.getBoundingClientRect();
+          return {
+            height: rectangle.height,
+            left: rectangle.left,
+            top: rectangle.top,
+            width: rectangle.width,
+          };
+        };
+        const buttonBounds = bounds(button);
+        const buttonStyle = getComputedStyle(button);
+        const sparkleBounds = bounds(sparkle);
+        const sparkleStyle = getComputedStyle(sparkle);
+        const thumbBounds = bounds(thumb);
+        const trackBounds = bounds(track);
+
+        return {
+          ariaChecked: button.getAttribute("aria-checked"),
+          ariaLabel: button.getAttribute("aria-label"),
+          button: buttonBounds,
+          buttonBackground: buttonStyle.backgroundColor,
+          buttonBorderWidths: [
+            buttonStyle.borderTopWidth,
+            buttonStyle.borderRightWidth,
+            buttonStyle.borderBottomWidth,
+            buttonStyle.borderLeftWidth,
+          ],
+          buttonBoxShadow: buttonStyle.boxShadow,
+          buttonFocused: document.activeElement === button,
+          buttonOutlineStyle: buttonStyle.outlineStyle,
+          buttonOutlineWidth: buttonStyle.outlineWidth,
+          gradientStopColors: gradient === null
+            ? []
+            : [...gradient.querySelectorAll("stop")].map(
+                // retain every shiny-gold stop
+                (stop) => stop.getAttribute("stop-color"),
+              ),
+          inkFill: ink.getAttribute("fill"),
+          sparkle: sparkleBounds,
+          sparkleCentered: Math.abs(
+            sparkleBounds.left + sparkleBounds.width / 2 -
+              (thumbBounds.left + thumbBounds.width / 2),
+          ) < 1 && Math.abs(
+            sparkleBounds.top + sparkleBounds.height / 2 -
+              (thumbBounds.top + thumbBounds.height / 2),
+          ) < 1,
+          sparkleDisplay: sparkleStyle.display,
+          sparkleHiddenByParent: sparkle.closest('[aria-hidden="true"]') !== null,
+          sparkleOpacity: sparkleStyle.opacity,
+          sparkleTitleCount: sparkle.querySelectorAll("title").length,
+          text: button.textContent?.trim(),
+          thumb: thumbBounds,
+          thumbContained: thumbBounds.left >= trackBounds.left &&
+            thumbBounds.left + thumbBounds.width <= trackBounds.left + trackBounds.width &&
+            thumbBounds.top >= trackBounds.top &&
+            thumbBounds.top + thumbBounds.height <= trackBounds.top + trackBounds.height,
+          tone: sparkle.getAttribute("data-sparkle-tone"),
+          track: trackBounds,
+          trackBackground: getComputedStyle(track).backgroundColor,
+          trackBorderColor: getComputedStyle(track).borderTopColor,
+        };
+      },
+    );
+
+    const enabled = await captureSwitch();
+    assert.equal(enabled.ariaChecked, "true");
+    assert.equal(enabled.ariaLabel, "Adjusted");
+    assert.equal(enabled.text, "");
+    assert.equal(enabled.button.width, 56);
+    assert.equal(enabled.button.height >= 37 && enabled.button.height <= 40, true);
+    assert.equal(enabled.buttonBackground, "rgba(0, 0, 0, 0)");
+    assert.deepEqual(enabled.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+    assert.equal(enabled.buttonBoxShadow, "none");
+    assert.equal(enabled.track.width, 56);
+    assert.equal(enabled.track.height, 32);
+    assert.equal(enabled.thumb.width, 26);
+    assert.equal(enabled.thumb.height, 26);
+    assert.equal(enabled.sparkle.width, 20);
+    assert.equal(enabled.sparkle.height, 20);
+    assert.equal(enabled.sparkleCentered, true);
+    assert.notEqual(enabled.sparkleDisplay, "none");
+    assert.equal(enabled.sparkleHiddenByParent, true);
+    assert.equal(enabled.sparkleOpacity, "1");
+    assert.equal(enabled.sparkleTitleCount, 0);
+    assert.equal(enabled.thumbContained, true);
+    assert.equal(enabled.tone, "gold");
+    assert.equal(enabled.inkFill, "url(#forecast-adjustment-gold)");
+    assert.equal(enabled.gradientStopColors.length >= 3, true);
+    assert.equal(new Set(enabled.gradientStopColors).size >= 3, true);
+
+    await toggle.click();
+    await page.waitForFunction(
+      // await the raw-state redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+    );
+    const disabled = await captureSwitch();
+    assert.equal(disabled.ariaChecked, "false");
+    assert.equal(disabled.ariaLabel, "Adjusted");
+    assert.equal(disabled.text, "");
+    assert.equal(disabled.button.width, 56);
+    assert.equal(disabled.buttonBackground, "rgba(0, 0, 0, 0)");
+    assert.deepEqual(disabled.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+    assert.equal(disabled.buttonBoxShadow, "none");
+    assert.equal(disabled.track.width, enabled.track.width);
+    assert.equal(disabled.track.height, enabled.track.height);
+    assert.equal(disabled.thumb.width, enabled.thumb.width);
+    assert.equal(disabled.thumb.height, enabled.thumb.height);
+    assert.equal(disabled.sparkle.width, enabled.sparkle.width);
+    assert.equal(disabled.sparkle.height, enabled.sparkle.height);
+    assert.equal(disabled.sparkleCentered, true);
+    assert.notEqual(disabled.sparkleDisplay, "none");
+    assert.equal(disabled.sparkleHiddenByParent, true);
+    assert.equal(disabled.sparkleOpacity, "1");
+    assert.equal(disabled.thumbContained, true);
+    assert.equal(disabled.tone, "gray");
+    assert.equal(disabled.inkFill, "currentColor");
+    assert.equal(Math.abs(enabled.thumb.left - disabled.thumb.left - 24) < 1, true);
+    assert.notEqual(enabled.trackBackground, disabled.trackBackground);
+    assert.notEqual(enabled.trackBorderColor, disabled.trackBorderColor);
+
+    await toggle.hover();
+    const hovered = await captureSwitch();
+    assert.equal(hovered.buttonBackground, "rgba(0, 0, 0, 0)");
+    assert.deepEqual(hovered.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+    assert.equal(hovered.buttonBoxShadow, "none");
+    await page.evaluate(
+      // establish the switch as the origin for keyboard traversal
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.focus(),
+    );
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    const focused = await captureSwitch();
+    assert.equal(focused.buttonFocused, true);
+    assert.equal(focused.buttonBackground, "rgba(0, 0, 0, 0)");
+    assert.deepEqual(focused.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+    assert.equal(focused.buttonBoxShadow, "none");
+    assert.equal(focused.buttonOutlineStyle, "solid");
+    assert.equal(Number.parseFloat(focused.buttonOutlineWidth) >= 3, true);
+    await toggle.press("Space");
+    await page.waitForFunction(
+      // await the keyboard-triggered adjusted redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true",
+    );
+    const keyboardEnabled = await captureSwitch();
+    assert.equal(keyboardEnabled.buttonFocused, true);
+    assert.equal(keyboardEnabled.tone, "gold");
+    assert.equal(keyboardEnabled.inkFill, "url(#forecast-adjustment-gold)");
+    assert.equal(Math.abs(keyboardEnabled.thumb.left - disabled.thumb.left - 24) < 1, true);
+  } finally {
+    // close disposable fixture resources
     await browser?.close();
     fixture.server.close();
     await once(fixture.server, "close");
@@ -1486,7 +1674,7 @@ test("settings opens a readable no-script privacy policy that remains available 
 });
 
 // retain switching and fail-raw behavior without an adjustment infobox
-test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
+test("forecast switch stays accessibly named Adjusted and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1513,12 +1701,12 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
       assert.equal(await inactiveToggle.getAttribute("data-forecast-adjustment-fallback"), "true");
       assert.equal(await inactiveToggle.isEnabled(), true);
-      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "");
       const inactiveTemperature = await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent();
       const inactiveWind = await page.locator('[data-forecast-chart="wind"] [data-forecast-value="0"]').textContent();
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "");
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
 
@@ -1527,7 +1715,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       await page.reload({ waitUntil: "networkidle" });
       const adjustmentToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
       assert.equal(await adjustmentToggle.isEnabled(), true);
       assert.equal(
@@ -1561,7 +1749,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       await adjustmentToggle.click();
       const regionalToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await regionalToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await regionalToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await regionalToggle.textContent() ?? "").trim(), "");
       assert.equal(await regionalToggle.evaluate(
         // retain keyboard focus through rerenders
         (toggle) => document.activeElement === toggle,
@@ -1583,14 +1771,14 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       // preserve the preference across reloads and both forecast-bearing routes
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       const rawHomeTemperature = await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent();
       await adjustmentToggle.click();
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       assert.notEqual(
         await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent(),
         rawHomeTemperature,
@@ -1618,7 +1806,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
       assert.equal(await adjustmentToggle.getAttribute("data-forecast-adjustment-available"), "false");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
       assert.equal(
         await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent(),
@@ -1840,8 +2028,8 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
   }
 });
 
-// preserve explicit raw selection with a stable label
-test("wind adjustment keeps an Adjusted label and persists the raw choice", { timeout: 60_000 }, async () => {
+// preserve explicit raw selection with a stable accessible name
+test("wind adjustment keeps an Adjusted accessible name and persists the raw choice", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1861,7 +2049,7 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
 
     assert.equal(await toggle.isEnabled(), true);
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
       await page.locator("body").evaluate(
@@ -1881,7 +2069,7 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
 
     await toggle.click();
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
       await page.locator('[data-forecast-chart="temperature"]').textContent(),
@@ -1902,16 +2090,16 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
 
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await page.getByRole("link", { name: "Now", exact: true }).click();
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await toggle.click();
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await page.close();
   } finally {
     await browser?.close();

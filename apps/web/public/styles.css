@@ -330,7 +330,7 @@ a {
   gap: 0.5rem;
 }
 
-/* preserve the existing header height when the homepage title needs two lines */
+/* preserve the existing header height while fitting the title on one line */
 .home-masthead {
   --masthead-title-size: clamp(2.2rem, 5vw, 3.5rem);
   --masthead-content-height: max(2.5rem, var(--masthead-title-size));
@@ -374,14 +374,6 @@ a {
   white-space: nowrap;
 }
 
-.home-masthead h1.masthead-title-wrapped {
-  font-size: calc(var(--masthead-content-height) / 2);
-}
-
-.masthead-title-wrapped .masthead-title-text > span {
-  display: block;
-}
-
 /* keep the forecast range beside the adjustment control */
 .forecast-masthead {
   display: grid;
@@ -394,60 +386,64 @@ a {
   text-overflow: ellipsis;
 }
 
+/* the switch itself is the control with no surrounding chip or visible label */
 .forecast-adjustment-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.55rem;
+  display: grid;
+  flex: 0 0 3.5rem;
+  place-items: center;
+  width: 3.5rem;
   min-height: 2.5rem;
-  padding: 0.4rem 0.65rem 0.4rem 0.8rem;
-  border-color: var(--md-sys-color-outline-variant);
+  padding: 0;
+  border: 0;
   color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-surface-container-lowest);
-  box-shadow: var(--md-sys-elevation-1);
+  background: transparent;
+  box-shadow: none;
 }
 
 .forecast-adjustment-toggle:hover:not(:disabled) {
-  border-color: var(--md-sys-color-outline);
   color: var(--md-sys-color-on-surface);
-  background: var(--md-sys-color-surface-container-low);
-}
-
-.forecast-adjustment-toggle-mode {
-  min-width: 4.25rem;
-  font-size: 0.76rem;
-  font-weight: 750;
-  text-align: right;
-  white-space: nowrap;
+  background: transparent;
+  box-shadow: none;
 }
 
 .forecast-adjustment-toggle-track {
   display: flex;
   align-items: center;
-  width: 2.25rem;
-  height: 1.3rem;
-  padding: 0.14rem;
+  width: 3.5rem;
+  height: 2rem;
+  padding: 0.125rem;
   border: 1px solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-full);
   background: var(--md-sys-color-surface-container-highest);
   transition: background-color 160ms ease, border-color 160ms ease;
 }
 
-.forecast-adjustment-toggle-track > span {
-  width: 0.9rem;
-  height: 0.9rem;
+.forecast-adjustment-toggle-thumb {
+  display: grid;
+  flex: 0 0 1.625rem;
+  place-items: center;
+  width: 1.625rem;
+  height: 1.625rem;
   border-radius: var(--md-sys-shape-full);
-  background: var(--md-sys-color-outline);
-  transition: background-color 160ms ease, transform 160ms ease;
+  background: var(--brand-white);
+  box-shadow: 0 1px 2px rgb(48 36 44 / 20%);
+  transition: transform 160ms ease;
+}
+
+/* keep the inactive sparkle visible rather than removing its shape */
+.forecast-adjustment-sparkle {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: #77747c;
 }
 
 .forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-track {
-  border-color: #248b54;
-  background: #248b54;
+  border-color: #b4923e;
+  background: #ead496;
 }
 
-.forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-track > span {
-  background: var(--brand-white);
-  transform: translateX(0.95rem);
+.forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-thumb {
+  transform: translateX(1.5rem);
 }
 
 .weather-content {
@@ -4380,15 +4376,7 @@ td small {
   }
 
   .forecast-adjustment-toggle {
-    flex: 0 0 auto;
-    gap: 0.35rem;
     min-height: 2.35rem;
-    padding: 0.3rem 0.45rem;
-  }
-
-  .forecast-adjustment-toggle-mode {
-    min-width: 3.75rem;
-    font-size: 0.68rem;
   }
 
   h2 {
