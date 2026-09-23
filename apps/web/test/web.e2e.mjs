@@ -1255,6 +1255,7 @@ test("homepage masthead keeps its weather icon and one-line title through respon
             headerOverflow: masthead.scrollWidth - masthead.clientWidth,
             icon: bounds(icon),
             iconComplete: icon.complete,
+            iconFilter: getComputedStyle(icon).filter,
             iconNaturalHeight: icon.naturalHeight,
             iconNaturalWidth: icon.naturalWidth,
             lineCount: uniqueLineTops.size,
@@ -1326,6 +1327,7 @@ test("homepage masthead keeps its weather icon and one-line title through respon
       assert.match(layout.fontFamily, /Google Sans Flex/u);
       assert.equal(layout.headerOverflow, 0);
       assert.equal(layout.iconComplete, true);
+      assert.equal(layout.iconFilter, "none");
       assert.equal(layout.iconNaturalHeight > 0, true);
       assert.equal(layout.iconNaturalWidth > 0, true);
       assert.equal(layout.icon.left < layout.title.left, true);

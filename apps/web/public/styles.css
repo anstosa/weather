@@ -345,13 +345,12 @@ a {
   height: var(--masthead-content-height);
 }
 
-/* shadow the supplied silhouette without tinting or framing the illustration */
+/* display the supplied high-contrast artwork without an added shadow */
 .masthead-weather-icon {
   flex: 0 0 var(--masthead-content-height);
   width: var(--masthead-content-height);
   height: var(--masthead-content-height);
   object-fit: contain;
-  filter: drop-shadow(0 0.6px 1px rgb(48 36 44 / 40%));
 }
 
 .home-masthead .masthead-actions {

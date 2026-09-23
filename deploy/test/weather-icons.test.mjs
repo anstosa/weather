@@ -9,21 +9,21 @@ import test from "node:test";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const weatherIcons = new Map([
-  ["01-sunny.svg", "0b37c600bc58d1b7e05dcfaca1c7f5039ceddf333d9b7ecc714a79cf0ec8bbcf"],
-  ["02-sunny-wind.svg", "713c0ec46a91347f0b61b0f69eccf855c4655ce70ebec06d1a292ec4b23a590f"],
-  ["03-partly-cloudy.svg", "8aebc0b7c3c811d62ef50418f648a060407e216748103ef8c8620a5db4c80649"],
-  ["04-partly-cloudy-wind.svg", "ba520680ea49ae4bb47db325cde1e0a5996c21ae12d7749f1f3d06562b9ce626"],
-  ["05-cloudy.svg", "94b324b582625e22c06172c2ee62349b3873dd0db0d9db06c50c40091201bde1"],
-  ["06-cloudy-wind.svg", "987f63d815f0b3d1cedc57a5efd44f0a41e334845bcd135be36daee07cafe756"],
-  ["07-light-rain.svg", "46a2f9d6629b5722691c5b2aef588768ff30bfd7cc1eaffaa6f7d946a379e986"],
-  ["08-light-rain-wind.svg", "ca5691e47f040c72738995a2ff90743ed836b3bf5e856fb1adc796db15340da4"],
-  ["09-heavy-rain.svg", "9a994a9d250a92d83754fc99f4a22b3e183871d6da6cac6f08b21d4e702152b2"],
-  ["10-heavy-rain-wind.svg", "24acd44b11d1f683b7b75f3792adf15f2b59899b86300a5f475f2d81cc70a17c"],
-  ["12-unavailable.svg", "14a4bd0bf38b89946291a658d0a27ce437cfcfdd3e59a6959cf5b5d9946d1146"],
-  ["13-clear-night.svg", "91b1718427ca04bcdd28e3f926db115ed9305c246a9c7174c0fea1393f237419"],
-  ["14-clear-night-wind.svg", "d378bc8974b2d997012ee313d963be9fd5ef8ab00bec811aa7542ece76a4e4e0"],
-  ["15-partly-cloudy-night.svg", "ad2b5c8621c8e38da29259bb445df9a52cac950ab7a2e9e37bc133a508f90a78"],
-  ["16-partly-cloudy-night-wind.svg", "4082ac532e74ee5574d7f9419430c251def7e9a4155b0d2ad26f6dcfca3c068e"],
+  ["01-sunny.svg", "1538a8f66e35466b9a0dca63002aa0fa8763b0adf5a26afbc46c14867f2aaceb"],
+  ["02-sunny-wind.svg", "f19e34d8735007aa83c83fa43c07eb0a65e99d619ba72e70365a3ccecb5da82a"],
+  ["03-partly-cloudy.svg", "1e71c885a93614c0f25f3aec2346fd4aa068a19e774f20c93f07a1540dad8246"],
+  ["04-partly-cloudy-wind.svg", "639b7ae22c22b8bc6c2dc6c488fe384a2ae0d2881a9b0ede16c9d74fadfcbc1e"],
+  ["05-cloudy.svg", "2506ec126175ceb8a4894a32984e9fc9a6b87d0ceb5f26881e79475a77e8a79e"],
+  ["06-cloudy-wind.svg", "66a9619e673a0a809d51126ceaf67528c58cdf7249da199da3709cedc58229c8"],
+  ["07-light-rain.svg", "7a9928bddb2a0387846cd071e428ba88619229620097e3231f9bb17a687a6ab4"],
+  ["08-light-rain-wind.svg", "010b7c1875c4b40294304cd2fafda741629e4a81478a7397e93552355628c38a"],
+  ["09-heavy-rain.svg", "f30d590dd6cd8f9063196dda88d533c79090af72efbfc86608081a88b221b097"],
+  ["10-heavy-rain-wind.svg", "381070d394f026a506b3f7c9394e69965d0c155ffb1980e73f53148240782f90"],
+  ["12-unavailable.svg", "01f4fb0efd030f4e02b3b3e1addabcaf65e1541b2b8b2831811f25b3fc57d49c"],
+  ["13-clear-night.svg", "25209cc97769833d3c23e8859c8d3e6676e5ea905f2d4a45e25deae90e02b96e"],
+  ["14-clear-night-wind.svg", "5b924f11a5f72e16688257611a814b6e02b6b3c0c0f7d14468afa4cc959905b4"],
+  ["15-partly-cloudy-night.svg", "a50cd55c2d3f972fd38cffbcca7310a9db089cbf8b6c0a94008b3e679dce0052"],
+  ["16-partly-cloudy-night-wind.svg", "c1aa525396fbd69881804964665f209a6198528e9a98e96f3f6d6071e33e3661"],
 ]);
 
 // identify one exact approved asset
@@ -100,7 +100,7 @@ test("web edge serves only the approved homepage weather SVGs", async (t) => {
   const origin = `http://127.0.0.1:${port}`;
   await waitForServer(`${origin}/weather-icons/01-sunny.svg`, diagnostics);
 
-  // verify every response against the unchanged mobile master
+  // verify every response against the approved high-contrast handoff
   for (const [name, approvedSha256] of weatherIcons) {
     const published = await readFile(join(repoRoot, "apps/web/public/weather-icons", name));
     const response = await fetch(`${origin}/weather-icons/${name}`);
