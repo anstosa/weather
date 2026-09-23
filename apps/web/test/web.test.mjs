@@ -2773,6 +2773,75 @@ test("pressure tile never derives the observed rate from the forecast", (context
   assert.match(tile, /condition-forecast-label"><\/span> <strong>12:00 <small>PM<\/small><\/strong>/u);
 });
 
+// keep the cold text cutoff independent of display units and rounding
+test("temperature text turns blue below 55F across display units", () => {
+  // retain warm, hot and unavailable bands around the moved cold boundary
+  for (const [valueF, label, tone] of [
+    [32, "Freezing", "blue"],
+    [49.9, "Chilly", "blue"],
+    [50, "Chilly", "blue"],
+    [54.9, "Chilly", "blue"],
+    [55, "Cool", "green"],
+    [55.1, "Cool", "green"],
+    [60, "Comfortable", "green"],
+    [70, "Comfortable", "green"],
+    [70.1, "Warm", "orange"],
+    [80, "Warm", "orange"],
+    [80.1, "Hot", "red"],
+    [null, "Unavailable", "neutral"],
+  ]) {
+    const temperatureC = valueF === null ? null : (valueF - 32) * 5 / 9;
+    assert.equal(temperatureBand(temperatureC).label, label);
+    const forecast = {
+      ...forecastRecord,
+      metrics: { ...forecastRecord.metrics, temperatureC, apparentTemperatureC: temperatureC },
+    };
+
+    // use the unrounded celsius reading with either unit preference
+    for (const temperature of ["fahrenheit", "celsius"]) {
+      const state = {
+        ...forecastState([forecast], null),
+        units: { ...DEFAULT_UNIT_PREFERENCES, temperature },
+      };
+      const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="temperature"[\s\S]*?<\/article>/u)?.[0];
+      assert.ok(tile);
+      const tones = [...tile.matchAll(/condition-forecast-tone-([a-z]+)/gu)].map(
+        // collect the apparent and air temperature extrema
+        (match) => match[1],
+      );
+      assert.deepEqual(tones, [tone, tone, tone, tone], `${String(valueF)}F in ${temperature}`);
+    }
+  }
+});
+
+// color the selected adjusted value without changing the raw forecast
+test("adjusted temperature crosses the shared 55F blue cutoff", () => {
+  const raw = {
+    ...forecastRecord,
+    metrics: { ...forecastRecord.metrics, temperatureC: 14, apparentTemperatureC: 14 },
+  };
+  const corrected = {
+    ...raw,
+    temperatureAdjustment: { ...temperatureCanaryDecision(raw), correctedTemperatureC: 12 },
+  };
+
+  // keep the warm raw value green and the corrected 53.6f value blue
+  for (const [mode, expectedAirTone] of [["raw", "green"], ["adjusted", "blue"]]) {
+    const state = {
+      ...forecastState([corrected], null),
+      forecastAdjustmentMode: mode,
+      forecastTemperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+    };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="temperature"[\s\S]*?<\/article>/u)?.[0];
+    assert.ok(tile);
+    const tones = [...tile.matchAll(/condition-forecast-tone-([a-z]+)/gu)].map(
+      // retain independent apparent-temperature colors
+      (match) => match[1],
+    );
+    assert.deepEqual(tones, ["green", "green", expectedAirTone, expectedAirTone]);
+  }
+});
+
 // verify the published current-condition threshold boundaries
 test("current condition bands follow requested weather and health thresholds", () => {
   assert.deepEqual(

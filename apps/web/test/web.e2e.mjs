@@ -5288,7 +5288,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
-        { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
+        { color: "rgb(56, 120, 197)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "wind", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "wind", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "rain", opacity: "0.75" },
@@ -5426,6 +5426,13 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentTide.locator(".condition-primary").textContent() ?? "", /2\.5\s*m/u);
     assert.match(await currentTide.textContent() ?? "", /Rising/u);
     assert.match(await currentTemperature.textContent() ?? "", /Max\s*19°C\s*Min\s*9°C\s*Max\s*20°C\s*Min\s*10°C/u);
+    assert.deepEqual(
+      await currentTemperature.locator(".condition-forecast-reading").evaluateAll(
+        // keep sub-55f extrema blue when the display switches to celsius
+        (readings) => readings.map((reading) => getComputedStyle(reading).color),
+      ),
+      ["rgb(67, 151, 86)", "rgb(56, 120, 197)", "rgb(67, 151, 86)", "rgb(56, 120, 197)"],
+    );
     assert.match(await currentWind.textContent() ?? "", /Max\s*4 m\/s\s*Max\s*7 m\/s/u);
     assert.match(await currentRain.textContent() ?? "", /Max 2\.5 mm\/h/u);
     assert.match(await currentRain.textContent() ?? "", /Accumulation\s*2\.5\s*mm/u);

@@ -8258,8 +8258,8 @@ export function temperatureBand(valueC: number | null): ConditionBand {
     return { color, detail: "At or below the freezing point", label: "Freezing" };
   }
 
-  // label chilly conditions
-  if (valueF < 50) {
+  // use blue forecast text below the shared 55f cold threshold
+  if (valueF < 55) {
     return { color, detail: "Cool outdoor conditions", label: "Chilly" };
   }
 
