@@ -3038,6 +3038,8 @@ function fitHomepageTitle(root: HTMLElement): void {
     const size = Number.parseFloat(getComputedStyle(heading).fontSize);
     heading.style.fontSize = `${size * (text.clientWidth - 1) / text.scrollWidth}px`;
   }
+  // match the visible switch to the fitted text without changing its reserved width
+  heading.parentElement?.style.setProperty("--adjustment-switch-height", getComputedStyle(heading).fontSize);
 }
 
 // revalidate a visible homepage without refreshing weather data

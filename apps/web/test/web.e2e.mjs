@@ -1587,8 +1587,8 @@ test("Now weather artwork preserves state across routes without widening fetch c
   }
 });
 
-// render one larger standalone switch with a solid sparkle and a shiny enabled track
-test("adjustment switch moves a solid gold and gray sparkle without chip chrome", { timeout: 60_000 }, async () => {
+// scale one standalone switch with the visible title while preserving its complete interaction contract
+test("adjustment switch scales with the title and moves a solid muted-gold or gray sparkle", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1610,13 +1610,19 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
         const thumb = track?.querySelector(".forecast-adjustment-toggle-thumb");
         const sparkle = thumb?.querySelector("svg.forecast-adjustment-sparkle");
         const ink = sparkle?.querySelector(".forecast-adjustment-sparkle-ink");
+        const masthead = button.closest(".masthead");
+        const title = masthead?.querySelector("h1");
+        const titleText = title?.querySelector(".masthead-title-text");
 
         // require every switch layer
         if (
           !(track instanceof HTMLElement) ||
           !(thumb instanceof HTMLElement) ||
           !(sparkle instanceof SVGElement) ||
-          !(ink instanceof SVGElement)
+          !(ink instanceof SVGElement) ||
+          !(masthead instanceof HTMLElement) ||
+          !(title instanceof HTMLElement) ||
+          !(titleText instanceof HTMLElement)
         ) {
           throw new Error("adjustment sparkle switch is incomplete");
         }
@@ -1625,8 +1631,10 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
         const bounds = (element) => {
           const rectangle = element.getBoundingClientRect();
           return {
+            bottom: rectangle.bottom,
             height: rectangle.height,
             left: rectangle.left,
+            right: rectangle.right,
             top: rectangle.top,
             width: rectangle.width,
           };
@@ -1637,8 +1645,15 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
         const sparkleStyle = getComputedStyle(sparkle);
         const thumbBounds = bounds(thumb);
         const trackBounds = bounds(track);
+        const titleBounds = bounds(title);
+        const titleStyle = getComputedStyle(title);
+        const titleWordBounds = [...titleText.querySelectorAll("span")].map(
+          // measure each visible title word
+          (word) => word.getBoundingClientRect(),
+        );
 
         return {
+          adjustmentHeight: Number.parseFloat(getComputedStyle(masthead).getPropertyValue("--adjustment-switch-height")),
           ariaChecked: button.getAttribute("aria-checked"),
           ariaLabel: button.getAttribute("aria-label"),
           button: buttonBounds,
@@ -1658,6 +1673,7 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
           inkRenderedFill: getComputedStyle(ink).fill,
           inkRenderedStroke: getComputedStyle(ink).stroke,
           inkStroke: ink.getAttribute("stroke"),
+          masthead: bounds(masthead),
           sparkle: sparkleBounds,
           sparkleCentered: Math.abs(
             sparkleBounds.left + sparkleBounds.width / 2 -
@@ -1673,6 +1689,8 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
           sparkleColor: sparkleStyle.color,
           text: button.textContent?.trim(),
           thumb: thumbBounds,
+          thumbRightInset: trackBounds.right - thumbBounds.right,
+          thumbTopInset: thumbBounds.top - trackBounds.top,
           thumbContained: thumbBounds.left >= trackBounds.left &&
             thumbBounds.left + thumbBounds.width <= trackBounds.left + trackBounds.width &&
             thumbBounds.top >= trackBounds.top &&
@@ -1682,72 +1700,167 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
           trackBackground: getComputedStyle(track).backgroundColor,
           trackBackgroundImage: getComputedStyle(track).backgroundImage,
           trackBorderColor: getComputedStyle(track).borderTopColor,
+          titleClipped: titleWordBounds.some(
+            // keep every word inside the single-line title box
+            (word) => word.left < titleBounds.left - 1 || word.right > titleBounds.right + 1,
+          ),
+          titleFontSize: Number.parseFloat(titleStyle.fontSize),
+          titleLines: new Set(titleWordBounds.map(
+            // merge words sharing one rendered line
+            (word) => Math.round(word.top),
+          )).size,
         };
       },
     );
 
+    const assertSwitchGeometry = (snapshot) => {
+      const inset = (snapshot.track.height - snapshot.thumb.height) / 2;
+      const expectedSparkleSize = Math.min(18, snapshot.thumb.width * 0.7);
+      assert.equal(Math.abs(snapshot.adjustmentHeight - snapshot.titleFontSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.track.height - snapshot.titleFontSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.track.width - snapshot.track.height * 1.75) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.track.height - snapshot.thumb.height - 4) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.thumb.width - snapshot.thumb.height) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.thumbTopInset - inset) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.sparkle.width - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.sparkle.height - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(snapshot.sparkle.width <= 18, true);
+      assert.equal(snapshot.button.width >= Math.max(44, snapshot.track.width) - 0.25, true);
+      assert.equal(snapshot.button.height >= snapshot.track.height - 0.25, true);
+      assert.equal(snapshot.buttonBackground, "rgba(0, 0, 0, 0)");
+      assert.deepEqual(snapshot.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+      assert.equal(snapshot.buttonBoxShadow, "none");
+      assert.equal(snapshot.sparkleCentered, true);
+      assert.notEqual(snapshot.sparkleDisplay, "none");
+      assert.equal(snapshot.sparkleHiddenByParent, true);
+      assert.equal(snapshot.sparkleOpacity, "1");
+      assert.equal(snapshot.sparkleTitleCount, 0);
+      assert.equal(snapshot.thumbContained, true);
+      assert.equal(snapshot.gradientElementCount, 0);
+      assert.equal(snapshot.inkFill, "currentColor");
+      assert.equal(snapshot.inkStroke, "currentColor");
+      assert.equal(snapshot.titleClipped, false, JSON.stringify(snapshot));
+      assert.equal(snapshot.titleLines, 1, JSON.stringify(snapshot));
+    };
+    const preferredTitleSizes = new Map([
+      [320, 20],
+      [412, 25.75],
+      [768, 38.4],
+      [1280, 56],
+    ]);
+    const baselineHeaderHeights = new Map([
+      [320, 51.96875],
+      [412, 51.96875],
+      [768, 58.390625],
+      [1280, 74.390625],
+    ]);
+
+    // compare the responsive title, hit-area, and artwork contracts together
+    for (const width of [320, 412, 768, 1280]) {
+      await page.setViewportSize({ height: 900, width });
+      await page.evaluate(
+        // settle both title sizing and bundled fonts
+        async () => await document.fonts.ready,
+      );
+      await page.waitForFunction(
+        // await the fitted title variable after each resize
+        () => {
+          const title = document.querySelector(".home-masthead h1");
+          const track = document.querySelector(".forecast-adjustment-toggle-track");
+          return title instanceof HTMLElement && track instanceof HTMLElement &&
+            Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+        },
+      );
+      const responsive = await captureSwitch();
+      const preferredTitleSize = preferredTitleSizes.get(width);
+      const baselineHeaderHeight = baselineHeaderHeights.get(width);
+
+      // require one explicit baseline for every viewport
+      if (preferredTitleSize === undefined || baselineHeaderHeight === undefined) {
+        throw new Error(`missing switch baseline for ${String(width)}px`);
+      }
+
+      assertSwitchGeometry(responsive);
+      assert.equal(responsive.ariaChecked, "true");
+      assert.equal(Math.abs(responsive.button.width - Math.max(44, preferredTitleSize * 1.75)) < 0.5, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.button.height - Math.max(width <= 672 ? 37.6 : 40, preferredTitleSize)) < 0.5, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.masthead.height - baselineHeaderHeight) < 1, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.thumbRightInset - (responsive.track.height - responsive.thumb.height) / 2) < 0.25, true);
+    }
+
+    await page.setViewportSize({ height: 900, width: 320 });
+    const scaledTitleSizes = [];
+    // prove reduced and enlarged browser text still drive the visible track
+    for (const rootSize of [12, 20]) {
+      await page.evaluate((size) => {
+        document.documentElement.style.fontSize = `${String(size)}px`;
+      }, rootSize);
+      await page.waitForFunction(
+        // await the resize observer's fitted switch variable
+        () => {
+          const title = document.querySelector(".home-masthead h1");
+          const track = document.querySelector(".forecast-adjustment-toggle-track");
+          return title instanceof HTMLElement && track instanceof HTMLElement &&
+            Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+        },
+      );
+      const scaled = await captureSwitch();
+      assertSwitchGeometry(scaled);
+      scaledTitleSizes.push(scaled.titleFontSize);
+    }
+    assert.equal((scaledTitleSizes[0] ?? 0) < (scaledTitleSizes[1] ?? 0), true, JSON.stringify(scaledTitleSizes));
+    await page.evaluate(
+      // restore the default browser text scale before interaction checks
+      () => document.documentElement.style.removeProperty("font-size"),
+    );
+    await page.waitForFunction(
+      // await the default fitted switch variable
+      () => {
+        const title = document.querySelector(".home-masthead h1");
+        const track = document.querySelector(".forecast-adjustment-toggle-track");
+        return title instanceof HTMLElement && track instanceof HTMLElement &&
+          Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+      },
+    );
+
     const enabled = await captureSwitch();
+    assertSwitchGeometry(enabled);
     assert.equal(enabled.ariaChecked, "true");
     assert.equal(enabled.ariaLabel, "Adjusted");
     assert.equal(enabled.text, "");
-    assert.equal(enabled.button.width, 56);
-    assert.equal(enabled.button.height >= 37 && enabled.button.height <= 40, true);
-    assert.equal(enabled.buttonBackground, "rgba(0, 0, 0, 0)");
-    assert.deepEqual(enabled.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
-    assert.equal(enabled.buttonBoxShadow, "none");
-    assert.equal(enabled.track.width, 56);
-    assert.equal(enabled.track.height, 32);
-    assert.equal(enabled.thumb.width, 26);
-    assert.equal(enabled.thumb.height, 26);
-    assert.equal(enabled.sparkle.width, 20);
-    assert.equal(enabled.sparkle.height, 20);
-    assert.equal(enabled.sparkleCentered, true);
-    assert.notEqual(enabled.sparkleDisplay, "none");
-    assert.equal(enabled.sparkleHiddenByParent, true);
-    assert.equal(enabled.sparkleOpacity, "1");
-    assert.equal(enabled.sparkleTitleCount, 0);
-    assert.equal(enabled.thumbContained, true);
     assert.equal(enabled.tone, "gold");
-    assert.equal(enabled.gradientElementCount, 0);
-    assert.equal(enabled.inkFill, "currentColor");
-    assert.equal(enabled.inkStroke, "currentColor");
     assert.equal(enabled.inkRenderedFill, "rgb(197, 138, 16)");
     assert.equal(enabled.inkRenderedStroke, "rgb(197, 138, 16)");
     assert.equal(enabled.sparkleColor, "rgb(197, 138, 16)");
-    assert.match(enabled.trackBackgroundImage, /^linear-gradient\(135deg,/u);
+    assert.match(
+      enabled.trackBackgroundImage,
+      /^linear-gradient\(135deg, rgb\(189, 145, 48\) 0%, rgb\(217, 181, 85\) 35%, rgb\(230, 205, 137\) 50%, rgb\(212, 172, 69\) 70%, rgb\(189, 145, 48\) 100%\)$/u,
+    );
+    assert.doesNotMatch(enabled.trackBackgroundImage, /rgb\(255, 240, 168\)/u);
 
     await toggle.click();
     await page.waitForFunction(
       // await the raw-state redraw
       () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
     );
+    await page.waitForTimeout(200);
     const disabled = await captureSwitch();
+    assertSwitchGeometry(disabled);
     assert.equal(disabled.ariaChecked, "false");
     assert.equal(disabled.ariaLabel, "Adjusted");
     assert.equal(disabled.text, "");
-    assert.equal(disabled.button.width, 56);
-    assert.equal(disabled.buttonBackground, "rgba(0, 0, 0, 0)");
-    assert.deepEqual(disabled.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
-    assert.equal(disabled.buttonBoxShadow, "none");
     assert.equal(disabled.track.width, enabled.track.width);
     assert.equal(disabled.track.height, enabled.track.height);
     assert.equal(disabled.thumb.width, enabled.thumb.width);
     assert.equal(disabled.thumb.height, enabled.thumb.height);
     assert.equal(disabled.sparkle.width, enabled.sparkle.width);
     assert.equal(disabled.sparkle.height, enabled.sparkle.height);
-    assert.equal(disabled.sparkleCentered, true);
-    assert.notEqual(disabled.sparkleDisplay, "none");
-    assert.equal(disabled.sparkleHiddenByParent, true);
-    assert.equal(disabled.sparkleOpacity, "1");
-    assert.equal(disabled.thumbContained, true);
     assert.equal(disabled.tone, "gray");
-    assert.equal(disabled.gradientElementCount, 0);
-    assert.equal(disabled.inkFill, "currentColor");
-    assert.equal(disabled.inkStroke, "currentColor");
     assert.equal(disabled.inkRenderedFill, "rgb(119, 116, 124)");
     assert.equal(disabled.inkRenderedStroke, "rgb(119, 116, 124)");
     assert.equal(disabled.sparkleColor, "rgb(119, 116, 124)");
-    assert.equal(Math.abs(enabled.thumb.left - disabled.thumb.left - 24) < 1, true);
+    assert.equal(Math.abs(disabled.thumb.left - disabled.track.left - (disabled.track.height - disabled.thumb.height) / 2) < 0.25, true);
+    assert.equal(Math.abs(enabled.thumb.left - disabled.thumb.left - (enabled.track.width - enabled.track.height)) < 0.5, true);
     assert.equal(disabled.trackBackgroundImage, "none");
     assert.notEqual(enabled.trackBackground, disabled.trackBackground);
     assert.notEqual(enabled.trackBorderColor, disabled.trackBorderColor);
@@ -1775,14 +1888,19 @@ test("adjustment switch moves a solid gold and gray sparkle without chip chrome"
       // await the keyboard-triggered adjusted redraw
       () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true",
     );
+    await page.waitForTimeout(200);
     const keyboardEnabled = await captureSwitch();
+    assertSwitchGeometry(keyboardEnabled);
     assert.equal(keyboardEnabled.buttonFocused, true);
     assert.equal(keyboardEnabled.tone, "gold");
     assert.equal(keyboardEnabled.inkFill, "currentColor");
     assert.equal(keyboardEnabled.inkStroke, "currentColor");
     assert.equal(keyboardEnabled.sparkleColor, "rgb(197, 138, 16)");
-    assert.match(keyboardEnabled.trackBackgroundImage, /^linear-gradient\(135deg,/u);
-    assert.equal(Math.abs(keyboardEnabled.thumb.left - disabled.thumb.left - 24) < 1, true);
+    assert.equal(keyboardEnabled.trackBackgroundImage, enabled.trackBackgroundImage);
+    assert.equal(Math.abs(keyboardEnabled.thumb.left - disabled.thumb.left - (keyboardEnabled.track.width - keyboardEnabled.track.height)) < 0.5, true);
+
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.getByRole("switch", { name: "Adjusted", exact: true }).getAttribute("aria-checked"), "true");
   } finally {
     // close disposable fixture resources
     await browser?.close();
