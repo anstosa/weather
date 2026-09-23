@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -2208,7 +2209,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /The latest refresh failed/u);
   assert.match(
     loadingHtml,
-    /<p class="refresh-indicator active" role="status"><span class="sr-only">Refreshing weather data…<\/span><\/p>/u,
+    /<p class="sr-only" role="status">Refreshing weather data…<\/p>/u,
   );
   assert.doesNotMatch(
     loadingHtml,
@@ -2239,7 +2240,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(initialTrendsHtml, /data-trend-metric-control|data-trend-metric-option/u);
   assert.doesNotMatch(initialTrendsHtml, /data-trend-mode-toggle|>Show all<\/button>/u);
   assert.doesNotMatch(initialHomeHtml, /station-map|skeleton-map/u);
-  assert.equal((initialMapHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 1);
+  assert.equal((initialMapHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 2);
   assert.equal((initialSettingsHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 0);
   assert.match(initialMapHtml, /class="station-map skeleton-map"/u);
   assert.doesNotMatch(initialHomeHtml, /No current model value|being collected|No normalized trend buckets/u);
@@ -3623,6 +3624,7 @@ test("authenticated homepage loads saved soil sensor positions", async () => {
   await controller.initialize();
 
   assert.equal(requested.some((url) => url.includes("/property-sensor-layout")), true);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
 });
 
@@ -3863,6 +3865,12 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
   await controller.refreshHomeNetwork();
   assert.equal(controller.state.homeNetwork, true);
   assert.equal(layouts.length, 1);
+  assert.equal(controller.state.propertySensorLayoutLoading, true);
+  const pendingLayout = renderWeatherDashboard(controller.state, "home", false);
+  assert.match(pendingLayout, /admin-soil-map-panel skeleton-region/u);
+  assert.match(pendingLayout, /class="weather-content" aria-busy="false"/u);
+  assert.match(pendingLayout, /role="status">Refreshing weather data…/u);
+  assert.doesNotMatch(pendingLayout, /Weather data is up to date/u);
   const beforeRecheck = controller.state;
   await controller.refreshHomeNetwork();
   assert.equal(controller.state, beforeRecheck);
@@ -3872,6 +3880,7 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
     // allow the delayed layout to reach the renderer
     (resolve) => setImmediate(resolve),
   );
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
   assert.match(renderWeatherDashboard(controller.state, "home", false), /data-soil-moisture-sensor="soil-1"/u);
 
@@ -3886,6 +3895,7 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
     (resolve) => setImmediate(resolve),
   );
   assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
 
   homeNetwork = true;
@@ -3898,6 +3908,7 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
     (resolve) => setImmediate(resolve),
   );
   assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
 });
 
@@ -3944,6 +3955,7 @@ test("homepage viewer context retries a failed soil layout without false placeme
     (resolve) => setImmediate(resolve),
   );
   assert.equal(controller.state.homeNetwork, true);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
   assert.equal(layoutReads, 1);
   const unavailable = renderWeatherDashboard(controller.state, "home", false);
@@ -3957,6 +3969,7 @@ test("homepage viewer context retries a failed soil layout without false placeme
     (resolve) => setImmediate(resolve),
   );
   assert.equal(layoutReads, 2);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
   const recovered = renderWeatherDashboard(controller.state, "home", false);
   assert.match(recovered, /data-soil-moisture-sensor="soil-1"/u);
@@ -4076,4 +4089,137 @@ test("failed next-page reads keep the prior page label and cursor", async () => 
   assert.equal(controller.state.nextCursor, "page-two");
   assert.equal(controller.state.history[0]?.id, "101");
   assert.match(controller.state.error ?? "", /status 503/u);
+});
+
+// keep pending data out of every public page without a header indicator
+test("all data routes use skeletons for initial and repeat reads", () => {
+  const initial = new WeatherDashboardController({ storage: null }).state;
+  const cached = {
+    ...initial,
+    current: [record],
+    forecast: [forecastRecord],
+    history: [record],
+    selectedSite: site,
+    sites: [site],
+  };
+  const markers = {
+    home: "current-conditions skeleton-region",
+    forecast: "forecast-chart skeleton-forecast-chart",
+    trends: "trend-chart skeleton-trend-chart",
+    map: "station-map skeleton-map",
+    logs: "skeleton-history-row",
+  };
+
+  // require cached data to use the same loading contract as the first read
+  for (const state of [initial, cached]) {
+    // inspect every remotely loaded public route
+    for (const [view, marker] of Object.entries(markers)) {
+      const html = renderWeatherDashboard(state, view);
+      assert.ok(html.includes(marker), `${view} must show an in-place skeleton`);
+      assert.match(html, /class="weather-content" aria-busy="true"/u);
+      assert.match(html, /<p class="sr-only" role="status">Refreshing weather data…<\/p>/u);
+      assert.doesNotMatch(html, /refresh-indicator/u);
+      assert.doesNotMatch(html.match(/<header[\s\S]*?<\/header>/u)?.[0] ?? "", /role="status"|Loading|Refreshing/u);
+    }
+  }
+
+  // clear loading surfaces for both success and last-good error recovery
+  for (const error of [null, "Read failed"]) {
+    // ensure every settled route renders real data or an honest empty state
+    for (const view of Object.keys(markers)) {
+      const html = renderWeatherDashboard({ ...cached, loading: false, error }, view);
+      assert.doesNotMatch(html, /skeleton-region|skeleton-history-row|skeleton-history-card/u);
+      assert.match(html, /class="weather-content" aria-busy="false"/u);
+      // preserve failures separately from loading feedback
+      if (error !== null) {
+        assert.match(html, /role="alert">Read failed/u);
+      }
+    }
+  }
+  assert.doesNotMatch(renderWeatherDashboard(initial, "settings"), /skeleton-region|skeleton-line/u);
+});
+
+// distinguish sensor loading from empty and unavailable states
+test("sensor maps and admin panels reserve missing data with skeletons", () => {
+  const initial = new WeatherDashboardController({ storage: null, isAdmin: true }).state;
+  const home = renderWeatherDashboard(initial, "home", true);
+  assert.match(home, /admin-soil-map-panel skeleton-region/u);
+  assert.match(home, /skeleton-temperature/u);
+  const map = renderWeatherDashboard(initial, "map");
+  assert.match(map, /property-map-panel skeleton-region/u);
+  assert.doesNotMatch(map, /Loading property sensors|No property sensors|<image/u);
+  const admin = renderWeatherDashboard(initial, "admin", true);
+  assert.match(admin, /forecast-adjustment-admin skeleton-region/u);
+  assert.match(admin, /property-admin skeleton-region/u);
+  assert.doesNotMatch(admin, /Loading EcoWitt|No EcoWitt|data-property-sensor-form|data-admin-forecast-adjustments/u);
+  const settled = renderWeatherDashboard({ ...initial, loading: false }, "admin", true);
+  assert.match(settled, /No EcoWitt sensor channels are reporting yet/u);
+  assert.doesNotMatch(settled, /skeleton-region/u);
+  const saving = renderWeatherDashboard({
+    ...initial,
+    loading: false,
+    forecastAdjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
+    adminAdjustmentSettingsSaving: true,
+  }, "admin", true);
+  assert.match(saving, /skeleton-action/u);
+  assert.match(saving, /class="sr-only">Saving forecast adjustments…/u);
+});
+
+// cover the app shell before javascript mounts its route-specific skeletons
+test("bootstrap uses skeletons instead of a visible loading notice", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /shell skeleton-region" aria-busy="true"/u);
+  assert.match(html, /skeleton-line skeleton-field/u);
+  assert.match(html, /class="sr-only" role="status">Loading Ballydídean weather…/u);
+  assert.doesNotMatch(html, /class="notice"/u);
+});
+
+// revoke optional loading feedback when its parent weather request fails
+test("failed homepage weather clears a pending optional layout skeleton", async () => {
+  let resolveCurrent;
+  let resolveLayout;
+  const current = new Promise(
+    // control the primary failure independently of the optional read
+    (resolve) => { resolveCurrent = resolve; },
+  );
+  const layout = new Promise(
+    // hold the optional positions until after access is revoked
+    (resolve) => { resolveLayout = resolve; },
+  );
+  const controller = new WeatherDashboardController({
+    storage: null,
+    // grant local display while delaying current and layout responses
+    fetcher: async (input) => {
+      const url = String(input);
+      // allow the private display boundary before the primary read settles
+      if (url === buildViewerContextUrl("/api/v1")) {
+        return Response.json({ data: { homeNetwork: true } });
+      }
+      // hold positions independently of current observations
+      if (url.includes("/property-sensor-layout")) {
+        return layout;
+      }
+      // inject the primary failure after the optional loader appears
+      if (url.includes("/current")) {
+        return current;
+      }
+      return Response.json({ data: [], site });
+    },
+  });
+  const initialized = controller.initialize();
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.propertySensorLayoutLoading, true);
+  resolveCurrent(Response.json({ error: "unavailable" }, { status: 503 }));
+  await initialized;
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
+  assert.equal(controller.state.homeNetwork, false);
+  assert.match(renderWeatherDashboard(controller.state), /role="status">Weather refresh failed/u);
+  assert.doesNotMatch(renderWeatherDashboard(controller.state), /skeleton-region|data-admin-soil-map/u);
+  resolveLayout(Response.json({ data: [] }));
+  await new Promise(
+    // reject the late positions without reactivating their loading state
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
+  assert.equal(controller.state.propertySensorLayout, null);
 });

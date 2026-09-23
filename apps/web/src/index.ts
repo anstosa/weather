@@ -437,6 +437,7 @@ export interface DashboardState {
   readonly page: number;
   readonly propertyMapLayer: MapLayer;
   readonly propertySensorLayout: readonly PropertySensorLayout[] | null;
+  readonly propertySensorLayoutLoading: boolean;
   readonly selectedPropertySensorKey: string | null;
   readonly selectedStationSlug: string | null;
   readonly trendDetail: TrendDetail;
@@ -591,6 +592,7 @@ const EMPTY_STATE: DashboardState = {
   page: 0,
   propertyMapLayer: "satellite",
   propertySensorLayout: null,
+  propertySensorLayoutLoading: false,
   selectedPropertySensorKey: null,
   selectedStationSlug: null,
   trendDetail: "rolling",
@@ -2248,7 +2250,7 @@ export class WeatherDashboardController {
     this.#homeNetworkLayoutRequest = null;
     this.#homeNetworkRefresh = null;
     this.#view = view;
-    this.patch({ homeNetwork: false });
+    this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
     await this.loadSelectedSite();
   }
 
@@ -2276,7 +2278,7 @@ export class WeatherDashboardController {
 
     // clear access only for an explicit full-weather refresh
     if (force && this.#state.homeNetwork) {
-      this.patch({ homeNetwork: false });
+      this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
     }
 
     // resolve only the current location check
@@ -2296,7 +2298,7 @@ export class WeatherDashboardController {
 
         // revoke a visible panel only after a negative result
         if (this.#state.homeNetwork) {
-          this.patch({ homeNetwork: false });
+          this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
         }
 
         return;
@@ -2334,6 +2336,7 @@ export class WeatherDashboardController {
       return;
     }
 
+    this.patch({ propertySensorLayoutLoading: true });
     const request = getJson<PropertySensorLayoutResponse>(
       this.#fetcher,
       buildPropertySensorLayoutUrl(this.#apiBaseUrl, PRODUCT_SITE.slug),
@@ -2361,6 +2364,7 @@ export class WeatherDashboardController {
         // preserve any newer layout request
         if (this.#homeNetworkLayoutRequest === request) {
           this.#homeNetworkLayoutRequest = null;
+          this.patch({ propertySensorLayoutLoading: false });
         }
       },
     );
@@ -2654,7 +2658,7 @@ export class WeatherDashboardController {
       return;
     }
 
-    this.patch({ error: null, homeNetwork: false, loading: true });
+    this.patch({ error: null, homeNetwork: false, loading: true, propertySensorLayoutLoading: false });
 
     // start the private location check without delaying weather rendering
     if (this.#view === "home" && !this.#isAdmin) {
@@ -2828,7 +2832,7 @@ export class WeatherDashboardController {
       this.#homeNetworkGeneration += 1;
       this.#homeNetworkLayoutRequest = null;
       this.#homeNetworkRefresh = null;
-      this.patch({ error: message, homeNetwork: false, loading: false });
+      this.patch({ error: message, homeNetwork: false, loading: false, propertySensorLayoutLoading: false });
       return;
     }
 
@@ -3140,12 +3144,12 @@ export function renderWeatherDashboard(
         ${view === "home" ? `<h1><span class="masthead-title-text"><span>Ballydídean</span> <span>Weather</span></span></h1>` : "<h1>Ballydídean Weather</h1>"}
         ${view === "forecast" ? renderForecastRangeSelector(state.forecastDays ?? 1, state.loading) : ""}
         <div class="masthead-actions">
-          ${renderLoadingIndicator(state)}
           ${renderForecastAdjustmentToggle(state, view)}
         </div>
       </header>
       ${renderSectionNavigation(state, view)}
-      <div class="weather-content">
+      ${renderLoadingStatus(state)}
+      <div class="weather-content" aria-busy="${String(state.loading)}">
         ${renderErrorStatus(state)}
         ${renderWeatherView(state, view, isAdmin)}
         ${renderCredits(state, view)}
@@ -3443,15 +3447,14 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
   `;
 }
 
-// render one reserved in-place loading indicator
-function renderLoadingIndicator(state: DashboardState): string {
-  const activeClass = state.loading ? " active" : "";
-  const message = state.loading
+// announce refreshes without a visible header indicator
+function renderLoadingStatus(state: DashboardState): string {
+  const message = state.loading || state.propertySensorLayoutLoading
     ? "Refreshing weather data…"
     : state.error === null
       ? "Weather data is up to date."
       : "Weather refresh failed.";
-  return `<p class="refresh-indicator${activeClass}" role="status"><span class="sr-only">${message}</span></p>`;
+  return `<p class="sr-only" role="status">${message}</p>`;
 }
 
 // render error feedback without affecting routine refreshes
@@ -3466,16 +3469,16 @@ function renderErrorStatus(state: DashboardState): string {
 
 // render the current summary
 function renderCurrent(state: DashboardState): string {
+  // reserve the cards for initial reads and later refreshes
+  if (state.loading) {
+    return renderCurrentSkeleton();
+  }
+
   const currentRecords = preferredCurrentRecords(state.current);
   const current = currentRecords[0];
 
   // render an honest empty state
   if (current === undefined) {
-    // reserve the final card grid during the first read
-    if (state.loading) {
-      return renderCurrentSkeleton();
-    }
-
     return '<p class="notice">No current weather value is available yet.</p>';
   }
 
@@ -3576,7 +3579,7 @@ function renderIndoorHouse(state: DashboardState): string {
     ),
   );
   return `
-    <section class="indoor-house-panel" data-indoor-house aria-labelledby="indoor-house-heading">
+    <section class="indoor-house-panel" data-indoor-house aria-labelledby="indoor-house-heading" aria-busy="${String(state.loading)}">
       <div class="indoor-house-heading">
         ${renderMaterialIcon("home")}
         <div><p class="eyebrow">Inside the house</p><h2 id="indoor-house-heading">Indoor temperatures</h2></div>
@@ -3589,7 +3592,7 @@ function renderIndoorHouse(state: DashboardState): string {
             (level) => {
               const temperatureC = sensorsByKey.get(level.sensorKey)?.readings.temperatureC ?? null;
               const measurement = formatMeasurement(temperatureC, "temperature", state.units, 0);
-              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature">${renderConditionMeasurement(measurement)}</span></li>`;
+              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature">${state.loading ? '<span class="skeleton-line skeleton-temperature" aria-hidden="true"></span>' : renderConditionMeasurement(measurement)}</span></li>`;
             },
           ).join("")}
         </ol>
@@ -4417,6 +4420,11 @@ function maximumAvailableMetricValues(
 
 // render the site-local forecast day
 function renderForecast(state: DashboardState): string {
+  // replace obsolete hours while the requested horizon loads
+  if (state.loading) {
+    return renderForecastSkeleton(state);
+  }
+
   const days = state.forecastDays ?? 1;
   const reference = state.current.find(
     // align the timeline with the current model day
@@ -4433,11 +4441,6 @@ function renderForecast(state: DashboardState): string {
 
   // render an honest ingestion warm-up state
   if (hours.length === 0) {
-    // reserve the final forecast charts during the first read
-    if (state.loading) {
-      return renderForecastSkeleton(state);
-    }
-
     return `
       <section class="panel forecast-panel" aria-label="Weather forecast">
         <p class="empty-panel">The first normalized forecast product is being collected.</p>
@@ -5525,8 +5528,8 @@ type TrendToggleIcon = keyof typeof TREND_TOGGLE_ICON_PATHS;
 
 // render calendar-year comparison charts
 function renderTrends(state: DashboardState): string {
-  // reserve the final chart during the first read
-  if (state.trends.length === 0 && state.loading) {
+  // reserve the selected chart until its data read settles
+  if (state.loading) {
     return renderTrendsSkeleton();
   }
 
@@ -6962,6 +6965,11 @@ interface MapViewport {
 
 // render the soil-only farm overview for eligible viewers
 function renderAdminSoilMoistureMap(state: DashboardState): string {
+  // keep delayed optional positions distinct from unavailable positions
+  if (state.loading || state.propertySensorLayoutLoading) {
+    return renderPropertyMapSkeleton(true);
+  }
+
   const site = state.selectedSite;
 
   // wait for the fixed site before projecting sensor coordinates
@@ -7027,7 +7035,7 @@ function renderAdminSoilMoistureMap(state: DashboardState): string {
         ${renderPropertyMapAttribution(state.propertyMapLayer)}
       </div>
       ${state.propertySensorLayout === null
-        ? `<p class="empty-panel">${state.loading ? "Loading soil moisture…" : "Soil moisture sensor positions are unavailable."}</p>`
+        ? `<p class="empty-panel">Soil moisture sensor positions are unavailable.</p>`
         : placed.length === 0
           ? `<p class="empty-panel">No soil moisture sensors have been placed yet.</p>`
           : ""}
@@ -7062,6 +7070,11 @@ function renderSoilMoistureMarker(
 
 // render the farm-scale EcoWitt sensor geography first
 function renderPropertySensorMap(state: DashboardState): string {
+  // reserve both the map and sensor list until their joint read settles
+  if (state.loading) {
+    return renderPropertyMapSkeleton();
+  }
+
   const site = state.selectedSite;
 
   // reserve the property map until current data arrives
@@ -7134,7 +7147,7 @@ function renderPropertySensorMap(state: DashboardState): string {
         </div>
         <div class="property-sensor-list-shell">
           ${placed.length === 0
-            ? `<p class="empty-panel">${state.loading ? "Loading property sensors…" : "No property sensors have been placed yet."}</p>`
+            ? `<p class="empty-panel">No property sensors have been placed yet.</p>`
             : `<ol class="property-sensor-list" aria-label="Placed property sensors">${sensorRows}</ol>`}
         </div>
       </div>
@@ -7143,6 +7156,33 @@ function renderPropertySensorMap(state: DashboardState): string {
         : ""}
     </section>
   `;
+}
+
+// reserve the existing map frame without requesting placeholder tiles
+function renderPropertyMapSkeleton(soil = false): string {
+  const headingId = soil ? "admin-soil-map-heading" : "property-map-heading";
+  return `
+    <section class="${soil ? "admin-soil-map-panel" : "panel property-map-panel"} skeleton-region"${soil ? " data-admin-soil-map" : ""} aria-labelledby="${headingId}" aria-busy="true">
+      <div class="section-heading">
+        <div><p class="eyebrow">Ballydídean property</p><h2 id="${headingId}">${soil ? "Soil moisture" : "Property sensors"}</h2></div>
+      </div>
+      <div class="${soil ? "admin-soil-map" : "property-map-layout"}">
+        <div class="property-map skeleton-map" aria-hidden="true">
+          <div class="property-map-canvas"><span class="skeleton-map-shape"></span></div>
+          <p class="map-attribution"><span class="skeleton-attribution">Map attribution</span></p>
+        </div>
+        ${soil ? "" : renderSkeletonFields()}
+      </div>
+    </section>
+  `;
+}
+
+// reserve short lists and form fields without fake interactive controls
+function renderSkeletonFields(): string {
+  return `<div class="skeleton-fields" aria-hidden="true">${Array.from({ length: 3 },
+    // preserve a readable row-sized loading surface
+    () => '<span class="skeleton-line skeleton-field"></span>',
+  ).join("")}</div>`;
 }
 
 // space dense property markers while retaining exact anchor lines
@@ -7209,6 +7249,16 @@ function propertySensorMarkerOffsets(
 // render three independently persisted forecast controls
 function renderForecastAdjustmentAdmin(state: DashboardState): string {
   const settings = state.forecastAdjustmentSettings ?? null;
+  // avoid presenting unknown adjustment settings as switched off
+  if (settings === null && state.loading) {
+    return `
+      <section class="panel forecast-adjustment-admin skeleton-region" aria-labelledby="forecast-adjustment-admin-heading" aria-busy="true">
+        <div class="section-heading"><div><p class="eyebrow">Administration</p><h2 id="forecast-adjustment-admin-heading">Forecast adjustments</h2></div></div>
+        ${renderSkeletonFields()}
+      </section>
+    `;
+  }
+
   const disabled = settings === null || state.adminAdjustmentSettingsSaving;
   const message = state.adminAdjustmentSettingsMessage ?? null;
 
@@ -7223,8 +7273,8 @@ function renderForecastAdjustmentAdmin(state: DashboardState): string {
         <label><input type="checkbox" name="wind"${settings?.wind ? " checked" : ""}${disabled ? " disabled" : ""}><span>Wind</span></label>
         <label><input type="checkbox" name="rain"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain</span></label>
         <div class="forecast-adjustment-admin-actions">
-          <button type="submit"${disabled ? " disabled" : ""}>${state.adminAdjustmentSettingsSaving ? "Saving…" : "Save adjustments"}</button>
-          <span role="status" aria-live="polite">${message === null ? "" : escapeHtml(message)}</span>
+          <button type="submit"${disabled ? " disabled" : ""}>Save adjustments</button>
+          <span role="status" aria-live="polite">${state.adminAdjustmentSettingsSaving ? '<span class="skeleton-line skeleton-action" aria-hidden="true"></span><span class="sr-only">Saving forecast adjustments…</span>' : message === null ? "" : escapeHtml(message)}</span>
         </div>
       </form>
     </section>
@@ -7236,12 +7286,28 @@ function renderPropertySensorAdmin(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const sensors = propertySensorSnapshots(state);
 
+  // reserve the editor until both sensor channels and positions are known
+  if (state.loading && (sensors.length === 0 || state.propertySensorLayout === null)) {
+    return `
+      <section class="panel property-admin skeleton-region" aria-labelledby="property-admin-heading" aria-busy="true">
+        ${renderPropertyAdminHeading()}
+        <div class="property-admin-layout">
+          ${renderSkeletonFields()}
+          <div class="property-admin-editor">
+            ${renderSkeletonFields()}
+            <div class="property-admin-map skeleton-map" aria-hidden="true"><span class="skeleton-map-shape"></span></div>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
   // explain the first ingestion wait honestly
   if (sensors.length === 0) {
     return `
       <section class="panel property-admin" aria-labelledby="property-admin-heading">
         ${renderPropertyAdminHeading()}
-        <p class="empty-panel">${state.loading ? "Loading EcoWitt sensor channels…" : "No EcoWitt sensor channels are reporting yet."}</p>
+        <p class="empty-panel">No EcoWitt sensor channels are reporting yet.</p>
       </section>
     `;
   }
@@ -7321,7 +7387,7 @@ function renderPropertySensorAdmin(state: DashboardState): string {
               ${renderPropertyMapZoomControls()}
             </div>
             ${renderPropertyMapAttribution(state.propertyMapLayer)}
-            <div class="property-admin-actions"><span aria-live="polite">${layout === undefined ? "Not placed" : `Updated ${formatInstant(layout.updatedAt, site.timezone)}`}</span><button type="submit"${state.loading ? " disabled" : ""}>${renderSaveIcon()} Save sensor</button></div>
+            <div class="property-admin-actions"><span role="status" aria-live="polite">${state.loading ? '<span class="skeleton-line skeleton-action" aria-hidden="true"></span><span class="sr-only">Saving sensor…</span>' : layout === undefined ? "Not placed" : `Updated ${formatInstant(layout.updatedAt, site.timezone)}`}</span><button type="submit"${state.loading ? " disabled" : ""}>${renderSaveIcon()} Save sensor</button></div>
           </form>
         </div>
       </div>
@@ -7565,15 +7631,15 @@ function propertySensorReadingLabels(
 
 // render tiled nearby station geography and latest readings
 function renderStationMap(state: DashboardState): string {
+  // reserve map geometry until station readings are ready
+  if (state.loading) {
+    return renderStationMapSkeleton();
+  }
+
   const site = state.selectedSite;
 
   // wait for site geometry
   if (site === null) {
-    // reserve the final station geography during the first read
-    if (state.loading) {
-      return renderStationMapSkeleton();
-    }
-
     return "";
   }
 
@@ -8734,23 +8800,23 @@ function renderHistoryFilters(state: DashboardState): string {
 
 // render history table rows
 function renderHistoryRows(state: DashboardState): string {
-  // render a useful empty row
-  if (state.history.length === 0) {
-    // reserve one full result page during the first read
-    if (state.loading) {
-      return Array.from({ length: 25 },
-        // preserve every final history row
-        () => `
-          <tr class="skeleton-history-row" aria-hidden="true">
-            ${Array.from({ length: 6 },
-              // reserve each final history cell
-              () => '<td><span class="skeleton-line skeleton-table-value"></span></td>',
-            ).join("")}
-          </tr>
-        `,
-      ).join("");
-    }
+  // reserve the requested page while filters or pagination load
+  if (state.loading) {
+    return Array.from({ length: 25 },
+      // preserve every final history row
+      () => `
+        <tr class="skeleton-history-row" aria-hidden="true">
+          ${Array.from({ length: 6 },
+            // reserve each final history cell
+            () => '<td><span class="skeleton-line skeleton-table-value"></span></td>',
+          ).join("")}
+        </tr>
+      `,
+    ).join("");
+  }
 
+  // render an honest empty result after the request settles
+  if (state.history.length === 0) {
     return `<tr><td colspan="6" class="empty">No records match these filters.</td></tr>`;
   }
 
@@ -8775,28 +8841,28 @@ function renderHistoryRows(state: DashboardState): string {
 
 // render compact phone history records
 function renderHistoryCards(state: DashboardState): string {
-  // render one compact empty state
-  if (state.history.length === 0) {
-    // reserve one full mobile result page during the first read
-    if (state.loading) {
-      return `
-        <ol class="history-cards skeleton-history-cards" aria-label="Loading weather history" aria-busy="true">
-          ${Array.from({ length: 25 },
-            // preserve every final mobile history card
-            () => `
-              <li aria-hidden="true">
-                <article class="history-card skeleton-history-card">
-                  <div class="history-card-primary"><span class="skeleton-line skeleton-history-time"></span><span class="skeleton-line skeleton-history-temperature"></span></div>
-                  <div class="history-card-metrics"><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span></div>
-                  <span class="skeleton-line skeleton-history-source"></span>
-                </article>
-              </li>
-            `,
-          ).join("")}
-        </ol>
-      `;
-    }
+  // reserve the requested mobile page while records load
+  if (state.loading) {
+    return `
+      <ol class="history-cards skeleton-history-cards" aria-label="Loading weather history" aria-busy="true">
+        ${Array.from({ length: 25 },
+          // preserve every final mobile history card
+          () => `
+            <li aria-hidden="true">
+              <article class="history-card skeleton-history-card">
+                <div class="history-card-primary"><span class="skeleton-line skeleton-history-time"></span><span class="skeleton-line skeleton-history-temperature"></span></div>
+                <div class="history-card-metrics"><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span></div>
+                <span class="skeleton-line skeleton-history-source"></span>
+              </article>
+            </li>
+          `,
+        ).join("")}
+      </ol>
+    `;
+  }
 
+  // render an honest empty result after the request settles
+  if (state.history.length === 0) {
     return '<p class="history-cards-empty">No records match these filters.</p>';
   }
 

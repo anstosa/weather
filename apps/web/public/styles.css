@@ -682,23 +682,6 @@ h2 {
   background: var(--md-sys-color-error-container);
 }
 
-.refresh-indicator {
-  flex: 0 0 0.65rem;
-  width: 0.65rem;
-  height: 0.65rem;
-  margin: 0;
-  border: 1px solid transparent;
-  border-radius: 50%;
-  opacity: 0;
-}
-
-.refresh-indicator.active {
-  border-color: var(--brand-black);
-  background: var(--brand-citron);
-  box-shadow: 0 0 0 0.18rem rgba(200, 183, 68, 0.3);
-  opacity: 1;
-}
-
 .section-heading,
 .pagination {
   display: flex;
@@ -3066,7 +3049,9 @@ h2 {
   visibility: hidden;
 }
 
-.skeleton-map .station-map-canvas {
+.skeleton-map .station-map-canvas,
+.skeleton-map .property-map-canvas,
+.property-admin-map.skeleton-map {
   display: grid;
   place-items: center;
 }
@@ -3105,6 +3090,28 @@ h2 {
   background-size: 220% 100%;
   animation: skeleton-shimmer 1.6s ease-in-out infinite;
   border-radius: 999px;
+}
+
+/* reserve pending sensor fields and action feedback in place */
+.skeleton-fields {
+  display: grid;
+  align-content: start;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.skeleton-field {
+  height: 2.75rem;
+  border-radius: var(--md-sys-shape-small);
+}
+
+.skeleton-action {
+  width: 8rem;
+}
+
+.skeleton-temperature {
+  width: 4rem;
+  height: 2rem;
 }
 
 .skeleton-history-row td {

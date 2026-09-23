@@ -619,6 +619,28 @@ async function captureSectionGeometry(page, selectors) {
   return geometry;
 }
 
+// require one in-place skeleton without restoring the retired masthead dot
+async function assertSkeletonLoadingState(page, selector) {
+  await page.locator(selector).first().waitFor({ state: "attached" });
+  assert.equal(await page.locator(".refresh-indicator").count(), 0);
+  assert.equal(await page.locator(".masthead [role='status']").count(), 0);
+  assert.equal(await page.locator(".weather-content").getAttribute("aria-busy"), "true");
+  const status = page.locator("main.shell > p.sr-only[role='status']");
+  assert.equal(await status.count(), 1);
+  assert.match(await status.textContent() ?? "", /Refreshing weather data/u);
+}
+
+// require a settled route with no permanent loading placeholder
+async function assertSkeletonLoadingSettled(page, expectedStatus = /Weather data is up to date/u) {
+  await page.locator(".weather-content[aria-busy='false']").waitFor();
+  assert.equal(await page.locator(".refresh-indicator").count(), 0);
+  assert.equal(await page.locator(".masthead [role='status']").count(), 0);
+  assert.equal(await page.locator(".skeleton-region, .skeleton-history-row, .skeleton-history-card").count(), 0);
+  const status = page.locator("main.shell > p.sr-only[role='status']");
+  assert.equal(await status.count(), 1);
+  assert.match(await status.textContent() ?? "", expectedStatus);
+}
+
 // require rendered lines to clear every title footprint
 async function assertForecastTitleClearance(page) {
   assert.equal(
@@ -1342,6 +1364,8 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
       assert.equal(layout.iconWidthAttribute, "32");
       assert.equal(layout.mastheadBrandCount, 0);
       assert.equal(layout.mastheadImageCount, 0);
+      assert.equal(await page.locator(".refresh-indicator").count(), 0);
+      assert.equal(await page.locator(".masthead [role='status']").count(), 0);
       assert.equal(layout.source, "/weather-icons/03-partly-cloudy.svg");
       assert.equal(layout.title.bottom <= layout.header.bottom + 1, true);
       assert.equal(layout.title.left >= layout.header.left - 1, true);
@@ -2044,6 +2068,7 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
     await loadingPage.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
     const loadingRange = loadingPage.getByRole("group", { name: "Forecast range" });
     await loadingRange.waitFor();
+    await assertSkeletonLoadingState(loadingPage, ".forecast-panel.skeleton-region");
     assert.equal(await loadingPage.locator(".forecast-range-selector").count(), 1);
     assert.equal(
       await loadingRange.locator("button").evaluateAll(
@@ -2057,6 +2082,7 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
     );
     releaseForecastRead();
     await loadingPage.locator('[data-forecast-charts][data-forecast-days="1"]').waitFor();
+    await assertSkeletonLoadingSettled(loadingPage);
     assert.equal(await loadingRange.locator("button:disabled").count(), 0);
     await loadingPage.close();
 
@@ -4758,7 +4784,7 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
       },
     );
     await page.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
-    await page.locator(".forecast-panel.skeleton-region").waitFor();
+    await assertSkeletonLoadingState(page, ".forecast-panel.skeleton-region");
     assert.deepEqual(
       await page.locator(".skeleton-forecast-chart h3").allTextContents(),
       ["device_thermostatTemperature", "airWind", "rainyRain rate", "cloudClouds", "humidity_percentageHumidity", "masksAir quality", "wb_sunnyUV index", "speedPressure", "waterTide"],
@@ -4796,6 +4822,56 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
     );
     releaseForecastReads();
     await page.locator(".forecast-panel:not(.skeleton-region)").waitFor();
+    await assertSkeletonLoadingSettled(page);
+
+    let releaseFiveDayRead;
+    const fiveDayReadReleased = new Promise(
+      // expose one subsequent range gate
+      (resolveRelease) => {
+        releaseFiveDayRead = resolveRelease;
+      },
+    );
+    await page.route(
+      /\/api\/v1\/sites\/ballydidean\/forecast\?days=5$/u,
+      // hold the replacement range behind the same in-place chart skeletons
+      async (route) => {
+        await fiveDayReadReleased;
+        await route.continue();
+      },
+    );
+    await page.getByRole("button", { name: "5 days", exact: true }).click();
+    await assertSkeletonLoadingState(page, ".forecast-panel.skeleton-region");
+    assert.equal(await page.getByRole("group", { name: "Forecast range" }).locator("button:disabled").count(), 3);
+    releaseFiveDayRead();
+    await page.locator('[data-forecast-charts][data-forecast-days="5"]').waitFor();
+    await assertSkeletonLoadingSettled(page);
+
+    let releaseFailedRangeRead;
+    const failedRangeReadReleased = new Promise(
+      // expose one recoverable range failure
+      (resolveRelease) => {
+        releaseFailedRangeRead = resolveRelease;
+      },
+    );
+    await page.route(
+      /\/api\/v1\/sites\/ballydidean\/forecast\?days=10$/u,
+      // fail only after the replacement skeleton is visible
+      async (route) => {
+        await failedRangeReadReleased;
+        await route.fulfill({
+          contentType: "application/json",
+          json: { error: { code: "unavailable" } },
+          status: 503,
+        });
+      },
+    );
+    await page.getByRole("button", { name: "10 days", exact: true }).click();
+    await assertSkeletonLoadingState(page, ".forecast-panel.skeleton-region");
+    releaseFailedRangeRead();
+    await page.getByRole("alert").waitFor();
+    await page.locator(".forecast-panel:not(.skeleton-region)").waitFor();
+    await assertSkeletonLoadingSettled(page, /Weather refresh failed/u);
+    assert.equal(await page.locator("[data-forecast-charts]").count(), 1);
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -4844,7 +4920,7 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
           await page.goto(`${fixture.origin}/trends`, { waitUntil: "domcontentloaded" });
         }
 
-        await page.locator(".skeleton-trend-chart").waitFor({ state: "attached" });
+        await assertSkeletonLoadingState(page, ".skeleton-trend-chart");
         await page.evaluate(
           // stabilize font-dependent geometry before comparison
           () => document.fonts.ready,
@@ -4865,12 +4941,154 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
         );
         releaseTrendRead();
         await page.locator(".trends-panel:not(.skeleton-region)").waitFor();
+        await assertSkeletonLoadingSettled(page);
         assert.deepEqual(await captureSectionGeometry(page, selectors), loadingGeometry);
       } finally {
         releaseTrendRead();
         await page.close();
       }
     }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// reserve the public map while keeping local-only settings immediately usable
+test("map uses an in-place skeleton while settings stays local-only", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const mapPage = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    let releaseMapReads;
+    const mapReadsReleased = new Promise(
+      // expose one deterministic map gate
+      (resolveRelease) => {
+        releaseMapReads = resolveRelease;
+      },
+    );
+    await mapPage.route(
+      /\/api\/v1\/sites\/ballydidean\/(?:current|property-sensor-layout)/u,
+      // hold all map data behind its reserved geography
+      async (route) => {
+        await mapReadsReleased;
+        await route.continue();
+      },
+    );
+    await mapPage.goto(`${fixture.origin}/map`, { waitUntil: "domcontentloaded" });
+    await assertSkeletonLoadingState(mapPage, ".station-map-panel.skeleton-region");
+    assert.equal(await mapPage.locator(".property-map-panel.skeleton-region").count(), 1);
+    assert.equal(await mapPage.locator(".skeleton-map").count(), 2);
+    assert.equal(await mapPage.locator(".skeleton-station-list li").count(), 11);
+    releaseMapReads();
+    await mapPage.locator(".station-map-panel:not(.skeleton-region)").waitFor();
+    await mapPage.locator(".property-map-panel:not(.skeleton-region)").waitFor();
+    await assertSkeletonLoadingSettled(mapPage);
+    await mapPage.close();
+
+    const weatherReadsBeforeSettings = fixture.state.requests.filter(
+      // count only site-data API reads
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/"),
+    ).length;
+    const settingsPage = await createFixturePage(browser, { viewport: { height: 844, width: 390 } });
+    await settingsPage.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    await settingsPage.locator(".unit-settings-page").waitFor();
+    await assertSkeletonLoadingSettled(settingsPage);
+    assert.equal(await settingsPage.locator(".skeleton-line, .skeleton-region").count(), 0);
+    assert.equal(fixture.state.requests.filter(
+      // keep settings independent from weather data
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/"),
+    ).length, weatherReadsBeforeSettings);
+    await settingsPage.close();
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// replace bootstrap and protected missing-data notices with stable skeletons
+test("bootstrap and administrator reads use in-place skeletons", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // verify the static startup shell at phone and desktop widths
+    for (const width of [320, 1280]) {
+      const page = await createFixturePage(browser, { viewport: { height: 900, width } });
+      let releaseClient;
+      const clientReleased = new Promise(
+        // expose the server-rendered bootstrap before the module mounts
+        (resolveRelease) => {
+          releaseClient = resolveRelease;
+        },
+      );
+      await page.route(
+        /\/assets\/browser-test\/client\.js$/u,
+        // hold only the interactive module
+        async (route) => {
+          await clientReleased;
+          await route.continue();
+        },
+      );
+      await page.goto(fixture.origin, { waitUntil: "commit" });
+      const shell = page.locator("main.shell.skeleton-region");
+      await shell.waitFor();
+      assert.equal(await shell.getAttribute("aria-busy"), "true");
+      assert.equal(await shell.getByRole("heading", { name: "Ballydídean Weather" }).count(), 1);
+      assert.equal(await shell.locator(".home-masthead .masthead-title-text").count(), 1);
+      assert.equal(await shell.locator(".weather-content.skeleton-fields .skeleton-field").count(), 3);
+      assert.equal(await shell.getByRole("status").evaluate((status) => status.matches(".sr-only")), true);
+      assert.equal(await page.locator(".refresh-indicator").count(), 0);
+      assert.equal(await page.evaluate(
+        // reject bootstrap horizontal overflow
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ), true);
+      const bootstrapScreen = await page.screenshot();
+      assert.ok(bootstrapScreen.byteLength > 500);
+      releaseClient();
+      await page.locator(".current-conditions:not(.skeleton-region)").waitFor();
+      await assertSkeletonLoadingSettled(page);
+      await page.close();
+    }
+
+    const adminPage = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 960 },
+    });
+    await adminPage.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await adminPage.getByLabel("Password").fill("test-admin-password");
+    let releaseAdminReads;
+    const adminReadsReleased = new Promise(
+      // expose both protected editor skeletons after authentication
+      (resolveRelease) => {
+        releaseAdminReads = resolveRelease;
+      },
+    );
+    await adminPage.route(
+      /\/api\/v1\/(?:sites\/ballydidean\/(?:current|property-sensor-layout)|admin\/sites\/ballydidean\/forecast-adjustment-settings)$/u,
+      // hold the complete administrator read set
+      async (route) => {
+        await adminReadsReleased;
+        await route.continue();
+      },
+    );
+    await adminPage.getByRole("button", { name: "Sign in" }).click();
+    await assertSkeletonLoadingState(adminPage, ".forecast-adjustment-admin.skeleton-region");
+    assert.equal(await adminPage.locator(".property-admin.skeleton-region").count(), 1);
+    assert.equal(await adminPage.locator(".forecast-adjustment-admin .skeleton-field").count(), 3);
+    assert.equal(await adminPage.locator(".property-admin .skeleton-field").count(), 6);
+    assert.equal(await adminPage.locator(".property-admin-map.skeleton-map").count(), 1);
+    releaseAdminReads();
+    await adminPage.locator("[data-admin-forecast-adjustments]").waitFor();
+    await adminPage.locator("[data-property-sensor-form]").waitFor();
+    await assertSkeletonLoadingSettled(adminPage);
+    await adminPage.close();
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -5214,7 +5432,8 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       const refreshed = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
       await page.clock.fastForward(10_100);
       await refreshed;
-      await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+      await page.locator(".weather-content[aria-busy='false']").waitFor();
+      assert.equal(await page.locator(".refresh-indicator").count(), 0);
       assert.equal(forecastReads, 2);
       assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
       assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
@@ -5482,7 +5701,8 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
     const midnightRefresh = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
     await page.clock.fastForward(11_000);
     await midnightRefresh;
-    await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
+    assert.equal(await page.locator(".refresh-indicator").count(), 0);
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
@@ -5498,7 +5718,8 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
       () => document.dispatchEvent(new Event("visibilitychange")),
     );
     await resumedRefresh;
-    await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
+    assert.equal(await page.locator(".refresh-indicator").count(), 0);
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:22PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:41PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
@@ -5548,7 +5769,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
         },
       );
       await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
-      await page.locator(".current-conditions.skeleton-region").waitFor();
+      await assertSkeletonLoadingState(page, ".current-conditions.skeleton-region");
       assert.equal(await page.locator(".skeleton-card").count(), 10);
       // abbreviate only the compact homepage label
       const temperatureLabel = page.locator('[data-condition="temperature"] .condition-label > span:last-child');
@@ -5583,6 +5804,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
         // require every first-load skeleton to clear
         () => document.querySelector(".skeleton-region") === null,
       );
+      await assertSkeletonLoadingSettled(page);
       assert.equal(await temperatureLabel.innerText(), expectedTemperatureLabel);
       assert.equal(await page.locator('[data-condition="temperature"] .condition-secondary > span').innerText(), "Air Temp");
       const loadedGeometry = await captureSectionGeometry(page, selectors);
@@ -5607,7 +5829,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
   }
 });
 
-test("initial history skeletons preserve a full logs page while records load", { timeout: 60_000 }, async () => {
+test("history skeletons cover initial reads, pagination, and empty results", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -5649,7 +5871,7 @@ test("initial history skeletons preserve a full logs page while records load", {
         },
       );
       await page.goto(`${fixture.origin}/logs`, { waitUntil: "domcontentloaded" });
-      await page.locator(".skeleton-history-row").first().waitFor({ state: "attached" });
+      await assertSkeletonLoadingState(page, ".skeleton-history-row");
       assert.equal(await page.locator(".skeleton-history-row").count(), 25);
       assert.equal(await page.locator(".skeleton-history-card").count(), 25);
       assert.equal(
@@ -5667,6 +5889,7 @@ test("initial history skeletons preserve a full logs page while records load", {
       releaseHistoryRead();
       await page.locator(".skeleton-history-row").first().waitFor({ state: "detached" });
       await page.locator("tbody tr:not(.skeleton-history-row)").first().waitFor({ state: "attached" });
+      await assertSkeletonLoadingSettled(page);
       const loadedGeometry = await captureSectionGeometry(page, selectors);
 
       // expose compact source provenance as a disclosure
@@ -5682,6 +5905,76 @@ test("initial history skeletons preserve a full logs page while records load", {
 
       assert.deepEqual(loadedGeometry, loadingGeometry);
       assert.equal(await page.locator(".skeleton-line").count(), 0);
+
+      // exercise subsequent pagination and an honest empty filter once
+      if (width === 390) {
+        let releaseNextPageRead;
+        const nextPageReadReleased = new Promise(
+          // expose one cursor-page gate
+          (resolveRelease) => {
+            releaseNextPageRead = resolveRelease;
+          },
+        );
+        await page.route(
+          (url) => url.pathname === "/api/v1/sites/ballydidean/history" && url.searchParams.has("cursor"),
+          // reserve the full result page while the cursor advances
+          async (route) => {
+            await nextPageReadReleased;
+            await route.fulfill({
+              contentType: "application/json",
+              json: {
+                data: [older],
+                page: { limit: 25, nextCursor: null },
+                site,
+              },
+              status: 200,
+            });
+          },
+        );
+        await page.getByRole("button", { name: "Next", exact: true }).click();
+        await assertSkeletonLoadingState(page, ".skeleton-history-row");
+        assert.equal(await page.getByRole("button", { name: "Previous", exact: true }).isDisabled(), true);
+        assert.equal(await page.getByRole("button", { name: "Next", exact: true }).isDisabled(), true);
+        releaseNextPageRead();
+        await page.locator(".history-card strong").filter({ hasText: "59.2" }).waitFor();
+        await assertSkeletonLoadingSettled(page);
+
+        let releaseEmptyRead;
+        const emptyReadReleased = new Promise(
+          // expose one filtered empty-state gate
+          (resolveRelease) => {
+            releaseEmptyRead = resolveRelease;
+          },
+        );
+        await page.route(
+          /\/api\/v1\/sites\/ballydidean\/history/u,
+          // return an honest empty page after its skeleton
+          async (route) => {
+            await emptyReadReleased;
+            await route.fulfill({
+              contentType: "application/json",
+              json: {
+                data: [],
+                page: { limit: 25, nextCursor: null },
+                site,
+              },
+              status: 200,
+            });
+          },
+        );
+        await page.locator(".history-filter-disclosure").evaluate(
+          // expose the compact filter form for pointer interaction
+          (details) => {
+            details.open = true;
+          },
+        );
+        await page.locator("select[name='sourceKind']").selectOption("reanalysis");
+        await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+        await assertSkeletonLoadingState(page, ".skeleton-history-row");
+        releaseEmptyRead();
+        await page.locator(".history-cards-empty").waitFor();
+        await assertSkeletonLoadingSettled(page);
+      }
       await page.close();
     }
   } finally {
