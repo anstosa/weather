@@ -1029,6 +1029,8 @@ test("manifest and service worker provide an installable application shell", { t
       viewport: { height: 780, width: 390 },
     });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    // keep the browser title aligned with the application name
+    assert.equal(await page.title(), "Ballydídean Weather");
     assert.equal(
       await page.locator('link[rel="manifest"]').getAttribute("href"),
       "/manifest.webmanifest",
