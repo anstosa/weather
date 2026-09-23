@@ -940,6 +940,21 @@ async function startFixtureServer() {
       ["/brand/ballydidean-weather-icon-192.png", [join(publicRoot, "brand/ballydidean-weather-icon-192.png"), "image/png"]],
       ["/brand/ballydidean-weather-icon-512.png", [join(publicRoot, "brand/ballydidean-weather-icon-512.png"), "image/png"]],
       ["/brand/ballydidean-weather-icon-maskable-512.png", [join(publicRoot, "brand/ballydidean-weather-icon-maskable-512.png"), "image/png"]],
+      ["/weather-icons/01-sunny.svg", [join(publicRoot, "weather-icons/01-sunny.svg"), "image/svg+xml"]],
+      ["/weather-icons/02-sunny-wind.svg", [join(publicRoot, "weather-icons/02-sunny-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/03-partly-cloudy.svg", [join(publicRoot, "weather-icons/03-partly-cloudy.svg"), "image/svg+xml"]],
+      ["/weather-icons/04-partly-cloudy-wind.svg", [join(publicRoot, "weather-icons/04-partly-cloudy-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/05-cloudy.svg", [join(publicRoot, "weather-icons/05-cloudy.svg"), "image/svg+xml"]],
+      ["/weather-icons/06-cloudy-wind.svg", [join(publicRoot, "weather-icons/06-cloudy-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/07-light-rain.svg", [join(publicRoot, "weather-icons/07-light-rain.svg"), "image/svg+xml"]],
+      ["/weather-icons/08-light-rain-wind.svg", [join(publicRoot, "weather-icons/08-light-rain-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/09-heavy-rain.svg", [join(publicRoot, "weather-icons/09-heavy-rain.svg"), "image/svg+xml"]],
+      ["/weather-icons/10-heavy-rain-wind.svg", [join(publicRoot, "weather-icons/10-heavy-rain-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/12-unavailable.svg", [join(publicRoot, "weather-icons/12-unavailable.svg"), "image/svg+xml"]],
+      ["/weather-icons/13-clear-night.svg", [join(publicRoot, "weather-icons/13-clear-night.svg"), "image/svg+xml"]],
+      ["/weather-icons/14-clear-night-wind.svg", [join(publicRoot, "weather-icons/14-clear-night-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/15-partly-cloudy-night.svg", [join(publicRoot, "weather-icons/15-partly-cloudy-night.svg"), "image/svg+xml"]],
+      ["/weather-icons/16-partly-cloudy-night-wind.svg", [join(publicRoot, "weather-icons/16-partly-cloudy-night-wind.svg"), "image/svg+xml"]],
       ["/fonts/google-sans-flex-latin.woff2", [join(publicRoot, "fonts/google-sans-flex-latin.woff2"), "font/woff2"]],
       ["/fonts/material-symbols-rounded-v4.woff2", [join(publicRoot, "fonts/material-symbols-rounded-v4.woff2"), "font/woff2"]],
       [`/assets/${fixtureAssetVersion}/client.js`, [join(distRoot, "client.js"), "text/javascript; charset=utf-8"]],
@@ -1123,6 +1138,260 @@ test("manifest and service worker provide an installable application shell", { t
       200,
     );
     await page.context().setOffline(false);
+  } finally {
+    // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// keep the live condition identity readable without changing masthead height
+test("homepage masthead keeps its weather icon and full title through responsive rerenders", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 1280 },
+    });
+    await page.clock.setFixedTime(new Date("2026-08-22T20:00:00Z"));
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // expose one known dry sensor reading alongside modeled cloud cover
+        (record) => record.provenance.sourceKind === "physical_sensor"
+          ? {
+              ...record,
+              metrics: { ...record.metrics, precipitationRateMmPerHour: 0 },
+            }
+          : record,
+      );
+      await route.fulfill({ json: body, response });
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.evaluate(
+      // settle both bundled display fonts before measuring line boxes
+      async () => await document.fonts.ready,
+    );
+
+    const baselineHeights = new Map([
+      [320, 51.96875],
+      [360, 51.96875],
+      [412, 51.96875],
+      [768, 58.390625],
+      [1280, 74.390625],
+    ]);
+    const baselineTitleSizes = new Map([
+      [320, 20],
+      [360, 22.5],
+      [412, 25.75],
+    ]);
+    const captureMasthead = async () => {
+      const icon = page.locator("img.masthead-weather-icon");
+      await icon.waitFor();
+      await page.waitForFunction(
+        // require decoded current-condition artwork
+        () => {
+          const image = document.querySelector("img.masthead-weather-icon");
+          return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+        },
+      );
+      return await page.locator(".home-masthead").evaluate(
+        // measure one complete rendered homepage masthead
+        (masthead) => {
+          const actions = masthead.querySelector(".masthead-actions");
+          const brand = masthead.querySelector(".masthead-brand");
+          const icon = masthead.querySelector("img.masthead-weather-icon");
+          const title = brand?.querySelector("h1");
+
+          // require the complete branded header
+          if (
+            !(actions instanceof HTMLElement) ||
+            !(brand instanceof HTMLElement) ||
+            !(icon instanceof HTMLImageElement) ||
+            !(title instanceof HTMLElement)
+          ) {
+            throw new Error("homepage masthead branding is incomplete");
+          }
+
+          const bounds = (element) => {
+            const rectangle = element.getBoundingClientRect();
+            return {
+              bottom: rectangle.bottom,
+              height: rectangle.height,
+              left: rectangle.left,
+              right: rectangle.right,
+              top: rectangle.top,
+              width: rectangle.width,
+            };
+          };
+          const mastheadBounds = masthead.getBoundingClientRect();
+          const titleBounds = title.getBoundingClientRect();
+          const wordBounds = [...title.querySelectorAll(".masthead-title-text > span")].map(
+            // measure only the two visible title words
+            (word) => word.getBoundingClientRect(),
+          );
+          const uniqueLineTops = new Set(wordBounds.map(
+            // merge both words when they share a rendered line
+            (rectangle) => Math.round(rectangle.top),
+          ));
+          const titleStyle = getComputedStyle(title);
+          const verticalClipBounds = titleStyle.overflowY === "visible" ? mastheadBounds : titleBounds;
+
+          return {
+            actions: bounds(actions),
+            alt: icon.alt,
+            bodyOverflow: document.body.scrollWidth - document.documentElement.clientWidth,
+            brand: bounds(brand),
+            fontFamily: titleStyle.fontFamily,
+            fontSize: Number.parseFloat(titleStyle.fontSize),
+            header: bounds(masthead),
+            headerOverflow: masthead.scrollWidth - masthead.clientWidth,
+            icon: bounds(icon),
+            iconComplete: icon.complete,
+            iconNaturalHeight: icon.naturalHeight,
+            iconNaturalWidth: icon.naturalWidth,
+            lineCount: uniqueLineTops.size,
+            source: new URL(icon.src).pathname,
+            title: bounds(title),
+            titleClippedHorizontally: wordBounds.some(
+              // keep both visible words inside the title box
+              (rectangle) => rectangle.left < titleBounds.left - 1 || rectangle.right > titleBounds.right + 1,
+            ),
+            titleClippedVertically: wordBounds.some(
+              // contain text in the actual vertical clipping ancestor
+              (rectangle) => rectangle.top < verticalClipBounds.top - 1 || rectangle.bottom > verticalClipBounds.bottom + 1,
+            ),
+            titleText: title.textContent?.replace(/\s+/gu, " ").trim(),
+            wordBounds: wordBounds.map(
+              // retain concrete title fragments for failure evidence
+              (rectangle) => bounds({ getBoundingClientRect: () => rectangle }),
+            ),
+            wrappedClass: title.classList.contains("masthead-title-wrapped"),
+          };
+        },
+      );
+    };
+
+    const nowLink = page.getByRole("link", { name: "Now", exact: true });
+    const dashboardIcon = await nowLink.locator('svg[data-nav-icon="dashboard"]').evaluate(
+      // compare the inline dashboard with the existing 24px navigation glyphs
+      (icon) => {
+        const rectangle = icon.getBoundingClientRect();
+        const style = getComputedStyle(icon);
+        return {
+          color: style.color,
+          fill: style.fill,
+          height: rectangle.height,
+          pathCount: icon.querySelectorAll("path").length,
+          viewBox: icon.getAttribute("viewBox"),
+          width: rectangle.width,
+        };
+      },
+    );
+    assert.equal(await nowLink.getAttribute("href"), "/");
+    assert.equal(await nowLink.getAttribute("aria-current"), "page");
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').getAttribute("aria-hidden"), "true");
+    assert.equal(await nowLink.locator(".material-symbols-rounded").count(), 0);
+    assert.equal(dashboardIcon.fill, dashboardIcon.color);
+    assert.equal(dashboardIcon.height >= 20 && dashboardIcon.height <= 24, true);
+    assert.equal(dashboardIcon.pathCount, 1);
+    assert.equal(dashboardIcon.viewBox, "0 0 24 24");
+    assert.equal(dashboardIcon.width >= 20 && dashboardIcon.width <= 24, true);
+
+    // prove the same document survives wide, narrow, and restored widths
+    for (const width of [1280, 320, 360, 412, 768, 1280]) {
+      await page.setViewportSize({ height: 900, width });
+      await page.evaluate(
+        // wait for any width-dependent font layout
+        async () => await document.fonts.ready,
+      );
+      const layout = await captureMasthead();
+      const baselineHeight = baselineHeights.get(width);
+
+      // require a recorded production baseline for every exercised width
+      if (baselineHeight === undefined) {
+        throw new Error(`missing masthead baseline for ${String(width)}px`);
+      }
+
+      assert.equal(Math.abs(layout.header.height - baselineHeight) < 1, true, JSON.stringify({ width, layout }));
+      assert.equal(layout.alt, "Current weather: Partly cloudy");
+      assert.equal(layout.bodyOverflow, 0);
+      assert.match(layout.fontFamily, /Google Sans Flex/u);
+      assert.equal(layout.headerOverflow, 0);
+      assert.equal(layout.iconComplete, true);
+      assert.equal(layout.iconNaturalHeight > 0, true);
+      assert.equal(layout.iconNaturalWidth > 0, true);
+      assert.equal(layout.icon.left < layout.title.left, true);
+      assert.equal(layout.icon.right <= layout.title.left, true);
+      assert.equal(layout.brand.right <= layout.actions.left, true);
+      assert.equal(layout.source, "/weather-icons/03-partly-cloudy.svg");
+      assert.equal(layout.title.bottom <= layout.header.bottom + 1, true);
+      assert.equal(layout.title.left >= layout.header.left - 1, true);
+      assert.equal(layout.title.right <= layout.actions.left + 1, true);
+      assert.equal(layout.title.top >= layout.header.top - 1, true);
+      assert.equal(layout.titleClippedHorizontally, false, JSON.stringify({ width, layout }));
+      assert.equal(layout.titleClippedVertically, false, JSON.stringify({ width, layout }));
+      assert.equal(layout.titleText, "Ballydídean Weather");
+
+      // wrap only the three phone widths that cannot fit the new brand row
+      if (width <= 412) {
+        const baselineTitleSize = baselineTitleSizes.get(width);
+
+        // require the previous single-line font size for comparison
+        if (baselineTitleSize === undefined) {
+          throw new Error(`missing title baseline for ${String(width)}px`);
+        }
+
+        assert.equal(layout.fontSize < baselineTitleSize, true, JSON.stringify({ width, layout }));
+        assert.equal(layout.lineCount, 2);
+        assert.equal(layout.wrappedClass, true);
+      } else {
+        assert.equal(layout.lineCount, 1);
+        assert.equal(layout.wrappedClass, false);
+      }
+    }
+
+    await page.setViewportSize({ height: 900, width: 320 });
+    const originalIcon = await page.locator("img.masthead-weather-icon").elementHandle();
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    const previousToggleState = await toggle.getAttribute("aria-checked");
+
+    // require the current image before proving its replacement
+    if (originalIcon === null) {
+      throw new Error("homepage masthead icon is unavailable before rerender");
+    }
+
+    await toggle.click();
+    await page.waitForFunction(
+      // require the controller to replace the old branded header
+      ([image, state]) => !image.isConnected &&
+        document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") !== state,
+      [originalIcon, previousToggleState],
+    );
+    const rerenderedLayout = await captureMasthead();
+    assert.equal(Math.abs(rerenderedLayout.header.height - 51.96875) < 1, true);
+    assert.equal(rerenderedLayout.alt, "Current weather: Partly cloudy");
+    assert.equal(rerenderedLayout.lineCount, 2);
+    assert.equal(rerenderedLayout.titleClippedHorizontally, false);
+    assert.equal(rerenderedLayout.titleClippedVertically, false);
+    assert.equal(rerenderedLayout.wrappedClass, true);
+
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    await page.locator(".forecast-panel").waitFor();
+    assert.equal(await page.locator(".masthead-weather-icon").count(), 0);
+    assert.equal(await page.locator(".masthead-brand").count(), 0);
+    assert.equal(await page.locator(".masthead h1").innerText(), "Ballydídean Weather");
+    assert.equal(await nowLink.getAttribute("href"), "/");
+    assert.equal(await nowLink.getAttribute("aria-current"), null);
+    await nowLink.click();
+    await page.waitForURL(`${fixture.origin}/`);
+    assert.equal((await captureMasthead()).lineCount, 2);
   } finally {
     // close only disposable browser resources
     await browser?.close();
@@ -1634,7 +1903,7 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
-    await page.getByRole("link", { name: "Home", exact: true }).click();
+    await page.getByRole("link", { name: "Now", exact: true }).click();
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
     assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
     await toggle.click();
@@ -3053,7 +3322,7 @@ test("anonymous home-network viewers see indoor and soil panels only while allow
     await page.waitForURL(`${fixture.origin}/forecast`);
     assert.equal(await page.locator("[data-indoor-house]").count(), 0);
     fixture.state.viewerContext = { data: { homeNetwork: false } };
-    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
     await page.waitForURL(fixture.origin + "/");
     assert.equal(await page.locator("[data-indoor-house]").count(), 0);
 
@@ -3354,7 +3623,7 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
     assert.equal(fixture.state.adminUpdates, 1);
     assert.equal(fixture.state.propertySensorLayout[0].displayName, "North orchard soil");
     assert.equal(fixture.state.propertySensorLayout[0].icon, "air-quality");
-    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
     await page.getByRole("heading", { name: "Indoor temperatures" }).waitFor();
     assert.deepEqual(
       await page.locator(".indoor-house-level").allTextContents(),
@@ -5412,7 +5681,7 @@ test("real browser configures and persists every measurement unit preference", {
     await settings.locator("select[name='pressure']").selectOption("hectopascals");
     await settings.locator("select[name='waterLevel']").selectOption("meters");
     await settings.getByRole("button", { name: "Save units" }).click();
-    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
     await page.waitForURL(`${fixture.origin}/`);
 
     assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /16\s*°C/u);
@@ -5560,6 +5829,8 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
         const navigationBounds = navigation.getBoundingClientRect();
         const forecastIcon = forecast.querySelector(".material-symbols-rounded");
         const forecastIconBounds = forecastIcon?.getBoundingClientRect();
+        const homeIcon = home.querySelector('svg[data-nav-icon="dashboard"]');
+        const homeIconBounds = homeIcon?.getBoundingClientRect();
         const mapIcon = map.querySelector(".material-symbols-rounded");
         const trendsIcon = trends.querySelector(".material-symbols-rounded");
         const trendsIconBounds = trendsIcon?.getBoundingClientRect();
@@ -5591,6 +5862,8 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
           forecastIconText: forecastIcon?.textContent,
           headingLineCount: headingRange.getClientRects().length,
           headingText: heading.textContent,
+          homeIconAriaHidden: homeIcon?.getAttribute("aria-hidden"),
+          homeIconIsSvg: homeIconBounds !== undefined && homeIconBounds.width <= 24 && homeIcon.tagName === "svg",
           iconFont: getComputedStyle(icon).fontFamily,
           iconHeight: iconBounds.height,
           iconText: icon.textContent,
@@ -5615,13 +5888,15 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
     assert.equal(headerLayout.activeIndicatorBackground, "rgb(240, 230, 150)");
     assert.equal(headerLayout.activeIndicatorHeight, 32);
     assert.equal(headerLayout.activeIndicatorWidth, 56);
-    assert.deepEqual(headerLayout.controlLabels, ["Home", "Forecast", "Trends", "Map", "Settings"]);
+    assert.deepEqual(headerLayout.controlLabels, ["Now", "Forecast", "Trends", "Map", "Settings"]);
     assert.equal(headerLayout.decorationContent, "none");
     assert.equal(headerLayout.desktopNavigationLeftAligned, true);
     assert.equal(headerLayout.headingLineCount, 1);
     assert.equal(headerLayout.headingText, "Ballydídean Weather");
     assert.equal(headerLayout.forecastIconIsGlyph, true);
     assert.equal(headerLayout.forecastIconText, "partly_cloudy_day");
+    assert.equal(headerLayout.homeIconAriaHidden, "true");
+    assert.equal(headerLayout.homeIconIsSvg, true);
     assert.equal(headerLayout.imageCount, 0);
     assert.match(headerLayout.iconFont, /Material Symbols Rounded/u);
     assert.equal(headerLayout.iconText, "settings");

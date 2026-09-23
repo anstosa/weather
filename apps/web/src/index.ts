@@ -2976,6 +2976,7 @@ export function mountWeatherDashboard(
   options: DashboardOptions = {},
 ): WeatherDashboardController {
   const controller = new WeatherDashboardController(options);
+  bindHomepageTitleSize(root);
 
   // redraw and wire one state snapshot
   controller.subscribe((state) => {
@@ -2991,6 +2992,7 @@ export function mountWeatherDashboard(
     }
 
     bindDashboardControls(root, controller);
+    fitHomepageTitle(root);
 
     // retain keyboard focus on the replaced preference switch
     if (toggleHadFocus) {
@@ -3002,6 +3004,42 @@ export function mountWeatherDashboard(
   bindHomeNetworkRefresh(root, controller);
   void controller.initialize();
   return controller;
+}
+
+// refit the fixed-height title after viewport and font changes
+function bindHomepageTitleSize(root: HTMLElement): void {
+  const observer = new ResizeObserver(() => {
+    // release the observer when its application root is removed
+    if (!root.isConnected) {
+      observer.disconnect();
+      return;
+    }
+    fitHomepageTitle(root);
+  });
+  observer.observe(root);
+  void document.fonts.ready.then(() => fitHomepageTitle(root));
+}
+
+// use two smaller lines only when the full-sized title would clip
+function fitHomepageTitle(root: HTMLElement): void {
+  const heading = root.querySelector<HTMLElement>(".home-masthead h1");
+  const text = heading?.querySelector<HTMLElement>(".masthead-title-text");
+  // leave other routes and detached application roots unchanged
+  if (heading == null || text == null || !root.isConnected) {
+    return;
+  }
+  heading.classList.remove("masthead-title-wrapped");
+  heading.style.removeProperty("font-size");
+  // retain the original single-line size wherever it fits
+  if (text.scrollWidth <= text.clientWidth) {
+    return;
+  }
+  heading.classList.add("masthead-title-wrapped");
+  // fit the longest word at unusually narrow widths or enlarged text settings
+  if (text.scrollWidth > text.clientWidth && text.clientWidth > 0) {
+    const size = Number.parseFloat(getComputedStyle(heading).fontSize);
+    heading.style.fontSize = `${size * text.clientWidth / text.scrollWidth}px`;
+  }
 }
 
 // revalidate a visible homepage without refreshing weather data
@@ -3066,7 +3104,13 @@ function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboard
     }
 
     const now = new Date();
-    const timezone = controller.state.selectedSite?.timezone ?? PRODUCT_SITE.timezone;
+    const site = controller.state.selectedSite ?? PRODUCT_SITE;
+    const timezone = site.timezone;
+    const icon = root.querySelector(".masthead-weather-icon");
+    // switch the current illustration at sunrise and sunset without refreshing weather
+    if (icon !== null) {
+      icon.outerHTML = renderCurrentWeatherIcon(controller.state, now);
+    }
     const day = formatWallClockParts(now, timezone);
     const today = forecastSiteDateKey(now.toISOString(), timezone);
 
@@ -3078,7 +3122,12 @@ function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboard
     previousDay = today;
     const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
     const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
-    timer = window.setTimeout(refresh, Math.max(1, midnight - now.getTime()));
+    const sun = eveningSunTimes(site, now);
+    const boundaries = [midnight, sun.sunrise?.getTime(), sun.sunset?.getTime()].filter(
+      // ignore absent and already elapsed daylight boundaries
+      (instant): instant is number => instant !== undefined && instant > now.getTime(),
+    );
+    timer = window.setTimeout(refresh, Math.max(1, Math.min(...boundaries) - now.getTime()));
   };
 
   document.addEventListener("visibilitychange", refresh);
@@ -3093,8 +3142,8 @@ export function renderWeatherDashboard(
 ): string {
   return `
     <main class="shell">
-      <header class="masthead${view === "forecast" ? " forecast-masthead" : ""}">
-        <h1>Ballydídean Weather</h1>
+      <header class="masthead${view === "forecast" ? " forecast-masthead" : view === "home" ? " home-masthead" : ""}">
+        ${view === "home" ? `<div class="masthead-brand">${renderCurrentWeatherIcon(state)}<h1><span class="masthead-title-text"><span>Ballydídean</span> <span>Weather</span></span></h1></div>` : "<h1>Ballydídean Weather</h1>"}
         ${view === "forecast" ? renderForecastRangeSelector(state.forecastDays ?? 1, state.loading) : ""}
         <div class="masthead-actions">
           ${renderLoadingIndicator(state)}
@@ -3109,6 +3158,55 @@ export function renderWeatherDashboard(
       </div>
     </main>
   `;
+}
+
+// select the approved artwork from the same current metrics as the homepage cards
+export function currentWeatherIcon(
+  state: Pick<DashboardState, "current" | "selectedSite">,
+  now = new Date(),
+): Readonly<{ name: string; label: string }> {
+  const current = preferredCurrentRecords(state.current);
+  const rain = findMetric(current, "precipitationRateMmPerHour");
+  const wind = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
+  const cloud = findMetric(current.filter(
+    // cloud cover is modeled rather than measured by the on-site gateway
+    (record) => record.provenance.sourceKind === "model_current",
+  ), "cloudCoverPercent");
+  const suffix = wind ? ", high wind" : "";
+  // missing rainfall must not imply a sunny or dry condition
+  if (rain === null || rain === 0 && cloud === null) {
+    return { name: "12-unavailable", label: "Conditions unavailable" };
+  }
+  // rain takes precedence even when cloud cover is unavailable
+  if (rain > 0) {
+    // use the widget's light and heavy rain boundary
+    if (rain < 2.5) {
+      return { name: wind ? "08-light-rain-wind" : "07-light-rain", label: `Light rain${suffix}` };
+    }
+    return { name: wind ? "10-heavy-rain-wind" : "09-heavy-rain", label: `Heavy rain${suffix}` };
+  }
+  // overcast artwork is shared between day and night
+  if (cloud !== null && cloud >= 75) {
+    return { name: wind ? "06-cloudy-wind" : "05-cloudy", label: `Cloudy${suffix}` };
+  }
+  const sun = eveningSunTimes(state.selectedSite ?? PRODUCT_SITE, now);
+  const night = sun.sunrise !== null && sun.sunset !== null &&
+    (now < sun.sunrise || now >= sun.sunset);
+  // replace only the sun-bearing illustrations after dark
+  if (cloud !== null && cloud < 25) {
+    return night
+      ? { name: wind ? "14-clear-night-wind" : "13-clear-night", label: `Clear night${suffix}` }
+      : { name: wind ? "02-sunny-wind" : "01-sunny", label: `Sunny${suffix}` };
+  }
+  return night
+    ? { name: wind ? "16-partly-cloudy-night-wind" : "15-partly-cloudy-night", label: `Partly cloudy night${suffix}` }
+    : { name: wind ? "04-partly-cloudy-wind" : "03-partly-cloudy", label: `Partly cloudy${suffix}` };
+}
+
+// preserve the supplied colors and expose the current condition independently of the title
+function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): string {
+  const icon = currentWeatherIcon(state, now);
+  return `<img class="masthead-weather-icon" src="/weather-icons/${icon.name}.svg" alt="Current weather: ${escapeHtml(icon.label)}" width="56" height="56">`;
 }
 
 // keep the adjustment label stable across modes
@@ -3224,7 +3322,7 @@ function renderSectionNavigation(view: WeatherView): string {
 
   return `
     <nav class="section-nav" aria-label="Weather sections">
-      <a class="section-nav-home" href="/" data-weather-route${view === "home" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("home")}</span><span>Home</span></a>
+      <a class="section-nav-home" href="/" data-weather-route${view === "home" ? ' aria-current="page"' : ""}><span class="section-nav-icon"><svg class="material-inline-icon" data-nav-icon="dashboard" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3h8v10H3V3Zm10 0h8v6h-8V3Zm0 8h8v10h-8V11ZM3 15h8v6H3v-6Z"/></svg></span><span>Now</span></a>
       <a class="section-nav-forecast" href="/forecast" data-weather-route${view === "forecast" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("partly_cloudy_day")}</span><span>Forecast</span></a>
       <a class="section-nav-trends" href="/trends" data-weather-route${view === "trends" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("trending_up")}</span><span>Trends</span></a>
       <a class="section-nav-map" href="/map" data-weather-route${view === "map" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("map")}</span><span>Map</span></a>

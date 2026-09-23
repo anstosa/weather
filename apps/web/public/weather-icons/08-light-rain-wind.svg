@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="08 light rain wind">
+<title>08 light rain wind</title>
+<defs>
+  <linearGradient id="cloud" x1="0" y1="0" x2="0.28" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#F4F7FB"/><stop offset="0.5" stop-color="#DBE4EE"/><stop offset="1" stop-color="#A9BBD0"/></linearGradient>
+  <linearGradient id="rear" x1="0" y1="0" x2="0.45" y2="1"><stop stop-color="#AFC0D4"/><stop offset="1" stop-color="#8299B6"/></linearGradient>
+  <linearGradient id="sun" x1="0.1" y1="0" x2="0.8" y2="1"><stop stop-color="#FFE994"/><stop offset="0.52" stop-color="#FFD56E"/><stop offset="1" stop-color="#FFB953"/></linearGradient>
+  <linearGradient id="rain" x1="0" y1="0" x2="0.8" y2="1"><stop stop-color="#82D0FF"/><stop offset="1" stop-color="#4096E5"/></linearGradient>
+  <linearGradient id="wind" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#93ACC9"/><stop offset="1" stop-color="#667F9E"/></linearGradient>
+  <linearGradient id="moon" x1="0" y1="0" x2="0.7" y2="1"><stop stop-color="#D2DCFF"/><stop offset="0.54" stop-color="#A6B9F5"/><stop offset="1" stop-color="#7D92E2"/></linearGradient>
+  <linearGradient id="status" x1="0" y1="0" x2="0.6" y2="1"><stop stop-color="#EBF0F7"/><stop offset="1" stop-color="#B6C5D7"/></linearGradient>
+</defs>
+<path d="M27 81 C18 81 13 75 13 67 C13 59 19 54 27 54 C31 40 43 32 54 35 C64 37 71 44 73 52 C82 51 89 59 89 67 C89 76 83 81 74 81 Z" fill="url(#cloud)" data-part="foreground-cloud"/><path d="M31 55 Q37 60 43 55" fill="none" stroke="#55677F" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" /><path d="M55 55 Q61 60 67 55" fill="none" stroke="#55677F" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" /><path d="M41 71 Q49 65 57 71" fill="none" stroke="#55677F" stroke-width="3.9" stroke-linecap="round" stroke-linejoin="round" /><path d="M94 45 H111 C120 45 121 36 115 34 C110 32 106 35 106 39" fill="none" stroke="url(#wind)" stroke-width="4.7" stroke-linecap="round" stroke-linejoin="round" data-part="open-wind-curl"/><path d="M95 68 H111 C120 68 122 77 116 79 C111 81 107 78 107 74" fill="none" stroke="url(#wind)" stroke-width="4.7" stroke-linecap="round" stroke-linejoin="round" data-part="open-wind-curl"/><path d="M97 56 H119" fill="none" stroke="#7D96B3" stroke-width="4.7" stroke-linecap="round" stroke-linejoin="round" data-part="straight-wind-line"/><path d="M36 89 L50 109" fill="none" stroke="url(#rain)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" data-part="rain-stroke"/><path d="M78 89 L92 109" fill="none" stroke="url(#rain)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" data-part="rain-stroke"/>
+</svg>

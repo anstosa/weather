@@ -1858,7 +1858,7 @@ test("dashboard separates current conditions from the historical logs route", ()
     ],
   });
 
-  assert.match(html, /<header class="masthead">[\s\S]*?<h1>Ballydídean Weather<\/h1>/u);
+  assert.match(html, /<header class="masthead home-masthead">[\s\S]*?class="masthead-weather-icon"[\s\S]*?<h1><span class="masthead-title-text"><span>Ballydídean<\/span> <span>Weather<\/span><\/span><\/h1>/u);
   assert.match(html, /data-forecast-adjustment-toggle/u);
   assert.match(forecastHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(logsHtml, /data-forecast-adjustment-toggle/u);
@@ -1867,7 +1867,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(trendsHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(html, /brand-link|brand-mark|ballydidean-wide\.svg/u);
   assert.doesNotMatch(html, /aria-label="Weather location"|data-site-selector/u);
-  assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-current="page">[\s\S]*?>home<\/span><\/span><span>Home<\/span><\/a>/u);
+  assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-current="page">[\s\S]*?data-nav-icon="dashboard"[\s\S]*?<\/svg><\/span><span>Now<\/span><\/a>/u);
   assert.match(html, /class="section-nav-map" href="\/map" data-weather-route>[\s\S]*?>map<\/span><\/span><span>Map<\/span><\/a>/u);
   assert.match(html, /class="section-nav-forecast" href="\/forecast" data-weather-route>[\s\S]*?>partly_cloudy_day<\/span><\/span><span>Forecast<\/span><\/a>/u);
   assert.match(html, /class="section-nav-trends" href="\/trends" data-weather-route>[\s\S]*?>trending_up<\/span><\/span><span>Trends<\/span><\/a>/u);

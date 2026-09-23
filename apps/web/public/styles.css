@@ -330,6 +330,58 @@ a {
   gap: 0.5rem;
 }
 
+/* preserve the existing header height when the homepage title needs two lines */
+.home-masthead {
+  --masthead-title-size: clamp(2.2rem, 5vw, 3.5rem);
+  --masthead-content-height: max(2.5rem, var(--masthead-title-size));
+}
+
+.masthead-brand {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  height: var(--masthead-content-height);
+}
+
+/* shadow the supplied silhouette without tinting or framing the illustration */
+.masthead-weather-icon {
+  flex: 0 0 var(--masthead-content-height);
+  width: var(--masthead-content-height);
+  height: var(--masthead-content-height);
+  object-fit: contain;
+  filter: drop-shadow(0 0.6px 1px rgb(48 36 44 / 40%));
+}
+
+.home-masthead .masthead-actions {
+  flex-shrink: 0;
+}
+
+.home-masthead h1 {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  height: var(--masthead-content-height);
+  font-size: var(--masthead-title-size);
+  line-height: 1;
+}
+
+.masthead-title-text {
+  display: block;
+  white-space: nowrap;
+}
+
+.home-masthead h1.masthead-title-wrapped {
+  font-size: calc(var(--masthead-content-height) / 2);
+}
+
+.masthead-title-wrapped .masthead-title-text > span {
+  display: block;
+}
+
 /* keep the forecast range beside the adjustment control */
 .forecast-masthead {
   display: grid;
@@ -472,6 +524,12 @@ a {
 
 .section-nav .material-symbols-rounded {
   font-size: 1.4rem;
+}
+
+/* match the existing navigation glyphs without extending the subsetted font */
+.section-nav .material-inline-icon {
+  width: 1.4rem;
+  height: 1.4rem;
 }
 
 .secondary-button {
@@ -4296,6 +4354,16 @@ td small {
 
   .section-nav .material-symbols-rounded {
     font-size: 1.3rem;
+  }
+
+  .section-nav .material-inline-icon {
+    width: 1.3rem;
+    height: 1.3rem;
+  }
+
+  .home-masthead {
+    --masthead-title-size: clamp(1.25rem, 6.25vw, 1.65rem);
+    --masthead-content-height: 2.35rem;
   }
 
   .masthead {
