@@ -336,23 +336,6 @@ a {
   --masthead-content-height: max(2.5rem, var(--masthead-title-size));
 }
 
-.masthead-brand {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-  height: var(--masthead-content-height);
-}
-
-/* display the supplied high-contrast artwork without an added shadow */
-.masthead-weather-icon {
-  flex: 0 0 var(--masthead-content-height);
-  width: var(--masthead-content-height);
-  height: var(--masthead-content-height);
-  object-fit: contain;
-}
-
 .home-masthead .masthead-actions {
   flex-shrink: 0;
 }
@@ -438,7 +421,12 @@ a {
 
 .forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-track {
   border-color: #b4923e;
-  background: #ead496;
+  background: linear-gradient(135deg, #b97a0b 0%, #e9b62e 28%, #fff0a8 48%, #e1aa20 65%, #b97a0b 100%);
+}
+
+/* keep the sparkle solid while the enabled track carries the metallic highlight */
+.forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-sparkle {
+  color: #c58a10;
 }
 
 .forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-thumb {
@@ -521,10 +509,11 @@ a {
   font-size: 1.4rem;
 }
 
-/* match the existing navigation glyphs without extending the subsetted font */
-.section-nav .material-inline-icon {
-  width: 1.4rem;
-  height: 1.4rem;
+/* preserve the weather artwork inside the existing navigation indicator without a shadow */
+.section-nav-weather-icon {
+  width: 2rem;
+  height: 2rem;
+  object-fit: contain;
 }
 
 .secondary-button {
@@ -4349,11 +4338,6 @@ td small {
 
   .section-nav .material-symbols-rounded {
     font-size: 1.3rem;
-  }
-
-  .section-nav .material-inline-icon {
-    width: 1.3rem;
-    height: 1.3rem;
   }
 
   .home-masthead {

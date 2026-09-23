@@ -817,10 +817,31 @@ test("sparkle adjustment switch exposes both preferences without visible text", 
       assert.doesNotMatch(toggle, /forecast-adjustment-toggle-mode/u);
       assert.match(toggle, /class="forecast-adjustment-toggle-thumb"[\s\S]*class="forecast-adjustment-sparkle"/u);
       assert.ok(toggle.includes(`data-sparkle-tone="${mode === "adjusted" ? "gold" : "gray"}"`));
-      assert.ok(toggle.includes(`fill="${mode === "adjusted" ? "url(#forecast-adjustment-gold)" : "currentColor"}"`));
-      assert.match(toggle, /<linearGradient id="forecast-adjustment-gold"[\s\S]*?<stop[^>]*stop-color=/u);
+      assert.match(toggle, /fill="currentColor" stroke="currentColor"/u);
+      assert.doesNotMatch(toggle, /<linearGradient|<defs>|url\(#forecast-adjustment-gold\)/u);
       assert.match(toggle, /class="forecast-adjustment-toggle-track" aria-hidden="true"/u);
     }
+  }
+});
+
+// keep one current-weather illustration in navigation rather than the page header
+test("Now navigation owns the current weather icon on every route", () => {
+  const state = {
+    ...forecastState([], null),
+    current: [{ ...record, metrics: { ...record.metrics, cloudCoverPercent: 80, precipitationRateMmPerHour: 0 } }],
+  };
+  // retain identical navigation artwork and naming on active and inactive routes
+  for (const view of ["home", "forecast", "map", "trends", "settings", "logs", "admin"]) {
+    const html = renderWeatherDashboard(state, view);
+    const header = html.match(/<header[\s\S]*?<\/header>/u)?.[0];
+    const nowLink = html.match(/<a class="section-nav-home"[\s\S]*?<\/a>/u)?.[0];
+    assert.ok(header);
+    assert.ok(nowLink);
+    assert.doesNotMatch(header, /<img|masthead-brand/u);
+    assert.match(nowLink, /aria-label="Now"/u);
+    assert.match(nowLink, /<img class="section-nav-weather-icon" src="\/weather-icons\/05-cloudy\.svg" alt="Current weather: Cloudy" width="32" height="32">/u);
+    assert.equal((html.match(/class="section-nav-weather-icon"/gu) ?? []).length, 1);
+    assert.doesNotMatch(html, /data-nav-icon="dashboard"|masthead-weather-icon/u);
   }
 });
 
@@ -1884,7 +1905,7 @@ test("dashboard separates current conditions from the historical logs route", ()
     ],
   });
 
-  assert.match(html, /<header class="masthead home-masthead">[\s\S]*?class="masthead-weather-icon"[\s\S]*?<h1><span class="masthead-title-text"><span>Ballydídean<\/span> <span>Weather<\/span><\/span><\/h1>/u);
+  assert.match(html, /<header class="masthead home-masthead">[\s\S]*?<h1><span class="masthead-title-text"><span>Ballydídean<\/span> <span>Weather<\/span><\/span><\/h1>/u);
   assert.match(html, /data-forecast-adjustment-toggle/u);
   assert.match(forecastHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(logsHtml, /data-forecast-adjustment-toggle/u);
@@ -1893,7 +1914,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(trendsHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(html, /brand-link|brand-mark|ballydidean-wide\.svg/u);
   assert.doesNotMatch(html, /aria-label="Weather location"|data-site-selector/u);
-  assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-current="page">[\s\S]*?data-nav-icon="dashboard"[\s\S]*?<\/svg><\/span><span>Now<\/span><\/a>/u);
+  assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-label="Now" aria-current="page">[\s\S]*?class="section-nav-weather-icon"[\s\S]*?<\/span><span>Now<\/span><\/a>/u);
   assert.match(html, /class="section-nav-map" href="\/map" data-weather-route>[\s\S]*?>map<\/span><\/span><span>Map<\/span><\/a>/u);
   assert.match(html, /class="section-nav-forecast" href="\/forecast" data-weather-route>[\s\S]*?>partly_cloudy_day<\/span><\/span><span>Forecast<\/span><\/a>/u);
   assert.match(html, /class="section-nav-trends" href="\/trends" data-weather-route>[\s\S]*?>trending_up<\/span><\/span><span>Trends<\/span><\/a>/u);

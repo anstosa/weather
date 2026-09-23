@@ -3100,7 +3100,7 @@ function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboard
     const now = new Date();
     const site = controller.state.selectedSite ?? PRODUCT_SITE;
     const timezone = site.timezone;
-    const icon = root.querySelector(".masthead-weather-icon");
+    const icon = root.querySelector(".section-nav-weather-icon");
     // switch the current illustration at sunrise and sunset without refreshing weather
     if (icon !== null) {
       icon.outerHTML = renderCurrentWeatherIcon(controller.state, now);
@@ -3137,14 +3137,14 @@ export function renderWeatherDashboard(
   return `
     <main class="shell">
       <header class="masthead${view === "forecast" ? " forecast-masthead" : view === "home" ? " home-masthead" : ""}">
-        ${view === "home" ? `<div class="masthead-brand">${renderCurrentWeatherIcon(state)}<h1><span class="masthead-title-text"><span>Ballydídean</span> <span>Weather</span></span></h1></div>` : "<h1>Ballydídean Weather</h1>"}
+        ${view === "home" ? `<h1><span class="masthead-title-text"><span>Ballydídean</span> <span>Weather</span></span></h1>` : "<h1>Ballydídean Weather</h1>"}
         ${view === "forecast" ? renderForecastRangeSelector(state.forecastDays ?? 1, state.loading) : ""}
         <div class="masthead-actions">
           ${renderLoadingIndicator(state)}
           ${renderForecastAdjustmentToggle(state, view)}
         </div>
       </header>
-      ${renderSectionNavigation(view)}
+      ${renderSectionNavigation(state, view)}
       <div class="weather-content">
         ${renderErrorStatus(state)}
         ${renderWeatherView(state, view, isAdmin)}
@@ -3197,10 +3197,10 @@ export function currentWeatherIcon(
     : { name: wind ? "04-partly-cloudy-wind" : "03-partly-cloudy", label: `Partly cloudy${suffix}` };
 }
 
-// preserve the supplied colors and expose the current condition independently of the title
+// preserve the supplied colors and expose the current condition inside now navigation
 function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): string {
   const icon = currentWeatherIcon(state, now);
-  return `<img class="masthead-weather-icon" src="/weather-icons/${icon.name}.svg" alt="Current weather: ${escapeHtml(icon.label)}" width="56" height="56">`;
+  return `<img class="section-nav-weather-icon" src="/weather-icons/${icon.name}.svg" alt="Current weather: ${escapeHtml(icon.label)}" width="32" height="32">`;
 }
 
 // keep adjustment semantics accessible while the thumb alone shows the preference
@@ -3242,8 +3242,7 @@ function renderForecastAdjustmentToggle(
       <span class="forecast-adjustment-toggle-track" aria-hidden="true">
         <span class="forecast-adjustment-toggle-thumb">
           <svg class="forecast-adjustment-sparkle" data-sparkle-tone="${adjusted ? "gold" : "gray"}" viewBox="0 0 24 24" focusable="false">
-            <defs><linearGradient id="forecast-adjustment-gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff3b5"/><stop offset="0.3" stop-color="#eeb828"/><stop offset="0.5" stop-color="#fff6cb"/><stop offset="0.62" stop-color="#d79b08"/><stop offset="1" stop-color="#b97500"/></linearGradient></defs>
-            <path class="forecast-adjustment-sparkle-ink" fill="${adjusted ? "url(#forecast-adjustment-gold)" : "currentColor"}" stroke="${adjusted ? "#a16e12" : "currentColor"}" stroke-width="0.45" stroke-linejoin="round" d="m10 3.5 2.1 6.4 6.4 2.1-6.4 2.1-2.1 6.4-2.1-6.4L1.5 12l6.4-2.1L10 3.5Zm8.5-2 .9 2.6L22 5l-2.6.9-.9 2.6-.9-2.6L15 5l2.6-.9.9-2.6Z"/>
+            <path class="forecast-adjustment-sparkle-ink" fill="currentColor" stroke="currentColor" stroke-width="0.45" stroke-linejoin="round" d="m10 3.5 2.1 6.4 6.4 2.1-6.4 2.1-2.1 6.4-2.1-6.4L1.5 12l6.4-2.1L10 3.5Zm8.5-2 .9 2.6L22 5l-2.6.9-.9 2.6-.9-2.6L15 5l2.6-.9.9-2.6Z"/>
           </svg>
         </span>
       </span>
@@ -3316,13 +3315,13 @@ function renderHomepage(state: DashboardState, isAdmin: boolean): string {
   `;
 }
 
-// render the stable product routes
-function renderSectionNavigation(view: WeatherView): string {
+// render stable product routes with current conditions as the now illustration
+function renderSectionNavigation(state: DashboardState, view: WeatherView): string {
   const settingsCurrent = view === "settings" || view === "logs" || view === "admin";
 
   return `
     <nav class="section-nav" aria-label="Weather sections">
-      <a class="section-nav-home" href="/" data-weather-route${view === "home" ? ' aria-current="page"' : ""}><span class="section-nav-icon"><svg class="material-inline-icon" data-nav-icon="dashboard" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3h8v10H3V3Zm10 0h8v6h-8V3Zm0 8h8v10h-8V11ZM3 15h8v6H3v-6Z"/></svg></span><span>Now</span></a>
+      <a class="section-nav-home" href="/" data-weather-route aria-label="Now"${view === "home" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderCurrentWeatherIcon(state)}</span><span>Now</span></a>
       <a class="section-nav-forecast" href="/forecast" data-weather-route${view === "forecast" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("partly_cloudy_day")}</span><span>Forecast</span></a>
       <a class="section-nav-trends" href="/trends" data-weather-route${view === "trends" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("trending_up")}</span><span>Trends</span></a>
       <a class="section-nav-map" href="/map" data-weather-route${view === "map" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("map")}</span><span>Map</span></a>

@@ -1,12 +1,12 @@
-# Homepage weather icons
+# Now navigation weather icons
 
 These SVGs are byte-for-byte copies from the approved high-contrast
 `weather-icons-handoff (2).zip`, also retained as native masters in
 `mobile/android/assets/weather-icons/svg/`. Keep the original filenames and
 artwork unchanged so the website and native widget use the same weather states.
 
-`11-bedtime.svg` is intentionally excluded because the homepage title represents
-current weather rather than the overnight widget message.
+`11-bedtime.svg` is intentionally excluded because the Now navigation item
+represents current weather rather than the overnight widget message.
 
 The supplied cloud, wind, and rain colors provide the contrast. Display the
 artwork directly without CSS shadows, recoloring, or a surrounding frame.

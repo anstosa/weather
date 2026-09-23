@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 import {
+  eveningSunTimes,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   UNIT_PREFERENCE_STORAGE_KEY,
 } from "../dist/index.js";
@@ -1146,8 +1147,8 @@ test("manifest and service worker provide an installable application shell", { t
   }
 });
 
-// keep the live condition identity and full title on one fixed-height row
-test("homepage masthead keeps its weather icon and one-line title through responsive rerenders", { timeout: 60_000 }, async () => {
+// keep current conditions in now navigation and the full title on one fixed-height row
+test("homepage keeps weather in Now navigation and a one-line title through responsive rerenders", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1157,7 +1158,14 @@ test("homepage masthead keeps its weather icon and one-line title through respon
       timezoneId: "America/Los_Angeles",
       viewport: { height: 900, width: 1280 },
     });
-    await page.clock.setFixedTime(new Date("2026-08-22T20:00:00Z"));
+    const sunset = eveningSunTimes(site, new Date("2026-08-22T20:00:00Z")).sunset;
+
+    // require one deterministic daylight boundary
+    if (sunset === null) {
+      throw new Error("fixture sunset is unavailable");
+    }
+
+    await page.clock.install({ time: new Date(sunset.getTime() - 10 * 60_000) });
     await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
       const response = await route.fetch();
       const body = await response.json();
@@ -1192,32 +1200,34 @@ test("homepage masthead keeps its weather icon and one-line title through respon
       [768, 38.4],
       [1280, 56],
     ]);
-    const captureMasthead = async () => {
-      const icon = page.locator("img.masthead-weather-icon");
+    const captureHeaderAndNow = async () => {
+      const icon = page.locator(".section-nav-home img.section-nav-weather-icon");
       await icon.waitFor();
       await page.waitForFunction(
         // require decoded current-condition artwork
         () => {
-          const image = document.querySelector("img.masthead-weather-icon");
+          const image = document.querySelector(".section-nav-home img.section-nav-weather-icon");
           return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
         },
       );
-      return await page.locator(".home-masthead").evaluate(
-        // measure one complete rendered homepage masthead
-        (masthead) => {
-          const actions = masthead.querySelector(".masthead-actions");
-          const brand = masthead.querySelector(".masthead-brand");
-          const icon = masthead.querySelector("img.masthead-weather-icon");
-          const title = brand?.querySelector("h1");
+      return await page.locator("main.shell").evaluate(
+        // measure one complete rendered homepage header and now destination
+        (shell) => {
+          const masthead = shell.querySelector(".home-masthead");
+          const actions = masthead?.querySelector(".masthead-actions");
+          const title = masthead?.querySelector("h1");
+          const home = shell.querySelector(".section-nav-home");
+          const icon = home?.querySelector("img.section-nav-weather-icon");
 
-          // require the complete branded header
+          // require the complete title and current-condition destination
           if (
+            !(masthead instanceof HTMLElement) ||
             !(actions instanceof HTMLElement) ||
-            !(brand instanceof HTMLElement) ||
             !(icon instanceof HTMLImageElement) ||
-            !(title instanceof HTMLElement)
+            !(title instanceof HTMLElement) ||
+            !(home instanceof HTMLAnchorElement)
           ) {
-            throw new Error("homepage masthead branding is incomplete");
+            throw new Error("homepage header or now navigation is incomplete");
           }
 
           const bounds = (element) => {
@@ -1248,17 +1258,25 @@ test("homepage masthead keeps its weather icon and one-line title through respon
             actions: bounds(actions),
             alt: icon.alt,
             bodyOverflow: document.body.scrollWidth - document.documentElement.clientWidth,
-            brand: bounds(brand),
+            dashboardCount: home.querySelectorAll('svg[data-nav-icon="dashboard"]').length,
             fontFamily: titleStyle.fontFamily,
             fontSize: Number.parseFloat(titleStyle.fontSize),
             header: bounds(masthead),
             headerOverflow: masthead.scrollWidth - masthead.clientWidth,
+            homeAriaCurrent: home.getAttribute("aria-current"),
+            homeAriaLabel: home.getAttribute("aria-label"),
+            homeHref: home.getAttribute("href"),
             icon: bounds(icon),
             iconComplete: icon.complete,
             iconFilter: getComputedStyle(icon).filter,
+            iconHeightAttribute: icon.getAttribute("height"),
+            iconInsideNow: icon.closest("a") === home,
             iconNaturalHeight: icon.naturalHeight,
             iconNaturalWidth: icon.naturalWidth,
+            iconWidthAttribute: icon.getAttribute("width"),
             lineCount: uniqueLineTops.size,
+            mastheadBrandCount: masthead.querySelectorAll(".masthead-brand").length,
+            mastheadImageCount: masthead.querySelectorAll("img").length,
             source: new URL(icon.src).pathname,
             title: bounds(title),
             titleClippedHorizontally: wordBounds.some(
@@ -1270,6 +1288,7 @@ test("homepage masthead keeps its weather icon and one-line title through respon
               (rectangle) => rectangle.top < verticalClipBounds.top - 1 || rectangle.bottom > verticalClipBounds.bottom + 1,
             ),
             titleText: title.textContent?.replace(/\s+/gu, " ").trim(),
+            titleIsDirectChild: title.parentElement === masthead,
             wordBounds: wordBounds.map(
               // retain concrete title fragments for failure evidence
               (rectangle) => bounds({ getBoundingClientRect: () => rectangle }),
@@ -1281,30 +1300,12 @@ test("homepage masthead keeps its weather icon and one-line title through respon
     };
 
     const nowLink = page.getByRole("link", { name: "Now", exact: true });
-    const dashboardIcon = await nowLink.locator('svg[data-nav-icon="dashboard"]').evaluate(
-      // compare the inline dashboard with the existing 24px navigation glyphs
-      (icon) => {
-        const rectangle = icon.getBoundingClientRect();
-        const style = getComputedStyle(icon);
-        return {
-          color: style.color,
-          fill: style.fill,
-          height: rectangle.height,
-          pathCount: icon.querySelectorAll("path").length,
-          viewBox: icon.getAttribute("viewBox"),
-          width: rectangle.width,
-        };
-      },
-    );
     assert.equal(await nowLink.getAttribute("href"), "/");
+    assert.equal(await nowLink.getAttribute("aria-label"), "Now");
     assert.equal(await nowLink.getAttribute("aria-current"), "page");
-    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').getAttribute("aria-hidden"), "true");
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").count(), 1);
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
     assert.equal(await nowLink.locator(".material-symbols-rounded").count(), 0);
-    assert.equal(dashboardIcon.fill, dashboardIcon.color);
-    assert.equal(dashboardIcon.height >= 20 && dashboardIcon.height <= 24, true);
-    assert.equal(dashboardIcon.pathCount, 1);
-    assert.equal(dashboardIcon.viewBox, "0 0 24 24");
-    assert.equal(dashboardIcon.width >= 20 && dashboardIcon.width <= 24, true);
 
     // prove the same document survives wide, narrow, and restored widths
     for (const width of [1280, 320, 360, 412, 768, 1280]) {
@@ -1313,7 +1314,7 @@ test("homepage masthead keeps its weather icon and one-line title through respon
         // wait for any width-dependent font layout
         async () => await document.fonts.ready,
       );
-      const layout = await captureMasthead();
+      const layout = await captureHeaderAndNow();
       const baselineHeight = baselineHeights.get(width);
 
       // require a recorded production baseline for every exercised width
@@ -1324,15 +1325,23 @@ test("homepage masthead keeps its weather icon and one-line title through respon
       assert.equal(Math.abs(layout.header.height - baselineHeight) < 1, true, JSON.stringify({ width, layout }));
       assert.equal(layout.alt, "Current weather: Partly cloudy");
       assert.equal(layout.bodyOverflow, 0);
+      assert.equal(layout.dashboardCount, 0);
       assert.match(layout.fontFamily, /Google Sans Flex/u);
       assert.equal(layout.headerOverflow, 0);
+      assert.equal(layout.homeAriaCurrent, "page");
+      assert.equal(layout.homeAriaLabel, "Now");
+      assert.equal(layout.homeHref, "/");
       assert.equal(layout.iconComplete, true);
       assert.equal(layout.iconFilter, "none");
+      assert.equal(layout.icon.height, 32);
+      assert.equal(layout.icon.width, 32);
+      assert.equal(layout.iconHeightAttribute, "32");
+      assert.equal(layout.iconInsideNow, true);
       assert.equal(layout.iconNaturalHeight > 0, true);
       assert.equal(layout.iconNaturalWidth > 0, true);
-      assert.equal(layout.icon.left < layout.title.left, true);
-      assert.equal(layout.icon.right <= layout.title.left, true);
-      assert.equal(layout.brand.right <= layout.actions.left, true);
+      assert.equal(layout.iconWidthAttribute, "32");
+      assert.equal(layout.mastheadBrandCount, 0);
+      assert.equal(layout.mastheadImageCount, 0);
       assert.equal(layout.source, "/weather-icons/03-partly-cloudy.svg");
       assert.equal(layout.title.bottom <= layout.header.bottom + 1, true);
       assert.equal(layout.title.left >= layout.header.left - 1, true);
@@ -1340,6 +1349,7 @@ test("homepage masthead keeps its weather icon and one-line title through respon
       assert.equal(layout.title.top >= layout.header.top - 1, true);
       assert.equal(layout.titleClippedHorizontally, false, JSON.stringify({ width, layout }));
       assert.equal(layout.titleClippedVertically, false, JSON.stringify({ width, layout }));
+      assert.equal(layout.titleIsDirectChild, true);
       assert.equal(layout.titleText, "Ballydídean Weather");
       const baselineTitleSize = baselineTitleSizes.get(width);
 
@@ -1354,27 +1364,69 @@ test("homepage masthead keeps its weather icon and one-line title through respon
       assert.equal(layout.wrappedClass, false);
     }
 
+    const currentReadsBeforeBoundary = fixture.state.requests.filter(
+      // count current data independently of clock-only artwork changes
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    await page.clock.fastForward(10 * 60_000 + 2_000);
+    await page.waitForFunction(
+      // require the scheduled sunset replacement
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/15-partly-cloudy-night.svg",
+    );
+    assert.equal((await captureHeaderAndNow()).alt, "Current weather: Partly cloudy night");
+    assert.equal(fixture.state.requests.filter(
+      // keep the sunset boundary data-free
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length, currentReadsBeforeBoundary);
+
+    await page.clock.setSystemTime(new Date(sunset.getTime() - 1_000));
+    await page.evaluate(
+      // simulate a foreground resume immediately before sunset
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await page.waitForFunction(
+      // restore the daylight artwork without a weather request
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    await page.clock.setSystemTime(new Date(sunset.getTime() + 1_000));
+    await page.evaluate(
+      // simulate a foreground resume immediately after sunset
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await page.waitForFunction(
+      // restore the night artwork from retained conditions
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/15-partly-cloudy-night.svg",
+    );
+    assert.equal(fixture.state.requests.filter(
+      // keep both visibility refreshes data-free
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length, currentReadsBeforeBoundary);
+
     await page.setViewportSize({ height: 900, width: 320 });
-    const originalIcon = await page.locator("img.masthead-weather-icon").elementHandle();
+    const originalIcon = await page.locator("img.section-nav-weather-icon").elementHandle();
     const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
     const previousToggleState = await toggle.getAttribute("aria-checked");
 
     // require the current image before proving its replacement
     if (originalIcon === null) {
-      throw new Error("homepage masthead icon is unavailable before rerender");
+      throw new Error("now weather icon is unavailable before rerender");
     }
 
     await toggle.click();
     await page.waitForFunction(
-      // require the controller to replace the old branded header
+      // require the controller to replace the old navigation artwork
       ([image, state]) => !image.isConnected &&
         document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") !== state,
       [originalIcon, previousToggleState],
     );
-    const rerenderedLayout = await captureMasthead();
+    const rerenderedLayout = await captureHeaderAndNow();
     assert.equal(Math.abs(rerenderedLayout.header.height - 51.96875) < 1, true);
-    assert.equal(rerenderedLayout.alt, "Current weather: Partly cloudy");
+    assert.equal(rerenderedLayout.alt, "Current weather: Partly cloudy night");
     assert.equal(rerenderedLayout.lineCount, 1);
+    assert.equal(rerenderedLayout.mastheadImageCount, 0);
     assert.equal(rerenderedLayout.titleClippedHorizontally, false);
     assert.equal(rerenderedLayout.titleClippedVertically, false);
     assert.equal(rerenderedLayout.wrappedClass, false);
@@ -1382,14 +1434,17 @@ test("homepage masthead keeps its weather icon and one-line title through respon
     await page.getByRole("link", { name: "Forecast", exact: true }).click();
     await page.waitForURL(`${fixture.origin}/forecast`);
     await page.locator(".forecast-panel").waitFor();
-    assert.equal(await page.locator(".masthead-weather-icon").count(), 0);
+    assert.equal(await page.locator(".masthead img").count(), 0);
     assert.equal(await page.locator(".masthead-brand").count(), 0);
     assert.equal(await page.locator(".masthead h1").innerText(), "Ballydídean Weather");
     assert.equal(await nowLink.getAttribute("href"), "/");
     assert.equal(await nowLink.getAttribute("aria-current"), null);
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("alt"), "Current weather: Partly cloudy night");
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("src"), "/weather-icons/15-partly-cloudy-night.svg");
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
     await nowLink.click();
     await page.waitForURL(`${fixture.origin}/`);
-    assert.equal((await captureMasthead()).lineCount, 1);
+    assert.equal((await captureHeaderAndNow()).lineCount, 1);
   } finally {
     // close only disposable browser resources
     await browser?.close();
@@ -1398,8 +1453,118 @@ test("homepage masthead keeps its weather icon and one-line title through respon
   }
 });
 
-// render one larger standalone switch with a stateful moving sparkle
-test("adjustment switch moves a gold and gray sparkle without chip chrome", { timeout: 60_000 }, async () => {
+// keep local and history routes from fetching current data solely for navigation artwork
+test("Now weather artwork preserves state across routes without widening fetch contracts", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 768 },
+    });
+    let raining = false;
+    await page.clock.setFixedTime(new Date("2026-08-22T20:00:00Z"));
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // switch only the preferred sensor rain rate
+        (record) => record.provenance.sourceKind === "physical_sensor"
+          ? {
+              ...record,
+              metrics: {
+                ...record.metrics,
+                precipitationRateMmPerHour: raining ? 3 : 0,
+                windSpeedMps: 2.5,
+              },
+            }
+          : record,
+      );
+      await route.fulfill({ json: body, response });
+    });
+    const currentReads = () => fixture.state.requests.filter(
+      // count only the exact current endpoint
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    const historyReads = () => fixture.state.requests.filter(
+      // count each history page or filter request
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/history"),
+    ).length;
+    const nowLink = page.getByRole("link", { name: "Now", exact: true });
+    const nowIcon = nowLink.locator("img.section-nav-weather-icon");
+
+    await page.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    await nowIcon.waitFor();
+    assert.equal(currentReads(), 0);
+    assert.equal(historyReads(), 0);
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await nowLink.getAttribute("aria-label"), "Now");
+    assert.equal(await nowIcon.getAttribute("alt"), "Current weather: Conditions unavailable");
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/12-unavailable.svg");
+    assert.equal(await nowIcon.getAttribute("width"), "32");
+    assert.equal(await nowIcon.getAttribute("height"), "32");
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
+
+    await page.getByRole("link", { name: "Logs", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/logs`);
+    await page.locator("table caption").waitFor();
+    assert.equal(currentReads(), 0);
+    assert.equal(historyReads(), 1);
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/12-unavailable.svg");
+
+    await nowLink.click();
+    await page.waitForURL(`${fixture.origin}/`);
+    await page.waitForFunction(
+      // require current data to replace the missing-state artwork
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    assert.equal(currentReads(), 1);
+    assert.equal(historyReads(), 1);
+    assert.equal(await nowIcon.getAttribute("alt"), "Current weather: Partly cloudy");
+
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/settings`);
+    assert.equal(currentReads(), 1);
+    assert.equal(historyReads(), 1);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/03-partly-cloudy.svg");
+    await page.getByRole("link", { name: "Logs", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/logs`);
+    await page.locator("table caption").waitFor();
+    assert.equal(currentReads(), 1);
+    assert.equal(historyReads(), 2);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/03-partly-cloudy.svg");
+
+    raining = true;
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    await page.waitForFunction(
+      // require route data to update the retained now illustration
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/09-heavy-rain.svg",
+    );
+    assert.equal(currentReads(), 2);
+    assert.equal(historyReads(), 2);
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await nowIcon.getAttribute("alt"), "Current weather: Heavy rain");
+    assert.equal(await nowLink.getAttribute("aria-current"), null);
+    await nowLink.click();
+    await page.waitForURL(`${fixture.origin}/`);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/09-heavy-rain.svg");
+    assert.equal(await nowLink.getAttribute("aria-current"), "page");
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// render one larger standalone switch with a solid sparkle and a shiny enabled track
+test("adjustment switch moves a solid gold and gray sparkle without chip chrome", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1421,7 +1586,6 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
         const thumb = track?.querySelector(".forecast-adjustment-toggle-thumb");
         const sparkle = thumb?.querySelector("svg.forecast-adjustment-sparkle");
         const ink = sparkle?.querySelector(".forecast-adjustment-sparkle-ink");
-        const gradient = sparkle?.querySelector("#forecast-adjustment-gold");
 
         // require every switch layer
         if (
@@ -1465,13 +1629,11 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
           buttonFocused: document.activeElement === button,
           buttonOutlineStyle: buttonStyle.outlineStyle,
           buttonOutlineWidth: buttonStyle.outlineWidth,
-          gradientStopColors: gradient === null
-            ? []
-            : [...gradient.querySelectorAll("stop")].map(
-                // retain every shiny-gold stop
-                (stop) => stop.getAttribute("stop-color"),
-              ),
+          gradientElementCount: sparkle.querySelectorAll("defs, linearGradient, stop").length,
           inkFill: ink.getAttribute("fill"),
+          inkRenderedFill: getComputedStyle(ink).fill,
+          inkRenderedStroke: getComputedStyle(ink).stroke,
+          inkStroke: ink.getAttribute("stroke"),
           sparkle: sparkleBounds,
           sparkleCentered: Math.abs(
             sparkleBounds.left + sparkleBounds.width / 2 -
@@ -1484,6 +1646,7 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
           sparkleHiddenByParent: sparkle.closest('[aria-hidden="true"]') !== null,
           sparkleOpacity: sparkleStyle.opacity,
           sparkleTitleCount: sparkle.querySelectorAll("title").length,
+          sparkleColor: sparkleStyle.color,
           text: button.textContent?.trim(),
           thumb: thumbBounds,
           thumbContained: thumbBounds.left >= trackBounds.left &&
@@ -1493,6 +1656,7 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
           tone: sparkle.getAttribute("data-sparkle-tone"),
           track: trackBounds,
           trackBackground: getComputedStyle(track).backgroundColor,
+          trackBackgroundImage: getComputedStyle(track).backgroundImage,
           trackBorderColor: getComputedStyle(track).borderTopColor,
         };
       },
@@ -1520,9 +1684,13 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
     assert.equal(enabled.sparkleTitleCount, 0);
     assert.equal(enabled.thumbContained, true);
     assert.equal(enabled.tone, "gold");
-    assert.equal(enabled.inkFill, "url(#forecast-adjustment-gold)");
-    assert.equal(enabled.gradientStopColors.length >= 3, true);
-    assert.equal(new Set(enabled.gradientStopColors).size >= 3, true);
+    assert.equal(enabled.gradientElementCount, 0);
+    assert.equal(enabled.inkFill, "currentColor");
+    assert.equal(enabled.inkStroke, "currentColor");
+    assert.equal(enabled.inkRenderedFill, "rgb(197, 138, 16)");
+    assert.equal(enabled.inkRenderedStroke, "rgb(197, 138, 16)");
+    assert.equal(enabled.sparkleColor, "rgb(197, 138, 16)");
+    assert.match(enabled.trackBackgroundImage, /^linear-gradient\(135deg,/u);
 
     await toggle.click();
     await page.waitForFunction(
@@ -1549,8 +1717,14 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
     assert.equal(disabled.sparkleOpacity, "1");
     assert.equal(disabled.thumbContained, true);
     assert.equal(disabled.tone, "gray");
+    assert.equal(disabled.gradientElementCount, 0);
     assert.equal(disabled.inkFill, "currentColor");
+    assert.equal(disabled.inkStroke, "currentColor");
+    assert.equal(disabled.inkRenderedFill, "rgb(119, 116, 124)");
+    assert.equal(disabled.inkRenderedStroke, "rgb(119, 116, 124)");
+    assert.equal(disabled.sparkleColor, "rgb(119, 116, 124)");
     assert.equal(Math.abs(enabled.thumb.left - disabled.thumb.left - 24) < 1, true);
+    assert.equal(disabled.trackBackgroundImage, "none");
     assert.notEqual(enabled.trackBackground, disabled.trackBackground);
     assert.notEqual(enabled.trackBorderColor, disabled.trackBorderColor);
 
@@ -1580,7 +1754,10 @@ test("adjustment switch moves a gold and gray sparkle without chip chrome", { ti
     const keyboardEnabled = await captureSwitch();
     assert.equal(keyboardEnabled.buttonFocused, true);
     assert.equal(keyboardEnabled.tone, "gold");
-    assert.equal(keyboardEnabled.inkFill, "url(#forecast-adjustment-gold)");
+    assert.equal(keyboardEnabled.inkFill, "currentColor");
+    assert.equal(keyboardEnabled.inkStroke, "currentColor");
+    assert.equal(keyboardEnabled.sparkleColor, "rgb(197, 138, 16)");
+    assert.match(keyboardEnabled.trackBackgroundImage, /^linear-gradient\(135deg,/u);
     assert.equal(Math.abs(keyboardEnabled.thumb.left - disabled.thumb.left - 24) < 1, true);
   } finally {
     // close disposable fixture resources
@@ -6019,7 +6196,7 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
         const navigationBounds = navigation.getBoundingClientRect();
         const forecastIcon = forecast.querySelector(".material-symbols-rounded");
         const forecastIconBounds = forecastIcon?.getBoundingClientRect();
-        const homeIcon = home.querySelector('svg[data-nav-icon="dashboard"]');
+        const homeIcon = home.querySelector("img.section-nav-weather-icon");
         const homeIconBounds = homeIcon?.getBoundingClientRect();
         const mapIcon = map.querySelector(".material-symbols-rounded");
         const trendsIcon = trends.querySelector(".material-symbols-rounded");
@@ -6052,8 +6229,13 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
           forecastIconText: forecastIcon?.textContent,
           headingLineCount: headingRange.getClientRects().length,
           headingText: heading.textContent,
-          homeIconAriaHidden: homeIcon?.getAttribute("aria-hidden"),
-          homeIconIsSvg: homeIconBounds !== undefined && homeIconBounds.width <= 24 && homeIcon.tagName === "svg",
+          homeAriaLabel: home.getAttribute("aria-label"),
+          homeDashboardCount: home.querySelectorAll('svg[data-nav-icon="dashboard"]').length,
+          homeIconAlt: homeIcon?.getAttribute("alt"),
+          homeIconHeight: homeIconBounds?.height,
+          homeIconIsImage: homeIconBounds !== undefined && homeIcon.tagName === "IMG",
+          homeIconSource: homeIcon instanceof HTMLImageElement ? new URL(homeIcon.src).pathname : null,
+          homeIconWidth: homeIconBounds?.width,
           iconFont: getComputedStyle(icon).fontFamily,
           iconHeight: iconBounds.height,
           iconText: icon.textContent,
@@ -6085,8 +6267,13 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
     assert.equal(headerLayout.headingText, "Ballydídean Weather");
     assert.equal(headerLayout.forecastIconIsGlyph, true);
     assert.equal(headerLayout.forecastIconText, "partly_cloudy_day");
-    assert.equal(headerLayout.homeIconAriaHidden, "true");
-    assert.equal(headerLayout.homeIconIsSvg, true);
+    assert.equal(headerLayout.homeAriaLabel, "Now");
+    assert.equal(headerLayout.homeDashboardCount, 0);
+    assert.equal(headerLayout.homeIconAlt, "Current weather: Conditions unavailable");
+    assert.equal(headerLayout.homeIconHeight, 32);
+    assert.equal(headerLayout.homeIconIsImage, true);
+    assert.equal(headerLayout.homeIconSource, "/weather-icons/12-unavailable.svg");
+    assert.equal(headerLayout.homeIconWidth, 32);
     assert.equal(headerLayout.imageCount, 0);
     assert.match(headerLayout.iconFont, /Material Symbols Rounded/u);
     assert.equal(headerLayout.iconText, "settings");
