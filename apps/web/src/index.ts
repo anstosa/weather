@@ -3592,7 +3592,9 @@ function renderIndoorHouse(state: DashboardState): string {
             (level) => {
               const temperatureC = sensorsByKey.get(level.sensorKey)?.readings.temperatureC ?? null;
               const measurement = formatMeasurement(temperatureC, "temperature", state.units, 0);
-              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature">${state.loading ? '<span class="skeleton-line skeleton-temperature" aria-hidden="true"></span>' : renderConditionMeasurement(measurement)}</span></li>`;
+              // share forecast thresholds without coloring pending placeholders
+              const tone = forecastTemperatureTone(state.loading ? null : temperatureC);
+              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature condition-forecast-tone-${tone}">${state.loading ? '<span class="skeleton-line skeleton-temperature" aria-hidden="true"></span>' : renderConditionMeasurement(measurement)}</span></li>`;
             },
           ).join("")}
         </ol>

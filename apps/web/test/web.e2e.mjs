@@ -3728,6 +3728,151 @@ test("anonymous home-network viewers see indoor and soil panels only while allow
   }
 });
 
+// apply outdoor temperature tones to authorized indoor readings without coupling them to display units
+test("indoor temperatures use discrete comfort colors across loading, units, and missing readings", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    let releaseInitialCurrent;
+    const initialCurrentReleased = new Promise(
+      // expose the neutral indoor loading state before current readings arrive
+      (resolveRelease) => {
+        releaseInitialCurrent = resolveRelease;
+      },
+    );
+    let holdInitialCurrent = true;
+    let indoorTemperatures = new Map([
+      ["gateway", 12],
+      ["temperature-1", 20],
+      ["temperature-2", 24],
+    ]);
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      // hold only the first current read behind the visible house skeleton
+      if (holdInitialCurrent) {
+        await initialCurrentReleased;
+      }
+
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // replace only fixture property-sensor temperatures
+        (record) => record.provenance.sourceKind === "physical_sensor"
+          ? {
+              ...record,
+              metadata: {
+                ...record.metadata,
+                provider: {
+                  ...record.metadata.provider,
+                  propertySensors: record.metadata.provider.propertySensors.map(
+                    // retain every unrelated sensor reading
+                    (sensor) => indoorTemperatures.has(sensor.key)
+                      ? {
+                          ...sensor,
+                          readings: {
+                            ...sensor.readings,
+                            temperatureC: indoorTemperatures.get(sensor.key),
+                          },
+                        }
+                      : sensor,
+                  ),
+                },
+              },
+            }
+          : record,
+      );
+      await route.fulfill({ json: body, response });
+    });
+    const readIndoor = async () => await page.locator("[data-indoor-house]").evaluate(
+      // capture visible floor text and its actual painted tone
+      (house) => ({
+        readings: [...house.querySelectorAll(".indoor-house-temperature")].map(
+          // inspect one rendered reading
+          (reading) => ({
+            color: getComputedStyle(reading).color,
+            tone: [...reading.classList].find((className) => className.startsWith("condition-forecast-tone-")),
+          }),
+        ),
+        text: [...house.querySelectorAll(".indoor-house-level")].map(
+          // retain the physical floor order
+          (level) => level.textContent,
+        ),
+      }),
+    );
+
+    await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    const house = page.locator("[data-indoor-house]");
+    await house.waitFor();
+    assert.equal(await house.getAttribute("aria-busy"), "true");
+    assert.deepEqual((await readIndoor()).readings, Array.from({ length: 3 }, () => ({
+      color: "rgb(0, 0, 0)",
+      tone: "condition-forecast-tone-neutral",
+    })));
+    assert.equal(await house.locator(".skeleton-temperature").count(), 3);
+
+    holdInitialCurrent = false;
+    releaseInitialCurrent();
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
+    assert.equal(await page.locator("html").getAttribute("data-weather-admin"), "false");
+    assert.deepEqual(await readIndoor(), {
+      readings: [
+        { color: "rgb(56, 120, 197)", tone: "condition-forecast-tone-blue" },
+        { color: "rgb(67, 151, 86)", tone: "condition-forecast-tone-green" },
+        { color: "rgb(239, 126, 31)", tone: "condition-forecast-tone-orange" },
+      ],
+      text: ["Second floor54°F", "First floor68°F", "Basement75°F"],
+    });
+    assert.ok((await house.screenshot()).byteLength > 500);
+
+    await page.getByRole("link", { name: "Settings" }).click();
+    await page.waitForURL(`${fixture.origin}/settings`);
+    assert.equal(await page.locator("[data-indoor-house]").count(), 0);
+    const settings = page.getByRole("region", { name: "Measurement units" });
+    await settings.locator("select[name='temperature']").selectOption("celsius");
+    await settings.getByRole("button", { name: "Save units" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
+    await page.waitForURL(`${fixture.origin}/`);
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
+    assert.deepEqual(await readIndoor(), {
+      readings: [
+        { color: "rgb(56, 120, 197)", tone: "condition-forecast-tone-blue" },
+        { color: "rgb(67, 151, 86)", tone: "condition-forecast-tone-green" },
+        { color: "rgb(239, 126, 31)", tone: "condition-forecast-tone-orange" },
+      ],
+      text: ["Second floor12°C", "First floor20°C", "Basement24°C"],
+    });
+    await page.setViewportSize({ height: 900, width: 1280 });
+    assert.ok((await house.screenshot()).byteLength > 500);
+
+    indoorTemperatures = new Map([
+      ["gateway", null],
+      ["temperature-1", 20],
+      ["temperature-2", 28],
+    ]);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
+    assert.deepEqual(await readIndoor(), {
+      readings: [
+        { color: "rgb(0, 0, 0)", tone: "condition-forecast-tone-neutral" },
+        { color: "rgb(67, 151, 86)", tone: "condition-forecast-tone-green" },
+        { color: "rgb(207, 67, 55)", tone: "condition-forecast-tone-red" },
+      ],
+      text: ["Second floor—", "First floor20°C", "Basement28°C"],
+    });
+    assert.equal(fixture.state.requests.some((entry) => entry.includes("/api/v1/admin/")), false);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // recheck visible home access on a bounded timer without polling weather
 test("home-network timer revokes access without rereading weather on other routes", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();

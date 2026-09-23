@@ -4223,3 +4223,62 @@ test("failed homepage weather clears a pending optional layout skeleton", async 
   assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
 });
+
+// reuse unrounded forecast thresholds for every indoor floor and display unit
+test("indoor temperatures share the thresholded forecast text colors", () => {
+  const initial = new WeatherDashboardController({ storage: null }).state;
+  // exercise each exact boundary and readings that round across it
+  for (const [valueF, tone] of [
+    [32, "blue"],
+    [54.9, "blue"],
+    [55, "green"],
+    [60, "green"],
+    [70, "green"],
+    [70.1, "orange"],
+    [80, "orange"],
+    [80.1, "red"],
+    [null, "neutral"],
+  ]) {
+    const temperatureC = valueF === null ? null : (valueF - 32) * 5 / 9;
+    const indoorRecord = {
+      ...ecowittRecord,
+      metadata: {
+        ...ecowittRecord.metadata,
+        provider: {
+          ...ecowittRecord.metadata.provider,
+          propertySensors: ["gateway", "temperature-1", "temperature-2"].map(
+            // use the same boundary reading at each physical floor
+            (key) => ({ key, model: "WH31", channel: null, readings: { temperatureC } }),
+          ),
+        },
+      },
+    };
+    // ensure unit conversion never changes the selected color
+    for (const temperature of ["fahrenheit", "celsius"]) {
+      const state = {
+        ...initial,
+        current: [indoorRecord],
+        loading: false,
+        units: { ...DEFAULT_UNIT_PREFERENCES, temperature },
+      };
+      // preserve the independent admin and home-network visibility paths
+      for (const isAdmin of [true, false]) {
+        const html = renderWeatherDashboard({ ...state, homeNetwork: !isAdmin }, "home", isAdmin);
+        const indoor = html.match(/<section class="indoor-house-panel"[\s\S]*?<\/section>/u)?.[0];
+        assert.ok(indoor);
+        assert.deepEqual([...indoor.matchAll(/indoor-house-temperature condition-forecast-tone-([a-z]+)/gu)].map(
+          // compare every floor against the shared discrete threshold
+          (match) => match[1],
+        ), [tone, tone, tone], `${String(valueF)}F in ${temperature}`);
+        const measurement = formatMeasurement(temperatureC, "temperature", state.units, 0);
+        assert.ok(indoor.includes(`<strong>${measurement.value}`));
+      }
+      const loading = renderWeatherDashboard({ ...state, loading: true }, "home", true);
+      assert.equal((loading.match(/indoor-house-temperature condition-forecast-tone-neutral/gu) ?? []).length, 3);
+      assert.equal((loading.match(/skeleton-temperature/gu) ?? []).length, 3);
+      assert.doesNotMatch(renderWeatherDashboard(state, "home", false), /data-indoor-house/u);
+    }
+  }
+  const missing = renderWeatherDashboard({ ...initial, loading: false }, "home", true);
+  assert.equal((missing.match(/indoor-house-temperature condition-forecast-tone-neutral/gu) ?? []).length, 3);
+});
