@@ -21,6 +21,7 @@ import {
   type DailyPrecipitationRow,
   type EcmwfTemperatureCanarySidecar,
   type EcmwfTemperatureCanaryStatus,
+  type ForecastProductSelection,
   type HistoryQuery,
   type MigrationReadinessAuthorization,
   type TrendPointRow,
@@ -85,6 +86,7 @@ export interface WeatherReadStore {
     siteSlug: string,
     asOf: string,
     hours: number,
+    productSelection?: ForecastProductSelection,
   ): Promise<readonly WeatherRecordRow[]>;
   // read optional retained pressure context
   getForecastPressureContext?(
@@ -467,8 +469,14 @@ export function createDatabaseWeatherReadStore(
       return await getCurrentWeather(pool, siteSlug, query);
     },
     // read the newest forecast product
-    async getForecast(siteSlug, asOf, hours) {
-      return await getWeatherForecast(pool, { asOf, hours, siteSlug });
+    async getForecast(siteSlug, asOf, hours, productSelection) {
+      return await getWeatherForecast(pool, {
+        asOf,
+        hours,
+        // omit the selector to preserve the repository compatibility default
+        ...(productSelection === undefined ? {} : { productSelection }),
+        siteSlug,
+      });
     },
     // read one complete retained pressure vintage
     async getForecastPressureContext(siteSlug, asOf) {
@@ -892,8 +900,8 @@ export function siteForecastDayWindow(
     month: nextDate.getUTCMonth() + 1,
     year: nextDate.getUTCFullYear(),
   };
-  const start = siteMidnightEpoch({ ...today, hour: 0, minute: 0 }, timezone);
-  const end = siteMidnightEpoch(endDate, timezone);
+  const start = siteWallClockEpoch({ ...today, hour: 0, minute: 0 }, timezone);
+  const end = siteWallClockEpoch(endDate, timezone);
   const hours = (end - start) / 3_600_000;
 
   // require a reviewed range and realistic civil-hour duration
@@ -908,8 +916,57 @@ export function siteForecastDayWindow(
   return { asOf: new Date(start).toISOString(), hours };
 }
 
-// resolve one local midnight without assuming a fixed UTC offset
-function siteMidnightEpoch(
+// calculate the widget's anchor midnight through next-date 07:00 window
+export function siteOvernightForecastWindow(
+  value: string,
+  timezone: string,
+): Readonly<{ asOf: string; hours: number }> {
+  const instant = new Date(value);
+
+  // reject invalid reference instants
+  if (!Number.isFinite(instant.getTime())) {
+    throw new RangeError("forecast reference must be a valid instant");
+  }
+
+  const current = formatSiteDateTimeParts(instant, timezone);
+  const currentDate = new Date(Date.UTC(
+    current.year,
+    current.month - 1,
+    current.day,
+  ));
+  // keep the prior date active until the exact local 07:00 boundary
+  const anchorDate = new Date(
+    current.hour < 7
+      ? currentDate.getTime() - 86_400_000
+      : currentDate.getTime(),
+  );
+  const nextDate = new Date(anchorDate.getTime() + 86_400_000);
+  const start = siteWallClockEpoch({
+    day: anchorDate.getUTCDate(),
+    hour: 0,
+    minute: 0,
+    month: anchorDate.getUTCMonth() + 1,
+    year: anchorDate.getUTCFullYear(),
+  }, timezone);
+  const end = siteWallClockEpoch({
+    day: nextDate.getUTCDate(),
+    hour: 7,
+    minute: 0,
+    month: nextDate.getUTCMonth() + 1,
+    year: nextDate.getUTCFullYear(),
+  }, timezone);
+  const hours = (end - start) / 3_600_000;
+
+  // accept only the three real-hour capacities spanning a DST transition
+  if (!Number.isSafeInteger(hours) || hours < 30 || hours > 32) {
+    throw new RangeError("site overnight forecast range has an unsupported duration");
+  }
+
+  return { asOf: new Date(start).toISOString(), hours };
+}
+
+// resolve one local wall clock without assuming a fixed UTC offset
+function siteWallClockEpoch(
   requested: SiteDateTimeParts,
   timezone: string,
 ): number {
@@ -928,15 +985,15 @@ function siteMidnightEpoch(
     const candidateEpoch = requestedEpoch - offset;
     const candidate = formatSiteDateTimeParts(new Date(candidateEpoch), timezone);
 
-    // retain exact local-midnight matches
+    // retain exact wall-clock matches
     if (siteDateTimeEquals(candidate, requested)) {
       matches.add(candidateEpoch);
     }
   }
 
-  // require one unambiguous midnight
+  // require one unambiguous wall clock
   if (matches.size !== 1) {
-    throw new RangeError("site forecast midnight is not uniquely representable");
+    throw new RangeError("site forecast wall clock is not uniquely representable");
   }
 
   return [...matches][0]!;
@@ -1166,24 +1223,28 @@ async function handleReadRoute(
 
   // serve the latest normalized forecast product
   if (route.kind === "forecast") {
-    rejectUnexpectedParameters(url.searchParams, new Set(["days"]));
-    const days = parsePublicQuery(
-      // parse only the reviewed forecast horizon
-      () => parseForecastDays(url.searchParams),
+    rejectUnexpectedParameters(url.searchParams, new Set(["days", "window"]));
+    const forecastWindow = parsePublicQuery(
+      // parse only the reviewed daily or overnight horizon
+      () => parseForecastRequestWindow(
+        url.searchParams,
+        generatedAt,
+        site.timezone,
+      ),
     );
-    const window = siteForecastDayWindow(generatedAt, site.timezone, days);
     const rows = await store.getForecast(
       route.siteSlug,
-      window.asOf,
-      window.hours,
+      forecastWindow.asOf,
+      forecastWindow.hours,
+      forecastWindow.productSelection,
     );
     const pressureContextRows = await readForecastPressureContextSafely(
       store,
       route.siteSlug,
-      window.asOf,
+      forecastWindow.asOf,
     );
     const to = new Date(
-      Date.parse(window.asOf) + window.hours * 3_600_000,
+      Date.parse(forecastWindow.asOf) + forecastWindow.hours * 3_600_000,
     ).toISOString();
     const [temperatureSidecar, temperatureStatus] =
       projectedTemperatureAdjustmentRuntime.state === "active"
@@ -1192,7 +1253,7 @@ async function handleReadRoute(
               store,
               route.siteSlug,
               generatedAt,
-              window.asOf,
+              forecastWindow.asOf,
               to,
               reportTemperatureFailure,
             ),
@@ -1221,7 +1282,7 @@ async function handleReadRoute(
       adjustmentRuntime,
       rainAdjustmentRuntime: rainAdjustmentRuntime(rainRun, generatedAt),
       data: records,
-      days,
+      days: forecastWindow.days,
       generatedAt,
       pressureContext: mapForecastPressureContextSafely(
         pressureContextRows,
@@ -2012,6 +2073,42 @@ function parseForecastDays(parameters: URLSearchParams): ForecastDays {
   return Number(value) as ForecastDays;
 }
 
+// resolve one strict daily or widget-overnight forecast query
+function parseForecastRequestWindow(
+  parameters: URLSearchParams,
+  generatedAt: string,
+  timezone: string,
+): Readonly<{
+  asOf: string;
+  days: ForecastDays;
+  hours: number;
+  productSelection?: ForecastProductSelection;
+}> {
+  const requestedWindow = getOptionalParameter(parameters, "window");
+
+  // reject a present empty selector instead of treating it as the default
+  if (requestedWindow === undefined && parameters.has("window")) {
+    throw new RangeError("forecast window must be overnight");
+  }
+
+  // preserve every existing parameter-free and days-based query
+  if (requestedWindow === undefined) {
+    const days = parseForecastDays(parameters);
+    return { ...siteForecastDayWindow(generatedAt, timezone, days), days };
+  }
+
+  // reject unknown or ambiguous window selection
+  if (requestedWindow !== "overnight" || parameters.has("days")) {
+    throw new RangeError("forecast window must be overnight and omit days");
+  }
+
+  return {
+    ...siteOvernightForecastWindow(generatedAt, timezone),
+    days: 1,
+    productSelection: "anchor-containing",
+  };
+}
+
 // parse one bounded tide API range
 function parseTideRange(
   parameters: URLSearchParams,
@@ -2064,7 +2161,7 @@ export function calendarTrendWindow(
   }
 
   return {
-    from: new Date(siteMidnightEpoch({ day: 1, hour: 0, minute: 0, month: 1, year: 2019 }, timezone)).toISOString(),
+    from: new Date(siteWallClockEpoch({ day: 1, hour: 0, minute: 0, month: 1, year: 2019 }, timezone)).toISOString(),
   };
 }
 

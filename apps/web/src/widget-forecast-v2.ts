@@ -44,30 +44,18 @@ export function projectWidgetForecastV2(
   const records = indexRecords(parsed.data);
   const hours = base.hours.map(
     // preserve every v1 field while adding the matching condition row
-    (hour) => {
-      const record = records.get(hour.start) ?? null;
-      return {
-        ...hour,
-        cloudCoverPercent: projectSupplementalField(
-          record,
-          "cloudCoverPercent",
-          base.generatedAt,
-          parsed.adjustmentRuntime,
-        ),
-        windSpeedMps: projectSupplementalField(
-          record,
-          "windSpeedMps",
-          base.generatedAt,
-          parsed.adjustmentRuntime,
-        ),
-      };
-    },
+    (hour) => projectWidgetForecastV2Hour(
+      hour,
+      records.get(hour.start) ?? null,
+      base.generatedAt,
+      parsed.adjustmentRuntime,
+    ),
   );
   const snapshot: WidgetForecastV2Snapshot = {
     ...base,
     hours,
     schemaVersion: WIDGET_FORECAST_V2_SCHEMA_VERSION,
-    status: summarizeStatus(hours),
+    status: summarizeWidgetForecastV2Status(hours),
   };
 
   // retain the shared public response ceiling
@@ -76,6 +64,30 @@ export function projectWidgetForecastV2(
   }
 
   return snapshot;
+}
+
+// extend one genuine base row with the v2 condition fields
+export function projectWidgetForecastV2Hour(
+  hour: WidgetForecastHour,
+  record: WeatherRecord | null,
+  generatedAt: string,
+  runtime: ForecastAdjustmentRuntimeStatus,
+): WidgetForecastV2Hour {
+  return {
+    ...hour,
+    cloudCoverPercent: projectSupplementalField(
+      record,
+      "cloudCoverPercent",
+      generatedAt,
+      runtime,
+    ),
+    windSpeedMps: projectSupplementalField(
+      record,
+      "windSpeedMps",
+      generatedAt,
+      runtime,
+    ),
+  };
 }
 
 // index rows already validated by the v1 projector
@@ -269,7 +281,9 @@ function unavailableField(): WidgetForecastField {
 }
 
 // summarize all four v2 field families
-function summarizeStatus(hours: readonly WidgetForecastV2Hour[]): WidgetForecastStatus {
+export function summarizeWidgetForecastV2Status(
+  hours: readonly WidgetForecastV2Hour[],
+): WidgetForecastStatus {
   const modes = new Set<WidgetForecastField["mode"]>();
 
   // include every field that the v2 native decoder consumes

@@ -7,6 +7,7 @@ import {
   WIDGET_FORECAST_MAX_BYTES,
 } from "../../apps/web/dist/widget-forecast.js";
 import { projectWidgetForecastV2 } from "../../apps/web/dist/widget-forecast-v2.js";
+import { projectWidgetForecastV3 } from "../../apps/web/dist/widget-forecast-v3.js";
 import { XweatherTileMemoryCache } from "./xweather-tile-cache.mjs";
 import { XweatherUsageBudget } from "./xweather-usage-budget.mjs";
 import { WeatherAdminStore } from "./weather-admin-store.mjs";
@@ -20,6 +21,7 @@ const adminSessionCookieName = "weather_admin_session";
 const maximumApiBytes = 1024 * 1024;
 const widgetForecastPath = "/api/v1/sites/ballydidean/widget-forecast";
 const widgetForecastV2Path = "/api/v2/sites/ballydidean/widget-forecast";
+const widgetForecastV3Path = "/api/v3/sites/ballydidean/widget-forecast";
 // allow the complete daily trends history
 const maximumTrendsApiBytes = 2 * 1024 * 1024;
 const maximumMapBytes = 4 * 1024 * 1024;
@@ -238,7 +240,10 @@ function isWidgetForecastPath(pathname) {
     /^\/api\/v1\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname) ||
     pathname === widgetForecastV2Path ||
     pathname.startsWith(`${widgetForecastV2Path}/`) ||
-    /^\/api\/v2\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname);
+    /^\/api\/v2\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname) ||
+    pathname === widgetForecastV3Path ||
+    pathname.startsWith(`${widgetForecastV3Path}/`) ||
+    /^\/api\/v3\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname);
 }
 
 // serve one bounded public widget snapshot
@@ -248,7 +253,9 @@ async function serveWidgetForecast(request, response, requestUrl) {
     ? projectWidgetForecast
     : requestUrl.pathname === widgetForecastV2Path
       ? projectWidgetForecastV2
-      : null;
+      : requestUrl.pathname === widgetForecastV3Path
+        ? projectWidgetForecastV3
+        : null;
 
   // reject every site and path outside the fixed public contract
   if (projector === null) {
@@ -270,7 +277,11 @@ async function serveWidgetForecast(request, response, requestUrl) {
 
   try {
     const settings = (await adminStore.readAdjustmentSettingsStatus()).settings;
-    const target = new URL("/api/v1/sites/ballydidean/forecast?days=1", apiOrigin);
+    // request the anchor-bearing product only for the overnight contract
+    const upstreamPath = requestUrl.pathname === widgetForecastV3Path
+      ? "/api/v1/sites/ballydidean/forecast?window=overnight"
+      : "/api/v1/sites/ballydidean/forecast?days=1";
+    const target = new URL(upstreamPath, apiOrigin);
     const upstream = await fetch(target, {
       headers: { Accept: "application/json" },
       method: "GET",
