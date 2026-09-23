@@ -2154,6 +2154,9 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /https:\/\/creativecommons\.org\/licenses\/by\/4\.0\//u);
   assert.match(html, /CC BY 4\.0/u);
   assert.match(html, /<footer class="credits" aria-label="Weather data credits">[\s\S]*?<details>[\s\S]*?<summary>Data sources &amp; credits<\/summary>/u);
+  assert.match(html, /<\/details>\s*<p class="project-credit">Built with love by <a href="https:\/\/ballydidean\.farm" rel="noreferrer">Ballydidean Farm Sanctuary<\/a><\/p>\s*<\/footer>/u);
+  assert.equal((html.match(/class="project-credit"/gu) ?? []).length, 1);
+  assert.doesNotMatch(html, /Ballydídean Farm Sanctuary<\/a> project/u);
   assert.doesNotMatch(html, /<details open/u);
   assert.match(html, /The latest refresh failed/u);
   assert.match(

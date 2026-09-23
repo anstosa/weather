@@ -3291,7 +3291,7 @@ function renderUnitSettings(units: UnitPreferences): string {
   `;
 }
 
-// render compact provider and license attribution
+// render provider licenses and the visible sanctuary credit
 function renderCredits(state: DashboardState, view: WeatherView): string {
   const attributions = new Map<string, string>();
   let includesOpenMeteo = false;
@@ -3339,9 +3339,9 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
           ${licenseCredit}
           ${forecastMapCredits}
           ${temperatureCanaryCredit}
-          <span>A <a href="https://www.ballydidean.farm/" rel="noreferrer">Ballydídean Farm Sanctuary</a> project</span>
         </div>
       </details>
+      <p class="project-credit">Built with love by <a href="https://ballydidean.farm" rel="noreferrer">Ballydidean Farm Sanctuary</a></p>
     </footer>
   `;
 }

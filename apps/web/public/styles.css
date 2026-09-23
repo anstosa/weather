@@ -4204,6 +4204,16 @@ td small {
   gap: 0.25rem;
 }
 
+/* hide the separator after the final data-source attribution */
+.credit-list > [aria-hidden="true"]:last-child {
+  display: none;
+}
+
+.project-credit {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+}
+
 .credits a {
   color: inherit;
 }

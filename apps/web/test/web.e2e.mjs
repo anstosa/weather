@@ -2869,11 +2869,22 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       true,
     );
     const credits = page.locator(".credits details");
+    const projectCredit = page.locator(".project-credit");
+    const projectCreditLink = projectCredit.getByRole("link", {
+      exact: true,
+      name: "Ballydidean Farm Sanctuary",
+    });
     assert.equal(await credits.getAttribute("open"), null);
+    assert.equal(await projectCredit.count(), 1);
+    assert.equal(await projectCredit.isVisible(), true);
+    assert.equal(await projectCredit.innerText(), "Built with love by Ballydidean Farm Sanctuary");
+    assert.equal(await projectCreditLink.getAttribute("href"), "https://ballydidean.farm");
+    assert.equal(await projectCreditLink.getAttribute("rel"), "noreferrer");
     assert.equal(await page.getByRole("link", { name: "Weather data by Open-Meteo" }).isVisible(), false);
     assert.equal(await page.getByRole("link", { name: "CC BY 4.0" }).isVisible(), false);
     await credits.getByText("Data sources & credits", { exact: true }).click();
     assert.equal(await credits.getAttribute("open"), "");
+    assert.equal(await projectCredit.isVisible(), true);
     assert.equal(await page.getByRole("link", { name: "Weather data by Open-Meteo" }).isVisible(), true);
     assert.equal(await page.getByRole("link", { name: "CC BY 4.0" }).isVisible(), true);
     assert.equal(await page.locator(".masthead img").count(), 0);
