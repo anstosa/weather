@@ -457,15 +457,26 @@ final class WidgetHostUITests: XCTestCase {
             )
         }
         let hosts = widgetHostQuery(on: springboard)
-        let host = try requireExisting(
-            in: hosts,
-            springboard: springboard,
-            stage: "observed-weather-widget-host",
-            timeout: 10
-        )
-        let frame = host.frame
-        // reject ambiguous or empty observation geometry
-        guard hosts.count == 1, frame.width > 0, frame.height > 0 else {
+        let deadline = Date().addingTimeInterval(10)
+        var observedFrame: CGRect?
+
+        // poll while SpringBoard settles host geometry
+        repeat {
+            let existingHosts = hosts.allElementsBoundByIndex.filter { $0.exists }
+            // retain only one usable host frame
+            if existingHosts.count == 1 {
+                let candidateFrame = existingHosts[0].frame
+                // accept positive geometry
+                if candidateFrame.width > 0, candidateFrame.height > 0 {
+                    observedFrame = candidateFrame
+                    break
+                }
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+        } while Date() < deadline
+
+        // reject ambiguous or empty observation geometry after polling
+        guard let observedFrame else {
             attachState(springboard, name: "failure-widget-target-host")
             throw NSError(
                 domain: "farm.ballydidean.weather.widget-host",
@@ -475,7 +486,7 @@ final class WidgetHostUITests: XCTestCase {
         }
         return WidgetTargetObservation(
             page: "\(current)/\(total)",
-            frame: frame
+            frame: observedFrame
         )
     }
 
