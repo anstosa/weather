@@ -22,6 +22,7 @@ import {
   createWeatherApiServer,
   readApiRelease,
   siteForecastDayWindow,
+  siteOvernightForecastWindow,
 } from "../dist/index.js";
 
 import { createQualifiedFixture } from "../../../packages/forecast-adjustment/test/evidence-fixtures.mjs";
@@ -245,8 +246,14 @@ function createFixture(overrides = {}, options = {}) {
       return [currentRecord];
     },
     // return normalized forecast rows
-    async getForecast(siteSlug, asOf, hours) {
-      forecastQueries.push({ asOf, hours, siteSlug });
+    async getForecast(siteSlug, asOf, hours, productSelection) {
+      forecastQueries.push({
+        asOf,
+        hours,
+        // preserve the existing captured shape for daily requests
+        ...(productSelection === undefined ? {} : { productSelection }),
+        siteSlug,
+      });
       return [forecastRecord];
     },
     // return no optional retained pressure vintage by default
@@ -842,6 +849,19 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
   assert.deepEqual(forecastQueries.at(-1), {
     asOf: "2026-08-21T07:00:00.000Z",
     hours: 240,
+    siteSlug: "ballydidean",
+  });
+
+  const overnightResponse = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast?window=overnight"),
+  );
+  const overnightBody = await overnightResponse.json();
+  assert.equal(overnightResponse.status, 200);
+  assert.equal(overnightBody.days, 1);
+  assert.deepEqual(forecastQueries.at(-1), {
+    asOf: "2026-08-21T07:00:00.000Z",
+    hours: 31,
+    productSelection: "anchor-containing",
     siteSlug: "ballydidean",
   });
 });
@@ -1877,6 +1897,38 @@ test("forecast day windows follow site midnight through DST changes", () => {
   );
 });
 
+// lock the overnight anchor boundary and daylight-saving capacities
+test("overnight forecast windows run from anchor midnight through next 07:00", () => {
+  assert.deepEqual(
+    siteOvernightForecastWindow(
+      "2026-09-12T13:59:59.999Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-09-11T07:00:00.000Z", hours: 31 },
+  );
+  assert.deepEqual(
+    siteOvernightForecastWindow(
+      "2026-09-12T14:00:00.000Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-09-12T07:00:00.000Z", hours: 31 },
+  );
+  assert.deepEqual(
+    siteOvernightForecastWindow(
+      "2026-03-08T15:00:00.000Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-03-08T08:00:00.000Z", hours: 30 },
+  );
+  assert.deepEqual(
+    siteOvernightForecastWindow(
+      "2026-11-01T16:00:00.000Z",
+      "America/Los_Angeles",
+    ),
+    { asOf: "2026-11-01T07:00:00.000Z", hours: 32 },
+  );
+});
+
 
 test("tides expose normalized NOAA levels and local event types", async () => {
   const { handler } = createFixture();
@@ -1945,6 +1997,10 @@ test("invalid ranges, cursors, duplicate filters, sites, stations, and sources a
     ["/api/v1/sites/ballydidean/current?source=999", 404],
     ["/api/v1/sites/ballydidean/current?unsupported=true", 400],
     ["/api/v1/sites/ballydidean/forecast?days=7", 400],
+    ["/api/v1/sites/ballydidean/forecast?window=other", 400],
+    ["/api/v1/sites/ballydidean/forecast?window=", 400],
+    ["/api/v1/sites/ballydidean/forecast?window=overnight&days=1", 400],
+    ["/api/v1/sites/ballydidean/forecast?window=overnight&window=overnight", 400],
   ];
 
   // verify each structured failure

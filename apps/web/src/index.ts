@@ -414,8 +414,19 @@ export interface HistoryFilters {
   readonly to?: string;
 }
 
+interface NowIconInputs {
+  readonly rain: number;
+  readonly cloud: number | null;
+  readonly windy: boolean;
+}
+
+interface CachedNowIcon extends NowIconInputs {
+  readonly cachedAt: number;
+}
+
 export interface DashboardState {
   readonly current: readonly WeatherRecord[];
+  readonly cachedNowIcon: CachedNowIcon | null;
   readonly dailyPrecipitation: DailyPrecipitation | null;
   readonly error: string | null;
   readonly filters: HistoryFilters;
@@ -437,6 +448,7 @@ export interface DashboardState {
   readonly page: number;
   readonly propertyMapLayer: MapLayer;
   readonly propertySensorLayout: readonly PropertySensorLayout[] | null;
+  readonly propertySensorLayoutLoading: boolean;
   readonly selectedPropertySensorKey: string | null;
   readonly selectedStationSlug: string | null;
   readonly trendDetail: TrendDetail;
@@ -570,6 +582,7 @@ type DashboardListener = (state: DashboardState) => void;
 
 const EMPTY_STATE: DashboardState = {
   current: [],
+  cachedNowIcon: null,
   dailyPrecipitation: null,
   error: null,
   filters: {},
@@ -591,6 +604,7 @@ const EMPTY_STATE: DashboardState = {
   page: 0,
   propertyMapLayer: "satellite",
   propertySensorLayout: null,
+  propertySensorLayoutLoading: false,
   selectedPropertySensorKey: null,
   selectedStationSlug: null,
   trendDetail: "rolling",
@@ -609,6 +623,58 @@ const EMPTY_STATE: DashboardState = {
 };
 
 export const FORECAST_ADJUSTMENT_MODE_STORAGE_KEY = "weather.forecast-adjustment-mode.v1";
+export const NOW_ICON_STORAGE_KEY = "weather.now-icon.ballydidean.v1";
+const NOW_ICON_CACHE_TTL_MS = 30 * 60 * 1_000;
+
+// retain only the three public inputs needed to choose weather artwork
+function parseNowIconInputs(value: unknown): NowIconInputs | null {
+  // reject primitives and arrays from browser storage
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const { rain, cloud, windy } = value as Record<string, unknown>;
+  // require bounded metrics without inventing dry conditions from missing data
+  if (
+    typeof rain !== "number" || !Number.isFinite(rain) || rain < 0 ||
+    typeof windy !== "boolean" ||
+    (cloud !== null && (typeof cloud !== "number" || !Number.isFinite(cloud) || cloud < 0 || cloud > 100)) ||
+    (rain === 0 && cloud === null)
+  ) {
+    return null;
+  }
+  return { rain, cloud, windy };
+}
+
+// reject expired or future-dated cached conditions
+function isNowIconCacheFresh(cache: CachedNowIcon | null | undefined, now: number): cache is CachedNowIcon {
+  return cache != null && cache.cachedAt <= now && now - cache.cachedAt < NOW_ICON_CACHE_TTL_MS;
+}
+
+// restore recent artwork before the first route render without restoring weather records
+function loadNowIconCache(storage: UnitPreferenceStorage | null): CachedNowIcon | null {
+  try {
+    const value: unknown = JSON.parse(storage?.getItem(NOW_ICON_STORAGE_KEY) ?? "null");
+    const inputs = parseNowIconInputs(value);
+    const cachedAt = (value as Partial<CachedNowIcon> | null)?.cachedAt;
+    // ignore invalid storage without preventing the page from opening
+    if (inputs === null || typeof cachedAt !== "number" || !Number.isFinite(cachedAt)) {
+      return null;
+    }
+    const cache = { ...inputs, cachedAt };
+    return isNowIconCacheFresh(cache, Date.now()) ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+// replace the small public cache or invalidate an authoritative unavailable response
+function persistNowIconCache(storage: UnitPreferenceStorage | null, cache: CachedNowIcon | null): void {
+  try {
+    storage?.setItem(NOW_ICON_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    // retain navigation continuity in memory when browser storage is blocked
+  }
+}
 
 // load one validated forecast display preference
 function loadForecastAdjustmentMode(
@@ -2164,6 +2230,7 @@ export class WeatherDashboardController {
     this.#view = options.view ?? "home";
     this.#state = {
       ...EMPTY_STATE,
+      cachedNowIcon: loadNowIconCache(this.#storage),
       forecastAdjustmentMode: loadForecastAdjustmentMode(this.#storage),
       loading: true,
       selectedSite: PRODUCT_SITE,
@@ -2248,7 +2315,7 @@ export class WeatherDashboardController {
     this.#homeNetworkLayoutRequest = null;
     this.#homeNetworkRefresh = null;
     this.#view = view;
-    this.patch({ homeNetwork: false });
+    this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
     await this.loadSelectedSite();
   }
 
@@ -2276,7 +2343,7 @@ export class WeatherDashboardController {
 
     // clear access only for an explicit full-weather refresh
     if (force && this.#state.homeNetwork) {
-      this.patch({ homeNetwork: false });
+      this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
     }
 
     // resolve only the current location check
@@ -2296,7 +2363,7 @@ export class WeatherDashboardController {
 
         // revoke a visible panel only after a negative result
         if (this.#state.homeNetwork) {
-          this.patch({ homeNetwork: false });
+          this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
         }
 
         return;
@@ -2334,6 +2401,7 @@ export class WeatherDashboardController {
       return;
     }
 
+    this.patch({ propertySensorLayoutLoading: true });
     const request = getJson<PropertySensorLayoutResponse>(
       this.#fetcher,
       buildPropertySensorLayoutUrl(this.#apiBaseUrl, PRODUCT_SITE.slug),
@@ -2361,6 +2429,7 @@ export class WeatherDashboardController {
         // preserve any newer layout request
         if (this.#homeNetworkLayoutRequest === request) {
           this.#homeNetworkLayoutRequest = null;
+          this.patch({ propertySensorLayoutLoading: false });
         }
       },
     );
@@ -2648,13 +2717,14 @@ export class WeatherDashboardController {
   // load only the current conditions panel
   async loadCurrent(): Promise<void> {
     const site = this.#state.selectedSite;
+    let pendingCurrent: Promise<RecordsResponse> | null = null;
 
     // wait for initialization
     if (site === null) {
       return;
     }
 
-    this.patch({ error: null, homeNetwork: false, loading: true });
+    this.patch({ error: null, homeNetwork: false, loading: true, propertySensorLayoutLoading: false });
 
     // start the private location check without delaying weather rendering
     if (this.#view === "home" && !this.#isAdmin) {
@@ -2671,18 +2741,22 @@ export class WeatherDashboardController {
         this.#view === "map" ||
         this.#view === "admin" ||
         (this.#view === "home" && this.#isAdmin);
+      // accept current artwork independently of unrelated forecast or layout failures
+      pendingCurrent = needsCurrent
+        ? getJson<RecordsResponse>(
+          this.#fetcher,
+          buildCurrentUrl(this.#apiBaseUrl, site.slug, this.#state.filters),
+        ).then((response) => {
+          const responseSite = requireProductSite(response.site);
+          const inputs = currentWeatherIconInputs(response.data);
+          const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now() };
+          persistNowIconCache(this.#storage, cachedNowIcon);
+          this.patch({ current: response.data, cachedNowIcon, selectedSite: responseSite, sites: [responseSite] });
+          return response;
+        })
+        : null;
       const [current, dailyPrecipitation, forecast, tides, trends, propertySensorLayout, adminSettings] = await Promise.all([
-        // load observations only where rendered
-        needsCurrent
-          ? getJson<RecordsResponse>(
-            this.#fetcher,
-            buildCurrentUrl(
-              this.#apiBaseUrl,
-              site.slug,
-              this.#state.filters,
-            ),
-          )
-          : Promise.resolve(null),
+        pendingCurrent,
         // load today's gauge total only on home
         needsDailyPrecipitation
           ? getJson<DailyPrecipitationResponse>(
@@ -2735,7 +2809,6 @@ export class WeatherDashboardController {
       );
       this.#state = {
         ...this.#state,
-        current: current?.data ?? this.#state.current,
         dailyPrecipitation: dailyPrecipitation === null
           ? this.#state.dailyPrecipitation
           : dailyPrecipitation.data,
@@ -2764,6 +2837,8 @@ export class WeatherDashboardController {
       };
       this.emit();
     } catch (error) {
+      // keep cold artwork loading until current settles even when a sibling fails first
+      await pendingCurrent?.catch(() => null);
       this.fail(error);
     }
   }
@@ -2828,7 +2903,7 @@ export class WeatherDashboardController {
       this.#homeNetworkGeneration += 1;
       this.#homeNetworkLayoutRequest = null;
       this.#homeNetworkRefresh = null;
-      this.patch({ error: message, homeNetwork: false, loading: false });
+      this.patch({ error: message, homeNetwork: false, loading: false, propertySensorLayoutLoading: false });
       return;
     }
 
@@ -2976,6 +3051,7 @@ export function mountWeatherDashboard(
   options: DashboardOptions = {},
 ): WeatherDashboardController {
   const controller = new WeatherDashboardController(options);
+  bindHomepageTitleSize(root);
 
   // redraw and wire one state snapshot
   controller.subscribe((state) => {
@@ -2991,6 +3067,7 @@ export function mountWeatherDashboard(
     }
 
     bindDashboardControls(root, controller);
+    fitHomepageTitle(root);
 
     // retain keyboard focus on the replaced preference switch
     if (toggleHadFocus) {
@@ -3002,6 +3079,38 @@ export function mountWeatherDashboard(
   bindHomeNetworkRefresh(root, controller);
   void controller.initialize();
   return controller;
+}
+
+// refit the fixed-height title after viewport and font changes
+function bindHomepageTitleSize(root: HTMLElement): void {
+  const observer = new ResizeObserver(() => {
+    // release the observer when its application root is removed
+    if (!root.isConnected) {
+      observer.disconnect();
+      return;
+    }
+    fitHomepageTitle(root);
+  });
+  observer.observe(root);
+  void document.fonts.ready.then(() => fitHomepageTitle(root));
+}
+
+// retain one complete title line at the largest size that fits beside the switch
+function fitHomepageTitle(root: HTMLElement): void {
+  const heading = root.querySelector<HTMLElement>(".home-masthead h1");
+  const text = heading?.querySelector<HTMLElement>(".masthead-title-text");
+  // leave other routes and detached application roots unchanged
+  if (heading == null || text == null || !root.isConnected) {
+    return;
+  }
+  heading.style.removeProperty("font-size");
+  // shrink only at unusually narrow widths or enlarged text settings
+  if (text.scrollWidth > text.clientWidth && text.clientWidth > 0) {
+    const size = Number.parseFloat(getComputedStyle(heading).fontSize);
+    heading.style.fontSize = `${size * (text.clientWidth - 1) / text.scrollWidth}px`;
+  }
+  // match the visible switch to the fitted text without changing its reserved width
+  heading.parentElement?.style.setProperty("--adjustment-switch-height", getComputedStyle(heading).fontSize);
 }
 
 // revalidate a visible homepage without refreshing weather data
@@ -3066,7 +3175,13 @@ function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboard
     }
 
     const now = new Date();
-    const timezone = controller.state.selectedSite?.timezone ?? PRODUCT_SITE.timezone;
+    const site = controller.state.selectedSite ?? PRODUCT_SITE;
+    const timezone = site.timezone;
+    const icon = root.querySelector(".section-nav-weather-icon");
+    // switch the current illustration at sunrise and sunset without refreshing weather
+    if (icon !== null) {
+      icon.outerHTML = renderCurrentWeatherIcon(controller.state, now);
+    }
     const day = formatWallClockParts(now, timezone);
     const today = forecastSiteDateKey(now.toISOString(), timezone);
 
@@ -3078,7 +3193,15 @@ function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboard
     previousDay = today;
     const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
     const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
-    timer = window.setTimeout(refresh, Math.max(1, midnight - now.getTime()));
+    const sun = eveningSunTimes(site, now);
+    const cacheExpiry = controller.state.cachedNowIcon === null
+      ? undefined
+      : controller.state.cachedNowIcon.cachedAt + NOW_ICON_CACHE_TTL_MS;
+    const boundaries = [midnight, sun.sunrise?.getTime(), sun.sunset?.getTime(), cacheExpiry].filter(
+      // ignore absent and already elapsed daylight or cache boundaries
+      (instant): instant is number => instant !== undefined && instant > now.getTime(),
+    );
+    timer = window.setTimeout(refresh, Math.max(1, Math.min(...boundaries) - now.getTime()));
   };
 
   document.addEventListener("visibilitychange", refresh);
@@ -3093,16 +3216,16 @@ export function renderWeatherDashboard(
 ): string {
   return `
     <main class="shell">
-      <header class="masthead${view === "forecast" ? " forecast-masthead" : ""}">
-        <h1>Ballydídean Weather</h1>
+      <header class="masthead${view === "forecast" ? " forecast-masthead" : view === "home" ? " home-masthead" : ""}">
+        ${view === "home" ? `<h1><span class="masthead-title-text"><span>Ballydídean</span> <span>Weather</span></span></h1>` : "<h1>Ballydídean Weather</h1>"}
         ${view === "forecast" ? renderForecastRangeSelector(state.forecastDays ?? 1, state.loading) : ""}
         <div class="masthead-actions">
-          ${renderLoadingIndicator(state)}
           ${renderForecastAdjustmentToggle(state, view)}
         </div>
       </header>
-      ${renderSectionNavigation(view)}
-      <div class="weather-content">
+      ${renderSectionNavigation(state, view)}
+      ${renderLoadingStatus(state)}
+      <div class="weather-content" aria-busy="${String(state.loading)}">
         ${renderErrorStatus(state)}
         ${renderWeatherView(state, view, isAdmin)}
         ${renderCredits(state, view)}
@@ -3111,7 +3234,77 @@ export function renderWeatherDashboard(
   `;
 }
 
-// keep the adjustment label stable across modes
+// select the approved artwork from the same current metrics as the homepage cards
+export function currentWeatherIcon(
+  state: Pick<DashboardState, "current" | "selectedSite">,
+  now = new Date(),
+): Readonly<{ name: string; label: string }> {
+  return selectCurrentWeatherIcon(currentWeatherIconInputs(state.current), state.selectedSite ?? PRODUCT_SITE, now);
+}
+
+// share sensor priority and cloud provenance between live and cached artwork
+function currentWeatherIconInputs(records: readonly WeatherRecord[]): NowIconInputs | null {
+  const current = preferredCurrentRecords(records);
+  const rain = findMetric(current, "precipitationRateMmPerHour");
+  const windy = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
+  const cloud = findMetric(current.filter(
+    // cloud cover is modeled rather than measured by the on-site gateway
+    (record) => record.provenance.sourceKind === "model_current",
+  ), "cloudCoverPercent");
+  return parseNowIconInputs({ rain, cloud, windy });
+}
+
+// recompute sun or moon artwork at the current farm time even for cached inputs
+function selectCurrentWeatherIcon(
+  inputs: NowIconInputs | null,
+  site: WeatherSite,
+  now: Date,
+): Readonly<{ name: string; label: string }> {
+  // missing rainfall must not imply a sunny or dry condition
+  if (inputs === null) {
+    return { name: "12-unavailable", label: "Conditions unavailable" };
+  }
+  const { rain, cloud, windy: wind } = inputs;
+  const suffix = wind ? ", high wind" : "";
+  // rain takes precedence even when cloud cover is unavailable
+  if (rain > 0) {
+    // use the widget's light and heavy rain boundary
+    if (rain < 2.5) {
+      return { name: wind ? "08-light-rain-wind" : "07-light-rain", label: `Light rain${suffix}` };
+    }
+    return { name: wind ? "10-heavy-rain-wind" : "09-heavy-rain", label: `Heavy rain${suffix}` };
+  }
+  // overcast artwork is shared between day and night
+  if (cloud !== null && cloud >= 75) {
+    return { name: wind ? "06-cloudy-wind" : "05-cloudy", label: `Cloudy${suffix}` };
+  }
+  const sun = eveningSunTimes(site, now);
+  const night = sun.sunrise !== null && sun.sunset !== null &&
+    (now < sun.sunrise || now >= sun.sunset);
+  // replace only the sun-bearing illustrations after dark
+  if (cloud !== null && cloud < 25) {
+    return night
+      ? { name: wind ? "14-clear-night-wind" : "13-clear-night", label: `Clear night${suffix}` }
+      : { name: wind ? "02-sunny-wind" : "01-sunny", label: `Sunny${suffix}` };
+  }
+  return night
+    ? { name: wind ? "16-partly-cloudy-night-wind" : "15-partly-cloudy-night", label: `Partly cloudy night${suffix}` }
+    : { name: wind ? "04-partly-cloudy-wind" : "03-partly-cloudy", label: `Partly cloudy${suffix}` };
+}
+
+// keep known artwork through navigation and reserve its space while first loading
+function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): string {
+  const cached = isNowIconCacheFresh(state.cachedNowIcon, now.getTime()) ? state.cachedNowIcon : null;
+  const inputs = currentWeatherIconInputs(state.current) ?? cached;
+  // loading is not an unavailable weather condition
+  if (inputs === null && state.loading) {
+    return `<span class="section-nav-weather-icon section-nav-weather-skeleton skeleton-line" role="img" aria-label="Loading current weather" aria-busy="true"></span>`;
+  }
+  const icon = selectCurrentWeatherIcon(inputs, state.selectedSite ?? PRODUCT_SITE, now);
+  return `<img class="section-nav-weather-icon" src="/weather-icons/${icon.name}.svg" alt="Current weather: ${escapeHtml(icon.label)}" width="32" height="32">`;
+}
+
+// keep adjustment semantics accessible while the thumb alone shows the preference
 function renderForecastAdjustmentToggle(
   state: DashboardState,
   view: WeatherView,
@@ -3147,8 +3340,13 @@ function renderForecastAdjustmentToggle(
       data-forecast-adjustment-available="${String(available)}"
       data-forecast-adjustment-fallback="${String(!available && adjusted)}"
     >
-      <span class="forecast-adjustment-toggle-mode">Adjusted</span>
-      <span class="forecast-adjustment-toggle-track" aria-hidden="true"><span></span></span>
+      <span class="forecast-adjustment-toggle-track" aria-hidden="true">
+        <span class="forecast-adjustment-toggle-thumb">
+          <svg class="forecast-adjustment-sparkle" data-sparkle-tone="${adjusted ? "gold" : "gray"}" viewBox="0 0 24 24" focusable="false">
+            <path class="forecast-adjustment-sparkle-ink" fill="currentColor" stroke="currentColor" stroke-width="0.45" stroke-linejoin="round" d="m10 3.5 2.1 6.4 6.4 2.1-6.4 2.1-2.1 6.4-2.1-6.4L1.5 12l6.4-2.1L10 3.5Zm8.5-2 .9 2.6L22 5l-2.6.9-.9 2.6-.9-2.6L15 5l2.6-.9.9-2.6Z"/>
+          </svg>
+        </span>
+      </span>
     </button>
   `;
 }
@@ -3218,13 +3416,13 @@ function renderHomepage(state: DashboardState, isAdmin: boolean): string {
   `;
 }
 
-// render the stable product routes
-function renderSectionNavigation(view: WeatherView): string {
+// render stable product routes with current conditions as the now illustration
+function renderSectionNavigation(state: DashboardState, view: WeatherView): string {
   const settingsCurrent = view === "settings" || view === "logs" || view === "admin";
 
   return `
     <nav class="section-nav" aria-label="Weather sections">
-      <a class="section-nav-home" href="/" data-weather-route${view === "home" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("home")}</span><span>Home</span></a>
+      <a class="section-nav-home" href="/" data-weather-route aria-label="Now"${view === "home" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderCurrentWeatherIcon(state)}</span><span>Now</span></a>
       <a class="section-nav-forecast" href="/forecast" data-weather-route${view === "forecast" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("partly_cloudy_day")}</span><span>Forecast</span></a>
       <a class="section-nav-trends" href="/trends" data-weather-route${view === "trends" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("trending_up")}</span><span>Trends</span></a>
       <a class="section-nav-map" href="/map" data-weather-route${view === "map" ? ' aria-current="page"' : ""}><span class="section-nav-icon">${renderMaterialIcon("map")}</span><span>Map</span></a>
@@ -3233,7 +3431,7 @@ function renderSectionNavigation(view: WeatherView): string {
   `;
 }
 
-// render the browser-persisted measurement unit page
+// render local preferences and full-page policy access
 function renderUnitSettings(units: UnitPreferences): string {
   return `
     <div class="settings-page">
@@ -3245,6 +3443,10 @@ function renderUnitSettings(units: UnitPreferences): string {
         <a class="settings-logs-link" href="/admin" aria-label="Admin">
           <span class="settings-destination-icon">${renderMaterialIcon("settings")}</span>
           <span><strong>Admin</strong></span>
+        </a>
+        <a class="settings-logs-link" href="/privacy" aria-label="Privacy policy">
+          <span class="settings-destination-icon"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6Z"/><path d="m8 12 3 3 5-6"/></svg></span>
+          <span><strong>Privacy policy</strong><small>What happens to your data</small></span>
         </a>
       </nav>
       <section class="unit-settings-page" aria-labelledby="unit-settings-heading">
@@ -3287,7 +3489,7 @@ function renderUnitSettings(units: UnitPreferences): string {
   `;
 }
 
-// render compact provider and license attribution
+// render provider licenses and the visible sanctuary credit
 function renderCredits(state: DashboardState, view: WeatherView): string {
   const attributions = new Map<string, string>();
   let includesOpenMeteo = false;
@@ -3335,22 +3537,21 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
           ${licenseCredit}
           ${forecastMapCredits}
           ${temperatureCanaryCredit}
-          <span>A <a href="https://www.ballydidean.farm/" rel="noreferrer">Ballydídean Farm Sanctuary</a> project</span>
         </div>
       </details>
+      <p class="project-credit">Built with love by <a href="https://ballydidean.farm" rel="noreferrer">Ballydidean Farm Sanctuary</a></p>
     </footer>
   `;
 }
 
-// render one reserved in-place loading indicator
-function renderLoadingIndicator(state: DashboardState): string {
-  const activeClass = state.loading ? " active" : "";
-  const message = state.loading
+// announce refreshes without a visible header indicator
+function renderLoadingStatus(state: DashboardState): string {
+  const message = state.loading || state.propertySensorLayoutLoading
     ? "Refreshing weather data…"
     : state.error === null
       ? "Weather data is up to date."
       : "Weather refresh failed.";
-  return `<p class="refresh-indicator${activeClass}" role="status"><span class="sr-only">${message}</span></p>`;
+  return `<p class="sr-only" role="status">${message}</p>`;
 }
 
 // render error feedback without affecting routine refreshes
@@ -3365,16 +3566,16 @@ function renderErrorStatus(state: DashboardState): string {
 
 // render the current summary
 function renderCurrent(state: DashboardState): string {
+  // reserve the cards for initial reads and later refreshes
+  if (state.loading) {
+    return renderCurrentSkeleton();
+  }
+
   const currentRecords = preferredCurrentRecords(state.current);
   const current = currentRecords[0];
 
   // render an honest empty state
   if (current === undefined) {
-    // reserve the final card grid during the first read
-    if (state.loading) {
-      return renderCurrentSkeleton();
-    }
-
     return '<p class="notice">No current weather value is available yet.</p>';
   }
 
@@ -3475,7 +3676,7 @@ function renderIndoorHouse(state: DashboardState): string {
     ),
   );
   return `
-    <section class="indoor-house-panel" data-indoor-house aria-labelledby="indoor-house-heading">
+    <section class="indoor-house-panel" data-indoor-house aria-labelledby="indoor-house-heading" aria-busy="${String(state.loading)}">
       <div class="indoor-house-heading">
         ${renderMaterialIcon("home")}
         <div><p class="eyebrow">Inside the house</p><h2 id="indoor-house-heading">Indoor temperatures</h2></div>
@@ -3488,7 +3689,9 @@ function renderIndoorHouse(state: DashboardState): string {
             (level) => {
               const temperatureC = sensorsByKey.get(level.sensorKey)?.readings.temperatureC ?? null;
               const measurement = formatMeasurement(temperatureC, "temperature", state.units, 0);
-              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature">${renderConditionMeasurement(measurement)}</span></li>`;
+              // share forecast thresholds without coloring pending placeholders
+              const tone = forecastTemperatureTone(state.loading ? null : temperatureC);
+              return `<li class="indoor-house-level indoor-house-level-${level.slug}"><span>${level.label}</span><span class="indoor-house-temperature condition-forecast-tone-${tone}">${state.loading ? '<span class="skeleton-line skeleton-temperature" aria-hidden="true"></span>' : renderConditionMeasurement(measurement)}</span></li>`;
             },
           ).join("")}
         </ol>
@@ -4291,6 +4494,11 @@ function maximumAvailableMetricValues(
 
 // render the site-local forecast day
 function renderForecast(state: DashboardState): string {
+  // replace obsolete hours while the requested horizon loads
+  if (state.loading) {
+    return renderForecastSkeleton(state);
+  }
+
   const days = state.forecastDays ?? 1;
   const reference = state.current.find(
     // align the timeline with the current model day
@@ -4307,11 +4515,6 @@ function renderForecast(state: DashboardState): string {
 
   // render an honest ingestion warm-up state
   if (hours.length === 0) {
-    // reserve the final forecast charts during the first read
-    if (state.loading) {
-      return renderForecastSkeleton(state);
-    }
-
     return `
       <section class="panel forecast-panel" aria-label="Weather forecast">
         <p class="empty-panel">The first normalized forecast product is being collected.</p>
@@ -5393,8 +5596,8 @@ type TrendToggleIcon = keyof typeof TREND_TOGGLE_ICON_PATHS;
 
 // render calendar-year comparison charts
 function renderTrends(state: DashboardState): string {
-  // reserve the final chart during the first read
-  if (state.trends.length === 0 && state.loading) {
+  // reserve the selected chart until its data read settles
+  if (state.loading) {
     return renderTrendsSkeleton();
   }
 
@@ -6830,6 +7033,11 @@ interface MapViewport {
 
 // render the soil-only farm overview for eligible viewers
 function renderAdminSoilMoistureMap(state: DashboardState): string {
+  // keep delayed optional positions distinct from unavailable positions
+  if (state.loading || state.propertySensorLayoutLoading) {
+    return renderPropertyMapSkeleton(true);
+  }
+
   const site = state.selectedSite;
 
   // wait for the fixed site before projecting sensor coordinates
@@ -6895,7 +7103,7 @@ function renderAdminSoilMoistureMap(state: DashboardState): string {
         ${renderPropertyMapAttribution(state.propertyMapLayer)}
       </div>
       ${state.propertySensorLayout === null
-        ? `<p class="empty-panel">${state.loading ? "Loading soil moisture…" : "Soil moisture sensor positions are unavailable."}</p>`
+        ? `<p class="empty-panel">Soil moisture sensor positions are unavailable.</p>`
         : placed.length === 0
           ? `<p class="empty-panel">No soil moisture sensors have been placed yet.</p>`
           : ""}
@@ -6930,6 +7138,11 @@ function renderSoilMoistureMarker(
 
 // render the farm-scale EcoWitt sensor geography first
 function renderPropertySensorMap(state: DashboardState): string {
+  // reserve both the map and sensor list until their joint read settles
+  if (state.loading) {
+    return renderPropertyMapSkeleton();
+  }
+
   const site = state.selectedSite;
 
   // reserve the property map until current data arrives
@@ -7002,7 +7215,7 @@ function renderPropertySensorMap(state: DashboardState): string {
         </div>
         <div class="property-sensor-list-shell">
           ${placed.length === 0
-            ? `<p class="empty-panel">${state.loading ? "Loading property sensors…" : "No property sensors have been placed yet."}</p>`
+            ? `<p class="empty-panel">No property sensors have been placed yet.</p>`
             : `<ol class="property-sensor-list" aria-label="Placed property sensors">${sensorRows}</ol>`}
         </div>
       </div>
@@ -7011,6 +7224,33 @@ function renderPropertySensorMap(state: DashboardState): string {
         : ""}
     </section>
   `;
+}
+
+// reserve the existing map frame without requesting placeholder tiles
+function renderPropertyMapSkeleton(soil = false): string {
+  const headingId = soil ? "admin-soil-map-heading" : "property-map-heading";
+  return `
+    <section class="${soil ? "admin-soil-map-panel" : "panel property-map-panel"} skeleton-region"${soil ? " data-admin-soil-map" : ""} aria-labelledby="${headingId}" aria-busy="true">
+      <div class="section-heading">
+        <div><p class="eyebrow">Ballydídean property</p><h2 id="${headingId}">${soil ? "Soil moisture" : "Property sensors"}</h2></div>
+      </div>
+      <div class="${soil ? "admin-soil-map" : "property-map-layout"}">
+        <div class="property-map skeleton-map" aria-hidden="true">
+          <div class="property-map-canvas"><span class="skeleton-map-shape"></span></div>
+          <p class="map-attribution"><span class="skeleton-attribution">Map attribution</span></p>
+        </div>
+        ${soil ? "" : renderSkeletonFields()}
+      </div>
+    </section>
+  `;
+}
+
+// reserve short lists and form fields without fake interactive controls
+function renderSkeletonFields(): string {
+  return `<div class="skeleton-fields" aria-hidden="true">${Array.from({ length: 3 },
+    // preserve a readable row-sized loading surface
+    () => '<span class="skeleton-line skeleton-field"></span>',
+  ).join("")}</div>`;
 }
 
 // space dense property markers while retaining exact anchor lines
@@ -7077,6 +7317,16 @@ function propertySensorMarkerOffsets(
 // render three independently persisted forecast controls
 function renderForecastAdjustmentAdmin(state: DashboardState): string {
   const settings = state.forecastAdjustmentSettings ?? null;
+  // avoid presenting unknown adjustment settings as switched off
+  if (settings === null && state.loading) {
+    return `
+      <section class="panel forecast-adjustment-admin skeleton-region" aria-labelledby="forecast-adjustment-admin-heading" aria-busy="true">
+        <div class="section-heading"><div><p class="eyebrow">Administration</p><h2 id="forecast-adjustment-admin-heading">Forecast adjustments</h2></div></div>
+        ${renderSkeletonFields()}
+      </section>
+    `;
+  }
+
   const disabled = settings === null || state.adminAdjustmentSettingsSaving;
   const message = state.adminAdjustmentSettingsMessage ?? null;
 
@@ -7091,8 +7341,8 @@ function renderForecastAdjustmentAdmin(state: DashboardState): string {
         <label><input type="checkbox" name="wind"${settings?.wind ? " checked" : ""}${disabled ? " disabled" : ""}><span>Wind</span></label>
         <label><input type="checkbox" name="rain"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain</span></label>
         <div class="forecast-adjustment-admin-actions">
-          <button type="submit"${disabled ? " disabled" : ""}>${state.adminAdjustmentSettingsSaving ? "Saving…" : "Save adjustments"}</button>
-          <span role="status" aria-live="polite">${message === null ? "" : escapeHtml(message)}</span>
+          <button type="submit"${disabled ? " disabled" : ""}>Save adjustments</button>
+          <span role="status" aria-live="polite">${state.adminAdjustmentSettingsSaving ? '<span class="skeleton-line skeleton-action" aria-hidden="true"></span><span class="sr-only">Saving forecast adjustments…</span>' : message === null ? "" : escapeHtml(message)}</span>
         </div>
       </form>
     </section>
@@ -7104,12 +7354,28 @@ function renderPropertySensorAdmin(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const sensors = propertySensorSnapshots(state);
 
+  // reserve the editor until both sensor channels and positions are known
+  if (state.loading && (sensors.length === 0 || state.propertySensorLayout === null)) {
+    return `
+      <section class="panel property-admin skeleton-region" aria-labelledby="property-admin-heading" aria-busy="true">
+        ${renderPropertyAdminHeading()}
+        <div class="property-admin-layout">
+          ${renderSkeletonFields()}
+          <div class="property-admin-editor">
+            ${renderSkeletonFields()}
+            <div class="property-admin-map skeleton-map" aria-hidden="true"><span class="skeleton-map-shape"></span></div>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
   // explain the first ingestion wait honestly
   if (sensors.length === 0) {
     return `
       <section class="panel property-admin" aria-labelledby="property-admin-heading">
         ${renderPropertyAdminHeading()}
-        <p class="empty-panel">${state.loading ? "Loading EcoWitt sensor channels…" : "No EcoWitt sensor channels are reporting yet."}</p>
+        <p class="empty-panel">No EcoWitt sensor channels are reporting yet.</p>
       </section>
     `;
   }
@@ -7189,7 +7455,7 @@ function renderPropertySensorAdmin(state: DashboardState): string {
               ${renderPropertyMapZoomControls()}
             </div>
             ${renderPropertyMapAttribution(state.propertyMapLayer)}
-            <div class="property-admin-actions"><span aria-live="polite">${layout === undefined ? "Not placed" : `Updated ${formatInstant(layout.updatedAt, site.timezone)}`}</span><button type="submit"${state.loading ? " disabled" : ""}>${renderSaveIcon()} Save sensor</button></div>
+            <div class="property-admin-actions"><span role="status" aria-live="polite">${state.loading ? '<span class="skeleton-line skeleton-action" aria-hidden="true"></span><span class="sr-only">Saving sensor…</span>' : layout === undefined ? "Not placed" : `Updated ${formatInstant(layout.updatedAt, site.timezone)}`}</span><button type="submit"${state.loading ? " disabled" : ""}>${renderSaveIcon()} Save sensor</button></div>
           </form>
         </div>
       </div>
@@ -7433,15 +7699,15 @@ function propertySensorReadingLabels(
 
 // render tiled nearby station geography and latest readings
 function renderStationMap(state: DashboardState): string {
+  // reserve map geometry until station readings are ready
+  if (state.loading) {
+    return renderStationMapSkeleton();
+  }
+
   const site = state.selectedSite;
 
   // wait for site geometry
   if (site === null) {
-    // reserve the final station geography during the first read
-    if (state.loading) {
-      return renderStationMapSkeleton();
-    }
-
     return "";
   }
 
@@ -8223,8 +8489,8 @@ export function temperatureBand(valueC: number | null): ConditionBand {
     return { color, detail: "At or below the freezing point", label: "Freezing" };
   }
 
-  // label chilly conditions
-  if (valueF < 50) {
+  // use blue forecast text below the shared 55f cold threshold
+  if (valueF < 55) {
     return { color, detail: "Cool outdoor conditions", label: "Chilly" };
   }
 
@@ -8596,23 +8862,23 @@ function renderHistoryFilters(state: DashboardState): string {
 
 // render history table rows
 function renderHistoryRows(state: DashboardState): string {
-  // render a useful empty row
-  if (state.history.length === 0) {
-    // reserve one full result page during the first read
-    if (state.loading) {
-      return Array.from({ length: 25 },
-        // preserve every final history row
-        () => `
-          <tr class="skeleton-history-row" aria-hidden="true">
-            ${Array.from({ length: 6 },
-              // reserve each final history cell
-              () => '<td><span class="skeleton-line skeleton-table-value"></span></td>',
-            ).join("")}
-          </tr>
-        `,
-      ).join("");
-    }
+  // reserve the requested page while filters or pagination load
+  if (state.loading) {
+    return Array.from({ length: 25 },
+      // preserve every final history row
+      () => `
+        <tr class="skeleton-history-row" aria-hidden="true">
+          ${Array.from({ length: 6 },
+            // reserve each final history cell
+            () => '<td><span class="skeleton-line skeleton-table-value"></span></td>',
+          ).join("")}
+        </tr>
+      `,
+    ).join("");
+  }
 
+  // render an honest empty result after the request settles
+  if (state.history.length === 0) {
     return `<tr><td colspan="6" class="empty">No records match these filters.</td></tr>`;
   }
 
@@ -8637,28 +8903,28 @@ function renderHistoryRows(state: DashboardState): string {
 
 // render compact phone history records
 function renderHistoryCards(state: DashboardState): string {
-  // render one compact empty state
-  if (state.history.length === 0) {
-    // reserve one full mobile result page during the first read
-    if (state.loading) {
-      return `
-        <ol class="history-cards skeleton-history-cards" aria-label="Loading weather history" aria-busy="true">
-          ${Array.from({ length: 25 },
-            // preserve every final mobile history card
-            () => `
-              <li aria-hidden="true">
-                <article class="history-card skeleton-history-card">
-                  <div class="history-card-primary"><span class="skeleton-line skeleton-history-time"></span><span class="skeleton-line skeleton-history-temperature"></span></div>
-                  <div class="history-card-metrics"><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span></div>
-                  <span class="skeleton-line skeleton-history-source"></span>
-                </article>
-              </li>
-            `,
-          ).join("")}
-        </ol>
-      `;
-    }
+  // reserve the requested mobile page while records load
+  if (state.loading) {
+    return `
+      <ol class="history-cards skeleton-history-cards" aria-label="Loading weather history" aria-busy="true">
+        ${Array.from({ length: 25 },
+          // preserve every final mobile history card
+          () => `
+            <li aria-hidden="true">
+              <article class="history-card skeleton-history-card">
+                <div class="history-card-primary"><span class="skeleton-line skeleton-history-time"></span><span class="skeleton-line skeleton-history-temperature"></span></div>
+                <div class="history-card-metrics"><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span><span class="skeleton-line skeleton-history-metric"></span></div>
+                <span class="skeleton-line skeleton-history-source"></span>
+              </article>
+            </li>
+          `,
+        ).join("")}
+      </ol>
+    `;
+  }
 
+  // render an honest empty result after the request settles
+  if (state.history.length === 0) {
     return '<p class="history-cards-empty">No records match these filters.</p>';
   }
 

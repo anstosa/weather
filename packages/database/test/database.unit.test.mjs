@@ -411,6 +411,60 @@ test("forecast repository keeps historical-only sources out of the live route", 
   ]);
 });
 
+// select the newest product that genuinely contains an overnight anchor
+test("forecast repository can select the newest anchor-containing product", async () => {
+  const captured = [];
+  const pool = {
+    // capture only the authoritative raw query
+    async query(text, values) {
+      captured.push({ text, values });
+      return { rows: [] };
+    },
+  };
+
+  assert.deepEqual(
+    await getWeatherForecast(pool, {
+      asOf: "2026-09-01T07:00:00.000Z",
+      hours: 31,
+      productSelection: "anchor-containing",
+      siteSlug: "ballydidean",
+    }),
+    [],
+  );
+  assert.equal(captured.length, 1);
+  assert.match(
+    captured[0].text,
+    /product\.source_id = s\.id[\s\S]*product\.source_kind = 'forecast'[\s\S]*product\.valid_at = \$2/u,
+  );
+  assert.match(captured[0].text, /candidate\.valid_at >= \$2/u);
+  assert.match(captured[0].text, /candidate\.valid_at < \$3/u);
+  assert.deepEqual(captured[0].values, [
+    "ballydidean",
+    "2026-09-01T07:00:00.000Z",
+    "2026-09-02T14:00:00.000Z",
+  ]);
+});
+
+// reject an unreviewed product selector before PostgreSQL access
+test("forecast repository rejects unknown product selection", async () => {
+  const pool = {
+    // expose any unexpected query execution
+    async query() {
+      throw new Error("query should not execute");
+    },
+  };
+
+  await assert.rejects(
+    () => getWeatherForecast(pool, {
+      asOf: "2026-09-01T07:00:00.000Z",
+      hours: 31,
+      productSelection: "unknown",
+      siteSlug: "ballydidean",
+    }),
+    /product selection is invalid/u,
+  );
+});
+
 // lock the bounded retained-vintage pressure context query
 test("forecast pressure context requires one complete recent v4 vintage", async () => {
   const captured = [];

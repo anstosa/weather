@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { chromium } from "playwright";
 import {
+  eveningSunTimes,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   UNIT_PREFERENCE_STORAGE_KEY,
 } from "../dist/index.js";
@@ -618,6 +619,28 @@ async function captureSectionGeometry(page, selectors) {
   return geometry;
 }
 
+// require one in-place skeleton without restoring the retired masthead dot
+async function assertSkeletonLoadingState(page, selector) {
+  await page.locator(selector).first().waitFor({ state: "attached" });
+  assert.equal(await page.locator(".refresh-indicator").count(), 0);
+  assert.equal(await page.locator(".masthead [role='status']").count(), 0);
+  assert.equal(await page.locator(".weather-content").getAttribute("aria-busy"), "true");
+  const status = page.locator("main.shell > p.sr-only[role='status']");
+  assert.equal(await status.count(), 1);
+  assert.match(await status.textContent() ?? "", /Refreshing weather data/u);
+}
+
+// require a settled route with no permanent loading placeholder
+async function assertSkeletonLoadingSettled(page, expectedStatus = /Weather data is up to date/u) {
+  await page.locator(".weather-content[aria-busy='false']").waitFor();
+  assert.equal(await page.locator(".refresh-indicator").count(), 0);
+  assert.equal(await page.locator(".masthead [role='status']").count(), 0);
+  assert.equal(await page.locator(".skeleton-region, .skeleton-history-row, .skeleton-history-card").count(), 0);
+  const status = page.locator("main.shell > p.sr-only[role='status']");
+  assert.equal(await status.count(), 1);
+  assert.match(await status.textContent() ?? "", expectedStatus);
+}
+
 // require rendered lines to clear every title footprint
 async function assertForecastTitleClearance(page) {
   assert.equal(
@@ -929,6 +952,8 @@ async function startFixtureServer() {
       ["/trends/", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
       ["/settings", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
       ["/settings/", [join(publicRoot, "index.html"), "text/html; charset=utf-8"]],
+      ["/privacy", [join(publicRoot, "privacy.html"), "text/html; charset=utf-8"]],
+      ["/privacy/", [join(publicRoot, "privacy.html"), "text/html; charset=utf-8"]],
       ["/manifest.webmanifest", [join(publicRoot, "manifest.webmanifest"), "application/manifest+json; charset=utf-8"]],
       ["/service-worker.js", [join(publicRoot, "service-worker.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/styles.css`, [join(publicRoot, "styles.css"), "text/css; charset=utf-8"]],
@@ -938,6 +963,21 @@ async function startFixtureServer() {
       ["/brand/ballydidean-weather-icon-192.png", [join(publicRoot, "brand/ballydidean-weather-icon-192.png"), "image/png"]],
       ["/brand/ballydidean-weather-icon-512.png", [join(publicRoot, "brand/ballydidean-weather-icon-512.png"), "image/png"]],
       ["/brand/ballydidean-weather-icon-maskable-512.png", [join(publicRoot, "brand/ballydidean-weather-icon-maskable-512.png"), "image/png"]],
+      ["/weather-icons/01-sunny.svg", [join(publicRoot, "weather-icons/01-sunny.svg"), "image/svg+xml"]],
+      ["/weather-icons/02-sunny-wind.svg", [join(publicRoot, "weather-icons/02-sunny-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/03-partly-cloudy.svg", [join(publicRoot, "weather-icons/03-partly-cloudy.svg"), "image/svg+xml"]],
+      ["/weather-icons/04-partly-cloudy-wind.svg", [join(publicRoot, "weather-icons/04-partly-cloudy-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/05-cloudy.svg", [join(publicRoot, "weather-icons/05-cloudy.svg"), "image/svg+xml"]],
+      ["/weather-icons/06-cloudy-wind.svg", [join(publicRoot, "weather-icons/06-cloudy-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/07-light-rain.svg", [join(publicRoot, "weather-icons/07-light-rain.svg"), "image/svg+xml"]],
+      ["/weather-icons/08-light-rain-wind.svg", [join(publicRoot, "weather-icons/08-light-rain-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/09-heavy-rain.svg", [join(publicRoot, "weather-icons/09-heavy-rain.svg"), "image/svg+xml"]],
+      ["/weather-icons/10-heavy-rain-wind.svg", [join(publicRoot, "weather-icons/10-heavy-rain-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/12-unavailable.svg", [join(publicRoot, "weather-icons/12-unavailable.svg"), "image/svg+xml"]],
+      ["/weather-icons/13-clear-night.svg", [join(publicRoot, "weather-icons/13-clear-night.svg"), "image/svg+xml"]],
+      ["/weather-icons/14-clear-night-wind.svg", [join(publicRoot, "weather-icons/14-clear-night-wind.svg"), "image/svg+xml"]],
+      ["/weather-icons/15-partly-cloudy-night.svg", [join(publicRoot, "weather-icons/15-partly-cloudy-night.svg"), "image/svg+xml"]],
+      ["/weather-icons/16-partly-cloudy-night-wind.svg", [join(publicRoot, "weather-icons/16-partly-cloudy-night-wind.svg"), "image/svg+xml"]],
       ["/fonts/google-sans-flex-latin.woff2", [join(publicRoot, "fonts/google-sans-flex-latin.woff2"), "font/woff2"]],
       ["/fonts/material-symbols-rounded-v4.woff2", [join(publicRoot, "fonts/material-symbols-rounded-v4.woff2"), "font/woff2"]],
       [`/assets/${fixtureAssetVersion}/client.js`, [join(distRoot, "client.js"), "text/javascript; charset=utf-8"]],
@@ -976,6 +1016,8 @@ async function startFixtureServer() {
           url.pathname === "/trends/" ||
           url.pathname === "/settings" ||
           url.pathname === "/settings/" ||
+          url.pathname === "/privacy" ||
+          url.pathname === "/privacy/" ||
           url.pathname === "/service-worker.js"
           ? source.toString("utf8").replaceAll("__WEATHER_ASSET_VERSION__", fixtureAssetVersion)
             .replaceAll(
@@ -1024,6 +1066,8 @@ test("manifest and service worker provide an installable application shell", { t
       viewport: { height: 780, width: 390 },
     });
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    // keep the browser title aligned with the application name
+    assert.equal(await page.title(), "Ballydídean Weather");
     assert.equal(
       await page.locator('link[rel="manifest"]').getAttribute("href"),
       "/manifest.webmanifest",
@@ -1124,8 +1168,1169 @@ test("manifest and service worker provide an installable application shell", { t
   }
 });
 
+// keep current conditions in now navigation and the full title on one fixed-height row
+test("homepage keeps weather in Now navigation and a one-line title through responsive rerenders", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 1280 },
+    });
+    const sunset = eveningSunTimes(site, new Date("2026-08-22T20:00:00Z")).sunset;
+
+    // require one deterministic daylight boundary
+    if (sunset === null) {
+      throw new Error("fixture sunset is unavailable");
+    }
+
+    await page.clock.install({ time: new Date(sunset.getTime() - 10 * 60_000) });
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // expose one known dry sensor reading alongside modeled cloud cover
+        (record) => record.provenance.sourceKind === "physical_sensor"
+          ? {
+              ...record,
+              metrics: { ...record.metrics, precipitationRateMmPerHour: 0 },
+            }
+          : record,
+      );
+      await route.fulfill({ json: body, response });
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.evaluate(
+      // settle both bundled display fonts before measuring line boxes
+      async () => await document.fonts.ready,
+    );
+
+    const baselineHeights = new Map([
+      [320, 51.96875],
+      [360, 51.96875],
+      [412, 51.96875],
+      [768, 58.390625],
+      [1280, 74.390625],
+    ]);
+    const baselineTitleSizes = new Map([
+      [320, 20],
+      [360, 22.5],
+      [412, 25.75],
+      [768, 38.4],
+      [1280, 56],
+    ]);
+    const captureHeaderAndNow = async () => {
+      const icon = page.locator(".section-nav-home img.section-nav-weather-icon");
+      await icon.waitFor();
+      await page.waitForFunction(
+        // require decoded current-condition artwork
+        () => {
+          const image = document.querySelector(".section-nav-home img.section-nav-weather-icon");
+          return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+        },
+      );
+      return await page.locator("main.shell").evaluate(
+        // measure one complete rendered homepage header and now destination
+        (shell) => {
+          const masthead = shell.querySelector(".home-masthead");
+          const actions = masthead?.querySelector(".masthead-actions");
+          const title = masthead?.querySelector("h1");
+          const home = shell.querySelector(".section-nav-home");
+          const icon = home?.querySelector("img.section-nav-weather-icon");
+
+          // require the complete title and current-condition destination
+          if (
+            !(masthead instanceof HTMLElement) ||
+            !(actions instanceof HTMLElement) ||
+            !(icon instanceof HTMLImageElement) ||
+            !(title instanceof HTMLElement) ||
+            !(home instanceof HTMLAnchorElement)
+          ) {
+            throw new Error("homepage header or now navigation is incomplete");
+          }
+
+          const bounds = (element) => {
+            const rectangle = element.getBoundingClientRect();
+            return {
+              bottom: rectangle.bottom,
+              height: rectangle.height,
+              left: rectangle.left,
+              right: rectangle.right,
+              top: rectangle.top,
+              width: rectangle.width,
+            };
+          };
+          const mastheadBounds = masthead.getBoundingClientRect();
+          const titleBounds = title.getBoundingClientRect();
+          const wordBounds = [...title.querySelectorAll(".masthead-title-text > span")].map(
+            // measure only the two visible title words
+            (word) => word.getBoundingClientRect(),
+          );
+          const uniqueLineTops = new Set(wordBounds.map(
+            // merge both words when they share a rendered line
+            (rectangle) => Math.round(rectangle.top),
+          ));
+          const titleStyle = getComputedStyle(title);
+          const verticalClipBounds = titleStyle.overflowY === "visible" ? mastheadBounds : titleBounds;
+
+          return {
+            actions: bounds(actions),
+            alt: icon.alt,
+            bodyOverflow: document.body.scrollWidth - document.documentElement.clientWidth,
+            dashboardCount: home.querySelectorAll('svg[data-nav-icon="dashboard"]').length,
+            fontFamily: titleStyle.fontFamily,
+            fontSize: Number.parseFloat(titleStyle.fontSize),
+            header: bounds(masthead),
+            headerOverflow: masthead.scrollWidth - masthead.clientWidth,
+            homeAriaCurrent: home.getAttribute("aria-current"),
+            homeAriaLabel: home.getAttribute("aria-label"),
+            homeHref: home.getAttribute("href"),
+            icon: bounds(icon),
+            iconComplete: icon.complete,
+            iconFilter: getComputedStyle(icon).filter,
+            iconHeightAttribute: icon.getAttribute("height"),
+            iconInsideNow: icon.closest("a") === home,
+            iconNaturalHeight: icon.naturalHeight,
+            iconNaturalWidth: icon.naturalWidth,
+            iconWidthAttribute: icon.getAttribute("width"),
+            lineCount: uniqueLineTops.size,
+            mastheadBrandCount: masthead.querySelectorAll(".masthead-brand").length,
+            mastheadImageCount: masthead.querySelectorAll("img").length,
+            source: new URL(icon.src).pathname,
+            title: bounds(title),
+            titleClippedHorizontally: wordBounds.some(
+              // keep both visible words inside the title box
+              (rectangle) => rectangle.left < titleBounds.left - 1 || rectangle.right > titleBounds.right + 1,
+            ),
+            titleClippedVertically: wordBounds.some(
+              // contain text in the actual vertical clipping ancestor
+              (rectangle) => rectangle.top < verticalClipBounds.top - 1 || rectangle.bottom > verticalClipBounds.bottom + 1,
+            ),
+            titleText: title.textContent?.replace(/\s+/gu, " ").trim(),
+            titleIsDirectChild: title.parentElement === masthead,
+            wordBounds: wordBounds.map(
+              // retain concrete title fragments for failure evidence
+              (rectangle) => bounds({ getBoundingClientRect: () => rectangle }),
+            ),
+            wrappedClass: title.classList.contains("masthead-title-wrapped"),
+          };
+        },
+      );
+    };
+
+    const nowLink = page.getByRole("link", { name: "Now", exact: true });
+    assert.equal(await nowLink.getAttribute("href"), "/");
+    assert.equal(await nowLink.getAttribute("aria-label"), "Now");
+    assert.equal(await nowLink.getAttribute("aria-current"), "page");
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").count(), 1);
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
+    assert.equal(await nowLink.locator(".material-symbols-rounded").count(), 0);
+
+    // prove the same document survives wide, narrow, and restored widths
+    for (const width of [1280, 320, 360, 412, 768, 1280]) {
+      await page.setViewportSize({ height: 900, width });
+      await page.evaluate(
+        // wait for any width-dependent font layout
+        async () => await document.fonts.ready,
+      );
+      const layout = await captureHeaderAndNow();
+      const baselineHeight = baselineHeights.get(width);
+
+      // require a recorded production baseline for every exercised width
+      if (baselineHeight === undefined) {
+        throw new Error(`missing masthead baseline for ${String(width)}px`);
+      }
+
+      assert.equal(Math.abs(layout.header.height - baselineHeight) < 1, true, JSON.stringify({ width, layout }));
+      assert.equal(layout.alt, "Current weather: Partly cloudy");
+      assert.equal(layout.bodyOverflow, 0);
+      assert.equal(layout.dashboardCount, 0);
+      assert.match(layout.fontFamily, /Google Sans Flex/u);
+      assert.equal(layout.headerOverflow, 0);
+      assert.equal(layout.homeAriaCurrent, "page");
+      assert.equal(layout.homeAriaLabel, "Now");
+      assert.equal(layout.homeHref, "/");
+      assert.equal(layout.iconComplete, true);
+      assert.equal(layout.iconFilter, "none");
+      assert.equal(layout.icon.height, 32);
+      assert.equal(layout.icon.width, 32);
+      assert.equal(layout.iconHeightAttribute, "32");
+      assert.equal(layout.iconInsideNow, true);
+      assert.equal(layout.iconNaturalHeight > 0, true);
+      assert.equal(layout.iconNaturalWidth > 0, true);
+      assert.equal(layout.iconWidthAttribute, "32");
+      assert.equal(layout.mastheadBrandCount, 0);
+      assert.equal(layout.mastheadImageCount, 0);
+      assert.equal(await page.locator(".refresh-indicator").count(), 0);
+      assert.equal(await page.locator(".masthead [role='status']").count(), 0);
+      assert.equal(layout.source, "/weather-icons/03-partly-cloudy.svg");
+      assert.equal(layout.title.bottom <= layout.header.bottom + 1, true);
+      assert.equal(layout.title.left >= layout.header.left - 1, true);
+      assert.equal(layout.title.right <= layout.actions.left + 1, true);
+      assert.equal(layout.title.top >= layout.header.top - 1, true);
+      assert.equal(layout.titleClippedHorizontally, false, JSON.stringify({ width, layout }));
+      assert.equal(layout.titleClippedVertically, false, JSON.stringify({ width, layout }));
+      assert.equal(layout.titleIsDirectChild, true);
+      assert.equal(layout.titleText, "Ballydídean Weather");
+      const baselineTitleSize = baselineTitleSizes.get(width);
+
+      // keep the largest useful one-line scale after removing the visible switch label
+      if (baselineTitleSize === undefined) {
+        throw new Error(`missing title baseline for ${String(width)}px`);
+      }
+
+      assert.equal(layout.fontSize <= baselineTitleSize + 0.1, true, JSON.stringify({ width, layout }));
+      assert.equal(layout.fontSize >= baselineTitleSize * 0.85, true, JSON.stringify({ width, layout }));
+      assert.equal(layout.lineCount, 1);
+      assert.equal(layout.wrappedClass, false);
+    }
+
+    const currentReadsBeforeBoundary = fixture.state.requests.filter(
+      // count current data independently of clock-only artwork changes
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    await page.clock.fastForward(10 * 60_000 + 2_000);
+    await page.waitForFunction(
+      // require the scheduled sunset replacement
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/15-partly-cloudy-night.svg",
+    );
+    assert.equal((await captureHeaderAndNow()).alt, "Current weather: Partly cloudy night");
+    assert.equal(fixture.state.requests.filter(
+      // keep the sunset boundary data-free
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length, currentReadsBeforeBoundary);
+
+    await page.clock.setSystemTime(new Date(sunset.getTime() - 1_000));
+    await page.evaluate(
+      // simulate a foreground resume immediately before sunset
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await page.waitForFunction(
+      // restore the daylight artwork without a weather request
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    await page.clock.setSystemTime(new Date(sunset.getTime() + 1_000));
+    await page.evaluate(
+      // simulate a foreground resume immediately after sunset
+      () => document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await page.waitForFunction(
+      // restore the night artwork from retained conditions
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/15-partly-cloudy-night.svg",
+    );
+    assert.equal(fixture.state.requests.filter(
+      // keep both visibility refreshes data-free
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length, currentReadsBeforeBoundary);
+
+    await page.setViewportSize({ height: 900, width: 320 });
+    const originalIcon = await page.locator("img.section-nav-weather-icon").elementHandle();
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    const previousToggleState = await toggle.getAttribute("aria-checked");
+
+    // require the current image before proving its replacement
+    if (originalIcon === null) {
+      throw new Error("now weather icon is unavailable before rerender");
+    }
+
+    await toggle.click();
+    await page.waitForFunction(
+      // require the controller to replace the old navigation artwork
+      ([image, state]) => !image.isConnected &&
+        document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") !== state,
+      [originalIcon, previousToggleState],
+    );
+    const rerenderedLayout = await captureHeaderAndNow();
+    assert.equal(Math.abs(rerenderedLayout.header.height - 51.96875) < 1, true);
+    assert.equal(rerenderedLayout.alt, "Current weather: Partly cloudy night");
+    assert.equal(rerenderedLayout.lineCount, 1);
+    assert.equal(rerenderedLayout.mastheadImageCount, 0);
+    assert.equal(rerenderedLayout.titleClippedHorizontally, false);
+    assert.equal(rerenderedLayout.titleClippedVertically, false);
+    assert.equal(rerenderedLayout.wrappedClass, false);
+
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    await page.locator(".forecast-panel").waitFor();
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await page.locator(".masthead-brand").count(), 0);
+    assert.equal(await page.locator(".masthead h1").innerText(), "Ballydídean Weather");
+    assert.equal(await nowLink.getAttribute("href"), "/");
+    assert.equal(await nowLink.getAttribute("aria-current"), null);
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("alt"), "Current weather: Partly cloudy night");
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("src"), "/weather-icons/15-partly-cloudy-night.svg");
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
+    await nowLink.click();
+    await page.waitForURL(`${fixture.origin}/`);
+    assert.equal((await captureHeaderAndNow()).lineCount, 1);
+  } finally {
+    // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// keep local and history routes from fetching current data solely for navigation artwork
+test("Now weather artwork preserves state across routes without widening fetch contracts", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 768 },
+    });
+    let raining = false;
+    await page.clock.setFixedTime(new Date("2026-08-22T20:00:00Z"));
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // switch only the preferred sensor rain rate
+        (record) => record.provenance.sourceKind === "physical_sensor"
+          ? {
+              ...record,
+              metrics: {
+                ...record.metrics,
+                precipitationRateMmPerHour: raining ? 3 : 0,
+                windSpeedMps: 2.5,
+              },
+            }
+          : record,
+      );
+      await route.fulfill({ json: body, response });
+    });
+    const currentReads = () => fixture.state.requests.filter(
+      // count only the exact current endpoint
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    const historyReads = () => fixture.state.requests.filter(
+      // count each history page or filter request
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/history"),
+    ).length;
+    const nowLink = page.getByRole("link", { name: "Now", exact: true });
+    const nowIcon = nowLink.locator("img.section-nav-weather-icon");
+
+    await page.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    await nowIcon.waitFor();
+    assert.equal(currentReads(), 0);
+    assert.equal(historyReads(), 0);
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await nowLink.getAttribute("aria-label"), "Now");
+    assert.equal(await nowIcon.getAttribute("alt"), "Current weather: Conditions unavailable");
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/12-unavailable.svg");
+    assert.equal(await nowIcon.getAttribute("width"), "32");
+    assert.equal(await nowIcon.getAttribute("height"), "32");
+    assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
+
+    await page.getByRole("link", { name: "Logs", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/logs`);
+    await page.locator("table caption").waitFor();
+    assert.equal(currentReads(), 0);
+    assert.equal(historyReads(), 1);
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/12-unavailable.svg");
+
+    await nowLink.click();
+    await page.waitForURL(`${fixture.origin}/`);
+    await page.waitForFunction(
+      // require current data to replace the missing-state artwork
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    assert.equal(currentReads(), 1);
+    assert.equal(historyReads(), 1);
+    assert.equal(await nowIcon.getAttribute("alt"), "Current weather: Partly cloudy");
+
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/settings`);
+    assert.equal(currentReads(), 1);
+    assert.equal(historyReads(), 1);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/03-partly-cloudy.svg");
+    await page.getByRole("link", { name: "Logs", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/logs`);
+    await page.locator("table caption").waitFor();
+    assert.equal(currentReads(), 1);
+    assert.equal(historyReads(), 2);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/03-partly-cloudy.svg");
+
+    raining = true;
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    await page.waitForURL(`${fixture.origin}/forecast`);
+    await page.waitForFunction(
+      // require route data to update the retained now illustration
+      () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/09-heavy-rain.svg",
+    );
+    assert.equal(currentReads(), 2);
+    assert.equal(historyReads(), 2);
+    assert.equal(await page.locator(".masthead img").count(), 0);
+    assert.equal(await nowIcon.getAttribute("alt"), "Current weather: Heavy rain");
+    assert.equal(await nowLink.getAttribute("aria-current"), null);
+    await nowLink.click();
+    await page.waitForURL(`${fixture.origin}/`);
+    assert.equal(await nowIcon.getAttribute("src"), "/weather-icons/09-heavy-rain.svg");
+    assert.equal(await nowLink.getAttribute("aria-current"), "page");
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// retain one sanitized current-condition summary without flashing unavailable artwork
+test("Now weather artwork restores a safe cache and settles cold skeletons honestly", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const cacheKey = "weather.now-icon.ballydidean.v1";
+    const sunset = eveningSunTimes(site, new Date("2026-08-22T20:00:00.000Z")).sunset;
+
+    // require one deterministic near-sunset cache window
+    if (sunset === null) {
+      throw new Error("fixture sunset is unavailable");
+    }
+
+    const now = new Date(sunset.getTime() - 10 * 60_000);
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    let rain = 0;
+    let responseMode = "usable";
+    const currentGates = [];
+
+    // hold exactly one upcoming current read
+    const holdNextCurrent = () => {
+      let markStarted;
+      let release;
+      const started = new Promise(
+        // expose the request interception boundary
+        (resolveStarted) => {
+          markStarted = resolveStarted;
+        },
+      );
+      const pending = new Promise(
+        // expose the response release boundary
+        (resolveRelease) => {
+          release = resolveRelease;
+        },
+      );
+      currentGates.push({ markStarted, pending });
+      return { release, started };
+    };
+    // read one complete navigation-artwork state
+    const readNowArtwork = async (targetPage = page) => await targetPage.locator(".section-nav-home").evaluate(
+      // distinguish loading, weather, and unavailable artwork
+      (home) => {
+        const image = home.querySelector("img.section-nav-weather-icon");
+        const skeleton = home.querySelector(".section-nav-weather-skeleton");
+        const skeletonBounds = skeleton?.getBoundingClientRect();
+        return {
+          alt: image?.getAttribute("alt") ?? null,
+          imageCount: home.querySelectorAll("img.section-nav-weather-icon").length,
+          skeletonAriaLabel: skeleton?.getAttribute("aria-label") ?? null,
+          skeletonClasses: skeleton === null ? [] : [...skeleton.classList],
+          skeletonCount: home.querySelectorAll(".section-nav-weather-skeleton").length,
+          skeletonHeight: skeletonBounds?.height ?? null,
+          skeletonRole: skeleton?.getAttribute("role") ?? null,
+          skeletonWidth: skeletonBounds?.width ?? null,
+          source: image instanceof HTMLImageElement ? new URL(image.src).pathname : null,
+        };
+      },
+    );
+    // decode the bounded cache payload
+    const readCache = async (targetPage = page) => await targetPage.evaluate((key) => {
+      const value = localStorage.getItem(key);
+      return value === null ? null : JSON.parse(value);
+    }, cacheKey);
+    // count only reads that could reveal current private sensor state
+    const currentReads = () => fixture.state.requests.filter(
+      // keep the exact current endpoint separate from route-local requests
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    // read every distinct artwork state painted in the current document
+    const observedArtwork = async (targetPage = page) => await targetPage.evaluate(
+      () => window.__weatherNowArtworkStates ?? [],
+    );
+
+    await page.clock.setFixedTime(now);
+    await page.addInitScript(() => {
+      const states = [];
+      window.__weatherNowArtworkStates = states;
+      // retain only distinct rendered loading or image states
+      const record = () => {
+        const image = document.querySelector("img.section-nav-weather-icon");
+        const skeleton = document.querySelector(".section-nav-weather-skeleton");
+        const state = skeleton !== null
+          ? "loading"
+          : image instanceof HTMLImageElement
+            ? new URL(image.src).pathname
+            : null;
+
+        // skip missing and duplicate mutation records
+        if (state !== null && states.at(-1) !== state) {
+          states.push(state);
+        }
+      };
+      const observer = new MutationObserver(
+        // sample each complete render replacement
+        () => record(),
+      );
+      observer.observe(document, { childList: true, subtree: true });
+      document.addEventListener("DOMContentLoaded", record, { once: true });
+    });
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      const gate = currentGates.shift();
+
+      // expose a deliberately pending current read
+      if (gate !== undefined) {
+        gate.markStarted();
+        await gate.pending;
+      }
+
+      // return one explicit outage without hiding the restored cache
+      if (responseMode === "failure") {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable" } }) });
+        return;
+      }
+
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // vary only fields admitted to the icon cache
+        (record) => {
+          // make one successful response intentionally unusable
+          if (responseMode === "unavailable") {
+            return {
+              ...record,
+              metrics: {
+                ...record.metrics,
+                cloudCoverPercent: record.provenance.sourceKind === "model_current"
+                  ? null
+                  : record.metrics.cloudCoverPercent,
+                precipitationRateMmPerHour: record.provenance.sourceKind === "physical_sensor"
+                  ? null
+                  : record.metrics.precipitationRateMmPerHour,
+              },
+            };
+          }
+
+          // keep clouds modeled and rain plus wind sensor-derived
+          return record.provenance.sourceKind === "physical_sensor"
+            ? {
+                ...record,
+                metrics: {
+                  ...record.metrics,
+                  precipitationRateMmPerHour: rain,
+                  windSpeedMps: 2.5,
+                },
+              }
+            : record;
+        },
+      );
+      await route.fulfill({ json: body, response });
+    });
+
+    const coldGate = holdNextCurrent();
+    await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    await coldGate.started;
+    await page.getByRole("img", { name: "Loading current weather", exact: true }).waitFor();
+    const cold = await readNowArtwork();
+    assert.deepEqual(cold, {
+      alt: null,
+      imageCount: 0,
+      skeletonAriaLabel: "Loading current weather",
+      skeletonClasses: ["section-nav-weather-icon", "section-nav-weather-skeleton", "skeleton-line"],
+      skeletonCount: 1,
+      skeletonHeight: 32,
+      skeletonRole: "img",
+      skeletonWidth: 32,
+      source: null,
+    });
+    assert.deepEqual(await observedArtwork(), ["loading"]);
+    const coldScreenshot = await page.screenshot();
+    assert.ok(coldScreenshot.byteLength > 500);
+    coldGate.release();
+    await page.waitForFunction(
+      // require live current data to replace the cold skeleton
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    assert.deepEqual(await readCache(), {
+      cachedAt: now.getTime(),
+      cloud: 42,
+      rain: 0,
+      windy: false,
+    });
+
+    rain = 3;
+    const warmGate = holdNextCurrent();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await warmGate.started;
+    assert.deepEqual(await readNowArtwork(), {
+      alt: "Current weather: Partly cloudy",
+      imageCount: 1,
+      skeletonAriaLabel: null,
+      skeletonClasses: [],
+      skeletonCount: 0,
+      skeletonHeight: null,
+      skeletonRole: null,
+      skeletonWidth: null,
+      source: "/weather-icons/03-partly-cloudy.svg",
+    });
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/03-partly-cloudy.svg"]);
+    const warmScreenshot = await page.screenshot();
+    assert.ok(warmScreenshot.byteLength > 500);
+    warmGate.release();
+    await page.waitForFunction(
+      // let newer live rain replace the warm cached illustration
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/09-heavy-rain.svg",
+    );
+    assert.deepEqual(await observedArtwork(), [
+      "/weather-icons/03-partly-cloudy.svg",
+      "/weather-icons/09-heavy-rain.svg",
+    ]);
+    assert.deepEqual(await readCache(), {
+      cachedAt: now.getTime(),
+      cloud: 42,
+      rain: 3,
+      windy: false,
+    });
+
+    rain = 0;
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction(
+      // refresh the cache back to one sun-bearing summary
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    const currentReadsBeforeLocalRoutes = currentReads();
+
+    await page.clock.setFixedTime(new Date(sunset.getTime() + 1_000));
+    await page.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    assert.equal(currentReads(), currentReadsBeforeLocalRoutes);
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/15-partly-cloudy-night.svg"]);
+    await page.goto(`${fixture.origin}/logs`, { waitUntil: "networkidle" });
+    await page.locator("table caption").waitFor({ state: "attached" });
+    assert.equal(currentReads(), currentReadsBeforeLocalRoutes);
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/15-partly-cloudy-night.svg"]);
+
+    responseMode = "failure";
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/15-partly-cloudy-night.svg"]);
+    assert.deepEqual(await readCache(), {
+      cachedAt: now.getTime(),
+      cloud: 42,
+      rain: 0,
+      windy: false,
+    });
+
+    responseMode = "unavailable";
+    const missingGate = holdNextCurrent();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await missingGate.started;
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    missingGate.release();
+    await page.waitForFunction(
+      // clear stale cache only after a successful unavailable response
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/12-unavailable.svg",
+    );
+    assert.equal(await readCache(), null);
+    assert.deepEqual(await observedArtwork(), [
+      "/weather-icons/15-partly-cloudy-night.svg",
+      "loading",
+      "/weather-icons/12-unavailable.svg",
+    ]);
+
+    const invalidPage = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    await invalidPage.clock.setFixedTime(now);
+    await invalidPage.addInitScript(({ key }) => {
+      localStorage.setItem(key, "{not-json");
+    }, { key: cacheKey });
+    let releaseInvalidCurrent;
+    const invalidCurrentPending = new Promise(
+      // hold the invalid-cache fallback in its cold loading state
+      (resolveRelease) => {
+        releaseInvalidCurrent = resolveRelease;
+      },
+    );
+    await invalidPage.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      await invalidCurrentPending;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable" } }) });
+    });
+    await invalidPage.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    await invalidPage.getByRole("img", { name: "Loading current weather", exact: true }).waitFor();
+    assert.equal((await readNowArtwork(invalidPage)).imageCount, 0);
+    releaseInvalidCurrent();
+    await invalidPage.waitForFunction(
+      // settle a failed cold read to honest unavailable artwork
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/12-unavailable.svg",
+    );
+    await invalidPage.close();
+
+    const expiredPage = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    await expiredPage.clock.setFixedTime(now);
+    await expiredPage.addInitScript(({ key, value }) => {
+      localStorage.setItem(key, JSON.stringify(value));
+    }, {
+      key: cacheKey,
+      value: { cachedAt: now.getTime() - 30 * 60_000 - 1, cloud: 42, rain: 0, windy: false },
+    });
+    const expiredReadsBefore = currentReads();
+    await expiredPage.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    assert.equal(currentReads(), expiredReadsBefore);
+    assert.deepEqual(await readNowArtwork(expiredPage), {
+      alt: "Current weather: Conditions unavailable",
+      imageCount: 1,
+      skeletonAriaLabel: null,
+      skeletonClasses: [],
+      skeletonCount: 0,
+      skeletonHeight: null,
+      skeletonRole: null,
+      skeletonWidth: null,
+      source: "/weather-icons/12-unavailable.svg",
+    });
+    await expiredPage.close();
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// scale one standalone switch with the visible title while preserving its complete interaction contract
+test("adjustment switch scales with the title and moves a solid muted-gold or gray sparkle", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "active";
+    const page = await createFixturePage(browser, {
+      hasTouch: true,
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 844, width: 320 },
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    // capture the switch after each input-driven rerender
+    const captureSwitch = async () => await toggle.evaluate(
+      // measure the visible control and its complete artwork contract
+      (button) => {
+        const track = button.querySelector(".forecast-adjustment-toggle-track");
+        const thumb = track?.querySelector(".forecast-adjustment-toggle-thumb");
+        const sparkle = thumb?.querySelector("svg.forecast-adjustment-sparkle");
+        const ink = sparkle?.querySelector(".forecast-adjustment-sparkle-ink");
+        const masthead = button.closest(".masthead");
+        const title = masthead?.querySelector("h1");
+        const titleText = title?.querySelector(".masthead-title-text");
+
+        // require every switch layer
+        if (
+          !(track instanceof HTMLElement) ||
+          !(thumb instanceof HTMLElement) ||
+          !(sparkle instanceof SVGElement) ||
+          !(ink instanceof SVGElement) ||
+          !(masthead instanceof HTMLElement) ||
+          !(title instanceof HTMLElement) ||
+          !(titleText instanceof HTMLElement)
+        ) {
+          throw new Error("adjustment sparkle switch is incomplete");
+        }
+
+        // compare the nested artwork bounds
+        const bounds = (element) => {
+          const rectangle = element.getBoundingClientRect();
+          return {
+            bottom: rectangle.bottom,
+            height: rectangle.height,
+            left: rectangle.left,
+            right: rectangle.right,
+            top: rectangle.top,
+            width: rectangle.width,
+          };
+        };
+        const buttonBounds = bounds(button);
+        const buttonStyle = getComputedStyle(button);
+        const sparkleBounds = bounds(sparkle);
+        const sparkleStyle = getComputedStyle(sparkle);
+        const thumbBounds = bounds(thumb);
+        const trackBounds = bounds(track);
+        const titleBounds = bounds(title);
+        const titleStyle = getComputedStyle(title);
+        const titleWordBounds = [...titleText.querySelectorAll("span")].map(
+          // measure each visible title word
+          (word) => word.getBoundingClientRect(),
+        );
+
+        return {
+          adjustmentHeight: Number.parseFloat(getComputedStyle(masthead).getPropertyValue("--adjustment-switch-height")),
+          ariaChecked: button.getAttribute("aria-checked"),
+          ariaLabel: button.getAttribute("aria-label"),
+          button: buttonBounds,
+          buttonBackground: buttonStyle.backgroundColor,
+          buttonBorderWidths: [
+            buttonStyle.borderTopWidth,
+            buttonStyle.borderRightWidth,
+            buttonStyle.borderBottomWidth,
+            buttonStyle.borderLeftWidth,
+          ],
+          buttonBoxShadow: buttonStyle.boxShadow,
+          buttonFocused: document.activeElement === button,
+          buttonOutlineStyle: buttonStyle.outlineStyle,
+          buttonOutlineWidth: buttonStyle.outlineWidth,
+          gradientElementCount: sparkle.querySelectorAll("defs, linearGradient, stop").length,
+          inkFill: ink.getAttribute("fill"),
+          inkRenderedFill: getComputedStyle(ink).fill,
+          inkRenderedStroke: getComputedStyle(ink).stroke,
+          inkStroke: ink.getAttribute("stroke"),
+          masthead: bounds(masthead),
+          sparkle: sparkleBounds,
+          sparkleCentered: Math.abs(
+            sparkleBounds.left + sparkleBounds.width / 2 -
+              (thumbBounds.left + thumbBounds.width / 2),
+          ) < 1 && Math.abs(
+            sparkleBounds.top + sparkleBounds.height / 2 -
+              (thumbBounds.top + thumbBounds.height / 2),
+          ) < 1,
+          sparkleDisplay: sparkleStyle.display,
+          sparkleHiddenByParent: sparkle.closest('[aria-hidden="true"]') !== null,
+          sparkleOpacity: sparkleStyle.opacity,
+          sparkleTitleCount: sparkle.querySelectorAll("title").length,
+          sparkleColor: sparkleStyle.color,
+          text: button.textContent?.trim(),
+          thumb: thumbBounds,
+          thumbRightInset: trackBounds.right - thumbBounds.right,
+          thumbTopInset: thumbBounds.top - trackBounds.top,
+          thumbContained: thumbBounds.left >= trackBounds.left &&
+            thumbBounds.left + thumbBounds.width <= trackBounds.left + trackBounds.width &&
+            thumbBounds.top >= trackBounds.top &&
+            thumbBounds.top + thumbBounds.height <= trackBounds.top + trackBounds.height,
+          tone: sparkle.getAttribute("data-sparkle-tone"),
+          track: trackBounds,
+          trackBackground: getComputedStyle(track).backgroundColor,
+          trackBackgroundImage: getComputedStyle(track).backgroundImage,
+          trackBorderColor: getComputedStyle(track).borderTopColor,
+          titleClipped: titleWordBounds.some(
+            // keep every word inside the single-line title box
+            (word) => word.left < titleBounds.left - 1 || word.right > titleBounds.right + 1,
+          ),
+          titleFontSize: Number.parseFloat(titleStyle.fontSize),
+          titleLines: new Set(titleWordBounds.map(
+            // merge words sharing one rendered line
+            (word) => Math.round(word.top),
+          )).size,
+        };
+      },
+    );
+
+    const assertSwitchGeometry = (snapshot) => {
+      const inset = (snapshot.track.height - snapshot.thumb.height) / 2;
+      const expectedSparkleSize = Math.min(18, snapshot.thumb.width * 0.7);
+      assert.equal(Math.abs(snapshot.adjustmentHeight - snapshot.titleFontSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.track.height - snapshot.titleFontSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.track.width - snapshot.track.height * 1.75) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.track.height - snapshot.thumb.height - 4) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.thumb.width - snapshot.thumb.height) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.thumbTopInset - inset) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.sparkle.width - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.sparkle.height - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(snapshot.sparkle.width <= 18, true);
+      assert.equal(snapshot.button.width >= Math.max(44, snapshot.track.width) - 0.25, true);
+      assert.equal(snapshot.button.height >= snapshot.track.height - 0.25, true);
+      assert.equal(snapshot.buttonBackground, "rgba(0, 0, 0, 0)");
+      assert.deepEqual(snapshot.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+      assert.equal(snapshot.buttonBoxShadow, "none");
+      assert.equal(snapshot.sparkleCentered, true);
+      assert.notEqual(snapshot.sparkleDisplay, "none");
+      assert.equal(snapshot.sparkleHiddenByParent, true);
+      assert.equal(snapshot.sparkleOpacity, "1");
+      assert.equal(snapshot.sparkleTitleCount, 0);
+      assert.equal(snapshot.thumbContained, true);
+      assert.equal(snapshot.gradientElementCount, 0);
+      assert.equal(snapshot.inkFill, "currentColor");
+      assert.equal(snapshot.inkStroke, "currentColor");
+      assert.equal(snapshot.titleClipped, false, JSON.stringify(snapshot));
+      assert.equal(snapshot.titleLines, 1, JSON.stringify(snapshot));
+    };
+    const preferredTitleSizes = new Map([
+      [320, 20],
+      [412, 25.75],
+      [768, 38.4],
+      [1280, 56],
+    ]);
+    const baselineHeaderHeights = new Map([
+      [320, 51.96875],
+      [412, 51.96875],
+      [768, 58.390625],
+      [1280, 74.390625],
+    ]);
+
+    // compare the responsive title, hit-area, and artwork contracts together
+    for (const width of [320, 412, 768, 1280]) {
+      await page.setViewportSize({ height: 900, width });
+      await page.evaluate(
+        // settle both title sizing and bundled fonts
+        async () => await document.fonts.ready,
+      );
+      await page.waitForFunction(
+        // await the fitted title variable after each resize
+        () => {
+          const title = document.querySelector(".home-masthead h1");
+          const track = document.querySelector(".forecast-adjustment-toggle-track");
+          return title instanceof HTMLElement && track instanceof HTMLElement &&
+            Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+        },
+      );
+      const responsive = await captureSwitch();
+      const preferredTitleSize = preferredTitleSizes.get(width);
+      const baselineHeaderHeight = baselineHeaderHeights.get(width);
+
+      // require one explicit baseline for every viewport
+      if (preferredTitleSize === undefined || baselineHeaderHeight === undefined) {
+        throw new Error(`missing switch baseline for ${String(width)}px`);
+      }
+
+      assertSwitchGeometry(responsive);
+      assert.equal(responsive.ariaChecked, "true");
+      assert.equal(Math.abs(responsive.button.width - Math.max(44, preferredTitleSize * 1.75)) < 0.5, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.button.height - Math.max(width <= 672 ? 37.6 : 40, preferredTitleSize)) < 0.5, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.masthead.height - baselineHeaderHeight) < 1, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.thumbRightInset - (responsive.track.height - responsive.thumb.height) / 2) < 0.25, true);
+    }
+
+    await page.setViewportSize({ height: 900, width: 320 });
+    const scaledTitleSizes = [];
+    // prove reduced and enlarged browser text still drive the visible track
+    for (const rootSize of [12, 20]) {
+      await page.evaluate((size) => {
+        document.documentElement.style.fontSize = `${String(size)}px`;
+      }, rootSize);
+      await page.waitForFunction(
+        // await the resize observer's fitted switch variable
+        () => {
+          const title = document.querySelector(".home-masthead h1");
+          const track = document.querySelector(".forecast-adjustment-toggle-track");
+          return title instanceof HTMLElement && track instanceof HTMLElement &&
+            Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+        },
+      );
+      const scaled = await captureSwitch();
+      assertSwitchGeometry(scaled);
+      scaledTitleSizes.push(scaled.titleFontSize);
+    }
+    assert.equal((scaledTitleSizes[0] ?? 0) < (scaledTitleSizes[1] ?? 0), true, JSON.stringify(scaledTitleSizes));
+    await page.evaluate(
+      // restore the default browser text scale before interaction checks
+      () => document.documentElement.style.removeProperty("font-size"),
+    );
+    await page.waitForFunction(
+      // await the default fitted switch variable
+      () => {
+        const title = document.querySelector(".home-masthead h1");
+        const track = document.querySelector(".forecast-adjustment-toggle-track");
+        return title instanceof HTMLElement && track instanceof HTMLElement &&
+          Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+      },
+    );
+
+    const enabled = await captureSwitch();
+    assertSwitchGeometry(enabled);
+    assert.equal(enabled.ariaChecked, "true");
+    assert.equal(enabled.ariaLabel, "Adjusted");
+    assert.equal(enabled.text, "");
+    assert.equal(enabled.tone, "gold");
+    assert.equal(enabled.inkRenderedFill, "rgb(197, 138, 16)");
+    assert.equal(enabled.inkRenderedStroke, "rgb(197, 138, 16)");
+    assert.equal(enabled.sparkleColor, "rgb(197, 138, 16)");
+    assert.match(
+      enabled.trackBackgroundImage,
+      /^linear-gradient\(135deg, rgb\(189, 145, 48\) 0%, rgb\(217, 181, 85\) 35%, rgb\(230, 205, 137\) 50%, rgb\(212, 172, 69\) 70%, rgb\(189, 145, 48\) 100%\)$/u,
+    );
+    assert.doesNotMatch(enabled.trackBackgroundImage, /rgb\(255, 240, 168\)/u);
+
+    await toggle.click();
+    await page.waitForFunction(
+      // await the raw-state redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+    );
+    await page.waitForTimeout(200);
+    const disabled = await captureSwitch();
+    assertSwitchGeometry(disabled);
+    assert.equal(disabled.ariaChecked, "false");
+    assert.equal(disabled.ariaLabel, "Adjusted");
+    assert.equal(disabled.text, "");
+    assert.equal(disabled.track.width, enabled.track.width);
+    assert.equal(disabled.track.height, enabled.track.height);
+    assert.equal(disabled.thumb.width, enabled.thumb.width);
+    assert.equal(disabled.thumb.height, enabled.thumb.height);
+    assert.equal(disabled.sparkle.width, enabled.sparkle.width);
+    assert.equal(disabled.sparkle.height, enabled.sparkle.height);
+    assert.equal(disabled.tone, "gray");
+    assert.equal(disabled.inkRenderedFill, "rgb(119, 116, 124)");
+    assert.equal(disabled.inkRenderedStroke, "rgb(119, 116, 124)");
+    assert.equal(disabled.sparkleColor, "rgb(119, 116, 124)");
+    assert.equal(Math.abs(disabled.thumb.left - disabled.track.left - (disabled.track.height - disabled.thumb.height) / 2) < 0.25, true);
+    assert.equal(Math.abs(enabled.thumb.left - disabled.thumb.left - (enabled.track.width - enabled.track.height)) < 0.5, true);
+    assert.equal(disabled.trackBackgroundImage, "none");
+    assert.notEqual(enabled.trackBackground, disabled.trackBackground);
+    assert.notEqual(enabled.trackBorderColor, disabled.trackBorderColor);
+
+    await toggle.hover();
+    const hovered = await captureSwitch();
+    assert.equal(hovered.buttonBackground, "rgba(0, 0, 0, 0)");
+    assert.deepEqual(hovered.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+    assert.equal(hovered.buttonBoxShadow, "none");
+    await page.evaluate(
+      // establish the switch as the origin for keyboard traversal
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.focus(),
+    );
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    const focused = await captureSwitch();
+    assert.equal(focused.buttonFocused, true);
+    assert.equal(focused.buttonBackground, "rgba(0, 0, 0, 0)");
+    assert.deepEqual(focused.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
+    assert.equal(focused.buttonBoxShadow, "none");
+    assert.equal(focused.buttonOutlineStyle, "solid");
+    assert.equal(Number.parseFloat(focused.buttonOutlineWidth) >= 3, true);
+    await toggle.press("Space");
+    await page.waitForFunction(
+      // await the keyboard-triggered adjusted redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true",
+    );
+    await page.waitForTimeout(200);
+    const keyboardEnabled = await captureSwitch();
+    assertSwitchGeometry(keyboardEnabled);
+    assert.equal(keyboardEnabled.buttonFocused, true);
+    assert.equal(keyboardEnabled.tone, "gold");
+    assert.equal(keyboardEnabled.inkFill, "currentColor");
+    assert.equal(keyboardEnabled.inkStroke, "currentColor");
+    assert.equal(keyboardEnabled.sparkleColor, "rgb(197, 138, 16)");
+    assert.equal(keyboardEnabled.trackBackgroundImage, enabled.trackBackgroundImage);
+    assert.equal(Math.abs(keyboardEnabled.thumb.left - disabled.thumb.left - (keyboardEnabled.track.width - keyboardEnabled.track.height)) < 0.5, true);
+
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.getByRole("switch", { name: "Adjusted", exact: true }).getAttribute("aria-checked"), "true");
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// verify the privacy policy as a static offline document
+test("settings opens a readable no-script privacy policy that remains available offline", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 780, width: 390 },
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.getByRole("link", { name: "Settings" }).click();
+    await page.waitForURL(`${fixture.origin}/settings`);
+    const privacyLink = page.getByRole("link", { name: "Privacy policy" });
+    assert.equal(await privacyLink.getAttribute("href"), "/privacy");
+    assert.equal(await privacyLink.getAttribute("data-weather-route"), null);
+    const privacyDocument = page.waitForResponse(
+      // require a full static document request
+      (response) => response.url() === `${fixture.origin}/privacy` &&
+        response.request().resourceType() === "document",
+    );
+    await privacyLink.click();
+    assert.equal((await privacyDocument).status(), 200);
+    await page.waitForURL(`${fixture.origin}/privacy`);
+    assert.equal(await page.getByRole("heading", { level: 1, name: "Privacy policy" }).isVisible(), true);
+    assert.equal(await page.getByRole("link", { name: "Back to weather" }).getAttribute("href"), "/");
+    assert.equal(await page.locator('a[href^="mailto:"]').getAttribute("href"), "mailto:sanctuary@ballydidean.farm");
+    assert.equal(await page.locator("script").count(), 0);
+    const readability = await page.locator("main").evaluate(
+      // measure rendered mobile readability
+      (main) => {
+        const style = getComputedStyle(main);
+        return {
+          fontSize: Number.parseFloat(style.fontSize),
+          horizontalOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          lineHeight: Number.parseFloat(style.lineHeight),
+          visibleWidth: main.getBoundingClientRect().width,
+        };
+      },
+    );
+    assert.equal(readability.horizontalOverflow, 0);
+    assert.equal(readability.fontSize >= 16, true);
+    assert.equal(readability.lineHeight / readability.fontSize >= 1.4, true);
+    assert.equal(readability.visibleWidth <= 390 && readability.visibleWidth >= 280, true);
+    assert.equal(
+      await page.evaluate(
+        // require one active shell worker before disconnecting
+        async () => (await navigator.serviceWorker.ready).active?.state === "activated",
+      ),
+      true,
+    );
+    await page.context().setOffline(true);
+
+    // require both canonical privacy paths offline
+    for (const pathname of ["/privacy", "/privacy/"]) {
+      const response = await page.goto(`${fixture.origin}${pathname}`, { waitUntil: "domcontentloaded" });
+      assert.equal(response?.status(), 200);
+      assert.equal(await page.getByRole("heading", { level: 1, name: "Privacy policy" }).isVisible(), true);
+    }
+
+    await page.context().setOffline(false);
+    const noScriptPage = await browser.newPage({
+      javaScriptEnabled: false,
+      viewport: { height: 780, width: 320 },
+    });
+    await noScriptPage.goto(`${fixture.origin}/privacy/`, { waitUntil: "load" });
+    assert.equal(await noScriptPage.getByRole("heading", { level: 1, name: "Privacy policy" }).isVisible(), true);
+    assert.equal(await noScriptPage.locator("script").count(), 0);
+    assert.equal(
+      await noScriptPage.evaluate(
+        // prohibit narrow-page overflow without JavaScript
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+      0,
+    );
+    await noScriptPage.close();
+  } finally {
+    // close only disposable browser resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // retain switching and fail-raw behavior without an adjustment infobox
-test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
+test("forecast switch stays accessibly named Adjusted and fail-raw on desktop and mobile", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1152,12 +2357,12 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
       assert.equal(await inactiveToggle.getAttribute("data-forecast-adjustment-fallback"), "true");
       assert.equal(await inactiveToggle.isEnabled(), true);
-      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "");
       const inactiveTemperature = await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent();
       const inactiveWind = await page.locator('[data-forecast-chart="wind"] [data-forecast-value="0"]').textContent();
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await inactiveToggle.textContent() ?? "").trim(), "");
       await inactiveToggle.click();
       assert.equal(await inactiveToggle.getAttribute("aria-checked"), "true");
 
@@ -1166,7 +2371,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       await page.reload({ waitUntil: "networkidle" });
       const adjustmentToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
       assert.equal(await adjustmentToggle.isEnabled(), true);
       assert.equal(
@@ -1200,7 +2405,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       await adjustmentToggle.click();
       const regionalToggle = page.getByRole("switch", { name: "Adjusted", exact: true });
       assert.equal(await regionalToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await regionalToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await regionalToggle.textContent() ?? "").trim(), "");
       assert.equal(await regionalToggle.evaluate(
         // retain keyboard focus through rerenders
         (toggle) => document.activeElement === toggle,
@@ -1222,14 +2427,14 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       // preserve the preference across reloads and both forecast-bearing routes
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "false");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       const rawHomeTemperature = await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent();
       await adjustmentToggle.click();
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       assert.notEqual(
         await page.locator("[data-condition='temperature'] .condition-forecast-readings").textContent(),
         rawHomeTemperature,
@@ -1257,7 +2462,7 @@ test("forecast switch stays labeled Adjusted and fail-raw on desktop and mobile"
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(await adjustmentToggle.getAttribute("aria-checked"), "true");
       assert.equal(await adjustmentToggle.getAttribute("data-forecast-adjustment-available"), "false");
-      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "Adjusted");
+      assert.equal((await adjustmentToggle.textContent() ?? "").trim(), "");
       assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
       assert.equal(
         await page.locator('[data-forecast-chart="temperature"] [data-forecast-value="0"]').textContent(),
@@ -1316,6 +2521,7 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
     await loadingPage.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
     const loadingRange = loadingPage.getByRole("group", { name: "Forecast range" });
     await loadingRange.waitFor();
+    await assertSkeletonLoadingState(loadingPage, ".forecast-panel.skeleton-region");
     assert.equal(await loadingPage.locator(".forecast-range-selector").count(), 1);
     assert.equal(
       await loadingRange.locator("button").evaluateAll(
@@ -1329,6 +2535,7 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
     );
     releaseForecastRead();
     await loadingPage.locator('[data-forecast-charts][data-forecast-days="1"]').waitFor();
+    await assertSkeletonLoadingSettled(loadingPage);
     assert.equal(await loadingRange.locator("button:disabled").count(), 0);
     await loadingPage.close();
 
@@ -1479,8 +2686,8 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
   }
 });
 
-// preserve explicit raw selection with a stable label
-test("wind adjustment keeps an Adjusted label and persists the raw choice", { timeout: 60_000 }, async () => {
+// preserve explicit raw selection with a stable accessible name
+test("wind adjustment keeps an Adjusted accessible name and persists the raw choice", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -1500,7 +2707,7 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
 
     assert.equal(await toggle.isEnabled(), true);
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
       await page.locator("body").evaluate(
@@ -1520,7 +2727,7 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
 
     await toggle.click();
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     assert.equal(await page.locator("[data-forecast-adjustment-status]").count(), 0);
     assert.equal(
       await page.locator('[data-forecast-chart="temperature"]').textContent(),
@@ -1541,16 +2748,16 @@ test("wind adjustment keeps an Adjusted label and persists the raw choice", { ti
 
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
-    await page.getByRole("link", { name: "Home", exact: true }).click();
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
+    await page.getByRole("link", { name: "Now", exact: true }).click();
     assert.equal(await toggle.getAttribute("aria-checked"), "false");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await toggle.click();
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await toggle.getAttribute("aria-checked"), "true");
-    assert.equal((await toggle.textContent() ?? "").trim(), "Adjusted");
+    assert.equal((await toggle.textContent() ?? "").trim(), "");
     await page.close();
   } finally {
     await browser?.close();
@@ -2696,11 +3903,22 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       true,
     );
     const credits = page.locator(".credits details");
+    const projectCredit = page.locator(".project-credit");
+    const projectCreditLink = projectCredit.getByRole("link", {
+      exact: true,
+      name: "Ballydidean Farm Sanctuary",
+    });
     assert.equal(await credits.getAttribute("open"), null);
+    assert.equal(await projectCredit.count(), 1);
+    assert.equal(await projectCredit.isVisible(), true);
+    assert.equal(await projectCredit.innerText(), "Built with love by Ballydidean Farm Sanctuary");
+    assert.equal(await projectCreditLink.getAttribute("href"), "https://ballydidean.farm");
+    assert.equal(await projectCreditLink.getAttribute("rel"), "noreferrer");
     assert.equal(await page.getByRole("link", { name: "Weather data by Open-Meteo" }).isVisible(), false);
     assert.equal(await page.getByRole("link", { name: "CC BY 4.0" }).isVisible(), false);
     await credits.getByText("Data sources & credits", { exact: true }).click();
     assert.equal(await credits.getAttribute("open"), "");
+    assert.equal(await projectCredit.isVisible(), true);
     assert.equal(await page.getByRole("link", { name: "Weather data by Open-Meteo" }).isVisible(), true);
     assert.equal(await page.getByRole("link", { name: "CC BY 4.0" }).isVisible(), true);
     assert.equal(await page.locator(".masthead img").count(), 0);
@@ -2867,12 +4085,166 @@ test("anonymous home-network viewers see indoor and soil panels only while allow
     await page.waitForURL(`${fixture.origin}/forecast`);
     assert.equal(await page.locator("[data-indoor-house]").count(), 0);
     fixture.state.viewerContext = { data: { homeNetwork: false } };
-    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
     await page.waitForURL(fixture.origin + "/");
     assert.equal(await page.locator("[data-indoor-house]").count(), 0);
 
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
     assert.equal(await page.getByRole("heading", { name: "Admin sign in" }).isVisible(), true);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// apply outdoor temperature tones to authorized indoor readings without coupling them to display units
+test("indoor temperatures use discrete comfort colors across loading, units, and missing readings", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    let releaseInitialCurrent;
+    const initialCurrentReleased = new Promise(
+      // expose the neutral indoor loading state before current readings arrive
+      (resolveRelease) => {
+        releaseInitialCurrent = resolveRelease;
+      },
+    );
+    let holdInitialCurrent = true;
+    let indoorTemperatures = new Map([
+      ["gateway", 12],
+      ["temperature-1", 20],
+      ["temperature-2", 24],
+    ]);
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      // hold only the first current read behind the visible house skeleton
+      if (holdInitialCurrent) {
+        await initialCurrentReleased;
+      }
+
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // replace only fixture property-sensor temperatures
+        (record) => record.provenance.sourceKind === "physical_sensor"
+          ? {
+              ...record,
+              metadata: {
+                ...record.metadata,
+                provider: {
+                  ...record.metadata.provider,
+                  propertySensors: record.metadata.provider.propertySensors.map(
+                    // retain every unrelated sensor reading
+                    (sensor) => indoorTemperatures.has(sensor.key)
+                      ? {
+                          ...sensor,
+                          readings: {
+                            ...sensor.readings,
+                            temperatureC: indoorTemperatures.get(sensor.key),
+                          },
+                        }
+                      : sensor,
+                  ),
+                },
+              },
+            }
+          : record,
+      );
+      await route.fulfill({ json: body, response });
+    });
+    const readIndoor = async () => await page.evaluate(
+      // capture the current attached house and its painted tones atomically
+      () => {
+        const house = document.querySelector("[data-indoor-house]");
+
+        // reject missing or detached render snapshots
+        if (!(house instanceof HTMLElement) || !house.isConnected) {
+          throw new Error("indoor house is unavailable");
+        }
+
+        return {
+          readings: [...house.querySelectorAll(".indoor-house-temperature")].map(
+            // inspect one rendered reading
+            (reading) => ({
+              color: getComputedStyle(reading).color,
+              tone: [...reading.classList].find((className) => className.startsWith("condition-forecast-tone-")),
+            }),
+          ),
+          text: [...house.querySelectorAll(".indoor-house-level")].map(
+            // retain the physical floor order
+            (level) => level.textContent,
+          ),
+        };
+      },
+    );
+
+    await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    const house = page.locator("[data-indoor-house]");
+    await house.waitFor();
+    assert.equal(await house.getAttribute("aria-busy"), "true");
+    assert.deepEqual((await readIndoor()).readings, Array.from({ length: 3 }, () => ({
+      color: "rgb(0, 0, 0)",
+      tone: "condition-forecast-tone-neutral",
+    })));
+    assert.equal(await house.locator(".skeleton-temperature").count(), 3);
+
+    holdInitialCurrent = false;
+    releaseInitialCurrent();
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
+    assert.equal(await page.locator("html").getAttribute("data-weather-admin"), "false");
+    assert.deepEqual(await readIndoor(), {
+      readings: [
+        { color: "rgb(56, 120, 197)", tone: "condition-forecast-tone-blue" },
+        { color: "rgb(67, 151, 86)", tone: "condition-forecast-tone-green" },
+        { color: "rgb(239, 126, 31)", tone: "condition-forecast-tone-orange" },
+      ],
+      text: ["Second floor54°F", "First floor68°F", "Basement75°F"],
+    });
+    assert.ok((await house.screenshot()).byteLength > 500);
+
+    await page.getByRole("link", { name: "Settings" }).click();
+    await page.waitForURL(`${fixture.origin}/settings`);
+    assert.equal(await page.locator("[data-indoor-house]").count(), 0);
+    const settings = page.getByRole("region", { name: "Measurement units" });
+    await settings.locator("select[name='temperature']").selectOption("celsius");
+    await settings.getByRole("button", { name: "Save units" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
+    await page.waitForURL(`${fixture.origin}/`);
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
+    assert.deepEqual(await readIndoor(), {
+      readings: [
+        { color: "rgb(56, 120, 197)", tone: "condition-forecast-tone-blue" },
+        { color: "rgb(67, 151, 86)", tone: "condition-forecast-tone-green" },
+        { color: "rgb(239, 126, 31)", tone: "condition-forecast-tone-orange" },
+      ],
+      text: ["Second floor12°C", "First floor20°C", "Basement24°C"],
+    });
+    await page.setViewportSize({ height: 900, width: 1280 });
+    assert.ok((await house.screenshot()).byteLength > 500);
+
+    indoorTemperatures = new Map([
+      ["gateway", null],
+      ["temperature-1", 20],
+      ["temperature-2", 28],
+    ]);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
+    assert.deepEqual(await readIndoor(), {
+      readings: [
+        { color: "rgb(0, 0, 0)", tone: "condition-forecast-tone-neutral" },
+        { color: "rgb(67, 151, 86)", tone: "condition-forecast-tone-green" },
+        { color: "rgb(207, 67, 55)", tone: "condition-forecast-tone-red" },
+      ],
+      text: ["Second floor—", "First floor20°C", "Basement28°C"],
+    });
+    assert.equal(fixture.state.requests.some((entry) => entry.includes("/api/v1/admin/")), false);
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -3168,7 +4540,7 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
     assert.equal(fixture.state.adminUpdates, 1);
     assert.equal(fixture.state.propertySensorLayout[0].displayName, "North orchard soil");
     assert.equal(fixture.state.propertySensorLayout[0].icon, "air-quality");
-    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
     await page.getByRole("heading", { name: "Indoor temperatures" }).waitFor();
     assert.deepEqual(
       await page.locator(".indoor-house-level").allTextContents(),
@@ -3936,7 +5308,7 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
       },
     );
     await page.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
-    await page.locator(".forecast-panel.skeleton-region").waitFor();
+    await assertSkeletonLoadingState(page, ".forecast-panel.skeleton-region");
     assert.deepEqual(
       await page.locator(".skeleton-forecast-chart h3").allTextContents(),
       ["device_thermostatTemperature", "airWind", "rainyRain rate", "cloudClouds", "humidity_percentageHumidity", "masksAir quality", "wb_sunnyUV index", "speedPressure", "waterTide"],
@@ -3974,6 +5346,56 @@ test("forecast skeletons expose every chart label on the reserved cards", { time
     );
     releaseForecastReads();
     await page.locator(".forecast-panel:not(.skeleton-region)").waitFor();
+    await assertSkeletonLoadingSettled(page);
+
+    let releaseFiveDayRead;
+    const fiveDayReadReleased = new Promise(
+      // expose one subsequent range gate
+      (resolveRelease) => {
+        releaseFiveDayRead = resolveRelease;
+      },
+    );
+    await page.route(
+      /\/api\/v1\/sites\/ballydidean\/forecast\?days=5$/u,
+      // hold the replacement range behind the same in-place chart skeletons
+      async (route) => {
+        await fiveDayReadReleased;
+        await route.continue();
+      },
+    );
+    await page.getByRole("button", { name: "5 days", exact: true }).click();
+    await assertSkeletonLoadingState(page, ".forecast-panel.skeleton-region");
+    assert.equal(await page.getByRole("group", { name: "Forecast range" }).locator("button:disabled").count(), 3);
+    releaseFiveDayRead();
+    await page.locator('[data-forecast-charts][data-forecast-days="5"]').waitFor();
+    await assertSkeletonLoadingSettled(page);
+
+    let releaseFailedRangeRead;
+    const failedRangeReadReleased = new Promise(
+      // expose one recoverable range failure
+      (resolveRelease) => {
+        releaseFailedRangeRead = resolveRelease;
+      },
+    );
+    await page.route(
+      /\/api\/v1\/sites\/ballydidean\/forecast\?days=10$/u,
+      // fail only after the replacement skeleton is visible
+      async (route) => {
+        await failedRangeReadReleased;
+        await route.fulfill({
+          contentType: "application/json",
+          json: { error: { code: "unavailable" } },
+          status: 503,
+        });
+      },
+    );
+    await page.getByRole("button", { name: "10 days", exact: true }).click();
+    await assertSkeletonLoadingState(page, ".forecast-panel.skeleton-region");
+    releaseFailedRangeRead();
+    await page.getByRole("alert").waitFor();
+    await page.locator(".forecast-panel:not(.skeleton-region)").waitFor();
+    await assertSkeletonLoadingSettled(page, /Weather refresh failed/u);
+    assert.equal(await page.locator("[data-forecast-charts]").count(), 1);
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -4022,7 +5444,7 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
           await page.goto(`${fixture.origin}/trends`, { waitUntil: "domcontentloaded" });
         }
 
-        await page.locator(".skeleton-trend-chart").waitFor({ state: "attached" });
+        await assertSkeletonLoadingState(page, ".skeleton-trend-chart");
         await page.evaluate(
           // stabilize font-dependent geometry before comparison
           () => document.fonts.ready,
@@ -4043,12 +5465,154 @@ test("trend skeleton shimmers and preserves desktop and mobile chart geometry", 
         );
         releaseTrendRead();
         await page.locator(".trends-panel:not(.skeleton-region)").waitFor();
+        await assertSkeletonLoadingSettled(page);
         assert.deepEqual(await captureSectionGeometry(page, selectors), loadingGeometry);
       } finally {
         releaseTrendRead();
         await page.close();
       }
     }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// reserve the public map while keeping local-only settings immediately usable
+test("map uses an in-place skeleton while settings stays local-only", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const mapPage = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    let releaseMapReads;
+    const mapReadsReleased = new Promise(
+      // expose one deterministic map gate
+      (resolveRelease) => {
+        releaseMapReads = resolveRelease;
+      },
+    );
+    await mapPage.route(
+      /\/api\/v1\/sites\/ballydidean\/(?:current|property-sensor-layout)/u,
+      // hold all map data behind its reserved geography
+      async (route) => {
+        await mapReadsReleased;
+        await route.continue();
+      },
+    );
+    await mapPage.goto(`${fixture.origin}/map`, { waitUntil: "domcontentloaded" });
+    await assertSkeletonLoadingState(mapPage, ".station-map-panel.skeleton-region");
+    assert.equal(await mapPage.locator(".property-map-panel.skeleton-region").count(), 1);
+    assert.equal(await mapPage.locator(".skeleton-map").count(), 2);
+    assert.equal(await mapPage.locator(".skeleton-station-list li").count(), 11);
+    releaseMapReads();
+    await mapPage.locator(".station-map-panel:not(.skeleton-region)").waitFor();
+    await mapPage.locator(".property-map-panel:not(.skeleton-region)").waitFor();
+    await assertSkeletonLoadingSettled(mapPage);
+    await mapPage.close();
+
+    const weatherReadsBeforeSettings = fixture.state.requests.filter(
+      // count only site-data API reads
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/"),
+    ).length;
+    const settingsPage = await createFixturePage(browser, { viewport: { height: 844, width: 390 } });
+    await settingsPage.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    await settingsPage.locator(".unit-settings-page").waitFor();
+    await assertSkeletonLoadingSettled(settingsPage);
+    assert.equal(await settingsPage.locator(".skeleton-line, .skeleton-region").count(), 0);
+    assert.equal(fixture.state.requests.filter(
+      // keep settings independent from weather data
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/"),
+    ).length, weatherReadsBeforeSettings);
+    await settingsPage.close();
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// replace bootstrap and protected missing-data notices with stable skeletons
+test("bootstrap and administrator reads use in-place skeletons", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // verify the static startup shell at phone and desktop widths
+    for (const width of [320, 1280]) {
+      const page = await createFixturePage(browser, { viewport: { height: 900, width } });
+      let releaseClient;
+      const clientReleased = new Promise(
+        // expose the server-rendered bootstrap before the module mounts
+        (resolveRelease) => {
+          releaseClient = resolveRelease;
+        },
+      );
+      await page.route(
+        /\/assets\/browser-test\/client\.js$/u,
+        // hold only the interactive module
+        async (route) => {
+          await clientReleased;
+          await route.continue();
+        },
+      );
+      await page.goto(fixture.origin, { waitUntil: "commit" });
+      const shell = page.locator("main.shell.skeleton-region");
+      await shell.waitFor();
+      assert.equal(await shell.getAttribute("aria-busy"), "true");
+      assert.equal(await shell.getByRole("heading", { name: "Ballydídean Weather" }).count(), 1);
+      assert.equal(await shell.locator(".home-masthead .masthead-title-text").count(), 1);
+      assert.equal(await shell.locator(".weather-content.skeleton-fields .skeleton-field").count(), 3);
+      assert.equal(await shell.getByRole("status").evaluate((status) => status.matches(".sr-only")), true);
+      assert.equal(await page.locator(".refresh-indicator").count(), 0);
+      assert.equal(await page.evaluate(
+        // reject bootstrap horizontal overflow
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ), true);
+      const bootstrapScreen = await page.screenshot();
+      assert.ok(bootstrapScreen.byteLength > 500);
+      releaseClient();
+      await page.locator(".current-conditions:not(.skeleton-region)").waitFor();
+      await assertSkeletonLoadingSettled(page);
+      await page.close();
+    }
+
+    const adminPage = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 960 },
+    });
+    await adminPage.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await adminPage.getByLabel("Password").fill("test-admin-password");
+    let releaseAdminReads;
+    const adminReadsReleased = new Promise(
+      // expose both protected editor skeletons after authentication
+      (resolveRelease) => {
+        releaseAdminReads = resolveRelease;
+      },
+    );
+    await adminPage.route(
+      /\/api\/v1\/(?:sites\/ballydidean\/(?:current|property-sensor-layout)|admin\/sites\/ballydidean\/forecast-adjustment-settings)$/u,
+      // hold the complete administrator read set
+      async (route) => {
+        await adminReadsReleased;
+        await route.continue();
+      },
+    );
+    await adminPage.getByRole("button", { name: "Sign in" }).click();
+    await assertSkeletonLoadingState(adminPage, ".forecast-adjustment-admin.skeleton-region");
+    assert.equal(await adminPage.locator(".property-admin.skeleton-region").count(), 1);
+    assert.equal(await adminPage.locator(".forecast-adjustment-admin .skeleton-field").count(), 3);
+    assert.equal(await adminPage.locator(".property-admin .skeleton-field").count(), 6);
+    assert.equal(await adminPage.locator(".property-admin-map.skeleton-map").count(), 1);
+    releaseAdminReads();
+    await adminPage.locator("[data-admin-forecast-adjustments]").waitFor();
+    await adminPage.locator("[data-property-sensor-form]").waitFor();
+    await assertSkeletonLoadingSettled(adminPage);
+    await adminPage.close();
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -4328,7 +5892,8 @@ test("clouds tile shows the clearest daylight range and includes night in daily 
       const refreshed = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
       await page.clock.fastForward(10_100);
       await refreshed;
-      await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+      await page.locator(".weather-content[aria-busy='false']").waitFor();
+      assert.equal(await page.locator(".refresh-indicator").count(), 0);
       assert.equal(forecastReads, 2);
       assert.equal(await tile.locator(".condition-status").innerText(), "Clear");
       assert.equal(await tile.locator(".condition-primary").innerText(), "0%");
@@ -4595,7 +6160,8 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
     const midnightRefresh = page.waitForResponse("**/api/v1/sites/ballydidean/forecast");
     await page.clock.fastForward(11_000);
     await midnightRefresh;
-    await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
+    assert.equal(await page.locator(".refresh-indicator").count(), 0);
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:26PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:45PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
@@ -4611,7 +6177,8 @@ test("sunset refreshes at farm midnight and when a suspended tab resumes", { tim
       () => document.dispatchEvent(new Event("visibilitychange")),
     );
     await resumedRefresh;
-    await page.locator(".refresh-indicator.active").waitFor({ state: "hidden" });
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
+    assert.equal(await page.locator(".refresh-indicator").count(), 0);
     assert.equal(await tile.locator(".condition-primary").innerText(), "7:22PM");
     assert.match(await tile.locator(".condition-secondary").innerText(), /6:41PM/u);
     assert.equal(await tile.locator(".condition-forecast strong").innerText(), "-2 mins");
@@ -4661,7 +6228,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
         },
       );
       await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
-      await page.locator(".current-conditions.skeleton-region").waitFor();
+      await assertSkeletonLoadingState(page, ".current-conditions.skeleton-region");
       assert.equal(await page.locator(".skeleton-card").count(), 10);
       // abbreviate only the compact homepage label
       const temperatureLabel = page.locator('[data-condition="temperature"] .condition-label > span:last-child');
@@ -4696,6 +6263,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
         // require every first-load skeleton to clear
         () => document.querySelector(".skeleton-region") === null,
       );
+      await assertSkeletonLoadingSettled(page);
       assert.equal(await temperatureLabel.innerText(), expectedTemperatureLabel);
       assert.equal(await page.locator('[data-condition="temperature"] .condition-secondary > span').innerText(), "Air Temp");
       const loadedGeometry = await captureSectionGeometry(page, selectors);
@@ -4720,7 +6288,7 @@ test("initial skeletons preserve homepage geometry while weather data loads", { 
   }
 });
 
-test("initial history skeletons preserve a full logs page while records load", { timeout: 60_000 }, async () => {
+test("history skeletons cover initial reads, pagination, and empty results", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -4762,7 +6330,7 @@ test("initial history skeletons preserve a full logs page while records load", {
         },
       );
       await page.goto(`${fixture.origin}/logs`, { waitUntil: "domcontentloaded" });
-      await page.locator(".skeleton-history-row").first().waitFor({ state: "attached" });
+      await assertSkeletonLoadingState(page, ".skeleton-history-row");
       assert.equal(await page.locator(".skeleton-history-row").count(), 25);
       assert.equal(await page.locator(".skeleton-history-card").count(), 25);
       assert.equal(
@@ -4780,6 +6348,7 @@ test("initial history skeletons preserve a full logs page while records load", {
       releaseHistoryRead();
       await page.locator(".skeleton-history-row").first().waitFor({ state: "detached" });
       await page.locator("tbody tr:not(.skeleton-history-row)").first().waitFor({ state: "attached" });
+      await assertSkeletonLoadingSettled(page);
       const loadedGeometry = await captureSectionGeometry(page, selectors);
 
       // expose compact source provenance as a disclosure
@@ -4795,6 +6364,76 @@ test("initial history skeletons preserve a full logs page while records load", {
 
       assert.deepEqual(loadedGeometry, loadingGeometry);
       assert.equal(await page.locator(".skeleton-line").count(), 0);
+
+      // exercise subsequent pagination and an honest empty filter once
+      if (width === 390) {
+        let releaseNextPageRead;
+        const nextPageReadReleased = new Promise(
+          // expose one cursor-page gate
+          (resolveRelease) => {
+            releaseNextPageRead = resolveRelease;
+          },
+        );
+        await page.route(
+          (url) => url.pathname === "/api/v1/sites/ballydidean/history" && url.searchParams.has("cursor"),
+          // reserve the full result page while the cursor advances
+          async (route) => {
+            await nextPageReadReleased;
+            await route.fulfill({
+              contentType: "application/json",
+              json: {
+                data: [older],
+                page: { limit: 25, nextCursor: null },
+                site,
+              },
+              status: 200,
+            });
+          },
+        );
+        await page.getByRole("button", { name: "Next", exact: true }).click();
+        await assertSkeletonLoadingState(page, ".skeleton-history-row");
+        assert.equal(await page.getByRole("button", { name: "Previous", exact: true }).isDisabled(), true);
+        assert.equal(await page.getByRole("button", { name: "Next", exact: true }).isDisabled(), true);
+        releaseNextPageRead();
+        await page.locator(".history-card strong").filter({ hasText: "59.2" }).waitFor();
+        await assertSkeletonLoadingSettled(page);
+
+        let releaseEmptyRead;
+        const emptyReadReleased = new Promise(
+          // expose one filtered empty-state gate
+          (resolveRelease) => {
+            releaseEmptyRead = resolveRelease;
+          },
+        );
+        await page.route(
+          /\/api\/v1\/sites\/ballydidean\/history/u,
+          // return an honest empty page after its skeleton
+          async (route) => {
+            await emptyReadReleased;
+            await route.fulfill({
+              contentType: "application/json",
+              json: {
+                data: [],
+                page: { limit: 25, nextCursor: null },
+                site,
+              },
+              status: 200,
+            });
+          },
+        );
+        await page.locator(".history-filter-disclosure").evaluate(
+          // expose the compact filter form for pointer interaction
+          (details) => {
+            details.open = true;
+          },
+        );
+        await page.locator("select[name='sourceKind']").selectOption("reanalysis");
+        await page.getByRole("button", { name: "Apply filters", exact: true }).click();
+        await assertSkeletonLoadingState(page, ".skeleton-history-row");
+        releaseEmptyRead();
+        await page.locator(".history-cards-empty").waitFor();
+        await assertSkeletonLoadingSettled(page);
+      }
       await page.close();
     }
   } finally {
@@ -5039,7 +6678,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
-        { color: "rgb(67, 151, 86)", condition: "temperature", opacity: "0.75" },
+        { color: "rgb(56, 120, 197)", condition: "temperature", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "wind", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "wind", opacity: "0.75" },
         { color: "rgb(56, 120, 197)", condition: "rain", opacity: "0.75" },
@@ -5161,8 +6800,10 @@ test("real browser configures and persists every measurement unit preference", {
     await settings.locator("select[name='pressure']").selectOption("hectopascals");
     await settings.locator("select[name='waterLevel']").selectOption("meters");
     await settings.getByRole("button", { name: "Save units" }).click();
-    await page.getByRole("link", { name: "Home" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
     await page.waitForURL(`${fixture.origin}/`);
+    await page.locator(".current-conditions:not(.skeleton-region)").waitFor();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
 
     assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /16\s*°C/u);
     assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*16\s*°C/u);
@@ -5177,6 +6818,13 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentTide.locator(".condition-primary").textContent() ?? "", /2\.5\s*m/u);
     assert.match(await currentTide.textContent() ?? "", /Rising/u);
     assert.match(await currentTemperature.textContent() ?? "", /Max\s*19°C\s*Min\s*9°C\s*Max\s*20°C\s*Min\s*10°C/u);
+    assert.deepEqual(
+      await currentTemperature.locator(".condition-forecast-reading").evaluateAll(
+        // keep sub-55f extrema blue when the display switches to celsius
+        (readings) => readings.map((reading) => getComputedStyle(reading).color),
+      ),
+      ["rgb(67, 151, 86)", "rgb(56, 120, 197)", "rgb(67, 151, 86)", "rgb(56, 120, 197)"],
+    );
     assert.match(await currentWind.textContent() ?? "", /Max\s*4 m\/s\s*Max\s*7 m\/s/u);
     assert.match(await currentRain.textContent() ?? "", /Max 2\.5 mm\/h/u);
     assert.match(await currentRain.textContent() ?? "", /Accumulation\s*2\.5\s*mm/u);
@@ -5201,10 +6849,13 @@ test("real browser configures and persists every measurement unit preference", {
     await page.waitForURL(`${fixture.origin}/settings`);
     await page.getByRole("link", { name: "Logs", exact: true }).click();
     await page.waitForURL(`${fixture.origin}/logs`);
-    await page.waitForLoadState("networkidle");
+    await page.locator("tbody tr:not(.skeleton-history-row)").first().waitFor();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
     assert.equal(await page.getByRole("columnheader", { name: "Temperature (°C)" }).isVisible(), true);
     assert.equal(await page.getByText("16.2").first().isVisible(), true);
     await page.reload({ waitUntil: "networkidle" });
+    await page.locator("tbody tr:not(.skeleton-history-row)").first().waitFor();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
     assert.equal(await page.getByRole("columnheader", { name: "Temperature (°C)" }).isVisible(), true);
     await page.getByRole("link", { name: "Settings" }).click();
     await page.waitForURL(`${fixture.origin}/settings`);
@@ -5302,6 +6953,8 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
         const navigationBounds = navigation.getBoundingClientRect();
         const forecastIcon = forecast.querySelector(".material-symbols-rounded");
         const forecastIconBounds = forecastIcon?.getBoundingClientRect();
+        const homeIcon = home.querySelector("img.section-nav-weather-icon");
+        const homeIconBounds = homeIcon?.getBoundingClientRect();
         const mapIcon = map.querySelector(".material-symbols-rounded");
         const trendsIcon = trends.querySelector(".material-symbols-rounded");
         const trendsIconBounds = trendsIcon?.getBoundingClientRect();
@@ -5333,6 +6986,13 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
           forecastIconText: forecastIcon?.textContent,
           headingLineCount: headingRange.getClientRects().length,
           headingText: heading.textContent,
+          homeAriaLabel: home.getAttribute("aria-label"),
+          homeDashboardCount: home.querySelectorAll('svg[data-nav-icon="dashboard"]').length,
+          homeIconAlt: homeIcon?.getAttribute("alt"),
+          homeIconHeight: homeIconBounds?.height,
+          homeIconIsImage: homeIconBounds !== undefined && homeIcon.tagName === "IMG",
+          homeIconSource: homeIcon instanceof HTMLImageElement ? new URL(homeIcon.src).pathname : null,
+          homeIconWidth: homeIconBounds?.width,
           iconFont: getComputedStyle(icon).fontFamily,
           iconHeight: iconBounds.height,
           iconText: icon.textContent,
@@ -5357,13 +7017,20 @@ test("real browser keeps the tablet masthead and compact navigation in separate 
     assert.equal(headerLayout.activeIndicatorBackground, "rgb(240, 230, 150)");
     assert.equal(headerLayout.activeIndicatorHeight, 32);
     assert.equal(headerLayout.activeIndicatorWidth, 56);
-    assert.deepEqual(headerLayout.controlLabels, ["Home", "Forecast", "Trends", "Map", "Settings"]);
+    assert.deepEqual(headerLayout.controlLabels, ["Now", "Forecast", "Trends", "Map", "Settings"]);
     assert.equal(headerLayout.decorationContent, "none");
     assert.equal(headerLayout.desktopNavigationLeftAligned, true);
     assert.equal(headerLayout.headingLineCount, 1);
     assert.equal(headerLayout.headingText, "Ballydídean Weather");
     assert.equal(headerLayout.forecastIconIsGlyph, true);
     assert.equal(headerLayout.forecastIconText, "partly_cloudy_day");
+    assert.equal(headerLayout.homeAriaLabel, "Now");
+    assert.equal(headerLayout.homeDashboardCount, 0);
+    assert.equal(headerLayout.homeIconAlt, "Current weather: Conditions unavailable");
+    assert.equal(headerLayout.homeIconHeight, 32);
+    assert.equal(headerLayout.homeIconIsImage, true);
+    assert.equal(headerLayout.homeIconSource, "/weather-icons/12-unavailable.svg");
+    assert.equal(headerLayout.homeIconWidth, 32);
     assert.equal(headerLayout.imageCount, 0);
     assert.match(headerLayout.iconFont, /Material Symbols Rounded/u);
     assert.equal(headerLayout.iconText, "settings");

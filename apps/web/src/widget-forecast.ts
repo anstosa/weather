@@ -10,7 +10,7 @@ import {
 export const WIDGET_FORECAST_SCHEMA_VERSION = "weather-widget/v1" as const;
 export const WIDGET_FORECAST_MAX_BYTES = 128 * 1_024;
 
-const PRODUCT_SITE = {
+export const WIDGET_FORECAST_SITE = {
   latitude: 47.950429954185445,
   longitude: -122.42797012608193,
   name: "Ballydidean",
@@ -72,11 +72,11 @@ export interface WidgetForecastSnapshot {
   readonly receivedAt: string;
   readonly schemaVersion: typeof WIDGET_FORECAST_SCHEMA_VERSION;
   readonly site: {
-    readonly latitude: typeof PRODUCT_SITE.latitude;
-    readonly longitude: typeof PRODUCT_SITE.longitude;
-    readonly name: typeof PRODUCT_SITE.name;
-    readonly slug: typeof PRODUCT_SITE.slug;
-    readonly timezone: typeof PRODUCT_SITE.timezone;
+    readonly latitude: typeof WIDGET_FORECAST_SITE.latitude;
+    readonly longitude: typeof WIDGET_FORECAST_SITE.longitude;
+    readonly name: typeof WIDGET_FORECAST_SITE.name;
+    readonly slug: typeof WIDGET_FORECAST_SITE.slug;
+    readonly timezone: typeof WIDGET_FORECAST_SITE.timezone;
   };
   readonly status: WidgetForecastStatus;
 }
@@ -94,59 +94,40 @@ interface ForecastEnvelope {
 
 type FieldKind = "rain" | "temperature";
 
+// retain one validated source envelope for versioned projections
+export interface WidgetForecastProjectionContext {
+  readonly generatedAt: string;
+  readonly parsed: ReturnType<typeof parseForecastRecordsResponse>;
+  readonly receivedAt: string;
+}
+
 // project one validated forecast response into the closed widget contract
 export function projectWidgetForecast(
   value: unknown,
   receivedAtValue: string,
 ): WidgetForecastSnapshot {
-  const envelope = parseEnvelope(value);
-  const generatedAt = canonicalInstant(envelope.generatedAt, "generatedAt");
-  const receivedAt = canonicalInstant(receivedAtValue, "receivedAt");
-
-  // reject a forecast anchor the edge could not yet have received
-  if (Date.parse(generatedAt) > Date.parse(receivedAt)) {
-    throw new RangeError("Widget forecast generatedAt is after receivedAt");
-  }
-
-  const parsed = parseForecastRecordsResponse(value);
-  const date = toSiteWallClock(generatedAt, PRODUCT_SITE.timezone).slice(0, 10);
-  const nextDate = addCalendarDays(date, 1);
-  const dayStart = canonicalInstant(
-    fromSiteWallClock(`${date}T00:00`, PRODUCT_SITE.timezone),
+  const context = parseWidgetForecastProjection(value, receivedAtValue);
+  const date = toSiteWallClock(context.generatedAt, WIDGET_FORECAST_SITE.timezone).slice(0, 10);
+  const nextDate = addWidgetForecastCalendarDays(date, 1);
+  const dayStart = canonicalWidgetForecastInstant(
+    fromSiteWallClock(`${date}T00:00`, WIDGET_FORECAST_SITE.timezone),
     "calendar.dayStart",
   );
-  const dayEnd = canonicalInstant(
-    fromSiteWallClock(`${nextDate}T00:00`, PRODUCT_SITE.timezone),
+  const dayEnd = canonicalWidgetForecastInstant(
+    fromSiteWallClock(`${nextDate}T00:00`, WIDGET_FORECAST_SITE.timezone),
     "calendar.dayEnd",
   );
-  const cutoff = canonicalInstant(
-    fromSiteWallClock(`${date}T20:00`, PRODUCT_SITE.timezone),
+  const cutoff = canonicalWidgetForecastInstant(
+    fromSiteWallClock(`${date}T20:00`, WIDGET_FORECAST_SITE.timezone),
     "calendar.cutoff",
   );
-  const expectedStarts = hourlyInstants(dayStart, dayEnd);
-  const records = indexRecords(parsed.data, expectedStarts);
-  const sunset = eveningSunTimes(PRODUCT_SITE, new Date(generatedAt)).sunset;
-  const hours = expectedStarts.map((start) => {
-    const record = records.get(start) ?? null;
-    return {
-      end: new Date(Date.parse(start) + HOUR_MS).toISOString(),
-      rainMmPerHour: projectField(
-        record,
-        "rain",
-        generatedAt,
-        parsed.adjustmentRuntime,
-        parsed.temperatureAdjustmentRuntime,
-      ),
-      start,
-      temperatureC: projectField(
-        record,
-        "temperature",
-        generatedAt,
-        parsed.adjustmentRuntime,
-        parsed.temperatureAdjustmentRuntime,
-      ),
-    };
-  });
+  const expectedStarts = widgetForecastHourlyInstants(dayStart, dayEnd, 23, 25);
+  const records = indexWidgetForecastRecords(context.parsed.data, expectedStarts);
+  const sunset = eveningSunTimes(WIDGET_FORECAST_SITE, new Date(context.generatedAt)).sunset;
+  const hours = expectedStarts.map(
+    // project each reviewed civil-day interval independently
+    (start) => projectWidgetForecastHour(records.get(start) ?? null, start, context),
+  );
   const snapshot: WidgetForecastSnapshot = {
     attribution: {
       label: "Open-Meteo · CC BY 4.0",
@@ -160,16 +141,16 @@ export function projectWidgetForecast(
       dayStart,
       sunset: sunset?.toISOString() ?? null,
     },
-    generatedAt,
+    generatedAt: context.generatedAt,
     hours,
-    receivedAt,
+    receivedAt: context.receivedAt,
     schemaVersion: WIDGET_FORECAST_SCHEMA_VERSION,
     site: {
-      latitude: PRODUCT_SITE.latitude,
-      longitude: PRODUCT_SITE.longitude,
-      name: PRODUCT_SITE.name,
-      slug: PRODUCT_SITE.slug,
-      timezone: PRODUCT_SITE.timezone,
+      latitude: WIDGET_FORECAST_SITE.latitude,
+      longitude: WIDGET_FORECAST_SITE.longitude,
+      name: WIDGET_FORECAST_SITE.name,
+      slug: WIDGET_FORECAST_SITE.slug,
+      timezone: WIDGET_FORECAST_SITE.timezone,
     },
     status: summarizeStatus(hours),
   };
@@ -182,6 +163,53 @@ export function projectWidgetForecast(
   return snapshot;
 }
 
+// validate one upstream response without choosing a versioned calendar
+export function parseWidgetForecastProjection(
+  value: unknown,
+  receivedAtValue: string,
+): WidgetForecastProjectionContext {
+  const envelope = parseEnvelope(value);
+  const generatedAt = canonicalWidgetForecastInstant(envelope.generatedAt, "generatedAt");
+  const receivedAt = canonicalWidgetForecastInstant(receivedAtValue, "receivedAt");
+
+  // reject a forecast anchor the edge could not yet have received
+  if (Date.parse(generatedAt) > Date.parse(receivedAt)) {
+    throw new RangeError("Widget forecast generatedAt is after receivedAt");
+  }
+
+  return {
+    generatedAt,
+    parsed: parseForecastRecordsResponse(value),
+    receivedAt,
+  };
+}
+
+// project one genuine forecast row through the shared v1 field rules
+export function projectWidgetForecastHour(
+  record: WeatherRecord | null,
+  start: string,
+  context: WidgetForecastProjectionContext,
+): WidgetForecastHour {
+  return {
+    end: new Date(Date.parse(start) + HOUR_MS).toISOString(),
+    rainMmPerHour: projectField(
+      record,
+      "rain",
+      context.generatedAt,
+      context.parsed.adjustmentRuntime,
+      context.parsed.temperatureAdjustmentRuntime,
+    ),
+    start,
+    temperatureC: projectField(
+      record,
+      "temperature",
+      context.generatedAt,
+      context.parsed.adjustmentRuntime,
+      context.parsed.temperatureAdjustmentRuntime,
+    ),
+  };
+}
+
 // validate the anchor and exact product site before invoking the shared parser
 function parseEnvelope(value: unknown): ForecastEnvelope {
   const envelope = objectValue(value);
@@ -192,11 +220,11 @@ function parseEnvelope(value: unknown): ForecastEnvelope {
     envelope === null ||
     typeof envelope.generatedAt !== "string" ||
     site === null ||
-    site.slug !== PRODUCT_SITE.slug ||
-    site.timezone !== PRODUCT_SITE.timezone ||
-    site.latitude !== PRODUCT_SITE.latitude ||
-    site.longitude !== PRODUCT_SITE.longitude ||
-    site.name !== PRODUCT_SITE.name
+    site.slug !== WIDGET_FORECAST_SITE.slug ||
+    site.timezone !== WIDGET_FORECAST_SITE.timezone ||
+    site.latitude !== WIDGET_FORECAST_SITE.latitude ||
+    site.longitude !== WIDGET_FORECAST_SITE.longitude ||
+    site.name !== WIDGET_FORECAST_SITE.name
   ) {
     throw new RangeError("Widget forecast site or calendar anchor is invalid");
   }
@@ -215,7 +243,7 @@ function objectValue(value: unknown): Record<string, unknown> | null {
 }
 
 // normalize one explicit-zone instant
-function canonicalInstant(value: string, field: string): string {
+export function canonicalWidgetForecastInstant(value: string, field: string): string {
   const match = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d{1,3})?(?<zone>Z|[+-]\d{2}:\d{2})$/u.exec(value);
 
   // reject local, normalized, and malformed timestamps
@@ -253,7 +281,7 @@ function canonicalInstant(value: string, field: string): string {
 }
 
 // advance one iso calendar date without applying a runtime timezone
-function addCalendarDays(date: string, days: number): string {
+export function addWidgetForecastCalendarDays(date: string, days: number): string {
   const [year, month, day] = date.split("-").map(Number);
 
   // reject an unexpected wall-clock representation
@@ -265,13 +293,18 @@ function addCalendarDays(date: string, days: number): string {
 }
 
 // enumerate every real utc hour in one site-local day
-function hourlyInstants(dayStart: string, dayEnd: string): readonly string[] {
+export function widgetForecastHourlyInstants(
+  dayStart: string,
+  dayEnd: string,
+  minimumHours: number,
+  maximumHours: number,
+): readonly string[] {
   const start = Date.parse(dayStart);
   const end = Date.parse(dayEnd);
   const count = (end - start) / HOUR_MS;
 
   // accept only reviewed civil-day capacities
-  if (!Number.isSafeInteger(count) || count < 23 || count > 25) {
+  if (!Number.isSafeInteger(count) || count < minimumHours || count > maximumHours) {
     throw new RangeError("Widget forecast day has an unsupported hour count");
   }
 
@@ -283,7 +316,7 @@ function hourlyInstants(dayStart: string, dayEnd: string): readonly string[] {
 }
 
 // reject duplicate and foreign-day rows while allowing genuine missing hours
-function indexRecords(
+export function indexWidgetForecastRecords(
   records: readonly WeatherRecord[],
   expectedStarts: readonly string[],
 ): ReadonlyMap<string, WeatherRecord> {
@@ -292,7 +325,7 @@ function indexRecords(
 
   // validate each supplied forecast row once
   for (const record of records) {
-    const start = canonicalInstant(record.validAt, "hour.start");
+    const start = canonicalWidgetForecastInstant(record.validAt, "hour.start");
 
     // reject nonforecast, off-day, and duplicate rows
     if (
@@ -479,7 +512,7 @@ function boundedDeadline(maximum: number, value: string | null | undefined): str
   }
 
   try {
-    const canonical = canonicalInstant(value, "adjustment deadline");
+    const canonical = canonicalWidgetForecastInstant(value, "adjustment deadline");
     return new Date(Math.min(maximum, Date.parse(canonical))).toISOString();
   } catch {
     // fail raw on a malformed required deadline
@@ -501,7 +534,7 @@ function rainDeadline(
   let decisionAt: string;
 
   try {
-    decisionAt = canonicalInstant(value, "rain decisionAt");
+    decisionAt = canonicalWidgetForecastInstant(value, "rain decisionAt");
   } catch {
     // fail raw on a malformed required decision clock
     return null;
@@ -531,8 +564,8 @@ function recordSource(
 
   const canonicalRunAt = runAt === null
       ? null
-      : canonicalInstant(runAt, "source.runAt");
-  const canonicalReceivedAt = canonicalInstant(receivedAt, "source.receivedAt");
+      : canonicalWidgetForecastInstant(runAt, "source.runAt");
+  const canonicalReceivedAt = canonicalWidgetForecastInstant(receivedAt, "source.receivedAt");
 
   // reject impossible source ordering before it can produce negative ages
   if (

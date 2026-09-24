@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -782,7 +783,7 @@ test("forecast adjustment boundary preserves raw and validates active metadata",
   );
   assert.match(html, /data-forecast-adjustment-available="true"/u);
   assert.match(html, /aria-checked="true"\s+aria-label="Adjusted"/u);
-  assert.match(html, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(html, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.doesNotMatch(html, /data-forecast-adjustment-status|Raw and adjusted source details/u);
 
   const rawHtml = renderWeatherDashboard(
@@ -794,8 +795,55 @@ test("forecast adjustment boundary preserves raw and validates active metadata",
   );
   assert.match(rawHtml, /class="forecast-adjustment-toggle"[\s\S]*aria-checked="false"[\s\S]*data-forecast-adjustment-toggle/u);
   assert.match(rawHtml, /aria-label="Adjusted"/u);
-  assert.match(rawHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(rawHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gray"/u);
   assert.doesNotMatch(rawHtml, /data-forecast-adjustment-status|Local adjustment turned off/u);
+});
+
+// retain accessible switch state without a visible label or separate chip content
+test("sparkle adjustment switch exposes both preferences without visible text", () => {
+  // use the same control on both forecast-bearing routes
+  for (const view of ["home", "forecast"]) {
+    // retain the persisted preference even when corrections are temporarily unavailable
+    for (const mode of ["adjusted", "raw"]) {
+      const html = renderWeatherDashboard({
+        ...forecastState([], null),
+        forecastAdjustmentMode: mode,
+      }, view);
+      const toggle = html.match(/<button\s+type="button"\s+class="forecast-adjustment-toggle"[\s\S]*?<\/button>/u)?.[0];
+      assert.ok(toggle);
+      assert.match(toggle, /role="switch"/u);
+      assert.match(toggle, /aria-label="Adjusted"/u);
+      assert.ok(toggle.includes(`aria-checked="${String(mode === "adjusted")}"`));
+      assert.equal(toggle.replace(/<[^>]+>/gu, "").trim(), "");
+      assert.doesNotMatch(toggle, /forecast-adjustment-toggle-mode/u);
+      assert.match(toggle, /class="forecast-adjustment-toggle-thumb"[\s\S]*class="forecast-adjustment-sparkle"/u);
+      assert.ok(toggle.includes(`data-sparkle-tone="${mode === "adjusted" ? "gold" : "gray"}"`));
+      assert.match(toggle, /fill="currentColor" stroke="currentColor"/u);
+      assert.doesNotMatch(toggle, /<linearGradient|<defs>|url\(#forecast-adjustment-gold\)/u);
+      assert.match(toggle, /class="forecast-adjustment-toggle-track" aria-hidden="true"/u);
+    }
+  }
+});
+
+// keep one current-weather illustration in navigation rather than the page header
+test("Now navigation owns the current weather icon on every route", () => {
+  const state = {
+    ...forecastState([], null),
+    current: [{ ...record, metrics: { ...record.metrics, cloudCoverPercent: 80, precipitationRateMmPerHour: 0 } }],
+  };
+  // retain identical navigation artwork and naming on active and inactive routes
+  for (const view of ["home", "forecast", "map", "trends", "settings", "logs", "admin"]) {
+    const html = renderWeatherDashboard(state, view);
+    const header = html.match(/<header[\s\S]*?<\/header>/u)?.[0];
+    const nowLink = html.match(/<a class="section-nav-home"[\s\S]*?<\/a>/u)?.[0];
+    assert.ok(header);
+    assert.ok(nowLink);
+    assert.doesNotMatch(header, /<img|masthead-brand/u);
+    assert.match(nowLink, /aria-label="Now"/u);
+    assert.match(nowLink, /<img class="section-nav-weather-icon" src="\/weather-icons\/05-cloudy\.svg" alt="Current weather: Cloudy" width="32" height="32">/u);
+    assert.equal((html.match(/class="section-nav-weather-icon"/gu) ?? []).length, 1);
+    assert.doesNotMatch(html, /data-nav-icon="dashboard"|masthead-weather-icon/u);
+  }
 });
 
 // keep ECMWF temperature explicit, opt-in, and independent from wind metadata
@@ -906,10 +954,10 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
   assert.equal(forecastMetricValue(parsed.data[0], "relativeHumidityPercent"), raw.metrics.relativeHumidityPercent);
   assert.notEqual(forecastMetricValue(parsed.data[0], "windSpeedMps"), raw.metrics.windSpeedMps);
   assert.match(adjustedHtml, /aria-checked="true"\s+aria-label="Adjusted"/u);
-  assert.match(adjustedHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(adjustedHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.match(adjustedHtml, /High wind/u);
   assert.match(regionalHtml, /aria-checked="false"\s+aria-label="Adjusted"/u);
-  assert.match(regionalHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(regionalHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gray"/u);
   assert.doesNotMatch(regionalHtml, /data-forecast-adjustment-status|Canary expires|Wind canary turned off/u);
 
   const invalid = parseForecastRecordsResponse({
@@ -946,7 +994,7 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
   );
   assert.doesNotMatch(inactiveHtml, /\sdisabled(?:\s|>)/u);
   assert.match(inactiveHtml, /aria-label="Adjusted"/u);
-  assert.match(inactiveHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(inactiveHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.doesNotMatch(inactiveHtml, /data-forecast-adjustment-status|Regional fallback/u);
 
   const invalid = parseForecastRecordsResponse({
@@ -969,7 +1017,7 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
     "forecast",
   );
   assert.match(invalidHtml, /aria-label="Adjusted"/u);
-  assert.match(invalidHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
+  assert.match(invalidHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
   assert.match(invalidHtml, /data-forecast-charts/u);
   assert.doesNotMatch(invalidHtml, /data-forecast-adjustment-status|Local adjustment unavailable/u);
 
@@ -1813,7 +1861,7 @@ test("dashboard separates current conditions from the historical logs route", ()
     ],
   });
 
-  assert.match(html, /<header class="masthead">[\s\S]*?<h1>Ballydídean Weather<\/h1>/u);
+  assert.match(html, /<header class="masthead home-masthead">[\s\S]*?<h1><span class="masthead-title-text"><span>Ballydídean<\/span> <span>Weather<\/span><\/span><\/h1>/u);
   assert.match(html, /data-forecast-adjustment-toggle/u);
   assert.match(forecastHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(logsHtml, /data-forecast-adjustment-toggle/u);
@@ -1822,7 +1870,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(trendsHtml, /data-forecast-adjustment-toggle/u);
   assert.doesNotMatch(html, /brand-link|brand-mark|ballydidean-wide\.svg/u);
   assert.doesNotMatch(html, /aria-label="Weather location"|data-site-selector/u);
-  assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-current="page">[\s\S]*?>home<\/span><\/span><span>Home<\/span><\/a>/u);
+  assert.match(html, /class="section-nav-home" href="\/" data-weather-route aria-label="Now" aria-current="page">[\s\S]*?class="section-nav-weather-icon"[\s\S]*?<\/span><span>Now<\/span><\/a>/u);
   assert.match(html, /class="section-nav-map" href="\/map" data-weather-route>[\s\S]*?>map<\/span><\/span><span>Map<\/span><\/a>/u);
   assert.match(html, /class="section-nav-forecast" href="\/forecast" data-weather-route>[\s\S]*?>partly_cloudy_day<\/span><\/span><span>Forecast<\/span><\/a>/u);
   assert.match(html, /class="section-nav-trends" href="\/trends" data-weather-route>[\s\S]*?>trending_up<\/span><\/span><span>Trends<\/span><\/a>/u);
@@ -1997,6 +2045,8 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(settingsHtml, /class="settings-logs-link" href="\/logs" data-weather-route aria-label="Logs">[\s\S]*?>history<\/span>[\s\S]*?<strong>Logs<\/strong>/u);
   assert.match(settingsHtml, /href="\/admin" aria-label="Admin">[\s\S]*?>settings<\/span>[\s\S]*?<strong>Admin<\/strong>/u);
   assert.doesNotMatch(settingsHtml, /href="\/admin" data-weather-route/u);
+  assert.match(settingsHtml, /href="\/privacy" aria-label="Privacy policy">[\s\S]*?<strong>Privacy policy<\/strong>/u);
+  assert.doesNotMatch(settingsHtml, /<a[^>]*href="\/privacy"[^>]*data-weather-route/u);
   assert.doesNotMatch(settingsHtml, /Property sensors<\/strong>|Name and place/u);
   assert.match(settingsHtml, /data-unit-settings-form/u);
   assert.doesNotMatch(settingsHtml, /<dialog|data-unit-settings-open|data-unit-settings-close/u);
@@ -2107,11 +2157,14 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /https:\/\/creativecommons\.org\/licenses\/by\/4\.0\//u);
   assert.match(html, /CC BY 4\.0/u);
   assert.match(html, /<footer class="credits" aria-label="Weather data credits">[\s\S]*?<details>[\s\S]*?<summary>Data sources &amp; credits<\/summary>/u);
+  assert.match(html, /<\/details>\s*<p class="project-credit">Built with love by <a href="https:\/\/ballydidean\.farm" rel="noreferrer">Ballydidean Farm Sanctuary<\/a><\/p>\s*<\/footer>/u);
+  assert.equal((html.match(/class="project-credit"/gu) ?? []).length, 1);
+  assert.doesNotMatch(html, /Ballydídean Farm Sanctuary<\/a> project/u);
   assert.doesNotMatch(html, /<details open/u);
   assert.match(html, /The latest refresh failed/u);
   assert.match(
     loadingHtml,
-    /<p class="refresh-indicator active" role="status"><span class="sr-only">Refreshing weather data…<\/span><\/p>/u,
+    /<p class="sr-only" role="status">Refreshing weather data…<\/p>/u,
   );
   assert.doesNotMatch(
     loadingHtml,
@@ -2142,7 +2195,7 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.doesNotMatch(initialTrendsHtml, /data-trend-metric-control|data-trend-metric-option/u);
   assert.doesNotMatch(initialTrendsHtml, /data-trend-mode-toggle|>Show all<\/button>/u);
   assert.doesNotMatch(initialHomeHtml, /station-map|skeleton-map/u);
-  assert.equal((initialMapHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 1);
+  assert.equal((initialMapHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 2);
   assert.equal((initialSettingsHtml.match(/class="[^"]*skeleton-region/gu) ?? []).length, 0);
   assert.match(initialMapHtml, /class="station-map skeleton-map"/u);
   assert.doesNotMatch(initialHomeHtml, /No current model value|being collected|No normalized trend buckets/u);
@@ -2721,6 +2774,75 @@ test("pressure tile never derives the observed rate from the forecast", (context
   assert.match(tile, /class="condition-primary"><strong>—<\/strong>/u);
   assert.match(tile, /condition-forecast-label">Max<\/span> <strong>\+4\.0<\/strong>/u);
   assert.match(tile, /condition-forecast-label"><\/span> <strong>12:00 <small>PM<\/small><\/strong>/u);
+});
+
+// keep the cold text cutoff independent of display units and rounding
+test("temperature text turns blue below 55F across display units", () => {
+  // retain warm, hot and unavailable bands around the moved cold boundary
+  for (const [valueF, label, tone] of [
+    [32, "Freezing", "blue"],
+    [49.9, "Chilly", "blue"],
+    [50, "Chilly", "blue"],
+    [54.9, "Chilly", "blue"],
+    [55, "Cool", "green"],
+    [55.1, "Cool", "green"],
+    [60, "Comfortable", "green"],
+    [70, "Comfortable", "green"],
+    [70.1, "Warm", "orange"],
+    [80, "Warm", "orange"],
+    [80.1, "Hot", "red"],
+    [null, "Unavailable", "neutral"],
+  ]) {
+    const temperatureC = valueF === null ? null : (valueF - 32) * 5 / 9;
+    assert.equal(temperatureBand(temperatureC).label, label);
+    const forecast = {
+      ...forecastRecord,
+      metrics: { ...forecastRecord.metrics, temperatureC, apparentTemperatureC: temperatureC },
+    };
+
+    // use the unrounded celsius reading with either unit preference
+    for (const temperature of ["fahrenheit", "celsius"]) {
+      const state = {
+        ...forecastState([forecast], null),
+        units: { ...DEFAULT_UNIT_PREFERENCES, temperature },
+      };
+      const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="temperature"[\s\S]*?<\/article>/u)?.[0];
+      assert.ok(tile);
+      const tones = [...tile.matchAll(/condition-forecast-tone-([a-z]+)/gu)].map(
+        // collect the apparent and air temperature extrema
+        (match) => match[1],
+      );
+      assert.deepEqual(tones, [tone, tone, tone, tone], `${String(valueF)}F in ${temperature}`);
+    }
+  }
+});
+
+// color the selected adjusted value without changing the raw forecast
+test("adjusted temperature crosses the shared 55F blue cutoff", () => {
+  const raw = {
+    ...forecastRecord,
+    metrics: { ...forecastRecord.metrics, temperatureC: 14, apparentTemperatureC: 14 },
+  };
+  const corrected = {
+    ...raw,
+    temperatureAdjustment: { ...temperatureCanaryDecision(raw), correctedTemperatureC: 12 },
+  };
+
+  // keep the warm raw value green and the corrected 53.6f value blue
+  for (const [mode, expectedAirTone] of [["raw", "green"], ["adjusted", "blue"]]) {
+    const state = {
+      ...forecastState([corrected], null),
+      forecastAdjustmentMode: mode,
+      forecastTemperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+    };
+    const tile = renderWeatherDashboard(state).match(/<article[^>]*data-condition="temperature"[\s\S]*?<\/article>/u)?.[0];
+    assert.ok(tile);
+    const tones = [...tile.matchAll(/condition-forecast-tone-([a-z]+)/gu)].map(
+      // retain independent apparent-temperature colors
+      (match) => match[1],
+    );
+    assert.deepEqual(tones, ["green", "green", expectedAirTone, expectedAirTone]);
+  }
 });
 
 // verify the published current-condition threshold boundaries
@@ -3366,6 +3488,7 @@ test("authenticated homepage loads saved soil sensor positions", async () => {
   await controller.initialize();
 
   assert.equal(requested.some((url) => url.includes("/property-sensor-layout")), true);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
 });
 
@@ -3606,6 +3729,12 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
   await controller.refreshHomeNetwork();
   assert.equal(controller.state.homeNetwork, true);
   assert.equal(layouts.length, 1);
+  assert.equal(controller.state.propertySensorLayoutLoading, true);
+  const pendingLayout = renderWeatherDashboard(controller.state, "home", false);
+  assert.match(pendingLayout, /admin-soil-map-panel skeleton-region/u);
+  assert.match(pendingLayout, /class="weather-content" aria-busy="false"/u);
+  assert.match(pendingLayout, /role="status">Refreshing weather data…/u);
+  assert.doesNotMatch(pendingLayout, /Weather data is up to date/u);
   const beforeRecheck = controller.state;
   await controller.refreshHomeNetwork();
   assert.equal(controller.state, beforeRecheck);
@@ -3615,6 +3744,7 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
     // allow the delayed layout to reach the renderer
     (resolve) => setImmediate(resolve),
   );
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
   assert.match(renderWeatherDashboard(controller.state, "home", false), /data-soil-moisture-sensor="soil-1"/u);
 
@@ -3629,6 +3759,7 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
     (resolve) => setImmediate(resolve),
   );
   assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
 
   homeNetwork = true;
@@ -3641,6 +3772,7 @@ test("homepage viewer context keeps authorized layouts but rejects revoked ones"
     (resolve) => setImmediate(resolve),
   );
   assert.equal(controller.state.homeNetwork, false);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
 });
 
@@ -3687,6 +3819,7 @@ test("homepage viewer context retries a failed soil layout without false placeme
     (resolve) => setImmediate(resolve),
   );
   assert.equal(controller.state.homeNetwork, true);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.equal(controller.state.propertySensorLayout, null);
   assert.equal(layoutReads, 1);
   const unavailable = renderWeatherDashboard(controller.state, "home", false);
@@ -3700,6 +3833,7 @@ test("homepage viewer context retries a failed soil layout without false placeme
     (resolve) => setImmediate(resolve),
   );
   assert.equal(layoutReads, 2);
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
   assert.deepEqual(controller.state.propertySensorLayout, [savedLayout]);
   const recovered = renderWeatherDashboard(controller.state, "home", false);
   assert.match(recovered, /data-soil-moisture-sensor="soil-1"/u);
@@ -3819,4 +3953,198 @@ test("failed next-page reads keep the prior page label and cursor", async () => 
   assert.equal(controller.state.nextCursor, "page-two");
   assert.equal(controller.state.history[0]?.id, "101");
   assert.match(controller.state.error ?? "", /status 503/u);
+});
+
+// keep pending data out of every public page without a header indicator
+test("all data routes use skeletons for initial and repeat reads", () => {
+  const initial = new WeatherDashboardController({ storage: null }).state;
+  const cached = {
+    ...initial,
+    current: [record],
+    forecast: [forecastRecord],
+    history: [record],
+    selectedSite: site,
+    sites: [site],
+  };
+  const markers = {
+    home: "current-conditions skeleton-region",
+    forecast: "forecast-chart skeleton-forecast-chart",
+    trends: "trend-chart skeleton-trend-chart",
+    map: "station-map skeleton-map",
+    logs: "skeleton-history-row",
+  };
+
+  // require cached data to use the same loading contract as the first read
+  for (const state of [initial, cached]) {
+    // inspect every remotely loaded public route
+    for (const [view, marker] of Object.entries(markers)) {
+      const html = renderWeatherDashboard(state, view);
+      assert.ok(html.includes(marker), `${view} must show an in-place skeleton`);
+      assert.match(html, /class="weather-content" aria-busy="true"/u);
+      assert.match(html, /<p class="sr-only" role="status">Refreshing weather data…<\/p>/u);
+      assert.doesNotMatch(html, /refresh-indicator/u);
+      assert.doesNotMatch(html.match(/<header[\s\S]*?<\/header>/u)?.[0] ?? "", /role="status"|Loading|Refreshing/u);
+    }
+  }
+
+  // clear loading surfaces for both success and last-good error recovery
+  for (const error of [null, "Read failed"]) {
+    // ensure every settled route renders real data or an honest empty state
+    for (const view of Object.keys(markers)) {
+      const html = renderWeatherDashboard({ ...cached, loading: false, error }, view);
+      assert.doesNotMatch(html, /skeleton-region|skeleton-history-row|skeleton-history-card/u);
+      assert.match(html, /class="weather-content" aria-busy="false"/u);
+      // preserve failures separately from loading feedback
+      if (error !== null) {
+        assert.match(html, /role="alert">Read failed/u);
+      }
+    }
+  }
+  // local settings fields stay usable even when navigation artwork is still loading
+  const settingsContent = renderWeatherDashboard(initial, "settings").split('<div class="weather-content"')[1];
+  assert.doesNotMatch(settingsContent, /skeleton-region|skeleton-line/u);
+});
+
+// distinguish sensor loading from empty and unavailable states
+test("sensor maps and admin panels reserve missing data with skeletons", () => {
+  const initial = new WeatherDashboardController({ storage: null, isAdmin: true }).state;
+  const home = renderWeatherDashboard(initial, "home", true);
+  assert.match(home, /admin-soil-map-panel skeleton-region/u);
+  assert.match(home, /skeleton-temperature/u);
+  const map = renderWeatherDashboard(initial, "map");
+  assert.match(map, /property-map-panel skeleton-region/u);
+  assert.doesNotMatch(map, /Loading property sensors|No property sensors|<image/u);
+  const admin = renderWeatherDashboard(initial, "admin", true);
+  assert.match(admin, /forecast-adjustment-admin skeleton-region/u);
+  assert.match(admin, /property-admin skeleton-region/u);
+  assert.doesNotMatch(admin, /Loading EcoWitt|No EcoWitt|data-property-sensor-form|data-admin-forecast-adjustments/u);
+  const settled = renderWeatherDashboard({ ...initial, loading: false }, "admin", true);
+  assert.match(settled, /No EcoWitt sensor channels are reporting yet/u);
+  assert.doesNotMatch(settled, /skeleton-region/u);
+  const saving = renderWeatherDashboard({
+    ...initial,
+    loading: false,
+    forecastAdjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
+    adminAdjustmentSettingsSaving: true,
+  }, "admin", true);
+  assert.match(saving, /skeleton-action/u);
+  assert.match(saving, /class="sr-only">Saving forecast adjustments…/u);
+});
+
+// cover the app shell before javascript mounts its route-specific skeletons
+test("bootstrap uses skeletons instead of a visible loading notice", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /shell skeleton-region" aria-busy="true"/u);
+  assert.match(html, /skeleton-line skeleton-field/u);
+  assert.match(html, /class="sr-only" role="status">Loading Ballydídean weather…/u);
+  assert.doesNotMatch(html, /class="notice"/u);
+});
+
+// revoke optional loading feedback when its parent weather request fails
+test("failed homepage weather clears a pending optional layout skeleton", async () => {
+  let resolveCurrent;
+  let resolveLayout;
+  const current = new Promise(
+    // control the primary failure independently of the optional read
+    (resolve) => { resolveCurrent = resolve; },
+  );
+  const layout = new Promise(
+    // hold the optional positions until after access is revoked
+    (resolve) => { resolveLayout = resolve; },
+  );
+  const controller = new WeatherDashboardController({
+    storage: null,
+    // grant local display while delaying current and layout responses
+    fetcher: async (input) => {
+      const url = String(input);
+      // allow the private display boundary before the primary read settles
+      if (url === buildViewerContextUrl("/api/v1")) {
+        return Response.json({ data: { homeNetwork: true } });
+      }
+      // hold positions independently of current observations
+      if (url.includes("/property-sensor-layout")) {
+        return layout;
+      }
+      // inject the primary failure after the optional loader appears
+      if (url.includes("/current")) {
+        return current;
+      }
+      return Response.json({ data: [], site });
+    },
+  });
+  const initialized = controller.initialize();
+  await controller.refreshHomeNetwork();
+  assert.equal(controller.state.propertySensorLayoutLoading, true);
+  resolveCurrent(Response.json({ error: "unavailable" }, { status: 503 }));
+  await initialized;
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
+  assert.equal(controller.state.homeNetwork, false);
+  assert.match(renderWeatherDashboard(controller.state), /role="status">Weather refresh failed/u);
+  assert.doesNotMatch(renderWeatherDashboard(controller.state), /skeleton-region|data-admin-soil-map/u);
+  resolveLayout(Response.json({ data: [] }));
+  await new Promise(
+    // reject the late positions without reactivating their loading state
+    (resolve) => setImmediate(resolve),
+  );
+  assert.equal(controller.state.propertySensorLayoutLoading, false);
+  assert.equal(controller.state.propertySensorLayout, null);
+});
+
+// reuse unrounded forecast thresholds for every indoor floor and display unit
+test("indoor temperatures share the thresholded forecast text colors", () => {
+  const initial = new WeatherDashboardController({ storage: null }).state;
+  // exercise each exact boundary and readings that round across it
+  for (const [valueF, tone] of [
+    [32, "blue"],
+    [54.9, "blue"],
+    [55, "green"],
+    [60, "green"],
+    [70, "green"],
+    [70.1, "orange"],
+    [80, "orange"],
+    [80.1, "red"],
+    [null, "neutral"],
+  ]) {
+    const temperatureC = valueF === null ? null : (valueF - 32) * 5 / 9;
+    const indoorRecord = {
+      ...ecowittRecord,
+      metadata: {
+        ...ecowittRecord.metadata,
+        provider: {
+          ...ecowittRecord.metadata.provider,
+          propertySensors: ["gateway", "temperature-1", "temperature-2"].map(
+            // use the same boundary reading at each physical floor
+            (key) => ({ key, model: "WH31", channel: null, readings: { temperatureC } }),
+          ),
+        },
+      },
+    };
+    // ensure unit conversion never changes the selected color
+    for (const temperature of ["fahrenheit", "celsius"]) {
+      const state = {
+        ...initial,
+        current: [indoorRecord],
+        loading: false,
+        units: { ...DEFAULT_UNIT_PREFERENCES, temperature },
+      };
+      // preserve the independent admin and home-network visibility paths
+      for (const isAdmin of [true, false]) {
+        const html = renderWeatherDashboard({ ...state, homeNetwork: !isAdmin }, "home", isAdmin);
+        const indoor = html.match(/<section class="indoor-house-panel"[\s\S]*?<\/section>/u)?.[0];
+        assert.ok(indoor);
+        assert.deepEqual([...indoor.matchAll(/indoor-house-temperature condition-forecast-tone-([a-z]+)/gu)].map(
+          // compare every floor against the shared discrete threshold
+          (match) => match[1],
+        ), [tone, tone, tone], `${String(valueF)}F in ${temperature}`);
+        const measurement = formatMeasurement(temperatureC, "temperature", state.units, 0);
+        assert.ok(indoor.includes(`<strong>${measurement.value}`));
+      }
+      const loading = renderWeatherDashboard({ ...state, loading: true }, "home", true);
+      assert.equal((loading.match(/indoor-house-temperature condition-forecast-tone-neutral/gu) ?? []).length, 3);
+      assert.equal((loading.match(/skeleton-temperature/gu) ?? []).length, 3);
+      assert.doesNotMatch(renderWeatherDashboard(state, "home", false), /data-indoor-house/u);
+    }
+  }
+  const missing = renderWeatherDashboard({ ...initial, loading: false }, "home", true);
+  assert.equal((missing.match(/indoor-house-temperature condition-forecast-tone-neutral/gu) ?? []).length, 3);
 });

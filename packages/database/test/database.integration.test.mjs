@@ -847,6 +847,34 @@ test(
             windowStart: "2026-08-22T07:00:00.000Z",
           });
 
+          const anchorContainingHorizon = await getWeatherForecast(pool, {
+            asOf: "2026-08-22T04:00:00.000Z",
+            hours: 6,
+            productSelection: "anchor-containing",
+            siteSlug: configuration.site.key,
+          });
+          assert.deepEqual(
+            anchorContainingHorizon.map(
+              // retain the newest product with the requested anchor hour
+              (record) => ({
+                productRunAt: record.productRunAt.toISOString(),
+                temperatureC: record.temperatureC,
+                validAt: record.validAt.toISOString(),
+              }),
+            ),
+            Array.from(
+              { length: 6 },
+              // build the complete older anchor-bearing product
+              (_unused, index) => ({
+                productRunAt: "2026-08-22T04:00:00.000Z",
+                temperatureC: -10,
+                validAt: new Date(
+                  Date.parse("2026-08-22T04:00:00.000Z") + index * 3_600_000,
+                ).toISOString(),
+              }),
+            ),
+          );
+
           const horizon = await getWeatherForecast(pool, {
             asOf: "2026-08-22T07:00:00.000Z",
             hours: 3,

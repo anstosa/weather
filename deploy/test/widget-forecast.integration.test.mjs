@@ -11,11 +11,22 @@ import {
   projectWidgetForecast,
   WIDGET_FORECAST_MAX_BYTES,
 } from "../../apps/web/dist/widget-forecast.js";
+import {
+  projectWidgetForecastV2,
+  WIDGET_FORECAST_V2_SCHEMA_VERSION,
+} from "../../apps/web/dist/widget-forecast-v2.js";
+import {
+  projectWidgetForecastV3,
+  WIDGET_FORECAST_V3_SCHEMA_VERSION,
+} from "../../apps/web/dist/widget-forecast-v3.js";
 import { createForecastFixture } from "../../scripts/widget-fixtures.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
 const widgetPath = "/api/v1/sites/ballydidean/widget-forecast";
+const widgetV2Path = "/api/v2/sites/ballydidean/widget-forecast";
+const widgetV3Path = "/api/v3/sites/ballydidean/widget-forecast";
 const forecastPath = "/api/v1/sites/ballydidean/forecast?days=1";
+const overnightForecastPath = "/api/v1/sites/ballydidean/forecast?window=overnight";
 const maximumApiBytes = 1024 * 1024;
 const enabledSettings = Object.freeze({
   rain: true,
@@ -140,7 +151,22 @@ test("widget forecast edge preserves filtering and rejects untrusted inputs", {
   const layoutPath = join(stateRoot, "property-sensor-layout.json");
   const apiPort = await reservePort();
   const edgePort = await reservePort();
-  const fixture = createForecastFixture({ generic: true, rain: true, temperature: true });
+  const fixture = createForecastFixture({
+    generic: true,
+    rain: true,
+    // retain real condition values through the v2 edge projection
+    row(index, record) {
+      return {
+        ...record,
+        metrics: {
+          ...record.metrics,
+          cloudCoverPercent: 30 + index,
+          windSpeedMps: 4 + index / 10,
+        },
+      };
+    },
+    temperature: true,
+  });
   const normalBody = Buffer.from(JSON.stringify(fixture.input));
   const maximumBody = paddedForecastBody(fixture.input);
   const requests = [];
@@ -252,9 +278,27 @@ test("widget forecast edge preserves filtering and rejects untrusted inputs", {
       const widgetResponse = await fetch(`${edgeOrigin}${widgetPath}`);
       const widget = await widgetResponse.json();
       const expected = projectWidgetForecast(browserForecast, widget.receivedAt);
+      const widgetV2Response = await fetch(`${edgeOrigin}${widgetV2Path}`);
+      const widgetV2 = await widgetV2Response.json();
+      const expectedV2 = projectWidgetForecastV2(browserForecast, widgetV2.receivedAt);
+      const widgetV3Response = await fetch(`${edgeOrigin}${widgetV3Path}`);
+      const widgetV3 = await widgetV3Response.json();
+      const expectedV3 = projectWidgetForecastV3(browserForecast, widgetV3.receivedAt);
       assert.equal(browserResponse.status, 200);
       assert.equal(widgetResponse.status, 200);
       assert.deepEqual(widget, expected);
+      assert.equal(widgetV2Response.status, 200);
+      assert.deepEqual(widgetV2, expectedV2);
+      assert.equal(widgetV2.schemaVersion, WIDGET_FORECAST_V2_SCHEMA_VERSION);
+      assert.equal(widgetV3Response.status, 200);
+      assert.deepEqual(widgetV3, expectedV3);
+      assert.equal(widgetV3.schemaVersion, WIDGET_FORECAST_V3_SCHEMA_VERSION);
+      assert.equal(widgetV3.hours.at(-1).end, widgetV3.calendar.overnightEnd);
+      assert.ok(widgetV2.hours.every(
+        // retain real condition metrics without derived defaults
+        (hour) => hour.cloudCoverPercent.mode === "raw" &&
+          hour.windSpeedMps.mode === "raw",
+      ));
       assert.equal(
         widget.hours[0].temperatureC.mode,
         settings.temperature ? "adjusted" : "raw",
@@ -306,7 +350,55 @@ test("widget forecast edge preserves filtering and rejects untrusted inputs", {
       assert.equal(upstreamRequest.headers.origin, undefined);
     }
 
-    const serialized = getBody.toString("utf8");
+    const v2Response = await fetch(`${edgeOrigin}${widgetV2Path}`);
+    const v2 = await v2Response.json();
+    assert.equal(v2Response.status, 200);
+    assert.equal(v2Response.headers.get("cache-control"), "no-store");
+    assert.equal(v2Response.headers.get("access-control-allow-origin"), null);
+    assert.equal(v2.schemaVersion, WIDGET_FORECAST_V2_SCHEMA_VERSION);
+    assert.ok(Buffer.byteLength(JSON.stringify(v2)) <= WIDGET_FORECAST_MAX_BYTES);
+
+    const v3RequestStart = requests.length;
+    const v3GetResponse = await fetch(`${edgeOrigin}${widgetV3Path}`, {
+      headers: {
+        Authorization: "Bearer private-v3-token",
+        Cookie: "private_cookie=v3-secret",
+        Origin: "https://foreign.example",
+      },
+    });
+    const v3GetBody = Buffer.from(await v3GetResponse.arrayBuffer());
+    const v3HeadResponse = await fetch(`${edgeOrigin}${widgetV3Path}`, {
+      headers: {
+        Authorization: "Bearer private-v3-head-token",
+        Cookie: "private_cookie=v3-head-secret",
+      },
+      method: "HEAD",
+    });
+    const v3HeadBody = Buffer.from(await v3HeadResponse.arrayBuffer());
+    const v3Requests = requests.slice(v3RequestStart);
+    assert.equal(v3GetResponse.status, 200);
+    assert.equal(v3HeadResponse.status, 200);
+    assert.equal(v3GetResponse.headers.get("cache-control"), "no-store");
+    assert.equal(v3GetResponse.headers.get("access-control-allow-origin"), null);
+    assert.equal(
+      Number(v3HeadResponse.headers.get("content-length")),
+      v3GetBody.byteLength,
+    );
+    assert.equal(v3HeadBody.byteLength, 0);
+    assert.ok(v3GetBody.byteLength <= WIDGET_FORECAST_MAX_BYTES);
+    assert.equal(v3Requests.length, 2);
+
+    // require the fixed overnight query without forwarding caller credentials
+    for (const upstreamRequest of v3Requests) {
+      assert.equal(upstreamRequest.method, "GET");
+      assert.equal(upstreamRequest.path, overnightForecastPath);
+      assert.equal(upstreamRequest.headers.accept, "application/json");
+      assert.equal(upstreamRequest.headers.authorization, undefined);
+      assert.equal(upstreamRequest.headers.cookie, undefined);
+      assert.equal(upstreamRequest.headers.origin, undefined);
+    }
+
+    const serialized = `${getBody.toString("utf8")}${v3GetBody.toString("utf8")}`;
 
     // reject private adjustment and provider internals from public bytes
     for (const forbidden of [
@@ -324,20 +416,36 @@ test("widget forecast edge preserves filtering and rejects untrusted inputs", {
     const beforeRejected = requests.length;
 
     // reject every mutation with one exact allow header
-    for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
-      const response = await fetch(`${edgeOrigin}${widgetPath}`, { method });
-      assert.equal(response.status, 405);
-      assert.equal(response.headers.get("allow"), "GET, HEAD");
+    for (const endpoint of [widgetPath, widgetV2Path, widgetV3Path]) {
+      // keep every versioned projection read-only
+      for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+        const response = await fetch(`${edgeOrigin}${endpoint}`, { method });
+        assert.equal(response.status, 405);
+        assert.equal(response.headers.get("allow"), "GET, HEAD");
+      }
     }
 
     // reject every caller-controlled projection query
-    for (const query of ["?date=2026-09-12", "?origin=https://evil.example", "?site=other"]) {
-      const response = await fetch(`${edgeOrigin}${widgetPath}${query}`);
-      assert.equal(response.status, 400);
+    for (const endpoint of [widgetPath, widgetV2Path, widgetV3Path]) {
+      // keep every versioned projection independent of caller input
+      for (const query of ["?date=2026-09-12", "?origin=https://evil.example", "?site=other"]) {
+        const response = await fetch(`${edgeOrigin}${endpoint}${query}`);
+        assert.equal(response.status, 400);
+      }
     }
 
     await assertHeadErrorParity(
       `${edgeOrigin}${widgetPath}?site=other`,
+      400,
+      "bad request\n",
+    );
+    await assertHeadErrorParity(
+      `${edgeOrigin}${widgetV2Path}?site=other`,
+      400,
+      "bad request\n",
+    );
+    await assertHeadErrorParity(
+      `${edgeOrigin}${widgetV3Path}?site=other`,
       400,
       "bad request\n",
     );
@@ -347,6 +455,12 @@ test("widget forecast edge preserves filtering and rejects untrusted inputs", {
       "/api/v1/sites/other/widget-forecast",
       `${widgetPath}/`,
       `${widgetPath}/private`,
+      "/api/v2/sites/other/widget-forecast",
+      `${widgetV2Path}/`,
+      `${widgetV2Path}/private`,
+      "/api/v3/sites/other/widget-forecast",
+      `${widgetV3Path}/`,
+      `${widgetV3Path}/private`,
     ]) {
       const response = await fetch(`${edgeOrigin}${path}`);
       assert.equal(response.status, 404);
