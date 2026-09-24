@@ -1,0 +1,23 @@
+Google Sans Regular and Bold, v14.000
+
+Official release:
+https://github.com/googlefonts/googlesans/releases/tag/v14.000
+
+Archive:
+https://github.com/googlefonts/googlesans/releases/download/v14.000/GoogleSans-v14.000.zip
+SHA-256: d338f0e74f5eabead86a85b87edf4cc50cd6561196dbe173d1db4139e95b3ca7
+
+Unmodified Android static fonts (resource filenames renamed for Android):
+build/GoogleSans/android/static/GoogleSans-Regular.ttf
+res/font/google_sans_regular.ttf
+SHA-256: dd5ac86cf90395d0003b83075b4e92fbca7c7157869db743670e39bc4d30f05b
+
+build/GoogleSans/android/static/GoogleSans-Bold.ttf
+res/font/google_sans_bold.ttf
+SHA-256: 39a9f6c8803ec29585d4d0fe07a16927bcf0056c9a9cb4702dc6eef6e76b7c02
+
+License and trademark notices copied from the matching upstream release tag:
+https://raw.githubusercontent.com/googlefonts/googlesans/v14.000/OFL.txt
+https://raw.githubusercontent.com/googlefonts/googlesans/v14.000/TRADEMARKS.txt
+
+Bundled alongside this notice as google-sans-OFL.txt and google-sans-TRADEMARKS.txt.

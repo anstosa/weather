@@ -6,6 +6,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Insets
 import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
@@ -13,6 +14,7 @@ import android.os.Bundle
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.webkit.CookieManager
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
@@ -129,6 +131,16 @@ class MainActivity : Activity() {
             })
         }
         return FrameLayout(this).apply {
+            // keep hosted content clear of enforced edge-to-edge system areas
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                val handledInsets = WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout()
+                // replace padding on each update while preserving keyboard insets for webview
+                setOnApplyWindowInsetsListener { view, insets ->
+                    val safeArea = insets.getInsets(handledInsets)
+                    view.setPadding(safeArea.left, safeArea.top, safeArea.right, safeArea.bottom)
+                    WindowInsets.Builder(insets).setInsets(handledInsets, Insets.NONE).build()
+                }
+            }
             addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(errorView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }

@@ -6,7 +6,7 @@
     <string name="canonical_weather_origin" translatable="false">https://weather.ballydidean.farm</string>
     <string name="widget_description">Forward weather through 8 PM</string>
     <string name="widget_name">Ballydidean Weather</string>
-    <string name="widget_bedtime">go to bed</string>
+    <string name="widget_bedtime">Overnight</string>
     <string name="widget_unit_title">Temperature unit</string>
     <string name="widget_unit_fahrenheit">Fahrenheit</string>
     <string name="widget_unit_celsius">Celsius</string>

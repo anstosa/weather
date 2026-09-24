@@ -6,7 +6,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.floor
 
 enum class TemperatureUnit {
@@ -22,6 +21,36 @@ enum class RainCondition(val accessibleName: String) {
     SPRINKLE("sprinkle"),
     RAIN("rain"),
     UNAVAILABLE("unavailable")
+}
+
+enum class WeatherCondition(val accessibleName: String) {
+    SUNNY("sunny"),
+    PARTLY_CLOUDY("partly cloudy"),
+    CLOUDY("cloudy"),
+    LIGHT_RAIN("light rain"),
+    HEAVY_RAIN("heavy rain"),
+    UNAVAILABLE("conditions unavailable")
+}
+
+enum class WidgetTemperatureTone {
+    NEUTRAL,
+    COLD,
+    WARM,
+    HOT;
+
+    companion object {
+        // share the 55f blue cutoff while replacing green with normal ink
+        fun fromCelsius(value: Double?): WidgetTemperatureTone {
+            // missing readings must not imply heat or cold
+            if (value == null || !value.isFinite()) return NEUTRAL
+            return when {
+                value < (55.0 - 32.0) * 5.0 / 9.0 -> COLD
+                value <= (70.0 - 32.0) * 5.0 / 9.0 -> NEUTRAL
+                value <= (80.0 - 32.0) * 5.0 / 9.0 -> WARM
+                else -> HOT
+            }
+        }
+    }
 }
 
 enum class WidgetPresentationMode {
@@ -43,10 +72,18 @@ data class WidgetGroup(
     val hourLabel: String,
     val landscapeLabel: String,
     val accessibleHours: String,
+    val weatherCondition: WeatherCondition = WeatherCondition.UNAVAILABLE,
+    val highWind: Boolean = false,
+    val temperatureTone: WidgetTemperatureTone = WidgetTemperatureTone.NEUTRAL,
+    val isNight: Boolean = false,
 ) {
     // describe every visible forecast semantic
     fun accessibilityLabel(): String {
-        return "$accessibleHours, $temperatureLabel, ${condition.accessibleName}, ${status.wireName()}"
+        // announce wind emphasis alongside the selected condition
+        val wind = if (highWind) ", high wind" else ""
+        // describe a clear night without announcing sunshine
+        val conditionName = if (isNight && weatherCondition == WeatherCondition.SUNNY) "clear" else weatherCondition.accessibleName
+        return "$accessibleHours, $temperatureLabel, $conditionName$wind, ${status.wireName()}"
     }
 }
 
@@ -63,9 +100,12 @@ data class WidgetPresentation(
     val sunset: Instant?,
     val generatedAt: Instant,
     val unit: TemperatureUnit,
+    val bedtimeStart: Instant? = null,
+    val bedtimeEnd: Instant? = null,
+    val overnight: WidgetGroup? = null,
 ) {
     val showCredit: Boolean
-        get() = mode == WidgetPresentationMode.WEATHER && groups.isNotEmpty()
+        get() = groups.isNotEmpty() || overnight != null
 }
 
 data class EffectiveForecastField(
@@ -84,8 +124,9 @@ object WidgetSemanticRenderer {
         now: Instant,
         unit: TemperatureUnit,
         attempt: WidgetAttempt? = null,
+        maxSegments: Int = WidgetRowGeometry.MIN_WEATHER_SEGMENTS,
     ): WidgetPresentation {
-        val hardExpiry = minOf(snapshot.calendar.dayEnd, snapshot.receivedAt.plus(Duration.ofHours(24)))
+        val hardExpiry = minOf(snapshot.calendar.overnightEnd ?: snapshot.calendar.dayEnd, snapshot.receivedAt.plus(Duration.ofHours(24)))
         val hardExpired = now >= hardExpiry
         val first = when {
             now < snapshot.calendar.dayStart -> 0
@@ -96,27 +137,45 @@ object WidgetSemanticRenderer {
         } else {
             snapshot.hours.drop(first).takeWhile { it.start < snapshot.calendar.cutoff }
         }
-        val width = if (remaining.isEmpty()) 1 else minOf(3, maxOf(1, ceil(remaining.size / 7.0).toInt()))
+        val capacity = maxOf(WidgetRowGeometry.MIN_WEATHER_SEGMENTS, maxSegments)
+        var blockHours = 1
+        // widen only future blocks until all hours fit the single row
+        while (1 + (remaining.size - 1 + blockHours - 1) / blockHours > capacity) {
+            blockHours += 1
+        }
+        val memberships = remaining.take(1).map { listOf(it) }.toMutableList()
+        val future = remaining.drop(1)
+        val forecastCount = minOf(future.size, capacity - 1)
+        var consumed = 0
+        // use every available panel before reserving any space for bedtime
+        for (index in 0 until forecastCount) {
+            val reserved = forecastCount - index - 1
+            val count = minOf(blockHours, future.size - consumed - reserved)
+            memberships += future.subList(consumed, consumed + count)
+            consumed += count
+        }
         val groups = mutableListOf<WidgetGroup>()
         val applicableFields = mutableListOf<EffectiveForecastField>()
-        // preserve contiguous fixed-membership groups
-        for ((groupIndex, members) in remaining.chunked(width).withIndex()) {
+        // preserve every hour once while keeping now separate
+        for ((groupIndex, members) in memberships.withIndex()) {
             val temperatures = members.map { effective(it.temperatureC, now, hardExpired) }
             val rains = members.map { effective(it.rainMmPerHour, now, hardExpired) }
-            applicableFields += temperatures
-            applicableFields += rains
+            val clouds = members.map { optionalEffective(it.cloudCoverPercent, now, hardExpired) }
+            val winds = members.map { optionalEffective(it.windSpeedMps, now, hardExpired) }
+            val fields = temperatures + rains + members.mapNotNull { it.cloudCoverPercent?.let { field -> effective(field, now, hardExpired) } } +
+                members.mapNotNull { it.windSpeedMps?.let { field -> effective(field, now, hardExpired) } }
+            applicableFields += fields
             val range = temperatureRange(temperatures, unit)
             val isNow = groupIndex == 0 && now >= members.first().start && now < members.first().end
-            val hourLabel = groupLabel(snapshot, members, isNow)
-            val temperatureLabel = range?.let { (minimum, maximum) ->
-                if (minimum == maximum) "$minimum°" else "$minimum–$maximum°"
-            } ?: "—"
+            val hourLabel = groupLabel(members, isNow)
+            val selectedTemperature = representativeTemperature(temperatures)
+            val temperatureLabel = selectedTemperature?.let { "${roundTemperature(convertTemperature(it, unit))}°" } ?: "—"
             groups += WidgetGroup(
                 start = members.first().start,
                 end = members.last().end,
                 hourCount = members.size,
                 isNow = isNow,
-                status = WidgetForecastDecoder.summarize((temperatures + rains).map { it.mode }),
+                status = WidgetForecastDecoder.summarize(fields.map { it.mode }),
                 minimumTemperature = range?.first,
                 maximumTemperature = range?.second,
                 temperatureLabel = temperatureLabel,
@@ -124,23 +183,32 @@ object WidgetSemanticRenderer {
                 hourLabel = hourLabel,
                 landscapeLabel = "$hourLabel ${temperatureLabel.removeSuffix("°")}",
                 accessibleHours = accessibleHours(members, isNow),
+                weatherCondition = weatherCondition(rains, clouds),
+                highWind = winds.any { (it.value ?: 0.0) >= 8.9408 },
+                temperatureTone = WidgetTemperatureTone.fromCelsius(selectedTemperature),
+                isNight = members.first().start.atZone(siteZone).hour < 7 ||
+                    snapshot.calendar.sunset?.let { members.first().start >= it } == true,
             )
-        }
-        val stale = stale(snapshot, applicableFields, now, attempt)
-        val status = if (applicableFields.isEmpty()) {
-            if (hardExpired) ForecastStatus.UNAVAILABLE else snapshot.status
-        } else {
-            WidgetForecastDecoder.summarize(applicableFields.map { it.mode })
         }
         val mode = when {
             hardExpired -> WidgetPresentationMode.UNAVAILABLE
             groups.isEmpty() -> WidgetPresentationMode.BEDTIME
             else -> WidgetPresentationMode.WEATHER
         }
-        val showBedtime = mode == WidgetPresentationMode.BEDTIME || (mode == WidgetPresentationMode.WEATHER && groups.size < 7)
+        // introduce overnight at four pm when fewer than five daytime hours remain
+        val showBedtime = mode == WidgetPresentationMode.BEDTIME ||
+            (mode == WidgetPresentationMode.WEATHER && groups.size < WidgetRowGeometry.MIN_WEATHER_SEGMENTS)
+        // include only the visible overnight summary in freshness and provenance
+        val overnight = if (showBedtime) overnightGroup(snapshot, now, unit, applicableFields) else null
+        val stale = stale(snapshot, applicableFields, now, attempt)
+        val status = if (applicableFields.isEmpty()) {
+            if (hardExpired) ForecastStatus.UNAVAILABLE else snapshot.status
+        } else {
+            WidgetForecastDecoder.summarize(applicableFields.map { it.mode })
+        }
         val message = when {
             mode == WidgetPresentationMode.UNAVAILABLE -> "refresh needed"
-            showBedtime -> "go to bed"
+            showBedtime -> overnight?.temperatureLabel ?: "—"
             else -> null
         }
         val sunset = if (hardExpired) null else snapshot.calendar.sunset
@@ -157,6 +225,54 @@ object WidgetSemanticRenderer {
             sunset = sunset,
             generatedAt = snapshot.generatedAt,
             unit = unit,
+            bedtimeStart = snapshot.calendar.cutoff,
+            bedtimeEnd = snapshot.calendar.overnightEnd,
+            overnight = overnight,
+        )
+    }
+
+    // summarize every real hour from eight pm through seven am including dst
+    private fun overnightGroup(
+        snapshot: WidgetForecastSnapshot,
+        now: Instant,
+        unit: TemperatureUnit,
+        applicableFields: MutableList<EffectiveForecastField>,
+    ): WidgetGroup? {
+        val start = snapshot.calendar.cutoff
+        val end = snapshot.calendar.overnightEnd ?: return null
+        val members = snapshot.hours.filter { it.start >= start && it.end <= end }
+        // never summarize an incomplete overnight grid as the full night
+        if (members.size.toLong() != Duration.between(start, end).toHours() || members.isEmpty()) return null
+        val temperatures = members.map { effective(it.temperatureC, now, false) }
+        val rains = members.map { effective(it.rainMmPerHour, now, false) }
+        val clouds = members.map { optionalEffective(it.cloudCoverPercent, now, false) }
+        val winds = members.map { optionalEffective(it.windSpeedMps, now, false) }
+        val fields = temperatures + rains + clouds + winds
+        applicableFields += fields
+        // keep a missing hour from inventing an overnight low
+        val minimum = if (temperatures.any { it.value == null }) null else temperatures.minOf { it.value!! }
+        val range = temperatureRange(temperatures, unit)
+        val label = minimum?.let { "${roundTemperature(convertTemperature(it, unit))}°" } ?: "—"
+        val highWind = winds.any { (it.value ?: 0.0) >= 8.9408 }
+        // one proven windy hour is enough but missing readings cannot prove a calm night
+        val condition = if (!highWind && winds.any { it.value == null }) WeatherCondition.UNAVAILABLE else weatherCondition(rains, clouds)
+        return WidgetGroup(
+            start = start,
+            end = end,
+            hourCount = members.size,
+            isNow = false,
+            status = WidgetForecastDecoder.summarize(fields.map { it.mode }),
+            minimumTemperature = range?.first,
+            maximumTemperature = range?.second,
+            temperatureLabel = label,
+            condition = rainCondition(rains),
+            hourLabel = "Overnight",
+            landscapeLabel = "Overnight ${label.removeSuffix("°")}",
+            accessibleHours = "Overnight, ${accessibleHours(members, false)}, low",
+            weatherCondition = condition,
+            highWind = highWind,
+            temperatureTone = WidgetTemperatureTone.fromCelsius(minimum),
+            isNight = true,
         )
     }
 
@@ -231,6 +347,50 @@ object WidgetSemanticRenderer {
         return false
     }
 
+    // retain missing legacy condition fields as unknown
+    private fun optionalEffective(field: ForecastField?, now: Instant, expired: Boolean): EffectiveForecastField {
+        return field?.let { effective(it, now, expired) } ?: EffectiveForecastField(ForecastMode.UNAVAILABLE, null, null)
+    }
+
+    // share the unrounded selected celsius value between text and comfort color
+    private fun representativeTemperature(fields: List<EffectiveForecastField>): Double? {
+        // a partial interval cannot claim a complete temperature
+        if (fields.any { it.value == null }) {
+            return null
+        }
+        val values = fields.map { it.value!! }
+        val mean = values.average()
+        val meanFahrenheit = convertTemperature(mean, TemperatureUnit.FAHRENHEIT)
+        return when {
+            meanFahrenheit > 65.0 -> values.max()
+            meanFahrenheit < 50.0 -> values.min()
+            else -> mean
+        }
+    }
+
+    // let the wettest hour override mean cloud coverage
+    private fun weatherCondition(rains: List<EffectiveForecastField>, clouds: List<EffectiveForecastField>): WeatherCondition {
+        // never infer fair weather from missing rainfall
+        if (rains.any { it.value == null }) {
+            return WeatherCondition.UNAVAILABLE
+        }
+        val rain = rains.maxOf { it.value!! }
+        // preserve rain even when cloud coverage is unavailable
+        if (rain > 0) {
+            return if (rain < 2.5) WeatherCondition.LIGHT_RAIN else WeatherCondition.HEAVY_RAIN
+        }
+        // dry weather still needs real cloud coverage
+        if (clouds.any { it.value == null }) {
+            return WeatherCondition.UNAVAILABLE
+        }
+        val coverage = clouds.map { it.value!! }.average()
+        return when {
+            coverage < 25 -> WeatherCondition.SUNNY
+            coverage < 75 -> WeatherCondition.PARTLY_CLOUDY
+            else -> WeatherCondition.CLOUDY
+        }
+    }
+
     // round a complete group after conversion
     private fun temperatureRange(fields: List<EffectiveForecastField>, unit: TemperatureUnit): Pair<Int, Int>? {
         // keep partial groups unavailable
@@ -266,41 +426,23 @@ object WidgetSemanticRenderer {
         return rounded.toInt()
     }
 
-    // build a compact disambiguated group label
-    private fun groupLabel(snapshot: WidgetForecastSnapshot, members: List<ForecastHour>, isNow: Boolean): String {
+    // show only the starting clock hour
+    private fun groupLabel(members: List<ForecastHour>, isNow: Boolean): String {
         // identify the current interval explicitly
         if (isNow) {
             return "Now"
         }
-        val firstIndex = snapshot.hours.indexOf(members.first())
-        val lastIndex = snapshot.hours.indexOf(members.last())
-        val first = compactHour(snapshot, firstIndex)
-        val last = compactHour(snapshot, lastIndex)
-        return if (members.size == 1) first else "$first–$last"
-    }
-
-    // label repeated local hours as a and b
-    private fun compactHour(snapshot: WidgetForecastSnapshot, index: Int): String {
-        val local = snapshot.hours[index].start.atZone(siteZone)
-        val peers = snapshot.hours.indices.filter {
-            val candidate = snapshot.hours[it].start.atZone(siteZone)
-            candidate.toLocalDateTime() == local.toLocalDateTime()
-        }
-        val hour = when (val clockHour = local.hour % 12) {
-            0 -> 12
-            else -> clockHour
-        }
-        val repeatSuffix = if (peers.size == 2) if (peers.first() == index) "a" else "b" else ""
-        val daySuffix = if (local.hour < 12) "a" else "p"
-        return "$hour$repeatSuffix$daySuffix"
+        val local = members.first().start.atZone(siteZone)
+        return local.format(DateTimeFormatter.ofPattern("ha", Locale.US)).lowercase(Locale.US)
     }
 
     // describe the complete interval range
     private fun accessibleHours(members: List<ForecastHour>, isNow: Boolean): String {
         val start = members.first().start.atZone(siteZone)
         val end = members.last().end.atZone(siteZone)
-        val startText = start.format(timeFormatter)
-        val endText = end.format(timeFormatter)
+        val intervalFormatter = DateTimeFormatter.ofPattern("h a z", Locale.US)
+        val startText = start.format(intervalFormatter)
+        val endText = end.format(intervalFormatter)
         return if (isNow) "Now, $startText through $endText" else "$startText through $endText"
     }
 

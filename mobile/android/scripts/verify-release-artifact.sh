@@ -28,7 +28,7 @@ fi
 
 # require the fixed cookiefree widget endpoint in release code
 if ! grep -F -q \
-  'https://weather.ballydidean.farm/api/v1/sites/ballydidean/widget-forecast' \
+  'https://weather.ballydidean.farm/api/v3/sites/ballydidean/widget-forecast' \
   "${STRINGS_FILE}"; then
   printf 'release artifact is missing the fixed widget endpoint\n' >&2
   exit 1

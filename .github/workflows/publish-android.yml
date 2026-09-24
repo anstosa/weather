@@ -1,0 +1,132 @@
+name: Android internal release
+
+on:
+  push:
+    tags:
+      - 'android-v*'
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: Android version name, such as 0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: android-internal-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish internal Android release
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Require successful exact-commit Check
+        env:
+          CI_CHECK_MODE: release
+          CI_SHA: ${{ github.sha }}
+          CI_REPOSITORY_ID: ${{ github.repository_id }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/await-check.mjs
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+
+      - name: Install pinned Android packages
+        run: sdkmanager --install 'platforms;android-37.0' 'build-tools;36.0.0'
+
+      - name: Verify wrapper and brand assets
+        run: |
+          set -euo pipefail
+          mobile/android/scripts/verify-wrapper.sh
+          java mobile/android/scripts/GenerateBrandAssets.java --check
+
+      - name: Prepare version and temporary upload key
+        id: version
+        env:
+          REQUESTED_VERSION_NAME: ${{ inputs.version_name }}
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: mobile/android/scripts/prepare-release.sh
+
+      - name: Build signed Weather release artifacts
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # keep signing values out of the serialized gradle configuration cache
+          mobile/android/gradlew -p mobile/android --no-daemon --no-configuration-cache \
+            -PweatherRequireReleaseSigning=true \
+            -PVERSION_CODE="${VERSION_CODE}" \
+            -PVERSION_NAME="${VERSION_NAME}" \
+            :app:testDebugUnitTest :app:lintRelease :app:assembleRelease :app:bundleRelease
+
+      - name: Verify signed release artifacts
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+        run: mobile/android/scripts/verify-store-artifacts.sh
+
+      - name: Retain verified Android release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ballydidean-weather-android-${{ steps.version.outputs.name }}-${{ steps.version.outputs.code }}
+          path: |
+            mobile/android/app/build/outputs/bundle/release/app-release.aab
+            mobile/android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to Google Play internal testing
+        # pin ferry fyi's v1.1.3 uploader before granting it play credentials
+        uses: r0adkll/upload-google-play@935ef9c68bb393a8e6116b1575626a7f5be3a7fb
+        with:
+          serviceAccountJson: ${{ env.PLAY_SERVICE_ACCOUNT_FILE }}
+          packageName: farm.ballydidean.weather
+          releaseFiles: mobile/android/app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          releaseName: ${{ steps.version.outputs.name }}
+          status: completed
+
+      - name: Remove temporary release credentials
+        if: always()
+        run: |
+          # remove only this workflow's private upload-key material
+          rm -f "${RUNNER_TEMP}/weather-android-signing/upload.jks" \
+            "${RUNNER_TEMP}/weather-android-signing/play-service-account.json"
+          # retain cleanup failures instead of masking a leftover credential
+          if [[ -d "${RUNNER_TEMP}/weather-android-signing" ]]; then
+            rmdir "${RUNNER_TEMP}/weather-android-signing"
+          fi

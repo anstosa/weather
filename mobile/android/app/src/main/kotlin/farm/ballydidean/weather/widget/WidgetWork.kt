@@ -27,6 +27,11 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 
+// keep automated debug builds offline unless manual live testing was requested
+internal fun widgetLiveRefreshEnabled(debug: Boolean, debugOptIn: Boolean): Boolean {
+    return !debug || debugOptIn
+}
+
 internal sealed interface WidgetFetchResult {
     data class Success(val bytes: ByteArray) : WidgetFetchResult
     data class Failure(val outcome: WidgetAttemptOutcome, val retry: Boolean) : WidgetFetchResult
@@ -226,7 +231,7 @@ internal class WidgetForecastClient(
     private class TooLargeException : IOException()
 
     companion object {
-        const val ENDPOINT = "https://weather.ballydidean.farm/api/v1/sites/ballydidean/widget-forecast"
+        const val ENDPOINT = "https://weather.ballydidean.farm/api/v3/sites/ballydidean/widget-forecast"
         private const val TOTAL_DEADLINE_MS = 8_000L
     }
 }
@@ -242,8 +247,8 @@ class WidgetRefreshWorker(
             WidgetWorkScheduler.cancel(applicationContext)
             return Result.success()
         }
-        // prevent ordinary debug and host-test traffic from reaching production
-        if (BuildConfig.DEBUG) {
+        // retain offline debug defaults while allowing explicit live widget testing
+        if (!widgetLiveRefreshEnabled(BuildConfig.DEBUG, BuildConfig.DEBUG_LIVE_WIDGET_REFRESH)) {
             return Result.success()
         }
         // coalesce immediate and periodic workers through one process lock
@@ -320,12 +325,14 @@ object WidgetBoundaryPlanner {
         val candidates = mutableListOf<Instant>()
         candidates += snapshot.calendar.cutoff
         candidates += snapshot.calendar.dayEnd
+        snapshot.calendar.overnightEnd?.let(candidates::add)
         candidates += snapshot.receivedAt.plus(Duration.ofMinutes(90)).plusMillis(1)
         candidates += snapshot.receivedAt.plus(Duration.ofHours(24))
         // capture every hour and correction boundary
         for (hour in snapshot.hours) {
             candidates += hour.end
-            for (field in listOf(hour.temperatureC, hour.rainMmPerHour)) {
+            // include icon-source correction deadlines
+            for (field in listOfNotNull(hour.temperatureC, hour.rainMmPerHour, hour.cloudCoverPercent, hour.windSpeedMps)) {
                 field.selectedUntil?.let(candidates::add)
                 for (source in listOfNotNull(field.rawSource, field.selectedSource)) {
                     candidates += source.receivedAt.plus(Duration.ofHours(12)).plusMillis(1)

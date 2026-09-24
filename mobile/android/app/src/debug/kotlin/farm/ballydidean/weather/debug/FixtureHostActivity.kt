@@ -63,13 +63,19 @@ class FixtureHostActivity : Activity() {
         activeOptions = options
         activeVariant = variant
         activeLandscape = heightDp == LANDSCAPE_HEIGHT_DP
-        val density = resources.displayMetrics.density
+        val bounds = hostView.outerBounds(widthDp, heightDp)
         hostView.layoutParams = (hostView.layoutParams as FrameLayout.LayoutParams).apply {
-            width = (widthDp * density).toInt()
-            height = (heightDp * density).toInt()
+            width = bounds.widthPx
+            height = bounds.heightPx
         }
-        AppWidgetManager.getInstance(this).updateAppWidgetOptions(appWidgetId, options)
-        hostView.updateAppWidgetSize(options, widthDp, heightDp, widthDp, heightDp)
+        // pass the full host area so the platform subtracts its own padding once
+        hostView.updateAppWidgetSize(
+            options,
+            bounds.widthDp,
+            bounds.heightDp,
+            bounds.widthDp,
+            bounds.heightDp,
+        )
         applyFixture(appWidgetId, options, variant)
     }
 
@@ -84,7 +90,7 @@ class FixtureHostActivity : Activity() {
         )
     }
 
-    // permit only approved M0 dimensions
+    // permit only approved widget content dimensions
     private fun requestedBounds(): Pair<Int, Int> {
         val requestedWidth = intent.getIntExtra(EXTRA_WIDTH_DP, PORTRAIT_WIDTH_DP)
         val requestedHeight = intent.getIntExtra(EXTRA_HEIGHT_DP, PORTRAIT_HEIGHT_DP)
@@ -114,8 +120,8 @@ class FixtureHostActivity : Activity() {
         val providerInfo = manager.getAppWidgetInfo(appWidgetId)
         val hostView = widgetHost.createView(this, appWidgetId, providerInfo)
         renderedHostView = hostView
-        val density = resources.displayMetrics.density
-        val layoutParams = FrameLayout.LayoutParams((widthDp * density).toInt(), (heightDp * density).toInt()).apply {
+        val bounds = hostView.outerBounds(widthDp, heightDp)
+        val layoutParams = FrameLayout.LayoutParams(bounds.widthPx, bounds.heightPx).apply {
             gravity = Gravity.CENTER
         }
         root.addView(hostView, layoutParams)
@@ -166,17 +172,23 @@ class FixtureHostActivity : Activity() {
         private const val HOST_ID = 0x57454154
 
         // identify the selected fixture after production remoteviews inflation
-        internal fun matchesFixture(view: View, variant: FixtureVariant, landscape: Boolean): Boolean {
+        internal fun matchesFixture(
+            view: View,
+            variant: FixtureVariant,
+            @Suppress("UNUSED_PARAMETER") landscape: Boolean,
+        ): Boolean {
             val text = buildList { collectText(view, this) }.joinToString(" ")
+            val descriptions = buildList { collectDescriptions(view, this) }.joinToString("; ")
             return when (variant) {
-                FixtureVariant.MAXIMUM -> text.contains(if (landscape) "12·1ᵃᵇ 38–41" else "12·1a·1b")
-                FixtureVariant.NEAR_CUTOFF -> text.contains(if (landscape) "6–8 48–51" else "6–8p")
-                FixtureVariant.ALL_BEDTIME -> text.contains("go to bed")
-                FixtureVariant.STALE -> text.contains("stale")
-                FixtureVariant.RAW_MIXED -> text.contains("mix")
-                FixtureVariant.RAW -> text.contains("raw")
-                FixtureVariant.UNAVAILABLE -> text.contains("refresh needed") && text.contains("unavailable")
-                FixtureVariant.CELSIUS -> text.contains("°C")
+                FixtureVariant.MAXIMUM -> text.contains("39°") && descriptions.contains("sunny")
+                FixtureVariant.OVERNIGHT_FIFTH -> text.contains("51°") && text.contains("Overnight") && text.contains("43°")
+                FixtureVariant.NEAR_CUTOFF -> text.contains("49°") && text.contains("Overnight") && text.contains("43°")
+                FixtureVariant.ALL_BEDTIME -> text.contains("Overnight") && text.contains("43°")
+                FixtureVariant.STALE -> text.contains("39°") && descriptions.contains("stale")
+                FixtureVariant.RAW_MIXED -> text.contains("39°") && descriptions.contains("mixed forecast")
+                FixtureVariant.RAW -> text.contains("39°") && descriptions.contains("raw forecast")
+                FixtureVariant.UNAVAILABLE -> text.contains("refresh needed") && descriptions.contains("unavailable forecast")
+                FixtureVariant.CELSIUS -> text.contains("4°") && descriptions.contains("degrees Celsius")
             }
         }
 
@@ -193,7 +205,39 @@ class FixtureHostActivity : Activity() {
                 }
             }
         }
+
+        // collect every accessible remoteviews description
+        private fun collectDescriptions(view: View, destination: MutableList<String>) {
+            view.contentDescription?.toString()?.takeIf { it.isNotBlank() }?.let(destination::add)
+            // visit the complete accessible hierarchy
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    collectDescriptions(view.getChildAt(index), destination)
+                }
+            }
+        }
     }
+}
+
+// hold outer host dimensions in both coordinate systems
+private data class FixtureHostBounds(
+    val widthPx: Int,
+    val heightPx: Int,
+    val widthDp: Int,
+    val heightDp: Int,
+)
+
+// include platform host padding around the requested remoteviews content
+private fun AppWidgetHostView.outerBounds(contentWidthDp: Int, contentHeightDp: Int): FixtureHostBounds {
+    val density = resources.displayMetrics.density
+    val horizontalPadding = paddingLeft + paddingRight
+    val verticalPadding = paddingTop + paddingBottom
+    return FixtureHostBounds(
+        widthPx = (contentWidthDp * density).toInt() + horizontalPadding,
+        heightPx = (contentHeightDp * density).toInt() + verticalPadding,
+        widthDp = contentWidthDp + (horizontalPadding / density).toInt(),
+        heightDp = contentHeightDp + (verticalPadding / density).toInt(),
+    )
 }
 
 private class FixtureAppWidgetHost(

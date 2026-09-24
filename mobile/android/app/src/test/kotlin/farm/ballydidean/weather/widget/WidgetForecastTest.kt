@@ -18,9 +18,9 @@ class WidgetForecastTest {
         "stale-old-source",
     )
 
-    // decode and reproduce every shared semantic golden
+    // preserve legacy data calendars expiry and provenance through the redesigned row
     @Test
-    fun sharedFixturesMatchNativeSemantics() {
+    fun sharedFixturesPreserveCalendarFreshnessAndCompleteCoverage() {
         // compare all frozen cross-platform cases
         for (name in fixtureNames) {
             val snapshot = WidgetForecastDecoder.decode(resource("fixtures/$name/snapshot.json"))
@@ -34,10 +34,13 @@ class WidgetForecastTest {
             assertEquals(name, expected.string("date"), presentation.date)
             assertEquals(name, expected.string("status"), presentation.status.wireName())
             assertEquals(name, expected.string("presentation"), presentation.mode.name.lowercase())
-            assertEquals(name, (expected.values.getValue("bedtime") as JsonBoolean).value, presentation.showBedtime)
             assertEquals(name, (expected.values.getValue("stale") as JsonBoolean).value, presentation.stale)
             assertEquals(name, (expected.values.getValue("hardExpired") as JsonBoolean).value, presentation.hardExpired)
-            assertGroups(name, expected.array("groups"), presentation.groups)
+            val expectedGroups = expected.array("groups").map { it as JsonObject }
+            assertTrue(name, presentation.groups.size <= 5)
+            assertEquals(name, expectedGroups.sumOf { it.number("hourCount").toInt() }, presentation.groups.sumOf { it.hourCount })
+            assertEquals(name, expectedGroups.firstOrNull()?.string("start"), presentation.groups.firstOrNull()?.start.toStringWithMillis())
+            assertEquals(name, expectedGroups.lastOrNull()?.string("end"), presentation.groups.lastOrNull()?.end.toStringWithMillis())
             val expectedFooter = expected.objectValue("footer")
             assertEquals(name, expectedFooter.string("status"), presentation.status.wireName())
             val expectedSunset = expectedFooter.values.getValue("sunset")
@@ -130,31 +133,26 @@ class WidgetForecastTest {
         )
     }
 
-    // verify one normalized group list
-    private fun assertGroups(name: String, expected: List<JsonValue>, actual: List<WidgetGroup>) {
-        assertEquals(name, expected.size, actual.size)
-        // compare every public semantic member
-        for (index in expected.indices) {
-            val expectedGroup = expected[index] as JsonObject
-            val actualGroup = actual[index]
-            assertEquals(name, expectedGroup.string("start"), actualGroup.start.toStringWithMillis())
-            assertEquals(name, expectedGroup.string("end"), actualGroup.end.toStringWithMillis())
-            assertEquals(name, expectedGroup.number("hourCount").toInt(), actualGroup.hourCount)
-            assertEquals(name, (expectedGroup.values.getValue("isNow") as JsonBoolean).value, actualGroup.isNow)
-            assertEquals(name, expectedGroup.string("status"), actualGroup.status.wireName())
-            assertEquals(name, expectedGroup.string("condition"), actualGroup.condition.name.lowercase())
-            val expectedTemperature = expectedGroup.values.getValue("temperature")
-            // preserve missing group temperature explicitly
-            if (expectedTemperature === JsonNull) {
-                assertNull(name, actualGroup.minimumTemperature)
-                assertNull(name, actualGroup.maximumTemperature)
-                assertEquals(name, "—", actualGroup.temperatureLabel)
-            } else {
-                val range = expectedTemperature as JsonObject
-                assertEquals(name, range.number("minimum").toInt(), actualGroup.minimumTemperature)
-                assertEquals(name, range.number("maximum").toInt(), actualGroup.maximumTemperature)
-                assertEquals(name, range.string("label"), actualGroup.temperatureLabel.removeSuffix("°"))
-            }
+    // decode real condition fields without relaxing either version's closed shape
+    @Test
+    fun v2RequiresBoundedCloudAndWindWithCorrectAggregateStatus() {
+        val source = resource("fixtures/adjusted-standard/snapshot.json").toString(Charsets.UTF_8)
+        val field = """{"mode":"raw","raw":25,"rawSource":{"runAt":null,"receivedAt":"2026-09-12T06:00:00.000Z"},"reason":"raw_forecast","selected":25,"selectedSource":null,"selectedUntil":null}"""
+        val v2 = source.replace("weather-widget/v1", "weather-widget/v2")
+            .replace("\"temperatureC\":", "\"cloudCoverPercent\":$field,\"windSpeedMps\":$field,\"temperatureC\":")
+            .replaceFirst("\"status\": \"adjusted\"", "\"status\": \"mixed\"")
+        val snapshot = WidgetForecastDecoder.decode(v2.toByteArray())
+        assertEquals(25.0, snapshot.hours.first().cloudCoverPercent!!.raw!!, 0.0)
+        assertEquals(25.0, snapshot.hours.first().windSpeedMps!!.raw!!, 0.0)
+        assertEquals(ForecastStatus.MIXED, snapshot.status)
+        assertThrows(IllegalArgumentException::class.java) {
+            WidgetForecastDecoder.decode(v2.replace("weather-widget/v2", "weather-widget/v1").toByteArray())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            WidgetForecastDecoder.decode(source.replace("weather-widget/v1", "weather-widget/v2").toByteArray())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            WidgetForecastDecoder.decode(v2.replace("\"raw\":25", "\"raw\":101").toByteArray())
         }
     }
 

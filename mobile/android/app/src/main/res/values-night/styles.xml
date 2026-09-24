@@ -3,8 +3,8 @@
     <style name="Theme.Weather" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#E8C9DA</item>
-        <item name="android:navigationBarColor">@color/widget_background</item>
-        <item name="android:statusBarColor">@color/widget_background</item>
+        <item name="android:navigationBarColor">#3B2933</item>
+        <item name="android:statusBarColor">#3B2933</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

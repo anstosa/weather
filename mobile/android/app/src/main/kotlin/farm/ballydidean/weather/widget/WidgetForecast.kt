@@ -39,6 +39,8 @@ data class ForecastHour(
     val end: Instant,
     val temperatureC: ForecastField,
     val rainMmPerHour: ForecastField,
+    val cloudCoverPercent: ForecastField? = null,
+    val windSpeedMps: ForecastField? = null,
 )
 
 data class ForecastCalendar(
@@ -47,6 +49,7 @@ data class ForecastCalendar(
     val dayEnd: Instant,
     val cutoff: Instant,
     val sunset: Instant?,
+    val overnightEnd: Instant? = null,
 )
 
 data class WidgetForecastSnapshot(
@@ -71,20 +74,24 @@ object WidgetForecastDecoder {
     fun decode(bytes: ByteArray): WidgetForecastSnapshot {
         require(bytes.size <= MAX_BYTES) { "widget snapshot exceeds 128 KiB" }
         val root = StrictJson.parse(bytes).closedObject(rootKeys, "root")
-        require(root.string("schemaVersion") == "weather-widget/v1") { "unsupported schema version" }
+        val version = root.string("schemaVersion")
+        require(version in setOf("weather-widget/v1", "weather-widget/v2", "weather-widget/v3")) { "unsupported schema version" }
+        val hasConditions = version != "weather-widget/v1"
+        val hasOvernight = version == "weather-widget/v3"
         validateAttribution(root.objectValue("attribution"))
         validateSite(root.objectValue("site"))
         val generatedAt = instant(root.string("generatedAt"), "generatedAt")
         val receivedAt = instant(root.string("receivedAt"), "receivedAt")
         require(generatedAt <= receivedAt) { "snapshot clocks are reversed" }
-        val calendar = decodeCalendar(root.objectValue("calendar"), generatedAt)
+        val calendar = decodeCalendar(root.objectValue("calendar"), generatedAt, hasOvernight)
         val hours = root.array("hours").mapIndexed { index, value ->
-            decodeHour(value, generatedAt, calendar, index)
+            decodeHour(value, generatedAt, calendar, index, hasConditions)
         }
-        require(hours.size in 23..25) { "hour count is outside the site calendar" }
-        require(hours.lastOrNull()?.end == calendar.dayEnd) { "hour grid does not reach day end" }
+        val horizon = calendar.overnightEnd ?: calendar.dayEnd
+        require(hours.size.toLong() == Duration.between(calendar.dayStart, horizon).toHours()) { "hour count is outside the site calendar" }
+        require(hours.lastOrNull()?.end == horizon) { "hour grid does not reach forecast end" }
         val status = status(root.string("status"))
-        val derivedStatus = summarize(hours.flatMap { listOf(it.temperatureC.mode, it.rainMmPerHour.mode) })
+        val derivedStatus = summarize(hours.flatMap { listOfNotNull(it.temperatureC.mode, it.rainMmPerHour.mode, it.cloudCoverPercent?.mode, it.windSpeedMps?.mode) })
         require(status == derivedStatus) { "snapshot status does not match fields" }
         return WidgetForecastSnapshot(generatedAt, receivedAt, calendar, hours, status)
     }
@@ -108,8 +115,10 @@ object WidgetForecastDecoder {
     }
 
     // validate generated-at anchored calendar fields
-    private fun decodeCalendar(value: JsonObject, generatedAt: Instant): ForecastCalendar {
-        value.closedObject(setOf("cutoff", "date", "dayEnd", "dayStart", "sunset"), "calendar")
+    private fun decodeCalendar(value: JsonObject, generatedAt: Instant, hasOvernight: Boolean): ForecastCalendar {
+        // extend only the new closed contract
+        val keys = setOf("cutoff", "date", "dayEnd", "dayStart", "sunset") + if (hasOvernight) setOf("overnightEnd") else emptySet()
+        value.closedObject(keys, "calendar")
         val dateText = value.string("date")
         require(datePattern.matches(dateText)) { "calendar date is malformed" }
         val date = LocalDate.parse(dateText)
@@ -122,9 +131,18 @@ object WidgetForecastDecoder {
         require(dayStart == expectedDayStart && dayEnd == expectedDayEnd && cutoff == expectedCutoff) {
             "calendar bounds do not match the site date"
         }
-        require(generatedAt >= dayStart && generatedAt < dayEnd) { "generatedAt is outside the anchored day" }
+        // retain the preceding evening until seven in the site timezone
+        val overnightEnd = if (hasOvernight) instant(value.string("overnightEnd"), "overnightEnd") else null
+        if (hasOvernight) {
+            require(overnightEnd == date.plusDays(1).atTime(7, 0).atZone(siteZone).toInstant()) { "overnight end is not seven am" }
+            require(generatedAt >= date.atTime(7, 0).atZone(siteZone).toInstant() && generatedAt < overnightEnd) {
+                "generatedAt is outside the forecast day"
+            }
+        } else {
+            require(generatedAt >= dayStart && generatedAt < dayEnd) { "generatedAt is outside the anchored day" }
+        }
         val sunset = nullableInstant(value.values.getValue("sunset"), "sunset")
-        return ForecastCalendar(date, dayStart, dayEnd, cutoff, sunset)
+        return ForecastCalendar(date, dayStart, dayEnd, cutoff, sunset, overnightEnd)
     }
 
     // validate one exact hourly interval
@@ -133,18 +151,29 @@ object WidgetForecastDecoder {
         generatedAt: Instant,
         calendar: ForecastCalendar,
         index: Int,
+        hasConditions: Boolean,
     ): ForecastHour {
-        val objectValue = value.closedObject(setOf("end", "rainMmPerHour", "start", "temperatureC"), "hour")
+        val baseKeys = setOf("end", "rainMmPerHour", "start", "temperatureC")
+        // keep both versioned hourly contracts closed
+        val keys = if (hasConditions) baseKeys + setOf("cloudCoverPercent", "windSpeedMps") else baseKeys
+        val objectValue = value.closedObject(keys, "hour")
         val start = instant(objectValue.string("start"), "hour start")
         val end = instant(objectValue.string("end"), "hour end")
         val expectedStart = calendar.dayStart.plus(Duration.ofHours(index.toLong()))
         require(start == expectedStart && end == start.plus(Duration.ofHours(1))) { "hour grid is not contiguous" }
-        require(start >= calendar.dayStart && end <= calendar.dayEnd) { "hour is outside the anchored day" }
+        require(start >= calendar.dayStart && end <= (calendar.overnightEnd ?: calendar.dayEnd)) { "hour is outside the forecast horizon" }
+        // retain absent v1 conditions without inventing sunny or calm weather
+        val cloud = if (hasConditions) decodeField(objectValue.values.getValue("cloudCoverPercent"), generatedAt, 0.0, 100.0, "cloud") else null
+        val wind = if (hasConditions) decodeField(objectValue.values.getValue("windSpeedMps"), generatedAt, 0.0, 150.0, "wind") else null
+        require(cloud?.mode != ForecastMode.ADJUSTED) { "cloud corrections are unsupported" }
+        require(wind?.mode != ForecastMode.ADJUSTED || wind.reason == "generic_adjustment") { "wind correction reason is invalid" }
         return ForecastHour(
             start,
             end,
             decodeField(objectValue.values.getValue("temperatureC"), generatedAt, -100.0, 70.0, "temperature"),
             decodeField(objectValue.values.getValue("rainMmPerHour"), generatedAt, 0.0, 2000.0, "rain"),
+            cloud,
+            wind,
         )
     }
 

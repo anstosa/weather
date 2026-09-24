@@ -6,8 +6,13 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.res.Configuration
-import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.os.Build
+import android.util.SizeF
+import android.util.TypedValue
 import android.os.Bundle
 import android.view.View
 import android.widget.RemoteViews
@@ -17,6 +22,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 class WeatherWidgetProvider : AppWidgetProvider() {
     // render cache first and enqueue bounded work
@@ -114,15 +120,15 @@ object WidgetController {
         val unit = WidgetPreferences.unit(context, appWidgetId)
         val storage = WidgetStorage(context)
         val stored = storage.readStoredSnapshot()
-        val presentation = if (stored == null) {
-            WidgetSemanticRenderer.unavailable(now, unit)
-        } else {
-            WidgetSemanticRenderer.render(stored.snapshot, now, unit, runtimeAttempt(storage, stored, now))
+        val views = WeatherWidgetRenderer.render(context, appWidgetId, options) { capacity ->
+            // retain an honest empty state without a cached snapshot
+            if (stored == null) {
+                WidgetSemanticRenderer.unavailable(now, unit)
+            } else {
+                WidgetSemanticRenderer.render(stored.snapshot, now, unit, runtimeAttempt(storage, stored, now), capacity)
+            }
         }
-        manager.updateAppWidget(
-            appWidgetId,
-            WeatherWidgetRenderer.render(context, appWidgetId, options, presentation),
-        )
+        manager.updateAppWidget(appWidgetId, views)
     }
 
     // render every current provider instance
@@ -134,20 +140,16 @@ object WidgetController {
             val unit = WidgetPreferences.unit(context, appWidgetId)
             val storage = WidgetStorage(context)
             val stored = storage.readStoredSnapshot()
-            val presentation = if (stored == null) {
-                WidgetSemanticRenderer.unavailable(now, unit)
-            } else {
-                WidgetSemanticRenderer.render(
-                    stored.snapshot,
-                    now,
-                    unit,
-                    boundAttempt(attemptOverride ?: storage.readAttempt(), stored, now),
-                )
+            val views = WeatherWidgetRenderer.render(context, appWidgetId, manager.getAppWidgetOptions(appWidgetId)) { capacity ->
+                // render each size without extending cache or correction lifetime
+                if (stored == null) {
+                    WidgetSemanticRenderer.unavailable(now, unit)
+                } else {
+                    WidgetSemanticRenderer.render(stored.snapshot, now, unit,
+                        boundAttempt(attemptOverride ?: storage.readAttempt(), stored, now), capacity)
+                }
             }
-            manager.updateAppWidget(
-                appWidgetId,
-                WeatherWidgetRenderer.render(context, appWidgetId, manager.getAppWidgetOptions(appWidgetId), presentation),
-            )
+            manager.updateAppWidget(appWidgetId, views)
         }
     }
 
@@ -177,236 +179,263 @@ object WidgetController {
 }
 
 object WeatherWidgetRenderer {
-    private const val LARGE_TEXT_FONT_SCALE = 1.3f
-    private const val LANDSCAPE_MAX_HEIGHT_DP = 60
-    private const val LANDSCAPE_MIN_WIDTH_DP = 500
-    private const val PROVIDER_URL = "https://open-meteo.com/"
-    private const val LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
     private val siteZone = ZoneId.of("America/Los_Angeles")
-    private val timeFormatter = DateTimeFormatter.ofPattern("h:mm", Locale.US)
+    private val timeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.US)
 
-    // build the size-aware remoteviews tree
+    // preserve the debug host seam without changing its fixed fixture data
+    fun render(context: Context, appWidgetId: Int, options: Bundle?, presentation: WidgetPresentation): RemoteViews {
+        return render(context, appWidgetId, options) { presentation }
+    }
+
+    // recompute the complete forecast grouping for each launcher allocation
+    @Suppress("DEPRECATION")
     fun render(
         context: Context,
         appWidgetId: Int,
         options: Bundle?,
-        presentation: WidgetPresentation,
+        presentation: (Int) -> WidgetPresentation,
     ): RemoteViews {
-        val landscapeMinimum = isLandscapeMinimum(options)
-        val landscape = landscapeMinimum && (
-            isExactLandscapeAllocation(options) ||
-                context.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-            )
-        val largeText = context.resources.configuration.fontScale >= LARGE_TEXT_FONT_SCALE
-        val layout = when {
-            landscape && largeText && presentation.groups.isEmpty() -> R.layout.widget_root_landscape_bedtime_large
-            landscape && largeText -> R.layout.widget_root_landscape_large
-            landscape -> R.layout.widget_root_landscape
-            largeText -> R.layout.widget_root_portrait_large
-            else -> R.layout.widget_root_portrait
+        // use exact responsive allocations on modern launchers
+        if (Build.VERSION.SDK_INT >= 31) {
+            val sizes = options?.getParcelableArrayList<SizeF>(AppWidgetManager.OPTION_APPWIDGET_SIZES)
+                ?.filter { it.width > 0 && it.height > 0 }?.distinct()?.take(16).orEmpty()
+            // tolerate launchers that omit the size map
+            if (sizes.isNotEmpty()) {
+                return RemoteViews(sizes.associateWith { size ->
+                    renderSize(context, appWidgetId, size, presentation(WidgetRowGeometry.capacity(size.width.toInt())))
+                })
+            }
         }
-        val views = RemoteViews(context.packageName, layout)
+        val width = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 320)?.coerceAtLeast(1) ?: 320
+        val height = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 100)?.coerceAtLeast(1) ?: 100
+        val portrait = SizeF(width.toFloat(), height.toFloat())
+        val landscape = SizeF(
+            options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, width)?.coerceAtLeast(1)?.toFloat() ?: portrait.width,
+            options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, height)?.coerceAtLeast(1)?.toFloat() ?: portrait.height,
+        )
+        return RemoteViews(
+            renderSize(context, appWidgetId, landscape, presentation(WidgetRowGeometry.capacity(landscape.width.toInt()))),
+            renderSize(context, appWidgetId, portrait, presentation(WidgetRowGeometry.capacity(portrait.width.toInt()))),
+        )
+    }
+
+    // compose one uninterrupted native row with no inset cards or metadata footer
+    private fun renderSize(context: Context, appWidgetId: Int, size: SizeF, presentation: WidgetPresentation): RemoteViews {
+        val compact = size.height < 76
+        val views = RemoteViews(context.packageName, R.layout.widget_row_root)
         views.removeAllViews(R.id.row_primary)
-        views.removeAllViews(R.id.row_secondary)
-        populateForecast(context, views, presentation, landscape, largeText)
-        populateFooter(context, views, presentation, appWidgetId)
-        views.setContentDescription(R.id.widget_root, presentationAccessibility(presentation))
-        views.setOnClickPendingIntent(R.id.widget_root, forecastPendingIntent(context, appWidgetId))
+        views.setImageViewBitmap(R.id.widget_panels, panelBitmap(context, size, presentation))
+        views.setImageViewBitmap(R.id.widget_hour_ticks, hourTicksBitmap(context, size, presentation))
+        // preserve equal weather widths and full-height native content
+        for (group in presentation.groups) {
+            views.addView(R.id.row_primary, slotView(context, group, compact, (size.width * WidgetRowGeometry.weatherFraction(presentation)).toFloat()))
+        }
+        // reserve all remaining fifths for one overnight or unavailable message
+        if (presentation.message != null) {
+            val weight = maxOf(1, WidgetRowGeometry.MIN_WEATHER_SEGMENTS - presentation.groups.size)
+            val width = size.width * (1.0 - presentation.groups.size * WidgetRowGeometry.weatherFraction(presentation))
+            views.addView(R.id.row_primary, messageView(context, presentation, weight, compact, width.toFloat()))
+        }
+        views.setContentDescription(android.R.id.background, presentationAccessibility(presentation))
+        views.setOnClickPendingIntent(android.R.id.background, forecastPendingIntent(context, appWidgetId))
         return views
     }
 
-    // infer the exact-layout orientation from host options
-    internal fun isLandscapeMinimum(options: Bundle?): Boolean {
-        val minimumHeight = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, Int.MAX_VALUE)
-            ?: Int.MAX_VALUE
-        val maximumHeight = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, Int.MAX_VALUE)
-            ?: Int.MAX_VALUE
-        val minimumWidth = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, Int.MIN_VALUE)
-            ?: Int.MIN_VALUE
-        val maximumWidth = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, Int.MIN_VALUE)
-            ?: Int.MIN_VALUE
-        return minOf(minimumHeight, maximumHeight) <= LANDSCAPE_MAX_HEIGHT_DP &&
-            maxOf(minimumWidth, maximumWidth) >= LANDSCAPE_MIN_WIDTH_DP
+    // draw flat panels and evening shading behind real native text and icons
+    private fun panelBitmap(context: Context, size: SizeF, presentation: WidgetPresentation): Bitmap {
+        val density = context.resources.displayMetrics.density
+        val width = (size.width * density).toInt().coerceIn(1, 4096)
+        val bitmap = Bitmap.createBitmap(width, 1, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint()
+        val fraction = WidgetRowGeometry.weatherFraction(presentation)
+        canvas.drawColor(context.getColor(R.color.widget_background))
+        // fill each weather panel through its exact edge
+        for ((index, group) in presentation.groups.withIndex()) {
+            val left = (index * fraction * width).toFloat()
+            val right = ((index + 1) * fraction * width).toFloat()
+            paint.color = context.getColor(if (group.isNow) R.color.widget_now else R.color.widget_background)
+            canvas.drawRect(left, 0f, right, 1f, paint)
+            // interpolate sunset within each forecast without recoloring now or bedtime
+            WidgetRowGeometry.postSunsetStartFraction(group, presentation.sunset)?.let { start ->
+                paint.color = context.getColor(R.color.widget_after_sunset)
+                canvas.drawRect(left + (right - left) * start.toFloat(), 0f, right, 1f, paint)
+            }
+        }
+        // fill all unused fifths blue only when overnight is actually displayed
+        if (presentation.showBedtime) {
+            paint.color = context.getColor(R.color.widget_bedtime)
+            canvas.drawRect((presentation.groups.size * fraction * width).toFloat(), 0f, width.toFloat(), 1f, paint)
+        }
+        val count = presentation.groups.size + if (presentation.message != null) 1 else 0
+        paint.color = context.getColor(R.color.widget_divider)
+        // separate panels with vertical rules only
+        for (index in 1 until count) {
+            val x = (index * fraction * width).toFloat()
+            canvas.drawRect(x - density * 0.35f, 0f, x + density * 0.35f, 1f, paint)
+        }
+        return bitmap
     }
 
-    // distinguish exact test bounds from launcher rotation ranges
-    internal fun isExactLandscapeAllocation(options: Bundle?): Boolean {
-        val minimumWidth = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, Int.MIN_VALUE)
-            ?: Int.MIN_VALUE
-        val maximumHeight = options?.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, Int.MAX_VALUE)
-            ?: Int.MAX_VALUE
-        return minimumWidth >= LANDSCAPE_MIN_WIDTH_DP && maximumHeight <= LANDSCAPE_MAX_HEIGHT_DP
+    // keep hourly marks in a tiny transparent strip above the unchanged full-height panels
+    private fun hourTicksBitmap(context: Context, size: SizeF, presentation: WidgetPresentation): Bitmap {
+        val density = context.resources.displayMetrics.density
+        val width = (size.width * density).toInt().coerceIn(1, 4096)
+        val height = (3 * density).roundToInt().coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint().apply { color = context.getColor(R.color.widget_divider) }
+        val tickHeight = minOf(height.toFloat(), (if (size.height < 76) 2f else 3f) * density)
+        val halfWidth = density * 0.5f
+        val fraction = WidgetRowGeometry.weatherFraction(presentation)
+        // mark only interior hour boundaries inside grouped forecasts
+        for ((index, group) in presentation.groups.withIndex()) {
+            // now already occupies its own single-hour segment
+            if (group.isNow) continue
+            val left = index * fraction * width
+            val panelWidth = fraction * width
+            // let existing full-height edges denote the first and final hours
+            for (hour in WidgetRowGeometry.hourTickFractions(group.start, group.end)) {
+                val x = (left + hour * panelWidth).toFloat()
+                canvas.drawRect(x - halfWidth, 0f, x + halfWidth, tickHeight, paint)
+            }
+        }
+        val start = presentation.bedtimeStart
+        val end = presentation.bedtimeEnd
+        // spread overnight hours across its actual remainder without inventing unknown bounds
+        if (presentation.showBedtime && start != null && end != null) {
+            val left = presentation.groups.size * fraction * width
+            val panelWidth = width - left
+            // preserve real elapsed-hour spacing across overnight daylight-saving changes
+            for (hour in WidgetRowGeometry.hourTickFractions(start, end)) {
+                val x = (left + hour * panelWidth).toFloat()
+                canvas.drawRect(x - halfWidth, 0f, x + halfWidth, tickHeight, paint)
+            }
+        }
+        return bitmap
     }
 
-    // add weather bedtime or unavailable coverage
-    private fun populateForecast(
-        context: Context,
-        views: RemoteViews,
-        presentation: WidgetPresentation,
-        landscape: Boolean,
-        largeText: Boolean,
-    ) {
-        // retain the compact single row at normal landscape scale
-        if (landscape && (!largeText || presentation.groups.isEmpty())) {
-            // add every remaining weather group
-            for (group in presentation.groups) {
-                views.addView(R.id.row_primary, slotView(context, group, landscape = true, largeText = false))
-            }
-            // fill spare or unavailable space once
-            if (presentation.message != null) {
-                val weight = if (presentation.groups.isEmpty()) 1 else 6
-                views.addView(R.id.row_primary, messageView(context, weight, presentation.message))
-            }
-            return
-        }
-
-        val primaryGroups = presentation.groups.take(4)
-        val secondaryGroups = presentation.groups.drop(4)
-        // populate the first static row
-        for (group in primaryGroups) {
-            views.addView(R.id.row_primary, slotView(context, group, landscape, largeText))
-        }
-        // populate the second static row
-        for (group in secondaryGroups) {
-            views.addView(R.id.row_secondary, slotView(context, group, landscape, largeText))
-        }
-        // fill both spare rows when requested
-        if (presentation.message != null) {
-            val firstWeight = if (primaryGroups.isEmpty()) 1 else 3
-            views.addView(R.id.row_primary, messageView(context, firstWeight, presentation.message))
-            // reserve the second unavailable row for readable metadata
-            if (presentation.mode != WidgetPresentationMode.UNAVAILABLE) {
-                views.addView(R.id.row_secondary, messageView(context, 1, presentation.message))
-            }
-        }
-        // move metadata into spare second-row width at large scale
-        if (largeText) {
-            views.addView(R.id.row_secondary, footerView(context, landscape))
-        }
-    }
-
-    // bind one forecast group
-    private fun slotView(
-        context: Context,
-        group: WidgetGroup,
-        landscape: Boolean,
-        largeText: Boolean,
-    ): RemoteViews {
-        // use a one-line compact tile at the 51dp landscape minimum
-        if (landscape) {
-            return RemoteViews(context.packageName, R.layout.widget_slot_landscape).apply {
-                setTextViewText(R.id.slot_summary, group.landscapeLabel)
-                setImageViewResource(R.id.slot_condition, conditionIcon(group.condition))
-                setContentDescription(R.id.slot_root, group.accessibilityLabel())
-            }
-        }
-        val layout = if (largeText) R.layout.widget_slot_portrait_large else R.layout.widget_slot
+    // tighten text insets and shrink temperatures to give the centered artwork more room
+    private fun slotView(context: Context, group: WidgetGroup, compact: Boolean, widthDp: Float): RemoteViews {
+        val available = widthDp - if (compact) 6f else 12f
+        val temperatureSize = fittedTextSize(context, group.temperatureLabel, available, if (compact) 16f else 24f,
+            Typeface.create(context.resources.getFont(R.font.google_sans_bold), Typeface.BOLD))
+        val layout = if (compact) R.layout.widget_panel_compact else R.layout.widget_panel
         return RemoteViews(context.packageName, layout).apply {
             setTextViewText(R.id.slot_hour, group.hourLabel)
             setTextViewText(R.id.slot_temperature, group.temperatureLabel)
-            setImageViewResource(R.id.slot_condition, conditionIcon(group.condition))
+            // explicitly reset the color when reused tiles return to the neutral range
+            setTextColor(R.id.slot_temperature, context.getColor(temperatureColor(group.temperatureTone)))
+            setTextViewTextSize(R.id.slot_hour, TypedValue.COMPLEX_UNIT_DIP, if (compact) 10f else 13f)
+            setTextViewTextSize(R.id.slot_temperature, TypedValue.COMPLEX_UNIT_DIP, temperatureSize)
+            // render the supplied bitmap directly without effects
+            setImageViewResource(R.id.slot_condition,
+                conditionIcon(group.weatherCondition, group.highWind, group.isNight))
             setContentDescription(R.id.slot_root, group.accessibilityLabel())
         }
     }
 
-    // select one truthful condition icon
-    private fun conditionIcon(condition: RainCondition): Int {
+    // measure at the actual pixel size so tiny-font hinting cannot shrink readable labels
+    private fun fittedTextSize(context: Context, text: String, availableDp: Float, preferredDp: Float, font: Typeface): Float {
+        // empty unavailable labels need no width adjustment
+        if (text.isEmpty()) return preferredDp
+        val density = context.resources.displayMetrics.density
+        val measure = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            textSize = preferredDp * density
+            typeface = font
+        }
+        return preferredDp * minOf(1f, availableDp.coerceAtLeast(1f) * density / measure.measureText(text))
+    }
+
+    // retain readable blue orange and red on both daytime and evening blush
+    private fun temperatureColor(tone: WidgetTemperatureTone): Int {
+        return when (tone) {
+            WidgetTemperatureTone.NEUTRAL -> R.color.widget_foreground
+            WidgetTemperatureTone.COLD -> R.color.widget_temperature_cold
+            WidgetTemperatureTone.WARM -> R.color.widget_temperature_warm
+            WidgetTemperatureTone.HOT -> R.color.widget_temperature_hot
+        }
+    }
+
+    // choose supplied day or moon illustrations without modifying their pixels
+    internal fun conditionIcon(condition: WeatherCondition, windy: Boolean, night: Boolean = false): Int {
+        // substitute crescents only where the daytime illustration contains a sun
+        if (night) {
+            when (condition) {
+                WeatherCondition.SUNNY -> return if (windy) R.drawable.ic_weather_clear_night_wind else R.drawable.ic_weather_clear_night
+                WeatherCondition.PARTLY_CLOUDY -> return if (windy) R.drawable.ic_weather_partly_night_wind else R.drawable.ic_weather_partly_night
+                else -> Unit
+            }
+        }
         return when (condition) {
-            RainCondition.DRY -> R.drawable.ic_dry
-            RainCondition.SPRINKLE -> R.drawable.ic_sprinkle
-            RainCondition.RAIN -> R.drawable.ic_rain
-            RainCondition.UNAVAILABLE -> R.drawable.ic_unavailable
+            WeatherCondition.SUNNY -> if (windy) R.drawable.ic_weather_sunny_wind else R.drawable.ic_weather_sunny
+            WeatherCondition.PARTLY_CLOUDY -> if (windy) R.drawable.ic_weather_partly_wind else R.drawable.ic_weather_partly
+            WeatherCondition.CLOUDY -> if (windy) R.drawable.ic_weather_cloudy_wind else R.drawable.ic_weather_cloudy
+            WeatherCondition.LIGHT_RAIN -> if (windy) R.drawable.ic_weather_light_rain_wind else R.drawable.ic_weather_light_rain
+            WeatherCondition.HEAVY_RAIN -> if (windy) R.drawable.ic_weather_heavy_rain_wind else R.drawable.ic_weather_heavy_rain
+            WeatherCondition.UNAVAILABLE -> R.drawable.ic_unavailable
         }
     }
 
-    // fill remaining fixed widget space
-    private fun messageView(context: Context, weight: Int, message: String): RemoteViews {
-        val layout = when (weight) {
-            3 -> R.layout.widget_bedtime_weight_3
-            6 -> R.layout.widget_bedtime_weight_6
-            else -> R.layout.widget_bedtime
+    // match the tighter weather spacing throughout the remainder-filling overnight segment
+    private fun messageView(context: Context, presentation: WidgetPresentation, weight: Int, compact: Boolean, widthDp: Float): RemoteViews {
+        val layout = when {
+            compact && weight == 2 -> R.layout.widget_message_compact_weight_2
+            compact && weight == 3 -> R.layout.widget_message_compact_weight_3
+            compact && weight == 4 -> R.layout.widget_message_compact_weight_4
+            compact -> R.layout.widget_message_compact
+            weight == 2 -> R.layout.widget_message_weight_2
+            weight == 3 -> R.layout.widget_message_weight_3
+            weight == 4 -> R.layout.widget_message_weight_4
+            else -> R.layout.widget_message
         }
+        val overnight = presentation.overnight
+        val label = if (presentation.showBedtime) "Overnight" else ""
+        val available = widthDp - if (compact) 6f else 12f
+        // preserve the shared left edge while giving the longer label more trailing room
+        val labelWidth = widthDp - if (compact) 6f else 10f
+        val labelSize = fittedTextSize(context, label, labelWidth, if (compact) 10f else 13f,
+            context.resources.getFont(R.font.google_sans_regular))
+        val temperatureSize = fittedTextSize(context, presentation.message.orEmpty(), available, if (compact) 16f else 24f,
+            Typeface.create(context.resources.getFont(R.font.google_sans_bold), Typeface.BOLD))
         return RemoteViews(context.packageName, layout).apply {
-            setTextViewText(R.id.bedtime_root, message)
-            setContentDescription(R.id.bedtime_root, message)
+            setTextViewText(R.id.bedtime_hour, label)
+            setTextViewText(R.id.bedtime_message, presentation.message)
+            setTextViewTextSize(R.id.bedtime_hour, TypedValue.COMPLEX_UNIT_DIP, labelSize)
+            setTextViewTextSize(R.id.bedtime_message, TypedValue.COMPLEX_UNIT_DIP, temperatureSize)
+            setTextColor(R.id.bedtime_message, context.getColor(temperatureColor(overnight?.temperatureTone ?: WidgetTemperatureTone.NEUTRAL)))
+            // render the supplied overnight bitmap directly without effects
+            setImageViewResource(R.id.bedtime_icon,
+                conditionIcon(overnight?.weatherCondition ?: WeatherCondition.UNAVAILABLE,
+                    overnight?.highWind == true, night = true))
+            setViewVisibility(R.id.bedtime_icon, if (presentation.showBedtime) View.VISIBLE else View.GONE)
+            setContentDescription(R.id.bedtime_root, overnightAccessibility(presentation))
         }
     }
 
-    // protect large-scale status unit and credit width
-    private fun footerView(context: Context, landscape: Boolean): RemoteViews {
-        val layout = if (landscape) R.layout.widget_footer_inline_landscape else R.layout.widget_footer_inline_portrait
-        return RemoteViews(context.packageName, layout)
+    // retain an honest accessible summary for legacy caches without overnight hours
+    private fun overnightAccessibility(presentation: WidgetPresentation): String? {
+        return presentation.overnight?.accessibilityLabel()
+            ?: if (presentation.showBedtime) "Overnight, 8 PM through 7 AM, forecast unavailable" else presentation.message
     }
 
-    // bind fixed footer and allowlisted credit actions
-    private fun populateFooter(
-        context: Context,
-        views: RemoteViews,
-        presentation: WidgetPresentation,
-        appWidgetId: Int,
-    ) {
-        views.setTextViewText(R.id.footer_primary, presentation.footer)
-        views.setContentDescription(R.id.footer_primary, footerAccessibility(presentation))
-        val creditVisibility = if (presentation.showCredit) View.VISIBLE else View.GONE
-        views.setViewVisibility(R.id.credit_provider, creditVisibility)
-        views.setViewVisibility(R.id.credit_separator, creditVisibility)
-        views.setViewVisibility(R.id.credit_license, creditVisibility)
-        // bind only compile-time credit destinations
-        if (presentation.showCredit) {
-            views.setOnClickPendingIntent(
-                R.id.credit_provider,
-                externalPendingIntent(context, appWidgetId + 10_000, PROVIDER_URL),
-            )
-            views.setOnClickPendingIntent(
-                R.id.credit_license,
-                externalPendingIntent(context, appWidgetId + 20_000, LICENSE_URL),
-            )
-            views.setContentDescription(R.id.credit_provider, "Weather data provider Open-Meteo")
-            views.setContentDescription(R.id.credit_license, "Weather data licensed under CC BY 4.0")
-        }
-    }
-
-    // describe complete widget semantics including attribution
+    // keep complete metadata accessible without a visible footer
     private fun presentationAccessibility(presentation: WidgetPresentation): String {
         val groups = presentation.groups.joinToString("; ") { it.accessibilityLabel() }
-        val attribution = if (presentation.showCredit) "; Open-Meteo, CC BY 4.0" else ""
-        return listOfNotNull(groups.ifBlank { null }, presentation.message, footerAccessibility(presentation))
-            .joinToString("; ") + attribution
-    }
-
-    // expand compact footer text for assistive technology
-    private fun footerAccessibility(presentation: WidgetPresentation): String {
         val sunset = presentation.sunset?.atZone(siteZone)?.format(timeFormatter)?.let { "Sunset $it" }
         val freshness = if (presentation.stale) "stale" else "current"
-        val unit = when (presentation.unit) {
-            TemperatureUnit.FAHRENHEIT -> "degrees Fahrenheit"
-            TemperatureUnit.CELSIUS -> "degrees Celsius"
-        }
-        return listOfNotNull(sunset, "${presentation.status.wireName()} forecast", freshness, unit).joinToString(", ")
+        val unit = if (presentation.unit == TemperatureUnit.FAHRENHEIT) "degrees Fahrenheit" else "degrees Celsius"
+        val attribution = if (presentation.showCredit) "Open-Meteo, CC BY 4.0; attribution and license in forecast" else null
+        return listOfNotNull(groups.ifBlank { null }, overnightAccessibility(presentation), sunset,
+            "${presentation.status.wireName()} forecast", freshness, unit, attribution).joinToString("; ")
     }
 
-    // open the enum-like in-app forecast route
+    // open the existing attributed in-app forecast route
     internal fun forecastPendingIntent(context: Context, appWidgetId: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             putExtra(MainActivity.EXTRA_ROUTE, MainActivity.ROUTE_FORECAST)
             addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
-        return PendingIntent.getActivity(
-            context,
-            appWidgetId,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-    }
-
-    // open one fixed safe external url
-    private fun externalPendingIntent(context: Context, requestCode: Int, url: String): PendingIntent {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-        return PendingIntent.getActivity(
-            context,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        return PendingIntent.getActivity(context, appWidgetId, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 }

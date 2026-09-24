@@ -15,34 +15,45 @@ import java.util.zip.CRC32;
 import javax.imageio.ImageIO;
 
 final class GenerateBrandAssets {
-    private static final String SOURCE_SHA256 = "4871810f45b233e384852af995dbb510a3c1765acc6410a0035396a847ddb568";
+    private static final String SOURCE_SHA256 = "7e58a1c467e32de2637a350fc3d50a4925b4f4102bc394d94d913c9f81b24ba7";
     private static final Map<String, Integer> OUTPUTS = new LinkedHashMap<>();
 
+    // retain density fallbacks alongside the shared adaptive artwork
     static {
-        OUTPUTS.put("mipmap-mdpi", 48);
-        OUTPUTS.put("mipmap-hdpi", 72);
-        OUTPUTS.put("mipmap-xhdpi", 96);
-        OUTPUTS.put("mipmap-xxhdpi", 144);
-        OUTPUTS.put("mipmap-xxxhdpi", 192);
+        OUTPUTS.put("mipmap-mdpi/ic_launcher.png", 48);
+        OUTPUTS.put("mipmap-hdpi/ic_launcher.png", 72);
+        OUTPUTS.put("mipmap-xhdpi/ic_launcher.png", 96);
+        OUTPUTS.put("mipmap-xxhdpi/ic_launcher.png", 144);
+        OUTPUTS.put("mipmap-xxxhdpi/ic_launcher.png", 192);
+        OUTPUTS.put("drawable-nodpi/ic_launcher_artwork.png", 512);
     }
 
     // verify or regenerate android launcher assets
     public static void main(String[] arguments) throws Exception {
+        // require an explicit verification or generation mode
         if (arguments.length != 1 || !(arguments[0].equals("--check") || arguments[0].equals("--write"))) {
             throw new IllegalArgumentException("usage: java mobile/android/scripts/GenerateBrandAssets.java --check|--write");
         }
         Path root = Path.of("").toAbsolutePath().normalize();
-        Path source = root.resolve("apps/web/public/brand/weather-app-icon-master.png");
+        Path source = root.resolve("apps/web/public/brand/ballydidean-weather-icon-maskable-512.png");
         byte[] sourceBytes = Files.readAllBytes(source);
-        require(sha256(sourceBytes).equals(SOURCE_SHA256), "brand master hash changed; review provenance before regeneration");
+        require(sha256(sourceBytes).equals(SOURCE_SHA256), "maskable brand hash changed; review provenance before regeneration");
         BufferedImage master = ImageIO.read(source.toFile());
-        require(master != null && master.getWidth() == 1254 && master.getHeight() == 1254, "brand master dimensions changed");
-        // produce every android density from the same master
+        require(master != null && master.getWidth() == 512 && master.getHeight() == 512, "maskable brand dimensions changed");
+        // reject artwork with a baked transparent launcher mask
+        for (int y = 0; y < master.getHeight(); y++) {
+            // require opaque artwork through every corner and edge
+            for (int x = 0; x < master.getWidth(); x++) {
+                require((master.getRGB(x, y) >>> 24) == 255, "maskable brand must be fully opaque");
+            }
+        }
+        // package full-bleed artwork and unmasked density fallbacks
         for (Map.Entry<String, Integer> output : OUTPUTS.entrySet()) {
-            byte[] expected = render(master, output.getValue());
+            // preserve the reviewed adaptive artwork byte for byte
+            byte[] expected = output.getValue() == master.getWidth() ? sourceBytes : render(master, output.getValue());
             Path path = root.resolve("mobile/android/app/src/main/res")
-                .resolve(output.getKey())
-                .resolve("ic_launcher.png");
+                .resolve(output.getKey());
+            // write only through the explicit generation command
             if (arguments[0].equals("--write")) {
                 Files.createDirectories(path.getParent());
                 Files.write(path, expected);
@@ -50,7 +61,7 @@ final class GenerateBrandAssets {
                 require(Files.exists(path), "missing generated asset " + path);
                 require(MessageDigest.isEqual(expected, Files.readAllBytes(path)), "generated asset differs " + path);
             }
-            System.out.println(output.getKey() + "/ic_launcher.png " + output.getValue() + "x" + output.getValue() + " " + sha256(expected));
+            System.out.println(output.getKey() + " " + output.getValue() + "x" + output.getValue() + " " + sha256(expected));
         }
     }
 

@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="widget_background">#3B2933</color>
-    <color name="widget_foreground">#FFF4FA</color>
-    <color name="widget_secondary">#E8C9DA</color>
-    <color name="widget_tile_background">#24FFFFFF</color>
-    <color name="widget_divider">#66E8C9DA</color>
+    <color name="widget_background">#F8DEE5</color>
+    <color name="widget_now">#FFFFFF</color>
+    <color name="widget_after_sunset">#EAB8C8</color>
+    <color name="widget_bedtime">#DAEAF5</color>
+    <color name="widget_foreground">#432E3B</color>
+    <color name="widget_temperature_cold">#2D63A3</color>
+    <color name="widget_temperature_warm">#AC500E</color>
+    <color name="widget_temperature_hot">#B52F26</color>
+    <color name="widget_secondary">#765568</color>
+    <color name="widget_divider">#CCA6B3</color>
 </resources>

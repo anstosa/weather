@@ -2,14 +2,19 @@
 
 Weather includes native Android and iOS companions for the hosted
 <https://weather.ballydidean.farm> site and one native forecast widget per
-platform. The widget reads the public, cookie-free
-`GET|HEAD /api/v1/sites/ballydidean/widget-forecast` snapshot. The apps retain
+platform. Android now uses the public, cookie-free
+`GET|HEAD /api/v3/sites/ballydidean/widget-forecast` snapshot for its single-row
+cloud/wind-aware overnight redesign (see `DESIGN.md` and `mobile/android/README.md`).
+The paused iOS client retains the unchanged v1 endpoint and presentation. The v1 and v2
+feeds remain unchanged and available. The apps retain
 the hosted site's existing authentication and storage behavior; native widget
 storage never receives browser cookies.
 
-This repository prepares credential-free builds and test artifacts. It does
-not contain production signing credentials, submit binaries, create store
-records, or claim store approval.
+Normal builds and Check remain credential-free. The separate opt-in
+[Android internal release workflow](android-release.md) can sign and publish to
+Play internal testing after its five private Actions secrets and Play account
+setup are supplied. The repository contains no production signing credentials,
+does not create store records, and does not claim store approval.
 
 ## Supported build matrix
 
@@ -281,7 +286,7 @@ metadata is stored separately so a failure can become visible without
 overwriting good weather.
 
 Android WorkManager and iOS WidgetKit request roughly 30-minute refreshes and
-known stale, correction-expiry, cutoff, and midnight boundaries. Both
+known stale, correction-expiry, cutoff, and midnight boundaries; Android v3 also retains the overnight summary through its 7am horizon. Both
 platforms recompute from the current clock whenever the OS invokes them. These
 schedulers are inexact: build and deterministic state tests do not promise a
 wall-clock execution time. Expired adjustments demote to captured raw values
@@ -289,13 +294,15 @@ or unavailable, and hard-expired snapshots never remain live-looking.
 
 ## Assets, attribution, and deferred publisher work
 
-Android launcher resources are reproducible 48, 72, 96, 144, and 192 pixel
-derivatives of
-`apps/web/public/brand/weather-app-icon-master.png`. The source hash and exact
+Android uses a system-masked adaptive launcher icon backed by the existing
+opaque square `apps/web/public/brand/ballydidean-weather-icon-maskable-512.png`.
+It packages that artwork unchanged and generates unmasked 48, 72, 96, 144 and
+192 pixel density fallbacks. No custom rounded or circular crop is applied.
+The source hash and exact
 generation command are recorded in `mobile/android/assets/README.md`; CI runs
 `java mobile/android/scripts/GenerateBrandAssets.java --check` rather than
 silently rewriting them. Native asset catalogs and resources must continue to
-reuse that repository-owned brand master rather than introducing a second
+reuse that repository-owned brand artwork rather than introducing a second
 brand source. Keep applicable source provenance with any derived assets.
 
 Whenever weather is shown, retain visible and accessible
@@ -337,4 +344,6 @@ Blueberry, and verify release identity, health,
 <https://weather.ballydidean.farm/forecast>, and the public widget endpoint.
 
 Do not sign, upload, submit, or start beta distribution as part of the
-credential-free preparation workflow.
+credential-free preparation workflow. Android internal publication is a separate
+explicitly authorized operation through the Android release workflow, with an
+explicit version and a successful exact-commit Check.

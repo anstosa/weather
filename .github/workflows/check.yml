@@ -217,7 +217,7 @@ jobs:
           import xml.etree.ElementTree as element_tree
 
           receipt = element_tree.parse(sys.argv[1]).getroot()
-          expected = {"errors": "0", "failures": "0", "skipped": "0", "tests": "21"}
+          expected = {"errors": "0", "failures": "0", "skipped": "0", "tests": "28"}
           # require the complete real-hosted journey count
           if any(receipt.attrib.get(name) != value for name, value in expected.items()):
               raise SystemExit(f"unexpected Android hosted-shell result: {receipt.attrib}")

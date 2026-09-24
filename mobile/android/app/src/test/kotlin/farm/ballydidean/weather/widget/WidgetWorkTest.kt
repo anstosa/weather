@@ -15,11 +15,20 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WidgetWorkTest {
+    // require explicit live opt-in only for debug builds
+    @Test
+    fun liveRefreshRequiresDebugOptInButReleaseAlwaysRefreshes() {
+        assertFalse(widgetLiveRefreshEnabled(debug = true, debugOptIn = false))
+        assertTrue(widgetLiveRefreshEnabled(debug = true, debugOptIn = true))
+        assertTrue(widgetLiveRefreshEnabled(debug = false, debugOptIn = false))
+        assertTrue(widgetLiveRefreshEnabled(debug = false, debugOptIn = true))
+    }
+
     // enforce the fixed public endpoint
     @Test
     fun endpointIsFixedAndCookieFreeByConstruction() {
         assertEquals(
-            "https://weather.ballydidean.farm/api/v1/sites/ballydidean/widget-forecast",
+            "https://weather.ballydidean.farm/api/v3/sites/ballydidean/widget-forecast",
             WidgetForecastClient.ENDPOINT,
         )
     }

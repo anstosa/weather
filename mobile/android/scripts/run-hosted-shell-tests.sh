@@ -52,6 +52,7 @@ XML
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-${HOME}/.gradle}"
 set +e
 "${ROOT}/gradlew" -p "${ROOT}" --no-daemon \
+  -PweatherLiveWidgetRefresh=false \
   -PweatherFixtureResDir="${GENERATED_RES}" \
   -Pandroid.testInstrumentationRunnerArguments.fixtureOrigin="${WEATHER_HTTPS_FIXTURE_ANDROID_ORIGIN}" \
   -Pandroid.testInstrumentationRunnerArguments.untrustedFixtureOrigin="${WEATHER_HTTPS_FIXTURE_ANDROID_UNTRUSTED_ORIGIN}" \
