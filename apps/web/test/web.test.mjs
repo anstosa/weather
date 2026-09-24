@@ -4136,7 +4136,9 @@ test("all data routes use skeletons for initial and repeat reads", () => {
       }
     }
   }
-  assert.doesNotMatch(renderWeatherDashboard(initial, "settings"), /skeleton-region|skeleton-line/u);
+  // local settings fields stay usable even when navigation artwork is still loading
+  const settingsContent = renderWeatherDashboard(initial, "settings").split('<div class="weather-content"')[1];
+  assert.doesNotMatch(settingsContent, /skeleton-region|skeleton-line/u);
 });
 
 // distinguish sensor loading from empty and unavailable states

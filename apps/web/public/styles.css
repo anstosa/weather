@@ -521,6 +521,13 @@ a {
   object-fit: contain;
 }
 
+/* reserve the artwork footprint while the first current observation loads */
+.section-nav-weather-icon.section-nav-weather-skeleton {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+}
+
 .secondary-button {
   border-color: var(--md-sys-color-outline);
   color: var(--md-sys-color-primary);

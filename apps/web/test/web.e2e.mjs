@@ -1587,6 +1587,342 @@ test("Now weather artwork preserves state across routes without widening fetch c
   }
 });
 
+// retain one sanitized current-condition summary without flashing unavailable artwork
+test("Now weather artwork restores a safe cache and settles cold skeletons honestly", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const cacheKey = "weather.now-icon.ballydidean.v1";
+    const sunset = eveningSunTimes(site, new Date("2026-08-22T20:00:00.000Z")).sunset;
+
+    // require one deterministic near-sunset cache window
+    if (sunset === null) {
+      throw new Error("fixture sunset is unavailable");
+    }
+
+    const now = new Date(sunset.getTime() - 10 * 60_000);
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    let rain = 0;
+    let responseMode = "usable";
+    const currentGates = [];
+
+    // hold exactly one upcoming current read
+    const holdNextCurrent = () => {
+      let markStarted;
+      let release;
+      const started = new Promise(
+        // expose the request interception boundary
+        (resolveStarted) => {
+          markStarted = resolveStarted;
+        },
+      );
+      const pending = new Promise(
+        // expose the response release boundary
+        (resolveRelease) => {
+          release = resolveRelease;
+        },
+      );
+      currentGates.push({ markStarted, pending });
+      return { release, started };
+    };
+    // read one complete navigation-artwork state
+    const readNowArtwork = async (targetPage = page) => await targetPage.locator(".section-nav-home").evaluate(
+      // distinguish loading, weather, and unavailable artwork
+      (home) => {
+        const image = home.querySelector("img.section-nav-weather-icon");
+        const skeleton = home.querySelector(".section-nav-weather-skeleton");
+        const skeletonBounds = skeleton?.getBoundingClientRect();
+        return {
+          alt: image?.getAttribute("alt") ?? null,
+          imageCount: home.querySelectorAll("img.section-nav-weather-icon").length,
+          skeletonAriaLabel: skeleton?.getAttribute("aria-label") ?? null,
+          skeletonClasses: skeleton === null ? [] : [...skeleton.classList],
+          skeletonCount: home.querySelectorAll(".section-nav-weather-skeleton").length,
+          skeletonHeight: skeletonBounds?.height ?? null,
+          skeletonRole: skeleton?.getAttribute("role") ?? null,
+          skeletonWidth: skeletonBounds?.width ?? null,
+          source: image instanceof HTMLImageElement ? new URL(image.src).pathname : null,
+        };
+      },
+    );
+    // decode the bounded cache payload
+    const readCache = async (targetPage = page) => await targetPage.evaluate((key) => {
+      const value = localStorage.getItem(key);
+      return value === null ? null : JSON.parse(value);
+    }, cacheKey);
+    // count only reads that could reveal current private sensor state
+    const currentReads = () => fixture.state.requests.filter(
+      // keep the exact current endpoint separate from route-local requests
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    // read every distinct artwork state painted in the current document
+    const observedArtwork = async (targetPage = page) => await targetPage.evaluate(
+      () => window.__weatherNowArtworkStates ?? [],
+    );
+
+    await page.clock.setFixedTime(now);
+    await page.addInitScript(() => {
+      const states = [];
+      window.__weatherNowArtworkStates = states;
+      // retain only distinct rendered loading or image states
+      const record = () => {
+        const image = document.querySelector("img.section-nav-weather-icon");
+        const skeleton = document.querySelector(".section-nav-weather-skeleton");
+        const state = skeleton !== null
+          ? "loading"
+          : image instanceof HTMLImageElement
+            ? new URL(image.src).pathname
+            : null;
+
+        // skip missing and duplicate mutation records
+        if (state !== null && states.at(-1) !== state) {
+          states.push(state);
+        }
+      };
+      const observer = new MutationObserver(
+        // sample each complete render replacement
+        () => record(),
+      );
+      observer.observe(document, { childList: true, subtree: true });
+      document.addEventListener("DOMContentLoaded", record, { once: true });
+    });
+    await page.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      const gate = currentGates.shift();
+
+      // expose a deliberately pending current read
+      if (gate !== undefined) {
+        gate.markStarted();
+        await gate.pending;
+      }
+
+      // return one explicit outage without hiding the restored cache
+      if (responseMode === "failure") {
+        await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable" } }) });
+        return;
+      }
+
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.map(
+        // vary only fields admitted to the icon cache
+        (record) => {
+          // make one successful response intentionally unusable
+          if (responseMode === "unavailable") {
+            return {
+              ...record,
+              metrics: {
+                ...record.metrics,
+                cloudCoverPercent: record.provenance.sourceKind === "model_current"
+                  ? null
+                  : record.metrics.cloudCoverPercent,
+                precipitationRateMmPerHour: record.provenance.sourceKind === "physical_sensor"
+                  ? null
+                  : record.metrics.precipitationRateMmPerHour,
+              },
+            };
+          }
+
+          // keep clouds modeled and rain plus wind sensor-derived
+          return record.provenance.sourceKind === "physical_sensor"
+            ? {
+                ...record,
+                metrics: {
+                  ...record.metrics,
+                  precipitationRateMmPerHour: rain,
+                  windSpeedMps: 2.5,
+                },
+              }
+            : record;
+        },
+      );
+      await route.fulfill({ json: body, response });
+    });
+
+    const coldGate = holdNextCurrent();
+    await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    await coldGate.started;
+    await page.getByRole("img", { name: "Loading current weather", exact: true }).waitFor();
+    const cold = await readNowArtwork();
+    assert.deepEqual(cold, {
+      alt: null,
+      imageCount: 0,
+      skeletonAriaLabel: "Loading current weather",
+      skeletonClasses: ["section-nav-weather-icon", "section-nav-weather-skeleton", "skeleton-line"],
+      skeletonCount: 1,
+      skeletonHeight: 32,
+      skeletonRole: "img",
+      skeletonWidth: 32,
+      source: null,
+    });
+    assert.deepEqual(await observedArtwork(), ["loading"]);
+    const coldScreenshot = await page.screenshot();
+    assert.ok(coldScreenshot.byteLength > 500);
+    coldGate.release();
+    await page.waitForFunction(
+      // require live current data to replace the cold skeleton
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    assert.deepEqual(await readCache(), {
+      cachedAt: now.getTime(),
+      cloud: 42,
+      rain: 0,
+      windy: false,
+    });
+
+    rain = 3;
+    const warmGate = holdNextCurrent();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await warmGate.started;
+    assert.deepEqual(await readNowArtwork(), {
+      alt: "Current weather: Partly cloudy",
+      imageCount: 1,
+      skeletonAriaLabel: null,
+      skeletonClasses: [],
+      skeletonCount: 0,
+      skeletonHeight: null,
+      skeletonRole: null,
+      skeletonWidth: null,
+      source: "/weather-icons/03-partly-cloudy.svg",
+    });
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/03-partly-cloudy.svg"]);
+    const warmScreenshot = await page.screenshot();
+    assert.ok(warmScreenshot.byteLength > 500);
+    warmGate.release();
+    await page.waitForFunction(
+      // let newer live rain replace the warm cached illustration
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/09-heavy-rain.svg",
+    );
+    assert.deepEqual(await observedArtwork(), [
+      "/weather-icons/03-partly-cloudy.svg",
+      "/weather-icons/09-heavy-rain.svg",
+    ]);
+    assert.deepEqual(await readCache(), {
+      cachedAt: now.getTime(),
+      cloud: 42,
+      rain: 3,
+      windy: false,
+    });
+
+    rain = 0;
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction(
+      // refresh the cache back to one sun-bearing summary
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/03-partly-cloudy.svg",
+    );
+    const currentReadsBeforeLocalRoutes = currentReads();
+
+    await page.clock.setFixedTime(new Date(sunset.getTime() + 1_000));
+    await page.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    assert.equal(currentReads(), currentReadsBeforeLocalRoutes);
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/15-partly-cloudy-night.svg"]);
+    await page.goto(`${fixture.origin}/logs`, { waitUntil: "networkidle" });
+    await page.locator("table caption").waitFor({ state: "attached" });
+    assert.equal(currentReads(), currentReadsBeforeLocalRoutes);
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/15-partly-cloudy-night.svg"]);
+
+    responseMode = "failure";
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    assert.deepEqual(await observedArtwork(), ["/weather-icons/15-partly-cloudy-night.svg"]);
+    assert.deepEqual(await readCache(), {
+      cachedAt: now.getTime(),
+      cloud: 42,
+      rain: 0,
+      windy: false,
+    });
+
+    responseMode = "unavailable";
+    const missingGate = holdNextCurrent();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await missingGate.started;
+    assert.equal((await readNowArtwork()).source, "/weather-icons/15-partly-cloudy-night.svg");
+    missingGate.release();
+    await page.waitForFunction(
+      // clear stale cache only after a successful unavailable response
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/12-unavailable.svg",
+    );
+    assert.equal(await readCache(), null);
+    assert.deepEqual(await observedArtwork(), [
+      "/weather-icons/15-partly-cloudy-night.svg",
+      "loading",
+      "/weather-icons/12-unavailable.svg",
+    ]);
+
+    const invalidPage = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    await invalidPage.clock.setFixedTime(now);
+    await invalidPage.addInitScript(({ key }) => {
+      localStorage.setItem(key, "{not-json");
+    }, { key: cacheKey });
+    let releaseInvalidCurrent;
+    const invalidCurrentPending = new Promise(
+      // hold the invalid-cache fallback in its cold loading state
+      (resolveRelease) => {
+        releaseInvalidCurrent = resolveRelease;
+      },
+    );
+    await invalidPage.route(/\/api\/v1\/sites\/ballydidean\/current$/u, async (route) => {
+      await invalidCurrentPending;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "unavailable" } }) });
+    });
+    await invalidPage.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    await invalidPage.getByRole("img", { name: "Loading current weather", exact: true }).waitFor();
+    assert.equal((await readNowArtwork(invalidPage)).imageCount, 0);
+    releaseInvalidCurrent();
+    await invalidPage.waitForFunction(
+      // settle a failed cold read to honest unavailable artwork
+      () => document.querySelector("img.section-nav-weather-icon")?.getAttribute("src") ===
+        "/weather-icons/12-unavailable.svg",
+    );
+    await invalidPage.close();
+
+    const expiredPage = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 320 },
+    });
+    await expiredPage.clock.setFixedTime(now);
+    await expiredPage.addInitScript(({ key, value }) => {
+      localStorage.setItem(key, JSON.stringify(value));
+    }, {
+      key: cacheKey,
+      value: { cachedAt: now.getTime() - 30 * 60_000 - 1, cloud: 42, rain: 0, windy: false },
+    });
+    const expiredReadsBefore = currentReads();
+    await expiredPage.goto(`${fixture.origin}/settings`, { waitUntil: "networkidle" });
+    assert.equal(currentReads(), expiredReadsBefore);
+    assert.deepEqual(await readNowArtwork(expiredPage), {
+      alt: "Current weather: Conditions unavailable",
+      imageCount: 1,
+      skeletonAriaLabel: null,
+      skeletonClasses: [],
+      skeletonCount: 0,
+      skeletonHeight: null,
+      skeletonRole: null,
+      skeletonWidth: null,
+      source: "/weather-icons/12-unavailable.svg",
+    });
+    await expiredPage.close();
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // scale one standalone switch with the visible title while preserving its complete interaction contract
 test("adjustment switch scales with the title and moves a solid muted-gold or gray sparkle", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();

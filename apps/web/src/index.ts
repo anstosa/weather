@@ -414,8 +414,19 @@ export interface HistoryFilters {
   readonly to?: string;
 }
 
+interface NowIconInputs {
+  readonly rain: number;
+  readonly cloud: number | null;
+  readonly windy: boolean;
+}
+
+interface CachedNowIcon extends NowIconInputs {
+  readonly cachedAt: number;
+}
+
 export interface DashboardState {
   readonly current: readonly WeatherRecord[];
+  readonly cachedNowIcon: CachedNowIcon | null;
   readonly dailyPrecipitation: DailyPrecipitation | null;
   readonly error: string | null;
   readonly filters: HistoryFilters;
@@ -571,6 +582,7 @@ type DashboardListener = (state: DashboardState) => void;
 
 const EMPTY_STATE: DashboardState = {
   current: [],
+  cachedNowIcon: null,
   dailyPrecipitation: null,
   error: null,
   filters: {},
@@ -611,6 +623,58 @@ const EMPTY_STATE: DashboardState = {
 };
 
 export const FORECAST_ADJUSTMENT_MODE_STORAGE_KEY = "weather.forecast-adjustment-mode.v1";
+export const NOW_ICON_STORAGE_KEY = "weather.now-icon.ballydidean.v1";
+const NOW_ICON_CACHE_TTL_MS = 30 * 60 * 1_000;
+
+// retain only the three public inputs needed to choose weather artwork
+function parseNowIconInputs(value: unknown): NowIconInputs | null {
+  // reject primitives and arrays from browser storage
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const { rain, cloud, windy } = value as Record<string, unknown>;
+  // require bounded metrics without inventing dry conditions from missing data
+  if (
+    typeof rain !== "number" || !Number.isFinite(rain) || rain < 0 ||
+    typeof windy !== "boolean" ||
+    (cloud !== null && (typeof cloud !== "number" || !Number.isFinite(cloud) || cloud < 0 || cloud > 100)) ||
+    (rain === 0 && cloud === null)
+  ) {
+    return null;
+  }
+  return { rain, cloud, windy };
+}
+
+// reject expired or future-dated cached conditions
+function isNowIconCacheFresh(cache: CachedNowIcon | null | undefined, now: number): cache is CachedNowIcon {
+  return cache != null && cache.cachedAt <= now && now - cache.cachedAt < NOW_ICON_CACHE_TTL_MS;
+}
+
+// restore recent artwork before the first route render without restoring weather records
+function loadNowIconCache(storage: UnitPreferenceStorage | null): CachedNowIcon | null {
+  try {
+    const value: unknown = JSON.parse(storage?.getItem(NOW_ICON_STORAGE_KEY) ?? "null");
+    const inputs = parseNowIconInputs(value);
+    const cachedAt = (value as Partial<CachedNowIcon> | null)?.cachedAt;
+    // ignore invalid storage without preventing the page from opening
+    if (inputs === null || typeof cachedAt !== "number" || !Number.isFinite(cachedAt)) {
+      return null;
+    }
+    const cache = { ...inputs, cachedAt };
+    return isNowIconCacheFresh(cache, Date.now()) ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+// replace the small public cache or invalidate an authoritative unavailable response
+function persistNowIconCache(storage: UnitPreferenceStorage | null, cache: CachedNowIcon | null): void {
+  try {
+    storage?.setItem(NOW_ICON_STORAGE_KEY, JSON.stringify(cache));
+  } catch {
+    // retain navigation continuity in memory when browser storage is blocked
+  }
+}
 
 // load one validated forecast display preference
 function loadForecastAdjustmentMode(
@@ -2166,6 +2230,7 @@ export class WeatherDashboardController {
     this.#view = options.view ?? "home";
     this.#state = {
       ...EMPTY_STATE,
+      cachedNowIcon: loadNowIconCache(this.#storage),
       forecastAdjustmentMode: loadForecastAdjustmentMode(this.#storage),
       loading: true,
       selectedSite: PRODUCT_SITE,
@@ -2652,6 +2717,7 @@ export class WeatherDashboardController {
   // load only the current conditions panel
   async loadCurrent(): Promise<void> {
     const site = this.#state.selectedSite;
+    let pendingCurrent: Promise<RecordsResponse> | null = null;
 
     // wait for initialization
     if (site === null) {
@@ -2675,18 +2741,22 @@ export class WeatherDashboardController {
         this.#view === "map" ||
         this.#view === "admin" ||
         (this.#view === "home" && this.#isAdmin);
+      // accept current artwork independently of unrelated forecast or layout failures
+      pendingCurrent = needsCurrent
+        ? getJson<RecordsResponse>(
+          this.#fetcher,
+          buildCurrentUrl(this.#apiBaseUrl, site.slug, this.#state.filters),
+        ).then((response) => {
+          const responseSite = requireProductSite(response.site);
+          const inputs = currentWeatherIconInputs(response.data);
+          const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now() };
+          persistNowIconCache(this.#storage, cachedNowIcon);
+          this.patch({ current: response.data, cachedNowIcon, selectedSite: responseSite, sites: [responseSite] });
+          return response;
+        })
+        : null;
       const [current, dailyPrecipitation, forecast, tides, trends, propertySensorLayout, adminSettings] = await Promise.all([
-        // load observations only where rendered
-        needsCurrent
-          ? getJson<RecordsResponse>(
-            this.#fetcher,
-            buildCurrentUrl(
-              this.#apiBaseUrl,
-              site.slug,
-              this.#state.filters,
-            ),
-          )
-          : Promise.resolve(null),
+        pendingCurrent,
         // load today's gauge total only on home
         needsDailyPrecipitation
           ? getJson<DailyPrecipitationResponse>(
@@ -2739,7 +2809,6 @@ export class WeatherDashboardController {
       );
       this.#state = {
         ...this.#state,
-        current: current?.data ?? this.#state.current,
         dailyPrecipitation: dailyPrecipitation === null
           ? this.#state.dailyPrecipitation
           : dailyPrecipitation.data,
@@ -2768,6 +2837,8 @@ export class WeatherDashboardController {
       };
       this.emit();
     } catch (error) {
+      // keep cold artwork loading until current settles even when a sibling fails first
+      await pendingCurrent?.catch(() => null);
       this.fail(error);
     }
   }
@@ -3123,8 +3194,11 @@ function bindConditionDayRefresh(root: HTMLElement, controller: WeatherDashboard
     const tomorrow = new Date(Date.UTC(day.year, day.month - 1, day.day + 1)).toISOString().slice(0, 10);
     const midnight = Date.parse(fromSiteWallClock(`${tomorrow}T00:00`, timezone));
     const sun = eveningSunTimes(site, now);
-    const boundaries = [midnight, sun.sunrise?.getTime(), sun.sunset?.getTime()].filter(
-      // ignore absent and already elapsed daylight boundaries
+    const cacheExpiry = controller.state.cachedNowIcon === null
+      ? undefined
+      : controller.state.cachedNowIcon.cachedAt + NOW_ICON_CACHE_TTL_MS;
+    const boundaries = [midnight, sun.sunrise?.getTime(), sun.sunset?.getTime(), cacheExpiry].filter(
+      // ignore absent and already elapsed daylight or cache boundaries
       (instant): instant is number => instant !== undefined && instant > now.getTime(),
     );
     timer = window.setTimeout(refresh, Math.max(1, Math.min(...boundaries) - now.getTime()));
@@ -3165,18 +3239,33 @@ export function currentWeatherIcon(
   state: Pick<DashboardState, "current" | "selectedSite">,
   now = new Date(),
 ): Readonly<{ name: string; label: string }> {
-  const current = preferredCurrentRecords(state.current);
+  return selectCurrentWeatherIcon(currentWeatherIconInputs(state.current), state.selectedSite ?? PRODUCT_SITE, now);
+}
+
+// share sensor priority and cloud provenance between live and cached artwork
+function currentWeatherIconInputs(records: readonly WeatherRecord[]): NowIconInputs | null {
+  const current = preferredCurrentRecords(records);
   const rain = findMetric(current, "precipitationRateMmPerHour");
-  const wind = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
+  const windy = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
   const cloud = findMetric(current.filter(
     // cloud cover is modeled rather than measured by the on-site gateway
     (record) => record.provenance.sourceKind === "model_current",
   ), "cloudCoverPercent");
-  const suffix = wind ? ", high wind" : "";
+  return parseNowIconInputs({ rain, cloud, windy });
+}
+
+// recompute sun or moon artwork at the current farm time even for cached inputs
+function selectCurrentWeatherIcon(
+  inputs: NowIconInputs | null,
+  site: WeatherSite,
+  now: Date,
+): Readonly<{ name: string; label: string }> {
   // missing rainfall must not imply a sunny or dry condition
-  if (rain === null || rain === 0 && cloud === null) {
+  if (inputs === null) {
     return { name: "12-unavailable", label: "Conditions unavailable" };
   }
+  const { rain, cloud, windy: wind } = inputs;
+  const suffix = wind ? ", high wind" : "";
   // rain takes precedence even when cloud cover is unavailable
   if (rain > 0) {
     // use the widget's light and heavy rain boundary
@@ -3189,7 +3278,7 @@ export function currentWeatherIcon(
   if (cloud !== null && cloud >= 75) {
     return { name: wind ? "06-cloudy-wind" : "05-cloudy", label: `Cloudy${suffix}` };
   }
-  const sun = eveningSunTimes(state.selectedSite ?? PRODUCT_SITE, now);
+  const sun = eveningSunTimes(site, now);
   const night = sun.sunrise !== null && sun.sunset !== null &&
     (now < sun.sunrise || now >= sun.sunset);
   // replace only the sun-bearing illustrations after dark
@@ -3203,9 +3292,15 @@ export function currentWeatherIcon(
     : { name: wind ? "04-partly-cloudy-wind" : "03-partly-cloudy", label: `Partly cloudy${suffix}` };
 }
 
-// preserve the supplied colors and expose the current condition inside now navigation
+// keep known artwork through navigation and reserve its space while first loading
 function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): string {
-  const icon = currentWeatherIcon(state, now);
+  const cached = isNowIconCacheFresh(state.cachedNowIcon, now.getTime()) ? state.cachedNowIcon : null;
+  const inputs = currentWeatherIconInputs(state.current) ?? cached;
+  // loading is not an unavailable weather condition
+  if (inputs === null && state.loading) {
+    return `<span class="section-nav-weather-icon section-nav-weather-skeleton skeleton-line" role="img" aria-label="Loading current weather" aria-busy="true"></span>`;
+  }
+  const icon = selectCurrentWeatherIcon(inputs, state.selectedSite ?? PRODUCT_SITE, now);
   return `<img class="section-nav-weather-icon" src="/weather-icons/${icon.name}.svg" alt="Current weather: ${escapeHtml(icon.label)}" width="32" height="32">`;
 }
 
