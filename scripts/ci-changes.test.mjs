@@ -250,7 +250,7 @@ test("Check workflow binds selected native jobs to the exact commit", async () =
   assert.match(android, /GenerateBrandAssets\.java --check/u);
   assert.match(android, /with-native-https-fixture\.sh[\s\S]*run-hosted-shell-tests\.sh/u);
   assert.match(android, /android-webview\/TEST-widgetPhone\.xml/u);
-  assert.match(android, /"tests": "21"/u);
+  assert.match(android, /"tests": "28"/u);
   assert.match(android, /managedDevice\/debug\/widgetPhone\/TEST-widgetPhone\.xml/u);
   assert.match(quality, /python3 mobile\/scripts\/native_https_fixture_test\.py/u);
   assert.match(ios, /timeout-minutes: 180/u);

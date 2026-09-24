@@ -456,9 +456,26 @@ final class WidgetHostUITests: XCTestCase {
                 userInfo: [NSLocalizedDescriptionKey: "one current visible Page control was not available"]
             )
         }
+        let hosts = widgetHostQuery(on: springboard)
+        let host = try requireExisting(
+            in: hosts,
+            springboard: springboard,
+            stage: "observed-weather-widget-host",
+            timeout: 10
+        )
+        let frame = host.frame
+        // reject ambiguous or empty observation geometry
+        guard hosts.count == 1, frame.width > 0, frame.height > 0 else {
+            attachState(springboard, name: "failure-widget-target-host")
+            throw NSError(
+                domain: "farm.ballydidean.weather.widget-host",
+                code: 29,
+                userInfo: [NSLocalizedDescriptionKey: "one existing Weather widget host with geometry was not available"]
+            )
+        }
         return WidgetTargetObservation(
             page: "\(current)/\(total)",
-            frame: try widgetHostElement(on: springboard).frame
+            frame: frame
         )
     }
 
