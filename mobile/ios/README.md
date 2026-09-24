@@ -88,6 +88,8 @@ Expected output paths beneath `$RESULTS`:
 
 These are unsigned build artifacts, not store-submittable binaries.
 
+CI also runs `scripts/probe-widget-semantic-host.sh` for all six frozen shared fixtures. The probe resolves the reviewed iPhone 17 device type and iOS 26.5 runtime once, then creates a uniquely named disposable Simulator for each case. Every case boots and configures only its owned destination, exports and validates the existing host/provider/tap receipts, records its exact Simulator UDID and deletion result, and deletes that Simulator before the next case starts. Exit and termination cleanup can delete only the currently active owned case; the probe never boots, shuts down, or deletes a borrowed Simulator.
+
 ## Genuine Home Screen gate
 
 Apple documents one supported placement path: select a widget-extension scheme in Xcode and choose **Product > Run**. On iPhone Simulator, Xcode displays the widget on the Home Screen. The checked-in maximum widget scheme preserves that manual path. Apple does not document a `simctl add-widget` command or stable widget-gallery selectors. A SwiftUI preview, a custom host app, coordinate-only gallery automation, or private SpringBoard defaults do not satisfy M0.

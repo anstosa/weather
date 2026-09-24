@@ -6,9 +6,12 @@ IOS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT="$IOS_ROOT/Weather.xcodeproj"
 RESULTS="${RESULTS:-$IOS_ROOT/.artifacts/widget-semantic-host}"
 APP_BUNDLE_ID="farm.ballydidean.weather"
+DEVICE_TYPE_IDENTIFIER=""
+RUNTIME_IDENTIFIER=""
 SIMULATOR_UDID=""
-SIMULATOR_BOOT_OWNED=0
-SIMULATOR_ALREADY_BOOTED=0
+ACTIVE_CASE_ID=""
+SIMULATOR_DELETE_FAILED=0
+TERMINATION_REQUESTED=0
 LOG_PID=""
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode_26.6.app/Contents/Developer}"
@@ -24,35 +27,72 @@ stop_log_capture() {
   fi
 }
 
-# flush logs and shut down only a self-booted simulator
+# delete only the active simulator created for one semantic case
+delete_active_simulator() {
+  local context="$1"
+  local case_results="$RESULTS/cases/$ACTIVE_CASE_ID"
+
+  stop_log_capture
+  # reject cleanup without a complete ownership record
+  if [[ -z "$SIMULATOR_UDID" || -z "$ACTIVE_CASE_ID" ]]; then
+    echo "semantic simulator cleanup lacks an active owned case" >&2
+    return 1
+  fi
+
+  xcrun simctl shutdown "$SIMULATOR_UDID" \
+    > "$case_results/simulator-shutdown-$context.log" 2>&1 || true
+  # clear ownership only after deleting the exact created device
+  if xcrun simctl delete "$SIMULATOR_UDID" \
+      > "$case_results/simulator-delete-$context.log" 2>&1; then
+    # fail closed when the successful deletion receipt cannot be written
+    if ! printf 'disposable_simulator_deleted=%s\ncleanup_context=%s\n' \
+        "$SIMULATOR_UDID" "$context" >> "$case_results/simulator-cleanup.txt"; then
+      SIMULATOR_DELETE_FAILED=1
+      return 1
+    fi
+    SIMULATOR_UDID=""
+    ACTIVE_CASE_ID=""
+    return 0
+  fi
+
+  printf 'disposable_simulator_delete_failed=%s\ncleanup_context=%s\n' \
+    "$SIMULATOR_UDID" "$context" >> "$case_results/simulator-cleanup.txt" || true
+  SIMULATOR_DELETE_FAILED=1
+  return 1
+}
+
+# flush logs and delete only the active owned case simulator
 cleanup() {
   local status=$?
-  trap - EXIT
+  trap - EXIT TERM
   stop_log_capture
-  # release only the boot owned by this probe
-  if [[ "$SIMULATOR_BOOT_OWNED" == 1 ]]; then
-    # record the exact owned shutdown outcome
-    if xcrun simctl shutdown "$SIMULATOR_UDID" > "$RESULTS/simulator-shutdown.log" 2>&1; then
-      printf 'self_booted_simulator_shutdown=%s\n' "$SIMULATOR_UDID" \
-        > "$RESULTS/simulator-cleanup.txt"
-    else
-      printf 'self_booted_simulator_shutdown_failed=%s\n' "$SIMULATOR_UDID" \
-        > "$RESULTS/simulator-cleanup.txt"
-      # retain an earlier failure instead of replacing it
-      if [[ "$status" -eq 0 ]]; then
-        status=78
-      fi
+  # preserve signal cancellation even between child commands
+  if [[ "$TERMINATION_REQUESTED" == 1 ]]; then
+    status=143
+  fi
+  # remove only a case device whose ownership is still active
+  if [[ -n "$SIMULATOR_UDID" && -n "$ACTIVE_CASE_ID" ]]; then
+    # fail closed when the exact owned device survives cleanup
+    if ! delete_active_simulator "trap"; then
+      status=78
     fi
-  # preserve a simulator already booted before this probe
-  elif [[ "$SIMULATOR_ALREADY_BOOTED" == 1 ]]; then
-    printf 'preexisting_booted_simulator_preserved=%s\n' "$SIMULATOR_UDID" \
-      > "$RESULTS/simulator-cleanup.txt"
+  fi
+  # retain a prior deletion failure even when trap cleanup later succeeds
+  if [[ "$SIMULATOR_DELETE_FAILED" == 1 ]]; then
+    status=78
   fi
   exit "$status"
 }
-trap cleanup EXIT
 
-# compile and host one decoded frozen fixture
+# convert termination into fail-closed exit cleanup
+handle_term() {
+  TERMINATION_REQUESTED=1
+  cleanup
+}
+trap cleanup EXIT
+trap handle_term TERM
+
+# compile and host one decoded frozen fixture on one owned simulator
 run_case() {
   local case_id="$1"
   local fixture="$2"
@@ -63,8 +103,34 @@ run_case() {
   local derived_data="$RESULTS/DerivedData/$fixture"
   local result_bundle="$case_results/WeatherSemanticHost.xcresult"
   local attachments="$case_results/attachments"
+  local owned_udid=""
 
   mkdir -p "$case_results"
+  # reject overlapping case ownership
+  if [[ -n "$SIMULATOR_UDID" || -n "$ACTIVE_CASE_ID" ]]; then
+    echo "semantic simulator ownership overlaps case: $case_id" >&2
+    exit 78
+  fi
+
+  ACTIVE_CASE_ID="$case_id"
+  SIMULATOR_UDID="$(xcrun simctl create \
+    "Weather Semantic Host ${case_id} $$" \
+    "$DEVICE_TYPE_IDENTIFIER" \
+    "$RUNTIME_IDENTIFIER")"
+  owned_udid="$SIMULATOR_UDID"
+  printf '%s\n' "$SIMULATOR_UDID" > "$case_results/simulator-udid.txt"
+  printf 'case=%s\ndevice_type=%s\nruntime=%s\n' \
+    "$case_id" "$DEVICE_TYPE_IDENTIFIER" "$RUNTIME_IDENTIFIER" \
+    > "$case_results/simulator-ownership.txt"
+  xcrun simctl boot "$SIMULATOR_UDID" \
+    > "$case_results/simulator-boot.log" 2>&1
+  xcrun simctl bootstatus "$SIMULATOR_UDID" -b \
+    > "$case_results/simulator-bootstatus.log" 2>&1
+  xcrun simctl ui "$SIMULATOR_UDID" appearance light
+  xcrun simctl ui "$SIMULATOR_UDID" content_size large
+  printf 'appearance=light\ncontent_size=large\n' \
+    > "$case_results/simulator-visual-settings.txt"
+
   # build one isolated compile-time fixture artifact
   xcodebuild \
     -project "$PROJECT" \
@@ -133,23 +199,25 @@ run_case() {
   done
   printf '%s\t%s\t%s\n' "$case_id" "$fixture" "$selector" >> "$RESULTS/cases.tsv"
   printf '%s\tpassed\t%s\n' "$case_id" "$expected" >> "$RESULTS/semantic-host.log"
+
+  # require deletion before the next semantic case can start
+  if ! delete_active_simulator "case"; then
+    echo "semantic simulator deletion failed: $case_id" >&2
+    exit 78
+  fi
+  # validate the exact per-case ownership and deletion receipts
+  if [[ "$(cat "$case_results/simulator-udid.txt")" != "$owned_udid" ]] \
+    || ! grep -Fxq "disposable_simulator_deleted=$owned_udid" \
+      "$case_results/simulator-cleanup.txt" \
+    || grep -Fq 'disposable_simulator_delete_failed=' \
+      "$case_results/simulator-cleanup.txt"; then
+    echo "semantic simulator deletion receipt failed: $case_id" >&2
+    exit 78
+  fi
 }
 
 "$SCRIPT_DIR/preflight.sh"
 "$SCRIPT_DIR/verify-project.py"
-
-# select the pinned runtime and device
-SIMULATOR_UDID="$(xcrun simctl list devices available --json | python3 -c '
-import json, sys
-payload = json.load(sys.stdin)
-for runtime, devices in payload["devices"].items():
-    if runtime.endswith("iOS-26-5"):
-        for device in devices:
-            if device["name"] == "iPhone 17" and device.get("isAvailable", False):
-                print(device["udid"])
-                raise SystemExit(0)
-raise SystemExit("no available iPhone 17 on iOS 26.5")
-')"
 
 # reject reused semantic-host evidence
 if [[ -e "$RESULTS/cases" || -e "$RESULTS/DerivedData" ]]; then
@@ -160,23 +228,29 @@ mkdir -p "$RESULTS/cases" "$RESULTS/DerivedData"
 : > "$RESULTS/cases.tsv"
 : > "$RESULTS/semantic-host.log"
 
-# boot and pin normal visual state for semantic evidence
-if xcrun simctl boot "$SIMULATOR_UDID" 2> "$RESULTS/simulator-boot.stderr"; then
-  SIMULATOR_BOOT_OWNED=1
-# preserve a simulator already booted before this probe
-elif grep -qi 'current state: Booted' "$RESULTS/simulator-boot.stderr"; then
-  SIMULATOR_ALREADY_BOOTED=1
-else
-  cat "$RESULTS/simulator-boot.stderr" >&2
-  exit 1
-fi
-xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-xcrun simctl ui "$SIMULATOR_UDID" appearance light
-xcrun simctl ui "$SIMULATOR_UDID" content_size large
+# resolve the pinned type and runtime once without borrowing a device
+DEVICE_TYPE_IDENTIFIER="$(xcrun simctl list devicetypes --json | python3 -c '
+import json, sys
+for device in json.load(sys.stdin)["devicetypes"]:
+    if device["name"] == "iPhone 17":
+        print(device["identifier"])
+        raise SystemExit(0)
+raise SystemExit("iPhone 17 device type unavailable")
+')"
+RUNTIME_IDENTIFIER="$(xcrun simctl list runtimes --json | python3 -c '
+import json, sys
+for runtime in json.load(sys.stdin)["runtimes"]:
+    if runtime["identifier"].endswith("iOS-26-5") and runtime.get("isAvailable", False):
+        print(runtime["identifier"])
+        raise SystemExit(0)
+raise SystemExit("iOS 26.5 runtime unavailable")
+')"
+
 {
   xcodebuild -version
   xcrun --sdk iphonesimulator --show-sdk-version
-  printf 'simulator_udid=%s\n' "$SIMULATOR_UDID"
+  printf 'device_type=%s\n' "$DEVICE_TYPE_IDENTIFIER"
+  printf 'runtime=%s\n' "$RUNTIME_IDENTIFIER"
   printf 'source_commit=%s\n' "$(git -C "$IOS_ROOT/../.." rev-parse HEAD)"
 } > "$RESULTS/toolchain.txt"
 

@@ -85,6 +85,47 @@ test("Android tag releases preserve the exact requested version", async (t) => {
   assert.match(unrelated.stderr, /android-vVERSION/u);
 });
 
+// give repeated internal builds distinct tags without changing the app version
+test("Android build tags retain the explicitly chosen version name", async (t) => {
+  // preserve both ordinary and prerelease names under an immutable build identity
+  for (const version of ["0.1.0", "0.1.0-beta.1"]) {
+    const { env } = await fixture(t, {
+      GITHUB_REF_TYPE: "tag",
+      GITHUB_REF_NAME: `android-v${version}+build.20260924T173000Z`,
+      REQUESTED_VERSION_NAME: version,
+    });
+    const result = prepare(env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(env.GITHUB_OUTPUT, "utf8"), `code=262661530\nname=${version}\n`);
+  }
+  const { env } = await fixture(t, {
+    GITHUB_REF_TYPE: "tag",
+    GITHUB_REF_NAME: "android-v0.1.0+build.20260924T173001Z",
+    REQUESTED_VERSION_NAME: "",
+  });
+  assert.equal(prepare(env).status, 0);
+  assert.match(await readFile(env.GITHUB_OUTPUT, "utf8"), /name=0\.1\.0\n$/u);
+  const mismatched = prepare({ ...env, REQUESTED_VERSION_NAME: "0.1.1" });
+  assert.notEqual(mismatched.status, 0);
+  assert.match(mismatched.stderr, /does not match/u);
+});
+
+// reject malformed build identities before restoring any release credentials
+test("Android build tags reject malformed or unsafe build identifiers", async (t) => {
+  const { root, env } = await fixture(t, { GITHUB_REF_TYPE: "tag", REQUESTED_VERSION_NAME: "" });
+  // keep the accepted metadata format narrow and single-line
+  for (const suffix of [
+    "+build.", "+build.1", "+build.20260924T173000", "+build.20260924T173000Z.extra",
+    "+other.20260924T173000Z", "+build.20260924T173000Z\nname=bad",
+    "+extra+build.20260924T173000Z",
+  ]) {
+    const result = prepare({ ...env, GITHUB_REF_NAME: `android-v0.1.0${suffix}` });
+    assert.notEqual(result.status, 0, suffix);
+    assert.match(result.stderr, /build tag/u);
+  }
+  await assert.rejects(access(join(root, "weather-android-signing")));
+});
+
 // reject input that could change workflow outputs or gradle command boundaries
 test("Android release preparation rejects missing and unsafe version names", async (t) => {
   const { root, env } = await fixture(t);

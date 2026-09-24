@@ -68,6 +68,14 @@ BANNED_SOURCE_PATTERNS = (
     r"NSAllowsArbitraryLoads",
     r"NSExceptionDomains",
 )
+SEMANTIC_CASE_IDS = (
+    "09-adjusted-standard",
+    "10-fall-back",
+    "11-midnight-race",
+    "12-missing-raw-at-expiry",
+    "13-spring-forward",
+    "14-stale-old-source",
+)
 
 
 def fail(message: str) -> None:
@@ -86,6 +94,93 @@ def verify_widget_host_method_scope(source: str) -> None:
     # reject private helpers stranded in the unrelated deep-link class
     if any(method in deep_link or host.count(method) != 1 for method in methods):
         fail("widget target helpers are outside WidgetHostUITests")
+
+
+def verify_semantic_probe_lifecycle(source: str) -> None:
+    """require one disposable simulator for every semantic case"""
+    required = (
+        'DEVICE_TYPE_IDENTIFIER=""',
+        'RUNTIME_IDENTIFIER=""',
+        'SIMULATOR_UDID=""',
+        'ACTIVE_CASE_ID=""',
+        'SIMULATOR_DELETE_FAILED=0',
+        'TERMINATION_REQUESTED=0',
+        'list devicetypes --json',
+        'list runtimes --json',
+        '"Weather Semantic Host ${case_id} $$"',
+        'trap cleanup EXIT',
+        'trap handle_term TERM',
+        'xcrun simctl delete "$SIMULATOR_UDID"',
+        'disposable_simulator_deleted=%s',
+        'disposable_simulator_delete_failed=%s',
+        'disposable_simulator_deleted=$owned_udid',
+        'if [[ -n "$SIMULATOR_UDID" && -n "$ACTIVE_CASE_ID" ]]; then',
+        'if [[ "$SIMULATOR_DELETE_FAILED" == 1 ]]; then',
+        'if [[ "$TERMINATION_REQUESTED" == 1 ]]; then',
+    )
+    # reject any missing ownership or fail-closed cleanup boundary
+    for fragment in required:
+        # identify the exact lifecycle contract that drifted
+        if fragment not in source:
+            fail(f"semantic host lifecycle lacks {fragment}")
+    # reject borrowed destinations or repeated identifier resolution
+    if (
+        'list devices available --json' in source
+        or source.count('list devicetypes --json') != 1
+        or source.count('list runtimes --json') != 1
+        or source.count('xcrun simctl create') != 1
+    ):
+        fail("semantic host lifecycle borrows a device or re-resolves identifiers")
+
+    run_case = source.partition("run_case() {")[2].partition(
+        '\n}\n\n"$SCRIPT_DIR/preflight.sh"'
+    )[0]
+    run_case_order = (
+        'ACTIVE_CASE_ID="$case_id"',
+        'SIMULATOR_UDID="$(xcrun simctl create',
+        'xcrun simctl boot "$SIMULATOR_UDID"',
+        'build-for-testing | tee "$case_results/build-for-testing.log"',
+        'test-without-building | tee "$case_results/test.log"',
+        'xcrun xcresulttool export attachments',
+        'for receipt in',
+        '>> "$RESULTS/semantic-host.log"',
+        'delete_active_simulator "case"',
+        '"$(cat "$case_results/simulator-udid.txt")" != "$owned_udid"',
+        'disposable_simulator_delete_failed=',
+    )
+    cursor = -1
+    # preserve create, evidence validation, and deletion inside each case
+    for fragment in run_case_order:
+        position = run_case.find(fragment, cursor + 1)
+        # reject shared-device execution or deletion before the verdict
+        if position < 0:
+            fail(f"semantic host per-case lifecycle order lacks {fragment}")
+        cursor = position
+
+    delete_case = source.partition("delete_active_simulator() {")[2].partition(
+        "\n}\n\n# flush logs"
+    )[0]
+    delete_order = (
+        'xcrun simctl delete "$SIMULATOR_UDID"',
+        'disposable_simulator_deleted=%s',
+        'SIMULATOR_UDID=""',
+        'ACTIVE_CASE_ID=""',
+        'disposable_simulator_delete_failed=%s',
+        'SIMULATOR_DELETE_FAILED=1',
+    )
+    cursor = -1
+    # clear ownership only after an exact successful deletion receipt
+    for fragment in delete_order:
+        position = delete_case.find(fragment, cursor + 1)
+        # reject early ownership clearing or swallowed deletion failure
+        if position < 0:
+            fail(f"semantic host deletion order lacks {fragment}")
+        cursor = position
+
+    case_ids = tuple(re.findall(r'^run_case "([^"]+)"', source, re.MULTILINE))
+    # require exactly one uniquely named owned destination per frozen case
+    if case_ids != SEMANTIC_CASE_IDS or len(set(case_ids)) != len(SEMANTIC_CASE_IDS):
+        fail("semantic host lifecycle does not run six unique owned cases")
 
 
 def verify_files() -> None:
@@ -903,21 +998,7 @@ def verify_release_reachable_sources() -> None:
     # create before booting only the disposable destination
     if unit_probe.find('xcrun simctl create') > unit_probe.find('xcrun simctl boot "$SIMULATOR_UDID"'):
         fail("widget product-unit probe boots before creating its Simulator")
-    semantic_lifecycle_fragments = (
-        'SIMULATOR_BOOT_OWNED=0',
-        'SIMULATOR_ALREADY_BOOTED=0',
-        'SIMULATOR_BOOT_OWNED=1',
-        'SIMULATOR_ALREADY_BOOTED=1',
-        'stop_log_capture',
-        'trap cleanup EXIT',
-        'if [[ "$SIMULATOR_BOOT_OWNED" == 1 ]]; then',
-        'xcrun simctl shutdown "$SIMULATOR_UDID"',
-    )
-    # retain only self-booted semantic-host shutdown
-    for fragment in semantic_lifecycle_fragments:
-        # reject a missing semantic ownership boundary
-        if fragment not in semantic_probe:
-            fail(f"semantic host lifecycle lacks {fragment}")
+    verify_semantic_probe_lifecycle(semantic_probe)
     # reject evidence reuse before preflight creates the results directory
     if unit_probe.find('if [[ -e "$RESULTS" ]]') > unit_probe.find('"$SCRIPT_DIR/preflight.sh"'):
         fail("widget product-unit probe checks evidence reuse after preflight")

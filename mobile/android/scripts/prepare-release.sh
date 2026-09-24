@@ -13,6 +13,15 @@ if [[ "${GITHUB_REF_TYPE:-}" == tag ]]; then
     exit 1
   fi
   tag_version="${GITHUB_REF_NAME#android-v}"
+  # keep repeated internal builds immutable without changing their app version
+  if [[ "${tag_version}" == *+* ]]; then
+    # allow only a single timestamp-shaped build identity after the version
+    if [[ ! "${tag_version}" =~ ^([^+]+)\+build\.[0-9]{8}T[0-9]{6}Z$ ]]; then
+      printf 'Android build tag must use android-vVERSION+build.YYYYMMDDTHHMMSSZ\n' >&2
+      exit 1
+    fi
+    tag_version="${BASH_REMATCH[1]}"
+  fi
   # never silently replace an explicit version with a tag version
   if [[ -n "${version_name}" && "${version_name}" != "${tag_version}" ]]; then
     printf 'requested version does not match the Android tag\n' >&2

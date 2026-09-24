@@ -6,8 +6,11 @@ import datetime
 import importlib.util
 import io
 import json
+import os
+import subprocess
 import struct
 import tempfile
+import textwrap
 import unittest
 import zlib
 from contextlib import redirect_stdout
@@ -25,6 +28,166 @@ PROJECT_SPEC.loader.exec_module(PROJECT_VERIFIER)
 UUID = "00000000-0000-0000-0000-000000000001"
 BASE = 1700000000
 KIND = "farm.ballydidean.weather.forecast"
+
+
+# install bounded fake apple command-line tools for lifecycle execution
+def install_semantic_mock_cli(directory):
+    binary = directory / "bin"
+    state = directory / "state"
+    binary.mkdir()
+    state.mkdir()
+    xcrun = binary / "xcrun"
+    xcrun.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            # emulate only the simctl lifecycle used by the semantic probe
+            if [[ "$1" == "simctl" ]]; then
+              command="$2"
+              # create one deterministic owned identifier
+              if [[ "$command" == "create" ]]; then
+                counter="$(cat "$MOCK_STATE/counter" 2>/dev/null || printf '0')"
+                counter=$((counter + 1))
+                printf '%s\n' "$counter" > "$MOCK_STATE/counter"
+                udid="owned-$counter"
+                case_id="${3#Weather Semantic Host }"
+                case_id="${case_id% *}"
+                printf '%s\t%s\n' "$udid" "$case_id" >> "$MOCK_STATE/devices.tsv"
+                printf 'create:%s:%s\n' "$udid" "$case_id" >> "$MOCK_LOG"
+                printf '%s\n' "$udid"
+                exit 0
+              fi
+              # emit bounded provider and route receipts until stopped
+              if [[ "$command" == "spawn" ]]; then
+                udid="$3"
+                case_id="$(awk -F '\t' -v id="$udid" '$1 == id { print $2 }' "$MOCK_STATE/devices.tsv")"
+                printf 'spawn:%s\n' "$udid" >> "$MOCK_LOG"
+                printf 'expected-%s\nroute=forecast source=deep-link\n' "$case_id"
+                : > "$MOCK_STATE/provider-$udid.ready"
+                exec sleep 3600
+              fi
+              # record every exact deletion attempt
+              if [[ "$command" == "delete" ]]; then
+                printf 'delete:%s\n' "$3" >> "$MOCK_LOG"
+                # fail only when requested by the regression
+                if [[ "${MOCK_DELETE_FAIL_ALWAYS:-0}" == 1 ]]; then
+                  exit 1
+                fi
+                exit 0
+              fi
+              printf '%s:%s\n' "$command" "${3:-}" >> "$MOCK_LOG"
+              exit 0
+            fi
+
+            # export the three existing per-case attachment receipts
+            if [[ "$1" == "xcresulttool" ]]; then
+              output=""
+              # locate the requested attachment directory
+              while [[ "$#" -gt 0 ]]; do
+                case "$1" in
+                  --output-path)
+                    output="$2"
+                    shift 2
+                    ;;
+                  *)
+                    shift
+                    ;;
+                esac
+              done
+              case_id="$(basename "$(dirname "$output")")"
+              mkdir -p "$output"
+              printf '["matrix-%s-home-screen","matrix-%s-widgetkit-bounds","matrix-%s-widget-tap-forecast-route"]\n' \
+                "$case_id" "$case_id" "$case_id" > "$output/manifest.json"
+              exit 0
+            fi
+            exit 1
+            """
+        )
+    )
+    xcrun.chmod(0o700)
+    xcodebuild = binary / "xcodebuild"
+    xcodebuild.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            method=""
+            # select the exact requested XCTest method
+            for argument in "$@"; do
+              case "$argument" in
+                -only-testing:*) method="${argument##*/}" ;;
+              esac
+            done
+            # return one executed-test marker or a build marker
+            if [[ -n "$method" ]]; then
+              current="$(cat "$MOCK_STATE/counter")"
+              # wait for the fake provider stream to publish its receipt
+              for attempt in {1..100}; do
+                # stop after the current case receipt is visible
+                if [[ -e "$MOCK_STATE/provider-owned-$current.ready" ]]; then
+                  break
+                fi
+                sleep 0.01
+              done
+              # reject a mock run that never started its provider stream
+              if [[ ! -e "$MOCK_STATE/provider-owned-$current.ready" ]]; then
+                exit 2
+              fi
+              printf '%s passed\n' "$method"
+              # fail the requested xctest after emitting normal output
+              if [[ "$method" == "${MOCK_XCODEBUILD_FAIL_METHOD:-}" ]]; then
+                exit 1
+              fi
+            else
+              printf 'build passed\n'
+            fi
+            """
+        )
+    )
+    xcodebuild.chmod(0o700)
+    return binary, state
+
+
+# execute only the semantic lifecycle prefix against fake tools
+def run_semantic_mock(directory, body, **overrides):
+    source = Path(__file__).with_name("probe-widget-semantic-host.sh").read_text()
+    prefix = source.partition('\n"$SCRIPT_DIR/preflight.sh"')[0]
+    binary, state = install_semantic_mock_cli(directory)
+    results = directory / "results"
+    log = directory / "operations.log"
+    runner = directory / "runner.sh"
+    runner.write_text(
+        prefix
+        + "\nmkdir -p \"$RESULTS/cases\" \"$RESULTS/DerivedData\"\n"
+        + ": > \"$RESULTS/cases.tsv\"\n: > \"$RESULTS/semantic-host.log\"\n"
+        + 'DEVICE_TYPE_IDENTIFIER="mock-device"\nRUNTIME_IDENTIFIER="mock-runtime"\n'
+        + body
+        + "\n"
+    )
+    runner.chmod(0o700)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{binary}:{environment['PATH']}",
+            "RESULTS": str(results),
+            "MOCK_LOG": str(log),
+            "MOCK_STATE": str(state),
+        }
+    )
+    environment.update(overrides)
+    result = subprocess.run(
+        ["bash", str(runner)],
+        cwd=directory,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    operations = log.read_text().splitlines() if log.exists() else []
+    return result, operations
 
 
 # encode one genuine one-pixel RGBA PNG without external dependencies
@@ -133,6 +296,93 @@ def evidence(directory, *, listing="0:fahrenheit,1:celsius", count=2,
 
 
 class ConfigurationPhaseTests(unittest.TestCase):
+    # create distinct devices and delete each before creating the next
+    def test_semantic_probe_executes_isolated_case_lifecycles(self):
+        with tempfile.TemporaryDirectory() as root:
+            result, operations = run_semantic_mock(
+                Path(root),
+                'run_case "case-a" "fixture-a" "SELECTOR_A" "testA" "expected-case-a"\n'
+                'run_case "case-b" "fixture-b" "SELECTOR_B" "testB" "expected-case-b"',
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # compare the exact create and delete identities
+        creates = [entry for entry in operations if entry.startswith("create:")]
+        deletes = [entry for entry in operations if entry.startswith("delete:")]
+        self.assertEqual(creates, ["create:owned-1:case-a", "create:owned-2:case-b"])
+        self.assertEqual(deletes, ["delete:owned-1", "delete:owned-2"])
+        self.assertLess(operations.index("delete:owned-1"), operations.index(creates[1]))
+
+    # delete the active owned device when xctest fails
+    def test_semantic_probe_executes_failure_cleanup(self):
+        with tempfile.TemporaryDirectory() as root:
+            result, operations = run_semantic_mock(
+                Path(root),
+                'run_case "case-fail" "fixture" "SELECTOR" "testFail" "expected-case-fail"',
+                MOCK_XCODEBUILD_FAIL_METHOD="testFail",
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("create:owned-1:case-fail", operations)
+        self.assertEqual(operations.count("delete:owned-1"), 1)
+
+    # propagate deletion failure after both normal and exit cleanup attempts
+    def test_semantic_probe_executes_fail_closed_deletion(self):
+        with tempfile.TemporaryDirectory() as root:
+            result, operations = run_semantic_mock(
+                Path(root),
+                'run_case "case-delete" "fixture" "SELECTOR" "testDelete" "expected-case-delete"',
+                MOCK_DELETE_FAIL_ALWAYS="1",
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(operations.count("delete:owned-1"), 2)
+
+    # keep term cancellation nonzero while deleting only the active owned id
+    def test_semantic_probe_executes_nonzero_term_cleanup(self):
+        body = textwrap.dedent(
+            """\
+            ACTIVE_CASE_ID="case-term"
+            SIMULATOR_UDID="owned-term"
+            mkdir -p "$RESULTS/cases/$ACTIVE_CASE_ID"
+            kill -TERM $$
+            """
+        )
+        with tempfile.TemporaryDirectory() as root:
+            result, operations = run_semantic_mock(Path(root), body)
+        self.assertEqual(result.returncode, 143, result.stderr)
+        self.assertEqual(operations.count("delete:owned-term"), 1)
+
+    # require six distinct per-case simulator lifecycles
+    def test_semantic_probe_owns_six_unique_case_simulators(self):
+        source = Path(__file__).with_name("probe-widget-semantic-host.sh").read_text()
+        PROJECT_VERIFIER.verify_semantic_probe_lifecycle(source)
+        duplicate = source.replace(
+            'run_case "10-fall-back"', 'run_case "09-adjusted-standard"', 1
+        )
+        with self.assertRaises(SystemExit):
+            PROJECT_VERIFIER.verify_semantic_probe_lifecycle(duplicate)
+
+    # require exit and signal cleanup after a failed semantic case
+    def test_semantic_probe_cleans_up_failed_cases(self):
+        source = Path(__file__).with_name("probe-widget-semantic-host.sh").read_text()
+        without_trap = source.replace("trap handle_term TERM", "trap - TERM", 1)
+        with self.assertRaises(SystemExit):
+            PROJECT_VERIFIER.verify_semantic_probe_lifecycle(without_trap)
+
+    # reject any return to a borrowed simulator destination
+    def test_semantic_probe_rejects_borrowed_devices(self):
+        source = Path(__file__).with_name("probe-widget-semantic-host.sh").read_text()
+        borrowed = source.replace(
+            "list devicetypes --json", "list devices available --json", 1
+        )
+        with self.assertRaises(SystemExit):
+            PROJECT_VERIFIER.verify_semantic_probe_lifecycle(borrowed)
+
+    # reject cleanup that swallows a simulator deletion failure
+    def test_semantic_probe_rejects_cleanup_contract_regression(self):
+        source = Path(__file__).with_name("probe-widget-semantic-host.sh").read_text()
+        swallowed = source.replace("SIMULATOR_DELETE_FAILED=1", "SIMULATOR_DELETE_FAILED=0")
+        with self.assertRaises(SystemExit):
+            PROJECT_VERIFIER.verify_semantic_probe_lifecycle(swallowed)
+
     # reject target helpers stranded in the unrelated deep-link class
     def test_widget_target_helpers_have_host_class_scope(self):
         header = "final class WeatherDeepLinkUITests: XCTestCase {\n"

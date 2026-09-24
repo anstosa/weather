@@ -67,6 +67,15 @@ Alternatively, after confirming the exact version and source, push an immutable
 tag `android-vVERSION` pointing to the already-validated commit. Do not move or
 reuse published tags. Date-based web release tags do not trigger this workflow.
 
+To publish another internal build with the same explicitly chosen version name,
+use a new immutable tag `android-vVERSION+build.YYYYMMDDTHHMMSSZ`, using the
+current UTC timestamp for the build identity. For example,
+`android-v0.1.0+build.20260924T173000Z` still publishes version name `0.1.0`;
+the suffix distinguishes the source tag, not the app version. The workflow
+generates a fresh numeric version code as usual. Never move the original
+`android-v0.1.0` tag, and wait for the new exact-commit **Check** before pushing
+the new build tag. This tag path also works before the workflow reaches `main`.
+
 The workflow retains Ferry FYI's UTC `yyDDDHHmm` numeric version-code scheme,
 not the caller's Actions run number. Releases are serialized, but this scheme
 has minute precision: do not publish the same UTC minute twice. Existing apps
