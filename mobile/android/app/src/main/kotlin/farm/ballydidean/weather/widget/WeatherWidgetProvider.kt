@@ -284,7 +284,8 @@ object WeatherWidgetRenderer {
         val height = (3 * density).roundToInt().coerceAtLeast(1)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val paint = Paint().apply { color = context.getColor(R.color.widget_divider) }
+        // retain visible hour marks on both light and post-sunset blush
+        val paint = Paint().apply { color = context.getColor(R.color.widget_secondary) }
         val tickHeight = minOf(height.toFloat(), (if (size.height < 76) 2f else 3f) * density)
         val halfWidth = density * 0.5f
         val fraction = WidgetRowGeometry.weatherFraction(presentation)
@@ -315,10 +316,10 @@ object WeatherWidgetRenderer {
         return bitmap
     }
 
-    // tighten text insets and shrink temperatures to give the centered artwork more room
+    // match the top inset and reduce temperatures by thirty percent for larger artwork
     private fun slotView(context: Context, group: WidgetGroup, compact: Boolean, widthDp: Float): RemoteViews {
-        val available = widthDp - if (compact) 6f else 12f
-        val temperatureSize = fittedTextSize(context, group.temperatureLabel, available, if (compact) 16f else 24f,
+        val available = widthDp - if (compact) 3f else 8f
+        val temperatureSize = fittedTextSize(context, group.temperatureLabel, available, if (compact) 11.2f else 16.8f,
             Typeface.create(context.resources.getFont(R.font.google_sans_bold), Typeface.BOLD))
         val layout = if (compact) R.layout.widget_panel_compact else R.layout.widget_panel
         return RemoteViews(context.packageName, layout).apply {
@@ -335,7 +336,7 @@ object WeatherWidgetRenderer {
         }
     }
 
-    // measure at the actual pixel size so tiny-font hinting cannot shrink readable labels
+    // remeasure hinted glyphs at the final size rather than assuming linear scaling
     private fun fittedTextSize(context: Context, text: String, availableDp: Float, preferredDp: Float, font: Typeface): Float {
         // empty unavailable labels need no width adjustment
         if (text.isEmpty()) return preferredDp
@@ -344,7 +345,24 @@ object WeatherWidgetRenderer {
             textSize = preferredDp * density
             typeface = font
         }
-        return preferredDp * minOf(1f, availableDp.coerceAtLeast(1f) * density / measure.measureText(text))
+        // leave two physical pixels for independently rounded panel widths and margins
+        val availablePx = (availableDp * density - 2f).coerceAtLeast(1f)
+        // retain the exact preferred size whenever the complete label already fits
+        if (measure.measureText(text) <= availablePx) return preferredDp
+        var lowerDp = 0f
+        var upperDp = preferredDp
+        // bound the search while testing the actual raster font size at each step
+        repeat(12) {
+            val candidateDp = (lowerDp + upperDp) / 2f
+            measure.textSize = candidateDp * density
+            // keep the lower bound at a measured size that fits without wrapping
+            if (measure.measureText(text) <= availablePx) {
+                lowerDp = candidateDp
+            } else {
+                upperDp = candidateDp
+            }
+        }
+        return lowerDp
     }
 
     // retain readable blue orange and red on both daytime and evening blush
@@ -391,12 +409,12 @@ object WeatherWidgetRenderer {
         }
         val overnight = presentation.overnight
         val label = if (presentation.showBedtime) "Overnight" else ""
-        val available = widthDp - if (compact) 6f else 12f
+        val available = widthDp - if (compact) 3f else 8f
         // preserve the shared left edge while giving the longer label more trailing room
-        val labelWidth = widthDp - if (compact) 6f else 10f
+        val labelWidth = widthDp - if (compact) 3f else 6f
         val labelSize = fittedTextSize(context, label, labelWidth, if (compact) 10f else 13f,
             context.resources.getFont(R.font.google_sans_regular))
-        val temperatureSize = fittedTextSize(context, presentation.message.orEmpty(), available, if (compact) 16f else 24f,
+        val temperatureSize = fittedTextSize(context, presentation.message.orEmpty(), available, if (compact) 11.2f else 16.8f,
             Typeface.create(context.resources.getFont(R.font.google_sans_bold), Typeface.BOLD))
         return RemoteViews(context.packageName, layout).apply {
             setTextViewText(R.id.bedtime_hour, label)

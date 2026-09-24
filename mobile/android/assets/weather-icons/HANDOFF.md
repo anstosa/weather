@@ -25,7 +25,9 @@ densities as needed.
 | Partly cloudy night | `15-partly-cloudy-night` |
 | Partly cloudy night + wind | `16-partly-cloudy-night-wind` |
 
-Every foreground cloud uses exactly the same cool light-gray gradient. Its
+All ten cloud-bearing icons use the exact same foreground cloud path, at the
+same size and position in their 128 × 128 viewBox. Every foreground cloud also
+uses exactly the same cool light-gray gradient. Its
 midtones and lower edge have been deepened for contrast on white, blush, and
 light blue widget surfaces, with no thick outline. Wind and rain colors have
 also been deepened to read cleanly at compact sizes. The only
@@ -33,8 +35,9 @@ secondary clouds are behind `05-cloudy` and `06-cloudy-wind`. Daytime partly clo
 a faceless sun behind its cloud; its night variants have a faceless crescent.
 Clear night has a happy crescent, while clear night with wind has a surprised
 crescent. All expressions sit inside the relevant
-silhouette. Wind compositions use a separately drawn smaller cloud or sun;
-their two wind curls remain open, with a straight line between them. Rain has exactly two or four separate strokes
+silhouette. Wind compositions arrange the sun or moon and wind around the
+fixed cloud; their two wind curls remain open, with a straight line between
+them. Rain has exactly two or four separate strokes
 and falls down-left, or more steeply down-right in windy states. The visible
 tear on `09-heavy-rain` is part of its face and is separate from its four rain
 strokes.

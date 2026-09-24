@@ -56,9 +56,10 @@ Weather illustrations use the supplied colors and artwork without a shadow,
 tint or other effect. Normal and compact artwork fills the largest square that
 fits between the time and temperature, without the former 40dp/20dp caps.
 The illustration stays centered and scales uniformly without cropping.
-Text uses tighter 6dp/3dp horizontal insets and slightly smaller 24dp/16dp bold
-temperatures. Vertical edge insets are 2dp normally and zero in compact rows,
-freeing more illustration space without shrinking text. Shorter widget heights
+The hour's left inset and the temperature's left and bottom insets match the
+unchanged hour top inset: 2dp normally and zero in compact rows. Right insets
+remain unchanged. Bold temperatures are 16.8dp/11.2dp, 30% smaller than the
+previous sizes, so the illustrations fill the freed space. Shorter widget heights
 scale the illustration to the remaining space. The images have no extra padding
 or inset box.
 
@@ -67,6 +68,8 @@ Multi-hour forecast and overnight segments have short, unlabeled top ticks at
 interior hour boundaries; single-hour and Now segments have none. The existing
 segment edges mark each range's start and end. Ticks use actual elapsed hours,
 including overnight daylight-saving transitions, without changing row height.
+Ticks use darker secondary ink so they remain visible above post-sunset blush;
+full-height dividers retain their lighter color.
 Now is white, forecasts are light blush, and overnight is light blue.
 Vertical dividers separate panels. Post-sunset portions of forecast panels are
 darker blush, split proportionally within each time block; Now stays white and
@@ -106,7 +109,7 @@ Wind variants activate at a selected speed of at least 20mph in any member hour.
 Missing input is not presented as sunny or calm. Adjusted values retain their
 original deadlines and raw fallbacks.
 
-The native icon set uses the supplied `weather-icons-handoff (2).zip` artwork without
+The native icon set uses the supplied `weather-icons-handoff (3).zip` artwork without
 redrawing or recoloring it. Unchanged transparent 512px PNGs live in
 `app/src/main/res/drawable-nodpi` under the existing resource names. Native
 ImageViews scale them with `fitCenter`; the widget is not a web wrapper.
@@ -117,9 +120,10 @@ weather illustrations keep integrated vector faces: happy/surprised sun,
 gentle/frowning partly cloudy, neutral/frowning cloud and light rain, and
 crying/angry heavy rain (normal/windy pairs). Closed-eye frowns have no eyebrows.
 Partly cloudy shows only the cloud face, with the sun tucked behind it. Every
-foreground cloud shares the same higher-contrast cool light-gray gradient; only fully cloudy adds a darker rear
-cloud. Wind variants are separately drawn smaller or shorter rather than
-squashed. Light rain has two strokes and heavy rain has four; wind-driven rain
+foreground cloud shares the same path, size, position and higher-contrast
+cool light-gray gradient; only fully cloudy adds a darker rear cloud. Wind and
+celestial details fit around the fixed cloud without squashing it.
+Light rain has two strokes and heavy rain has four; wind-driven rain
 reverses to down-right at a stronger slant, with visibly open wind curls.
 Moon and unavailable icons use the same modern gradient finish.
 Do not tint the icon ImageViews or replace these exports with approximate native

@@ -4,7 +4,7 @@
 
 Active · 2026-09-23 · Android home-screen widget redesign requested by Ansel.
 Evidence: current `WeatherWidgetProvider`, `WidgetSemantics`, native host tests,
-and the user-supplied `weather-icons-handoff (1).zip`. Its approved SVG masters,
+and the user-supplied `weather-icons-handoff (3).zip`. Its approved SVG masters,
 preview and import manifest are retained in `mobile/android/assets/weather-icons/`.
 The supplied artwork supersedes the earlier agent-drawn icon iterations.
 This supersedes the old
@@ -50,17 +50,20 @@ starting at the sunset's exact proportional position inside a forecast block.
 White now `#FFFFFF`, light blush `#F8DEE5`, post-sunset blush `#EAB8C8`, overnight
 blue `#DAEAF5`, ink `#432E3B`, divider `#CCA6B3`. Now always stays white and
 overnight always stays blue. No sunset line.
+Decorative hour ticks use secondary ink `#765568` above the panel background to
+stay legible on post-sunset blush; vertical dividers remain `#CCA6B3`.
 Only the outer silhouette is rounded, with an 8dp radius. No panel margins or
 horizontal dividers. Use bundled Google Sans Regular and Bold (approved instead
-of Product Sans), approximately 13dp time and bold 24dp temperature, with
-10dp labels and 16dp temperatures at the existing 51dp compact minimum height. Centered illustrations
+of Product Sans), approximately 13dp time and bold 16.8dp temperature, with
+10dp labels and 11.2dp temperatures at the existing 51dp compact minimum height. Centered illustrations
 from the approved handoff cover sunny, partly cloudy, cloudy, light/heavy rain,
 high-wind variants, overnight and unavailable states. Use the supplied transparent
 512px PNG exports unchanged in native ImageViews, with SVG masters retained for
 future edits. Preserve their smooth silhouettes, rounded rain strokes, gradients
 and integrated expressions rather than redrawing or recoloring them.
-Wind variants use smaller or shorter
-weather silhouettes, never non-uniform scaling. Light rain has two rain
+All ten cloud-bearing variants share the supplied foreground cloud path, size
+and position. Wind and celestial details fit around that fixed cloud without
+non-uniform scaling. Light rain has two rain
 strokes; heavy rain has four. Normal rain slopes down-left; wind-driven rain
 slopes down-right at a steeper angle away from vertical, clear of the wind lines.
 Rain-and-wind curls have visibly open tips, with a gap from the straight stream
@@ -92,9 +95,11 @@ Target minimum weather-panel width is
 Weather panels have equal widths, capped at 20%; overnight takes the remainder.
 Icons fill the largest square inside the available text gap and panel width,
 without fixed normal or compact size caps. Preserve aspect ratio, full artwork,
-vertical centering, text sizes and the five-panel width rule.
-Use 2dp vertical text-edge insets normally and zero in compact rows to give
-height-constrained illustrations more room without reducing typography.
+vertical centering and the five-panel width rule.
+Match the hour's left inset and the temperature's left and bottom insets to the
+unchanged hour top inset: 2dp normally and zero in compact rows. Preserve the
+existing right insets. Temperatures are 30% smaller than the former 24dp/16dp
+sizes, freeing vertical space that the uncapped illustrations fill.
 Time labels are `Now`, `1pm`, or `Overnight` for the night summary. The single temperature uses
 the block high when mean temperature is above 65°F, the low below 50°F, and the
 mean otherwise, rounded only after selection and unit conversion.

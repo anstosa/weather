@@ -12,13 +12,16 @@ import org.junit.Test
 
 // verify the packaged icon leaves all shape decisions to android
 class LauncherIconInstrumentationTest {
-    // resolve both application and launcher icons through the package manager
+    // resolve both application and launcher branding through the package manager
     @Test
     fun applicationAndLauncherUseSystemMaskedIcons() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val manager = context.packageManager
+        assertEquals("Ballydídean Weather", manager.getApplicationLabel(context.applicationInfo).toString())
         assertTrue(manager.getApplicationIcon(context.packageName) is AdaptiveIconDrawable)
         val launch = checkNotNull(manager.getLaunchIntentForPackage(context.packageName))
+        val launcher = checkNotNull(launch.resolveActivityInfo(manager, 0))
+        assertEquals("Ballydídean Weather", launcher.loadLabel(manager).toString())
         assertTrue(manager.getActivityIcon(launch) is AdaptiveIconDrawable)
         assertTrue(context.getDrawable(R.mipmap.ic_launcher) is AdaptiveIconDrawable)
     }

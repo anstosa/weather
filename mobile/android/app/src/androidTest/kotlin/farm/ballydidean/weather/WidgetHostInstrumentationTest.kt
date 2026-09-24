@@ -269,7 +269,7 @@ class WidgetHostInstrumentationTest {
         assertTrue("clipped descender escaped the glyph oracle", glyphsCrossVerticalBoundary(textView))
     }
 
-    // verify six signed temperatures retain the enlarged artwork in the dense normal row
+    // verify dense typography and visible hour marks across sunset at both heights
     @Test
     fun testDenseSixPanelPortrait() {
         setOrientation(instrumentation, landscape = false)
@@ -321,6 +321,28 @@ class WidgetHostInstrumentationTest {
         assertNoTextClipping(allViews, compact = false)
         assertNoVisibleFooter(allViews, presentation)
         captureView(rendered, "dense-six-${DENSE_WIDTH_DP}x${FixtureHostActivity.PORTRAIT_HEIGHT_DP}-font1_0-light")
+        // cross an interior hour boundary so the fixture contains ticks on both blush surfaces
+        val shaded = presentation.copy(sunset = groups[2].start.plusSeconds(5_400))
+        // prove composed visibility in both normal and compact rows
+        for (heightDp in listOf(FixtureHostActivity.PORTRAIT_HEIGHT_DP, FixtureHostActivity.LANDSCAPE_HEIGHT_DP)) {
+            options.putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+            options.putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
+            val compact = heightDp == FixtureHostActivity.LANDSCAPE_HEIGHT_DP
+            val shadedViews = WeatherWidgetRenderer.render(context, 0, options, shaded).apply(context, container)
+            val shadedHeightPx = (heightDp * density).roundToInt()
+            container.removeAllViews()
+            container.addView(shadedViews, FrameLayout.LayoutParams(widthPx, shadedHeightPx))
+            container.measure(
+                MeasureSpec.makeMeasureSpec(widthPx, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(shadedHeightPx, MeasureSpec.EXACTLY),
+            )
+            container.layout(0, 0, widthPx, shadedHeightPx)
+            assertHourTicks(shadedViews, shaded, compact, context, requireSunsetCoverage = true)
+            val shadedChildren = mutableListOf<View>()
+            collectViews(shadedViews, shadedChildren)
+            assertNoTextClipping(shadedChildren, compact)
+            captureView(shadedViews, "sunset-ticks-${DENSE_WIDTH_DP}x${heightDp}")
+        }
     }
 
     // inspect the inflated remoteviews hierarchy
@@ -507,7 +529,7 @@ class WidgetHostInstrumentationTest {
             assertEquals(slot.width, content.width)
             assertEquals(1f, (iconSpace.layoutParams as LinearLayout.LayoutParams).weight, 0f)
             assertEquals(null, condition.contentDescription)
-            assertArtworkFillsGap(iconSpace, condition, compact, density)
+            assertArtworkFillsGap(iconSpace, condition, temperature, compact, density)
             val conditionBitmap = condition.drawable as? BitmapDrawable
             assertEquals(512, checkNotNull(conditionBitmap).bitmap.width)
             assertEquals(512, conditionBitmap.bitmap.height)
@@ -517,11 +539,11 @@ class WidgetHostInstrumentationTest {
             assertEquals(Typeface.create(resources.getFont(R.font.google_sans_bold), Typeface.BOLD), temperature.typeface)
             assertTrue(temperature.typeface.isBold)
             assertTrue(abs(hour.textSize / density - if (compact) 10f else 13f) < 0.6f)
-            assertTrue(abs(temperature.textSize / density - if (compact) 16f else 24f) < 0.6f)
-            // lock the tightened text edges around the larger illustration
-            assertMargins(hour, if (compact) 3f else 6f, if (compact) 0f else 2f,
+            assertTrue(abs(temperature.textSize / density - if (compact) 11.2f else 16.8f) < 0.6f)
+            // match left and bottom text edges to the unchanged top inset
+            assertMargins(hour, if (compact) 0f else 2f, if (compact) 0f else 2f,
                 if (compact) 3f else 6f, 0f, density)
-            assertMargins(temperature, if (compact) 3f else 6f, 0f,
+            assertMargins(temperature, if (compact) 0f else 2f, 0f,
                 if (compact) 3f else 6f, if (compact) 0f else 2f, density)
             assertCentered(iconSpace, condition, density)
             assertCenteredInTextGap(hour, temperature, condition)
@@ -597,7 +619,7 @@ class WidgetHostInstrumentationTest {
     }
 
     // prove the bitmap itself grows uniformly rather than only widening its empty container
-    private fun assertArtworkFillsGap(space: View, icon: ImageView, compact: Boolean, density: Float) {
+    private fun assertArtworkFillsGap(space: View, icon: ImageView, temperature: TextView, compact: Boolean, density: Float) {
         assertEquals(space.width, icon.width)
         assertEquals(space.height, icon.height)
         assertEquals(0, icon.paddingLeft)
@@ -610,12 +632,22 @@ class WidgetHostInstrumentationTest {
         val available = minOf(space.width, space.height).toFloat()
         assertEquals(available, artwork.width(), 1f)
         assertEquals(available, artwork.height(), 1f)
-        val priorCapDp = if (compact) 20f else 40f
-        val reclaimedVerticalDp = if (compact) 2f else 4f
-        val priorArtworkSize = minOf(space.width.toFloat(), space.height - reclaimedVerticalDp * density, priorCapDp * density)
+        // measure the former temperature to prove actual growth from the reclaimed text height
+        val priorTemperature = TextView(icon.context).apply {
+            typeface = temperature.typeface
+            includeFontPadding = false
+            maxLines = 1
+            text = temperature.text
+            setTextSize(TypedValue.COMPLEX_UNIT_DIP, if (compact) 16f else 24f)
+            measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED)
+        }
+        val reclaimedHeight = priorTemperature.measuredHeight - temperature.height
+        assertTrue("temperature reduction did not free icon height", reclaimedHeight > 0)
+        val priorArtworkSize = minOf(space.width, space.height - reclaimedHeight).toFloat()
+        // narrow overnight panels can fill their width before using all reclaimed height
         assertTrue(
             "artwork did not grow: ${priorArtworkSize / density}dp to ${artwork.width() / density}dp",
-            artwork.width() - priorArtworkSize >= 1.5f * density,
+            artwork.width() - priorArtworkSize >= density,
         )
         assertTrue(artwork.left >= -1f && artwork.top >= -1f)
         assertTrue(artwork.right <= icon.width + 1f && artwork.bottom <= icon.height + 1f)
@@ -672,17 +704,17 @@ class WidgetHostInstrumentationTest {
         assertEquals(if (expectedBedtime) View.VISIBLE else View.GONE, icon.visibility)
         val density = instrumentation.targetContext.resources.displayMetrics.density
         // retain the dedicated trailing room on the overnight label
-        assertMargins(hour, if (compact) 3f else 6f, if (compact) 0f else 2f,
+        assertMargins(hour, if (compact) 0f else 2f, if (compact) 0f else 2f,
             if (compact) 3f else 4f, 0f, density)
-        assertMargins(message, if (compact) 3f else 6f, 0f,
+        assertMargins(message, if (compact) 0f else 2f, 0f,
             if (compact) 3f else 6f, if (compact) 0f else 2f, density)
-        assertTrue(abs(message.textSize / density - if (compact) 16f else 24f) < 0.6f)
+        assertTrue(abs(message.textSize / density - if (compact) 11.2f else 16.8f) < 0.6f)
         // center the summary icon between the label and bold low even in compact rows
         if (expectedBedtime) {
             val space = checkNotNull(root.findViewById<View>(R.id.bedtime_icon_space))
             assertCentered(space, icon, instrumentation.targetContext.resources.displayMetrics.density)
             assertCenteredInTextGap(hour, message, icon)
-            assertArtworkFillsGap(space, icon, compact, density)
+            assertArtworkFillsGap(space, icon, message, compact, density)
             val iconBitmap = icon.drawable as? BitmapDrawable
             assertEquals(512, checkNotNull(iconBitmap).bitmap.width)
             assertEquals(512, iconBitmap.bitmap.height)
@@ -849,6 +881,7 @@ class WidgetHostInstrumentationTest {
         presentation: farm.ballydidean.weather.widget.WidgetPresentation,
         compact: Boolean,
         context: Context,
+        requireSunsetCoverage: Boolean = false,
     ) {
         val density = context.resources.displayMetrics.density
         val root = checkNotNull(hostView.findViewById<ViewGroup>(android.R.id.background))
@@ -866,9 +899,9 @@ class WidgetHostInstrumentationTest {
         bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
         val visibleColumns = BooleanArray(bitmap.width)
         val maximumColumnAlpha = IntArray(bitmap.width)
-        val expectedInk = context.getColor(R.color.widget_divider)
+        val expectedInk = Color.rgb(118, 85, 104)
         var maximumVisibleRow = -1
-        // accept antialiased divider ink inside the tiny transparent strip
+        // accept antialiased secondary ink inside the tiny transparent strip
         for (index in pixels.indices) {
             val color = pixels[index]
             // record only painted tick pixels
@@ -902,6 +935,29 @@ class WidgetHostInstrumentationTest {
             assertTrue(maximumVisibleRow < paintedHeightLimit)
             // reject accidental full-height dividers in the dedicated overlay
             assertTrue(maximumVisibleRow < root.height - 1)
+        }
+        // inspect the real composition rather than only the transparent source bitmap
+        if (requireSunsetCoverage) {
+            val panels = checkNotNull(root.findViewById<ImageView>(R.id.widget_panels))
+            val panelBitmap = checkNotNull((panels.drawable as? BitmapDrawable)?.bitmap)
+            val composed = Bitmap.createBitmap(root.width, bitmap.height, Bitmap.Config.ARGB_8888)
+            instrumentation.runOnMainSync { root.draw(Canvas(composed)) }
+            var daytimeTicks = 0
+            var sunsetTicks = 0
+            val sampleY = minOf(1, bitmap.height - 1)
+            // require each fully painted tick to remain visible over its actual panel background
+            for (run in runs) {
+                val x = run.maxBy { Color.alpha(bitmap.getPixel(it, sampleY)) }
+                val background = panelBitmap.getPixel(x, 0)
+                assertEquals("hour tick covered at x=$x", expectedInk, composed.getPixel(x, sampleY))
+                // prove the synthetic fixture exercises both sides of sunset
+                when (background) {
+                    Color.rgb(248, 222, 229) -> daytimeTicks += 1
+                    Color.rgb(234, 184, 200) -> sunsetTicks += 1
+                }
+            }
+            assertTrue("fixture has no daytime ticks", daytimeTicks > 0)
+            assertTrue("fixture has no post-sunset ticks", sunsetTicks > 0)
         }
     }
 
@@ -986,6 +1042,8 @@ class WidgetHostInstrumentationTest {
             val layout = textView.layout
             // reject incomplete line layout
             if (layout != null) {
+                assertEquals("wrapped text: ${textView.text}", 1, layout.lineCount)
+                // inspect the full line without hiding clipped trailing glyphs
                 for (line in 0 until layout.lineCount) {
                     assertEquals("ellipsized: ${textView.text}", 0, layout.getEllipsisCount(line))
                     val availableWidth = textView.width - textView.paddingLeft - textView.paddingRight
@@ -1000,11 +1058,11 @@ class WidgetHostInstrumentationTest {
                 !glyphsCrossVerticalBoundary(textView),
             )
             val minimumDp = when (textView.id) {
-                R.id.slot_temperature -> if (compact) 16f else 24f
+                R.id.slot_temperature -> if (compact) 11.2f else 16.8f
                 R.id.slot_hour -> if (compact) 10f else 13f
                 // allow the long overnight label to fit one fifth panel
                 R.id.bedtime_hour -> 10f
-                R.id.bedtime_message -> if (compact) 16f else 24f
+                R.id.bedtime_message -> if (compact) 11.2f else 16.8f
                 else -> 10f
             }
             assertTrue(

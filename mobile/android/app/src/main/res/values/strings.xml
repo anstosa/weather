@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Weather</string>
+    <string name="app_name">Ballydídean Weather</string>
     <string name="hosted_error">Weather is unavailable</string>
     <string name="hosted_retry">Retry</string>
     <string name="canonical_weather_origin" translatable="false">https://weather.ballydidean.farm</string>

@@ -1,6 +1,6 @@
 {
-  "source": "user-supplied weather-icons-handoff (2).zip",
-  "archive_sha256": "8e26d5d85677c6246f73140b3bceabc4c388c3e9825e360e3e75092f37163908",
+  "source": "user-supplied weather-icons-handoff (3).zip",
+  "archive_sha256": "8c6121a363c5367a54e6ef192e13ecc215eea27480eb194e477d01e437933aab",
   "rendering": "unchanged 512px PNG in drawable-nodpi; native ImageView fitCenter without effects",
   "icons": [
     {
@@ -18,50 +18,50 @@
     {
       "asset": "03-partly-cloudy",
       "resource": "ic_weather_partly",
-      "png_sha256": "801ebb435faadb23cdcc6dd6c8e530ef7959c2ec71a08915235548e2a53f1776",
-      "svg_sha256": "1e71c885a93614c0f25f3aec2346fd4aa068a19e774f20c93f07a1540dad8246"
+      "png_sha256": "5946ce630c9f320b0f6ba1f1c997837188eabfec5af757387f92e0d5ba2cd515",
+      "svg_sha256": "c4e7ee46bf7a0ccc5c7599e7763f8abca0959926f15782b3744e5a5b22676c35"
     },
     {
       "asset": "04-partly-cloudy-wind",
       "resource": "ic_weather_partly_wind",
-      "png_sha256": "c764156fb9185a6ad42db84a2e89584849c58a1cc5ccad0c3b1105ae3c77a9ff",
-      "svg_sha256": "639b7ae22c22b8bc6c2dc6c488fe384a2ae0d2881a9b0ede16c9d74fadfcbc1e"
+      "png_sha256": "ccb336c836bf08820ed52930f427ce99ea2325b2481f24e11f5b5935995bf1e6",
+      "svg_sha256": "a96d82eb82f6592ba06aceb2e015307b53997e9f9cc9ee45bbe4321ce8d86454"
     },
     {
       "asset": "05-cloudy",
       "resource": "ic_weather_cloudy",
-      "png_sha256": "b2f145f79fbce3b8e5dbcdfa900849f5ac14f315ee675cc12a6ff3bd1572863c",
-      "svg_sha256": "2506ec126175ceb8a4894a32984e9fc9a6b87d0ceb5f26881e79475a77e8a79e"
+      "png_sha256": "53e99af3e7f33d506ed0c094a8ba2b976c8724604d46f0305b2e55b5a61ab438",
+      "svg_sha256": "725de5ce91add806d911ca90a9a934fadff965ecafdc2bd35ff058d503737de0"
     },
     {
       "asset": "06-cloudy-wind",
       "resource": "ic_weather_cloudy_wind",
-      "png_sha256": "81432c9918c1b552d456e7a6648ba7597cf5095f71fb3854e33c8733b6be4ed3",
-      "svg_sha256": "66a9619e673a0a809d51126ceaf67528c58cdf7249da199da3709cedc58229c8"
+      "png_sha256": "b46f356e6ca019322b67ef793d51356a4e5b409f15bd5c5cc42a9af59a7cfca7",
+      "svg_sha256": "7a248cf64d016dbc5c73bbc95da0bc7c20456985eb644adcfa2e97ff234f0c90"
     },
     {
       "asset": "07-light-rain",
       "resource": "ic_weather_light_rain",
-      "png_sha256": "7bab0fd0b03e80af0b312ca06e8a991bda6fcf17027a550cf652b551c6562dc7",
-      "svg_sha256": "7a9928bddb2a0387846cd071e428ba88619229620097e3231f9bb17a687a6ab4"
+      "png_sha256": "f4bd96cbef6ee8729daaab6204709d6d91901c45f495be8a976a7b90042feb64",
+      "svg_sha256": "bb2b518c9f6c628877c2784983bc70faf87e0d51b902a4652a731a0f5c74b3e6"
     },
     {
       "asset": "08-light-rain-wind",
       "resource": "ic_weather_light_rain_wind",
-      "png_sha256": "aa1082eb343daefb1d6efb099942e5532a29cc91838d2fa21935427abd40e886",
-      "svg_sha256": "010b7c1875c4b40294304cd2fafda741629e4a81478a7397e93552355628c38a"
+      "png_sha256": "ff1c108dacb5538c1a441eebcf2a681abc261fc838967083d10bab45fc42f156",
+      "svg_sha256": "060347a86898367f88f6738f2137a4b08ee042c991d6693a856111152cb9010a"
     },
     {
       "asset": "09-heavy-rain",
       "resource": "ic_weather_heavy_rain",
-      "png_sha256": "18a1eb6a2338517c7fd21898c6735435e1871fc8bb8f9072565b2aebb5fc3b84",
-      "svg_sha256": "f30d590dd6cd8f9063196dda88d533c79090af72efbfc86608081a88b221b097"
+      "png_sha256": "f3e8316669011781fa1ce1b077093be29f8f060e9290c0c087e0f0d194ca898d",
+      "svg_sha256": "6c25673a761cfb6acf096d2bebe684253acebf5812eb2ecbae4ef6d6a24a0621"
     },
     {
       "asset": "10-heavy-rain-wind",
       "resource": "ic_weather_heavy_rain_wind",
-      "png_sha256": "bbad60071d5e8e04e987293ac1dacfdee57b0322b610cc67f23b51f3c9ed2c2c",
-      "svg_sha256": "381070d394f026a506b3f7c9394e69965d0c155ffb1980e73f53148240782f90"
+      "png_sha256": "1369f6b52bae229d73bd4a2397418953f23b19b63b1ce83dae120d171fc35aa6",
+      "svg_sha256": "83239abf17f13e7fa04d1e545e89146fd08e25293b5659cf34f9e06398b2e937"
     },
     {
       "asset": "11-bedtime",
@@ -90,14 +90,14 @@
     {
       "asset": "15-partly-cloudy-night",
       "resource": "ic_weather_partly_night",
-      "png_sha256": "d7a76d97fe2ff78b527a69245bd601e6d2817e889cffc10909267ec30ae08e6a",
-      "svg_sha256": "a50cd55c2d3f972fd38cffbcca7310a9db089cbf8b6c0a94008b3e679dce0052"
+      "png_sha256": "b0f2409fb77bb3508a5385a782992a8ee6c972d9592b18b0e24db5035762c15d",
+      "svg_sha256": "fd22b6a8f1a45b83d9655623ce430b4731d84ac263d2e613309d4be2fff1c6a4"
     },
     {
       "asset": "16-partly-cloudy-night-wind",
       "resource": "ic_weather_partly_night_wind",
-      "png_sha256": "963a627d916fa70b872bd13ade02fadaffc2c0bf9083c75fcd5ebf269152ac94",
-      "svg_sha256": "c1aa525396fbd69881804964665f209a6198528e9a98e96f3f6d6071e33e3661"
+      "png_sha256": "d29a2aa1b572f35765f6e27215eada869c90075e293bf941c52b92b516cfe504",
+      "svg_sha256": "0e6d2da79ef636c78f41e91666cbca49dd5a855ef89926e26d62f353f46c6976"
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Approved weather icon artwork
 
-Source: Ansel's supplied `weather-icons-handoff (2).zip`. These higher-contrast
+Source: Ansel's supplied `weather-icons-handoff (3).zip`. These fixed-cloud-geometry
 assets supersede the prior handoff. Preserve the supplied appearance rather than
 reinterpreting its gradients, faces, spacing or wind geometry.
 
@@ -13,8 +13,10 @@ reinterpreting its gradients, faces, spacing or wind geometry.
 - `../../app/src/androidTest/assets/widget-icons-reference/`: original PNG test references
 
 The PNGs remain native Android image resources. Density-neutral packaging and
-the `fitCenter` ImageViews retain the exact artwork at up to 40dp and compact
-20dp sizes, scaling down only when the label-to-temperature gap is shorter.
+the `fitCenter` ImageViews retain the exact artwork while filling the largest
+square available between the time and temperature, without fixed size caps.
+All ten cloud-bearing icons share the supplied foreground cloud path, size and
+position; wind and celestial details are arranged around that fixed cloud.
 Tighter text insets and slightly smaller temperatures prioritize the icons
 without adding an SVG library, effects or changing the single-row layout. The
 bedtime artwork remains as a reference asset even though weather rendering no
