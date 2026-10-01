@@ -1732,7 +1732,7 @@ function parseForecastAdjustmentDecision(
     : parseForecastAdjustmentFailRawDecision(decision);
 }
 
-// accept and canonicalize the compatible shared-switch envelope
+// accept the three independent adjustment controls
 function parseForecastAdjustmentSettings(value: unknown): ForecastAdjustmentSettings | null {
   const settings = forecastAdjustmentObject(value);
 
@@ -1748,16 +1748,15 @@ function parseForecastAdjustmentSettings(value: unknown): ForecastAdjustmentSett
     return null;
   }
 
-  const enabled = settings.rain;
   return {
     version: 1,
-    temperature: enabled,
-    wind: enabled,
-    rain: enabled,
+    temperature: settings.temperature,
+    wind: settings.wind,
+    rain: settings.rain,
   };
 }
 
-// map compatible adjustments onto the shared admin control
+// map adjusted metrics onto their admin controls
 function forecastAdjustmentMetricEnabled(
   metric: ForecastAdjustmentMetric,
   settings: ForecastAdjustmentSettings | null,
@@ -2533,7 +2532,7 @@ export class WeatherDashboardController {
     }
   }
 
-  // persist the shared forecast switch in its v1 envelope
+  // persist the independent forecast switches
   async saveForecastAdjustmentSettings(value: ForecastAdjustmentSettings): Promise<void> {
     // reject non-admin or concurrent updates
     if (!this.#isAdmin || this.#state.adminAdjustmentSettingsSaving) {
@@ -7079,7 +7078,7 @@ function propertySensorMarkerOffsets(
   return offsets;
 }
 
-// render the shared persisted forecast control
+// render three persisted forecast controls
 function renderForecastAdjustmentAdmin(state: DashboardState): string {
   const settings = state.forecastAdjustmentSettings ?? null;
   const disabled = settings === null || state.adminAdjustmentSettingsSaving;
@@ -7090,9 +7089,11 @@ function renderForecastAdjustmentAdmin(state: DashboardState): string {
       <div class="section-heading">
         <div><p class="eyebrow">Administration</p><h2 id="forecast-adjustment-admin-heading">Forecast adjustments</h2></div>
       </div>
-      <p class="property-admin-intro">Turn rain, temperature, and wind forecast adjustments on or off together. Visitors can still switch between adjusted and raw values.</p>
+      <p class="property-admin-intro">Choose which adjustments are available in the forecast. Visitors can still switch between adjusted and raw values.</p>
       <form data-admin-forecast-adjustments>
-        <label><input type="checkbox" name="enabled"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain, temperature, and wind</span></label>
+        <label><input type="checkbox" name="temperature"${settings?.temperature ? " checked" : ""}${disabled ? " disabled" : ""}><span>Temperature</span></label>
+        <label><input type="checkbox" name="wind"${settings?.wind ? " checked" : ""}${disabled ? " disabled" : ""}><span>Wind</span></label>
+        <label><input type="checkbox" name="rain"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain</span></label>
         <div class="forecast-adjustment-admin-actions">
           <button type="submit"${disabled ? " disabled" : ""}>${state.adminAdjustmentSettingsSaving ? "Saving…" : "Save adjustments"}</button>
           <span role="status" aria-live="polite">${message === null ? "" : escapeHtml(message)}</span>
@@ -8787,16 +8788,15 @@ function bindForecastAdjustmentAdmin(
     return;
   }
 
-  // submit the shared switch in the compatible v1 envelope
+  // submit one complete set of independent switches
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const data = new FormData(form);
-    const enabled = data.has("enabled");
     void controller.saveForecastAdjustmentSettings({
       version: 1,
-      temperature: enabled,
-      wind: enabled,
-      rain: enabled,
+      temperature: data.has("temperature"),
+      wind: data.has("wind"),
+      rain: data.has("rain"),
     });
   });
 }

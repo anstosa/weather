@@ -3,7 +3,8 @@
 ## October 1, 2026 permanent serving policy
 
 The operator requested that the existing temperature and wind adjustments no
-longer expire and that the rain administrator switch control all three models.
+longer expire. The temporary shared rain administrator switch has since been
+replaced by three independent temperature, wind, and rain checkboxes.
 New content-addressed permanent authorizations select a fixed cross-month
 temperature model and the unchanged wind candidate/report. The temperature
 coefficient vectors and learned strengths are byte-for-byte equal to the
@@ -27,13 +28,13 @@ bands. Replay digest:
 This reuses development data, establishes a three-month transfer analogue,
 and does not prove perpetual skill or replace later as-issued monitoring.
 
-The shared admin switch is a serving gate. Turning it off returns raw values
-for rain, temperature, and wind. Turning it on does not bypass missing or stale
+Each admin switch is a serving gate for its own model. Turning it off returns
+raw values for that metric alone. Turning it on does not bypass missing or stale
 source data, model identity checks, correction bounds, runtime verification, or
 raw fallback. A rain decision outside its operational window does not shut off
 eligible temperature or wind decisions. Independent emergency kill switches
 remain a separate fail-raw control for temperature and wind. Release validation
-must prove both shared off/on behavior and each emergency kill switch before
+must prove all eight independent on/off combinations and each emergency kill switch before
 the immutable image is deployed and verified on Blueberry.
 
 ## September 8, 2026 reviewed release 13 receipt

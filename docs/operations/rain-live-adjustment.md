@@ -1,11 +1,12 @@
-# Rain adjustment and shared administration
+# Rain adjustment and independent administration
 
-## October 1, 2026 control change
+## October 1, 2026 independent control restoration
 
-One persistent administrator switch now governs rain, temperature, and wind
-adjustments together. Turning it off removes all three corrections from public
-forecast responses. Turning it on permits each correction only when that
-model's own source, integrity, and inference checks pass. A rain hour falling
+Three persistent administrator checkboxes independently gate rain, temperature,
+and wind adjustments. Turning one off removes only that model's correction
+from public forecast responses. Turning one on permits its correction only
+when that model's own source, integrity, and inference checks pass. Turning
+all three off hides the public Raw/Adjusted switch. A rain hour falling
 back to raw does not disable an otherwise eligible temperature or wind hour.
 The independent temperature and wind emergency kill switches remain available.
 
@@ -16,9 +17,8 @@ qualifies the research models or bypasses raw fallback. Rain's adjustment
 model has no authorization expiry; its separate prospective source-capture
 policy still ends on October 8, 2027 and retains finite provider/storage
 budgets. That collection policy is not made permanent by this model release.
-The prior
-independent-checkbox and fourteen-day policies below describe historical
-releases, not the current control policy.
+The fourteen-day policies below describe historical releases, not the current
+serving duration. The temporary shared-checkbox policy has been superseded.
 
 ## September 14 authorized live use (historical)
 
@@ -77,11 +77,11 @@ temperature and wind authorization expiry.
 ## Validation and rollout
 
 Run targeted rain worker/API/native parity tests, PostgreSQL projection/ACL
-integration, admin authentication/persistence/shared-switch tests,
+integration, admin authentication/persistence/independent-switch tests,
 the full workspace check, browser verification and deployment integration.
 Use the documented immutable Weather release process and the version-eleven
 control-plane handoff; retain published prior migrations and release files.
-Verify actual adjusted rain records, shared-switch persistence,
+Verify actual adjusted rain records, independent-switch persistence,
 all-off toggle removal and the absence of experimental copy after deployment.
 
 The live pages are [forecast](https://weather.ballydidean.farm/forecast) and

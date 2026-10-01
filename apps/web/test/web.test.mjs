@@ -1005,8 +1005,8 @@ test("inactive and invalid adjustment metadata remain usable raw", () => {
   assert.equal(forecastMetricValue(missing.data[0], "temperatureC"), raw.metrics.temperatureC);
 });
 
-// keep legacy mixed payloads aligned with the shared rain switch
-test("rain setting governs temperature wind and rain adjusted values together", () => {
+// keep each adjusted metric aligned with its own persisted switch
+test("temperature wind and rain settings gate their own adjusted values", () => {
   const raw = {
     ...forecastRecord,
     metadata: {
@@ -1015,7 +1015,7 @@ test("rain setting governs temperature wind and rain adjusted values together", 
     },
   };
 
-  // exercise every legacy three-bit payload against the rain value
+  // exercise every independent three-bit setting
   for (let bits = 0; bits < 8; bits += 1) {
     const settings = {
       version: 1,
@@ -1023,7 +1023,6 @@ test("rain setting governs temperature wind and rain adjusted values together", 
       wind: Boolean(bits & 2),
       rain: Boolean(bits & 4),
     };
-    const enabled = settings.rain;
     const parsed = parseForecastRecordsResponse({
       adjustmentSettings: settings,
       adjustmentRuntime: windCanaryRuntime(),
@@ -1046,21 +1045,16 @@ test("rain setting governs temperature wind and rain adjusted values together", 
       units: { ...DEFAULT_UNIT_PREFERENCES, precipitation: "millimeters" },
     };
     const html = renderWeatherDashboard(state, "forecast");
-    assert.deepEqual(parsed.adjustmentSettings, {
-      version: 1,
-      temperature: enabled,
-      wind: enabled,
-      rain: enabled,
-    });
-    assert.equal(forecastMetricValue(row, "temperatureC"), enabled ? 15 : raw.metrics.temperatureC);
-    assert.equal(forecastMetricValue(row, "windSpeedMps"), enabled ? raw.metrics.windSpeedMps + 0.4 : raw.metrics.windSpeedMps);
-    assert.equal(forecastMetricValue(row, "precipitationMm"), enabled ? 2.5 : raw.metrics.precipitationMm);
-    assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour"), enabled ? 2.5 : raw.metrics.precipitationRateMmPerHour);
+    assert.deepEqual(parsed.adjustmentSettings, settings);
+    assert.equal(forecastMetricValue(row, "temperatureC"), settings.temperature ? 15 : raw.metrics.temperatureC);
+    assert.equal(forecastMetricValue(row, "windSpeedMps"), settings.wind ? raw.metrics.windSpeedMps + 0.4 : raw.metrics.windSpeedMps);
+    assert.equal(forecastMetricValue(row, "precipitationMm"), settings.rain ? 2.5 : raw.metrics.precipitationMm);
+    assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour"), settings.rain ? 2.5 : raw.metrics.precipitationRateMmPerHour);
     assert.equal(forecastMetricValue(row, "precipitationMm", false), raw.metrics.precipitationMm);
     assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour", false), raw.metrics.precipitationRateMmPerHour);
-    assert.equal(html.includes("data-forecast-adjustment-toggle"), enabled);
+    assert.equal(html.includes("data-forecast-adjustment-toggle"), bits !== 0);
     assert.doesNotMatch(html, /experimental/i);
-    assert.equal(html.includes("2.5 mm"), enabled);
+    assert.equal(html.includes("2.5 mm"), settings.rain);
   }
 });
 
@@ -3740,7 +3734,7 @@ test("homepage viewer context retries a failed soil layout without false placeme
   assert.doesNotMatch(recovered, /Soil moisture sensor positions are unavailable\./u);
 });
 
-test("admin saves one shared adjustment switch and verifies readback", async () => {
+test("admin saves independent adjustment switches and verifies readback", async () => {
   let persisted = { version: 1, temperature: true, wind: true, rain: false };
   let staleReadback = false;
   let rejectWrite = false;
@@ -3784,16 +3778,18 @@ test("admin saves one shared adjustment switch and verifies readback", async () 
 
   const controller = new WeatherDashboardController({ fetcher, isAdmin: true, view: "admin" });
   await controller.initialize();
-  const disabled = { version: 1, temperature: false, wind: false, rain: false };
-  assert.deepEqual(controller.state.forecastAdjustmentSettings, disabled);
+  const initial = { version: 1, temperature: true, wind: true, rain: false };
+  assert.deepEqual(controller.state.forecastAdjustmentSettings, initial);
   const initialHtml = renderWeatherDashboard(controller.state, "admin", true);
   assert.match(initialHtml, /data-admin-forecast-adjustments/u);
-  assert.match(initialHtml, /name="enabled"/u);
-  assert.doesNotMatch(initialHtml, /name="enabled" checked/u);
-  assert.match(initialHtml, /Rain, temperature, and wind/u);
-  assert.doesNotMatch(initialHtml, /name="temperature"|name="wind"|name="rain"/u);
+  assert.match(initialHtml, /name="temperature"/u);
+  assert.match(initialHtml, /name="wind"/u);
+  assert.match(initialHtml, /name="rain"/u);
+  assert.match(initialHtml, /name="temperature" checked/u);
+  assert.match(initialHtml, /name="wind" checked/u);
+  assert.doesNotMatch(initialHtml, /name="rain" checked/u);
 
-  const enabled = { version: 1, temperature: true, wind: true, rain: true };
+  const enabled = { version: 1, temperature: false, wind: false, rain: true };
   await controller.saveForecastAdjustmentSettings({
     version: 1, temperature: false, wind: false, rain: true,
   });
@@ -3803,7 +3799,8 @@ test("admin saves one shared adjustment switch and verifies readback", async () 
   assert.equal(writes[0].method, "PUT");
   assert.deepEqual(JSON.parse(writes[0].body), enabled);
   const savedHtml = renderWeatherDashboard(controller.state, "admin", true);
-  assert.match(savedHtml, /name="enabled" checked/u);
+  assert.match(savedHtml, /name="rain" checked/u);
+  assert.doesNotMatch(savedHtml, /name="temperature" checked|name="wind" checked/u);
 
   staleReadback = true;
   await controller.saveForecastAdjustmentSettings(enabled);
@@ -3813,7 +3810,7 @@ test("admin saves one shared adjustment switch and verifies readback", async () 
 
   staleReadback = false;
   rejectWrite = true;
-  await controller.saveForecastAdjustmentSettings(disabled);
+  await controller.saveForecastAdjustmentSettings({ version: 1, temperature: false, wind: false, rain: false });
   assert.deepEqual(controller.state.forecastAdjustmentSettings, enabled);
   assert.match(controller.state.adminAdjustmentSettingsMessage, /status 403/u);
 });
