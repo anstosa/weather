@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  applyEcmwfTemperatureMosRuntime,
   applyForecastAdjustmentTemperatureCanary,
   canonicalJsonBytes,
   canonicalObjectSha256,
@@ -325,6 +326,72 @@ test("permanent temperature model applies after September without expiry", async
       now: () => "2100-01-01T00:00:00.000Z",
     }).load()).state,
     "active",
+  );
+});
+
+// bind the frozen fit to causal training and serving boundaries
+test("permanent temperature bundles reject rehashed causal boundary violations", () => {
+  const original = createPermanentBundle();
+  const boundary = structuredClone(original);
+  boundary.model.effectiveFrom = boundary.model.trainingCutoffUtc;
+  boundary.bundleSha256 = canonicalObjectSha256(boundary, "bundleSha256");
+  assert.equal(
+    Date.parse(boundary.model.latestTrainingValidAt) + 7 * 3_600_000,
+    Date.parse(boundary.model.trainingCutoffUtc),
+  );
+  assert.doesNotThrow(() => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(boundary));
+
+  // reject either side of the causal fit by one millisecond
+  for (const overrides of [
+    { latestTrainingValidAt: "2026-08-25T00:00:00.001Z" },
+    { effectiveFrom: "2026-08-25T06:59:59.999Z" },
+  ]) {
+    const bundle = structuredClone(original);
+    Object.assign(bundle.model, overrides);
+    bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+    assert.throws(
+      () => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle),
+      /permanent temperature training boundary is invalid/u,
+    );
+  }
+});
+
+// preserve raw independently of bundle validation at numerical inference
+test("permanent temperature inference rejects future training and pre-effective forecasts", () => {
+  const original = createPermanentBundle();
+  const source = createSource();
+  const forecast = { ...source, cohort: original.model.cohort, key: "causal-boundary" };
+  const model = { ...original.model, effectiveFrom: forecast.validAt };
+  const recentErrorState = createState(false);
+  assert.equal(applyEcmwfTemperatureMosRuntime({ forecast, model, recentErrorState }).applied, true);
+  const cases = [
+    [{ latestTrainingValidAt: "2026-08-25T00:00:00.001Z" }, "invalid_model"],
+    [{ effectiveFrom: "2026-08-25T06:59:59.999Z" }, "invalid_model"],
+    [{ effectiveFrom: "2026-09-08T07:00:00.001Z" }, "model_not_yet_available"],
+  ];
+
+  // observe exact fail-raw reasons at each one-millisecond violation
+  for (const [overrides, reason] of cases) {
+    const result = applyEcmwfTemperatureMosRuntime({
+      forecast,
+      model: { ...model, ...overrides },
+      recentErrorState,
+    });
+    assert.equal(result.applied, false);
+    assert.equal(result.reason, reason);
+    assert.equal(result.predictionTemperatureC, forecast.rawTemperatureC);
+  }
+});
+
+// reject a validly hashed receipt issued after activation
+test("permanent temperature authorization cannot precede its operator approval", () => {
+  const bundle = structuredClone(createPermanentBundle());
+  bundle.authorization.authorizedAt = new Date(Date.parse(bundle.authorization.activatedAt) + 1).toISOString();
+  bundle.authorization.authorizationSha256 = canonicalObjectSha256(bundle.authorization, "authorizationSha256");
+  bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+  assert.throws(
+    () => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle),
+    /permanent temperature authorization is invalid/u,
   );
 });
 

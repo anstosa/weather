@@ -870,22 +870,6 @@ test("temperature canary overrides only adjusted temperature with truthful prove
     18.2,
   );
   assert.equal(malformed.data[0].adjustment.state, "active");
-
-  const permanent = parseForecastRecordsResponse({
-    adjustmentRuntime: adjustmentRuntime(),
-    data: [{
-      ...raw,
-      adjustment: activeAdjustment(raw),
-      temperatureAdjustment: temperatureCanaryDecision(raw),
-    }],
-    site,
-    temperatureAdjustmentRuntime: {
-      ...temperatureCanaryRuntime(),
-      expiresAt: null,
-    },
-  });
-  assert.equal(permanent.temperatureAdjustmentRuntime.state, "active");
-  assert.equal(forecastMetricValue(permanent.data[0], "temperatureC"), 15);
 });
 
 // retain canary safeguards behind the concise adjustment label
@@ -928,17 +912,6 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
   assert.match(regionalHtml, /forecast-adjustment-toggle-mode">Adjusted</u);
   assert.doesNotMatch(regionalHtml, /data-forecast-adjustment-status|Canary expires|Wind canary turned off/u);
 
-  const permanent = parseForecastRecordsResponse({
-    adjustmentRuntime: { ...windCanaryRuntime(), expiresAt: null },
-    data: [{ ...raw, adjustment: windCanaryAdjustment(raw) }],
-    site,
-  });
-  assert.equal(permanent.adjustmentRuntime.state, "active");
-  assert.notEqual(
-    forecastMetricValue(permanent.data[0], "windSpeedMps"),
-    raw.metrics.windSpeedMps,
-  );
-
   const invalid = parseForecastRecordsResponse({
     adjustmentRuntime: windCanaryRuntime(),
     data: [{ ...raw, adjustment: activeAdjustment(raw) }],
@@ -947,6 +920,59 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
   assert.equal(invalid.adjustmentRuntime.state, "disabled");
   assert.equal(invalid.adjustmentRuntime.reasonCode, "adjustment_error");
   assert.equal(invalid.data[0].adjustment, undefined);
+});
+
+// attribute temperature only when its independent setting is enabled
+test("disabled temperature settings hide ECMWF credit despite active runtime", () => {
+  const state = {
+    ...forecastState([], windCanaryRuntime()),
+    forecastTemperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+    forecastAdjustmentSettings: { version: 1, temperature: false, wind: true, rain: true },
+  };
+  const html = renderWeatherDashboard(state, "forecast");
+  assert.doesNotMatch(html, /Adjusted temperature uses ECMWF IFS/u);
+});
+
+// retain exact finite and permanent deadlines at the browser trust boundary
+test("temperature and wind runtimes preserve null or finite expiry and reject malformed expiry", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+  const cases = [
+    ["temperatureC", "temperatureAdjustmentRuntime", "temperatureAdjustment", temperatureCanaryRuntime(), temperatureCanaryDecision(raw)],
+    ["windSpeedMps", "adjustmentRuntime", "adjustment", windCanaryRuntime(), windCanaryAdjustment(raw)],
+  ];
+
+  // exercise each independent runtime without changing its model identity
+  for (const [metric, runtimeKey, decisionKey, runtime, decision] of cases) {
+    // accept only explicit null or a valid finite instant
+    for (const expiresAt of [null, runtime.expiresAt]) {
+      const parsed = parseForecastRecordsResponse({
+        [runtimeKey]: { ...runtime, expiresAt },
+        data: [{ ...raw, [decisionKey]: decision }],
+        site,
+      });
+      assert.equal(parsed[runtimeKey].state, "active", `${metric} with ${expiresAt}`);
+      assert.equal(parsed[runtimeKey].expiresAt, expiresAt);
+      assert.notEqual(forecastMetricValue(parsed.data[0], metric), raw.metrics[metric]);
+    }
+
+    // discard decisions behind an invalid runtime envelope
+    for (const expiresAt of [undefined, "never", 42, "2026-99-99T00:00:00Z"]) {
+      const parsed = parseForecastRecordsResponse({
+        [runtimeKey]: { ...runtime, expiresAt },
+        data: [{ ...raw, [decisionKey]: decision }],
+        site,
+      });
+      assert.equal(parsed[runtimeKey].state, "disabled", `${metric} with ${expiresAt}`);
+      assert.equal(parsed.data[0][decisionKey], undefined);
+      assert.equal(forecastMetricValue(parsed.data[0], metric), raw.metrics[metric]);
+    }
+  }
 });
 
 // retain raw fallback without a status panel

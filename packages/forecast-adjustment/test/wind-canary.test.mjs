@@ -407,6 +407,35 @@ test("permanent wind authorization retains activation and safety gates", async (
   );
 });
 
+// preserve evidence-before-authority and authority-before-activation ordering
+test("permanent wind authorization rejects rehashed backdated approval or activation", () => {
+  const original = createPermanentBundle();
+  const evidenceAt = original.transferReport.bridgeEndExclusive;
+  const cases = [
+    [evidenceAt, evidenceAt, true],
+    [new Date(Date.parse(evidenceAt) - 1).toISOString(), original.authorization.activatedAt, false],
+    [new Date(Date.parse(original.authorization.activatedAt) + 1).toISOString(), original.authorization.activatedAt, false],
+  ];
+
+  // accept equality while rejecting either one-millisecond ordering violation
+  for (const [authorizedAt, activatedAt, valid] of cases) {
+    const bundle = structuredClone(original);
+    Object.assign(bundle.authorization, { authorizedAt, activatedAt });
+    bundle.authorization.authorizationSha256 = canonicalObjectSha256(bundle.authorization, "authorizationSha256");
+    bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+
+    // distinguish timing rejection from ordinary digest tampering
+    if (valid) {
+      assert.doesNotThrow(() => verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle));
+    } else {
+      assert.throws(
+        () => verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle),
+        /permanent wind canary authorization timing is invalid/u,
+      );
+    }
+  }
+});
+
 test("permanent wind authorization rejects rehashed semantic substitution", () => {
   const original = createPermanentBundle();
   const authorization = { ...original.authorization, permanent: false };
