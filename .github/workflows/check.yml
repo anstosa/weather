@@ -14,23 +14,25 @@ permissions:
   actions: read
 
 jobs:
-  quality-gates:
+  change-selection:
     runs-on: ubuntu-latest
+    outputs:
+      deploy_integration: ${{ steps.changes.outputs.deploy_integration }}
+      full_browser: ${{ steps.changes.outputs.full_browser }}
+      full_tests: ${{ steps.changes.outputs.full_tests }}
+      integration: ${{ steps.changes.outputs.integration }}
+      native_android: ${{ steps.changes.outputs.native_android }}
     steps:
-      - name: Check out repository
+      - name: Check out exact workflow commit
         uses: actions/checkout@v4
         with:
           # retain the merge base and historical deployment tags
           fetch-depth: 0
+          ref: ${{ github.sha }}
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          cache: npm
           node-version-file: .nvmrc
-      - name: Install dependencies
-        run: npm ci
-      - name: Install deployment validators
-        run: sudo apt-get update && sudo apt-get install --yes age shellcheck
       - id: baseline
         name: Resolve comparison baseline
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -63,13 +65,38 @@ jobs:
           CI_BASE_VERIFIED: ${{ steps.trusted-baseline.outputs.baseline_verified }}
           CI_HEAD_SHA: ${{ github.sha }}
         run: node scripts/ci-changes.mjs
+
+  quality-gates:
+    needs: change-selection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact selected commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: npm
+          node-version-file: .nvmrc
+      - name: Install dependencies
+        run: npm ci
+      - name: Install deployment validators
+        run: sudo apt-get update && sudo apt-get install --yes age shellcheck
       - name: Lint repository
         run: npm run lint
+      - name: Verify native project structure
+        run: npm run verify:mobile-static
+      - name: Verify the shared native HTTPS fixture
+        run: python3 mobile/scripts/native_https_fixture_test.py
       - name: Build and typecheck once
         run: npm run build
+      - name: Verify the shared widget contract
+        run: npm run test:mobile-shared:compiled
       - name: Run compiled unit tests
         env:
-          FULL_TESTS: ${{ steps.changes.outputs.full_tests }}
+          FULL_TESTS: ${{ needs.change-selection.outputs.full_tests }}
         shell: bash
         run: |
           set -euo pipefail
@@ -79,11 +106,11 @@ jobs:
             npm run test:fast:compiled
           fi
       - name: Run PostgreSQL integration gates
-        if: steps.changes.outputs.integration == 'true'
+        if: needs.change-selection.outputs.integration == 'true'
         run: npm run test:integration:compiled
       - name: Run browser gates
         env:
-          FULL_BROWSER: ${{ steps.changes.outputs.full_browser }}
+          FULL_BROWSER: ${{ needs.change-selection.outputs.full_browser }}
         shell: bash
         run: |
           set -euo pipefail
@@ -95,5 +122,142 @@ jobs:
       - name: Verify static deployment contracts once
         run: deploy/scripts/verify-static.sh
       - name: Run deployment and recovery rehearsal
-        if: steps.changes.outputs.deploy_integration == 'true'
+        if: needs.change-selection.outputs.deploy_integration == 'true'
         run: WEATHER_RUN_DEPLOY_INTEGRATION=1 node --test --test-concurrency=1 deploy/test/*.integration.test.mjs
+
+  native-android:
+    name: Native Android
+    needs: change-selection
+    if: needs.change-selection.outputs.native_android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Check out exact selected commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          cache: gradle
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        with:
+          packages: platform-tools
+      - name: Install Android emulator runtime libraries
+        run: sudo apt-get update && sudo apt-get install --yes libpulse0
+      - name: Install pinned Android packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            'platform-tools' \
+            'emulator' \
+            'platforms;android-36' \
+            'platforms;android-37.0' \
+            'build-tools;36.0.0' \
+            'system-images;android-36;default;x86_64'
+          sudo chmod 0666 /dev/kvm
+      - name: Verify wrapper and toolchain pins
+        env:
+          RESULTS: ${{ runner.temp }}/weather-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RESULTS}"
+          mobile/android/scripts/verify-wrapper.sh | tee "${RESULTS}/wrapper.txt"
+          mobile/android/scripts/toolchain-receipt.sh | tee "${RESULTS}/toolchain.txt"
+          java mobile/android/scripts/GenerateBrandAssets.java --check \
+            | tee "${RESULTS}/brand-assets.txt"
+      - name: Build test and lint Android artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          source mobile/android/scripts/android-env.sh
+          mobile/android/gradlew -p mobile/android --no-daemon \
+            :app:testDebugUnitTest \
+            :app:lintDebug \
+            :app:assembleDebug \
+            :app:lintRelease \
+            :app:assembleRelease
+      - name: Exercise the real Android HTTPS hosted shell
+        env:
+          RESULTS: ${{ runner.temp }}/weather-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          mobile/scripts/with-native-https-fixture.sh \
+            --evidence-dir "${RESULTS}/https-fixture" \
+            -- mobile/android/scripts/run-hosted-shell-tests.sh \
+            "${RESULTS}/android-webview"
+      - name: Verify unsigned Android Release isolation
+        env:
+          RESULTS: ${{ runner.temp }}/weather-android
+        shell: bash
+        run: |
+          set -euo pipefail
+          source mobile/android/scripts/android-env.sh
+          mobile/android/scripts/verify-release-artifact.sh | tee "${RESULTS}/release-scan.txt"
+          test -f mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          test -f mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          sha256sum \
+            mobile/android/app/build/outputs/apk/debug/app-debug.apk \
+            mobile/android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            > "${RESULTS}/apk-sha256.txt"
+          test -s \
+            mobile/android/app/build/outputs/androidTest-results/managedDevice/debug/widgetPhone/TEST-widgetPhone.xml
+          test -s "${RESULTS}/android-webview/TEST-widgetPhone.xml"
+          test -d mobile/android/app/build/reports/androidTests/managedDevice
+          python3 - "${RESULTS}/android-webview/TEST-widgetPhone.xml" <<'PY'
+          import sys
+          import xml.etree.ElementTree as element_tree
+
+          receipt = element_tree.parse(sys.argv[1]).getroot()
+          expected = {"errors": "0", "failures": "0", "skipped": "0", "tests": "29"}
+          # require the complete real-hosted journey count
+          if any(receipt.attrib.get(name) != value for name, value in expected.items()):
+              raise SystemExit(f"unexpected Android hosted-shell result: {receipt.attrib}")
+          PY
+      - name: Retain Android build and host evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: native-android-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/weather-android/**
+            mobile/android/app/build/outputs/apk/**
+            mobile/android/app/build/outputs/androidTest-results/**
+            mobile/android/app/build/outputs/managed_device_android_test_additional_output/**
+            mobile/android/app/build/reports/**
+            mobile/android/app/build/test-results/**
+          retention-days: 14
+
+  check-complete:
+    name: Required Check jobs
+    if: always()
+    needs:
+      - change-selection
+      - quality-gates
+      - native-android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact workflow commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enforce selected job results
+        env:
+          CI_CHANGES_MODE: aggregate
+          CI_CHANGE_SELECTION_RESULT: ${{ needs.change-selection.result }}
+          CI_NATIVE_ANDROID: ${{ needs.change-selection.outputs.native_android }}
+          CI_NATIVE_ANDROID_RESULT: ${{ needs.native-android.result }}
+          CI_QUALITY_GATES_RESULT: ${{ needs.quality-gates.result }}
+        run: node scripts/ci-changes.mjs

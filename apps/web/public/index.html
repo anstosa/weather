@@ -17,13 +17,19 @@
     <link rel="preload" href="/fonts/material-symbols-rounded-v4.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="modulepreload" href="/assets/__WEATHER_ASSET_VERSION__/index.js">
     <link rel="modulepreload" href="/assets/__WEATHER_ASSET_VERSION__/units.js">
-    <title>Ballydídean Farm Weather</title>
+    <title>Ballydídean Weather</title>
     <link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">
   </head>
   <body>
     <div id="weather-app">
-      <main class="shell">
-        <p class="notice" role="status">Loading Ballydídean weather…</p>
+      <main class="shell skeleton-region" aria-busy="true" aria-label="Loading weather">
+        <header class="masthead home-masthead"><h1><span class="masthead-title-text">Ballydídean Weather</span></h1></header>
+        <p class="sr-only" role="status">Loading Ballydídean weather…</p>
+        <div class="weather-content skeleton-fields" aria-hidden="true">
+          <span class="skeleton-line skeleton-field"></span>
+          <span class="skeleton-line skeleton-field"></span>
+          <span class="skeleton-line skeleton-field"></span>
+        </div>
       </main>
     </div>
     <noscript>This weather dashboard requires JavaScript to load current and historical data.</noscript>

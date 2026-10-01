@@ -4,19 +4,30 @@ import { basename, extname, join, relative, resolve } from "node:path";
 const root = process.cwd();
 const ignoredDirectories = new Set([
   ".git",
+  ".gradle",
   ".omx",
+  "build",
   "coverage",
   "dist",
+  "host-evidence",
   "node_modules",
 ]);
 const textExtensions = new Set([
   "",
   ".css",
   ".html",
+  ".java",
   ".json",
+  ".kt",
+  ".kts",
   ".md",
   ".mjs",
+  ".pro",
+  ".properties",
+  ".py",
+  ".sh",
   ".ts",
+  ".xml",
   ".yml",
   ".yaml",
 ]);

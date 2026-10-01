@@ -1,0 +1,103 @@
+{
+  "source": "user-supplied weather-icons-handoff (3).zip",
+  "archive_sha256": "8c6121a363c5367a54e6ef192e13ecc215eea27480eb194e477d01e437933aab",
+  "rendering": "unchanged 512px PNG in drawable-nodpi; native ImageView fitCenter without effects",
+  "icons": [
+    {
+      "asset": "01-sunny",
+      "resource": "ic_weather_sunny",
+      "png_sha256": "4b6f837a54d01ffe14d4a2f8cc3481f1b97a08045cff467f7010901fe70a8569",
+      "svg_sha256": "1538a8f66e35466b9a0dca63002aa0fa8763b0adf5a26afbc46c14867f2aaceb"
+    },
+    {
+      "asset": "02-sunny-wind",
+      "resource": "ic_weather_sunny_wind",
+      "png_sha256": "4e0921f9938739dd63a4ef452b07e7d381a61d4964ef33daaaf7ef3802ec51e8",
+      "svg_sha256": "f19e34d8735007aa83c83fa43c07eb0a65e99d619ba72e70365a3ccecb5da82a"
+    },
+    {
+      "asset": "03-partly-cloudy",
+      "resource": "ic_weather_partly",
+      "png_sha256": "5946ce630c9f320b0f6ba1f1c997837188eabfec5af757387f92e0d5ba2cd515",
+      "svg_sha256": "c4e7ee46bf7a0ccc5c7599e7763f8abca0959926f15782b3744e5a5b22676c35"
+    },
+    {
+      "asset": "04-partly-cloudy-wind",
+      "resource": "ic_weather_partly_wind",
+      "png_sha256": "ccb336c836bf08820ed52930f427ce99ea2325b2481f24e11f5b5935995bf1e6",
+      "svg_sha256": "a96d82eb82f6592ba06aceb2e015307b53997e9f9cc9ee45bbe4321ce8d86454"
+    },
+    {
+      "asset": "05-cloudy",
+      "resource": "ic_weather_cloudy",
+      "png_sha256": "53e99af3e7f33d506ed0c094a8ba2b976c8724604d46f0305b2e55b5a61ab438",
+      "svg_sha256": "725de5ce91add806d911ca90a9a934fadff965ecafdc2bd35ff058d503737de0"
+    },
+    {
+      "asset": "06-cloudy-wind",
+      "resource": "ic_weather_cloudy_wind",
+      "png_sha256": "b46f356e6ca019322b67ef793d51356a4e5b409f15bd5c5cc42a9af59a7cfca7",
+      "svg_sha256": "7a248cf64d016dbc5c73bbc95da0bc7c20456985eb644adcfa2e97ff234f0c90"
+    },
+    {
+      "asset": "07-light-rain",
+      "resource": "ic_weather_light_rain",
+      "png_sha256": "f4bd96cbef6ee8729daaab6204709d6d91901c45f495be8a976a7b90042feb64",
+      "svg_sha256": "bb2b518c9f6c628877c2784983bc70faf87e0d51b902a4652a731a0f5c74b3e6"
+    },
+    {
+      "asset": "08-light-rain-wind",
+      "resource": "ic_weather_light_rain_wind",
+      "png_sha256": "ff1c108dacb5538c1a441eebcf2a681abc261fc838967083d10bab45fc42f156",
+      "svg_sha256": "060347a86898367f88f6738f2137a4b08ee042c991d6693a856111152cb9010a"
+    },
+    {
+      "asset": "09-heavy-rain",
+      "resource": "ic_weather_heavy_rain",
+      "png_sha256": "f3e8316669011781fa1ce1b077093be29f8f060e9290c0c087e0f0d194ca898d",
+      "svg_sha256": "6c25673a761cfb6acf096d2bebe684253acebf5812eb2ecbae4ef6d6a24a0621"
+    },
+    {
+      "asset": "10-heavy-rain-wind",
+      "resource": "ic_weather_heavy_rain_wind",
+      "png_sha256": "1369f6b52bae229d73bd4a2397418953f23b19b63b1ce83dae120d171fc35aa6",
+      "svg_sha256": "83239abf17f13e7fa04d1e545e89146fd08e25293b5659cf34f9e06398b2e937"
+    },
+    {
+      "asset": "11-bedtime",
+      "resource": "ic_weather_moon",
+      "png_sha256": "947a7e54252c622035de76241192d50dfe8b72ad5788a69d89350b92e6e53bb7",
+      "svg_sha256": "75398ef95614f6afefade89ab1ee7a6ab3c28eb72009579339cb361f13b7c650"
+    },
+    {
+      "asset": "12-unavailable",
+      "resource": "ic_unavailable",
+      "png_sha256": "36b2207a129b474fcdebca0cce98a4d6006bca6c0fa3c6dcc657c30286e996c4",
+      "svg_sha256": "01f4fb0efd030f4e02b3b3e1addabcaf65e1541b2b8b2831811f25b3fc57d49c"
+    },
+    {
+      "asset": "13-clear-night",
+      "resource": "ic_weather_clear_night",
+      "png_sha256": "b8ea88b7fec20c9b4dfaf23fdf1646a24d651c01e15ced9ea448e3e03816a22a",
+      "svg_sha256": "25209cc97769833d3c23e8859c8d3e6676e5ea905f2d4a45e25deae90e02b96e"
+    },
+    {
+      "asset": "14-clear-night-wind",
+      "resource": "ic_weather_clear_night_wind",
+      "png_sha256": "7df0def2964208a1f404a5d61de83ae370084812679c24fdd544b4f8714c335c",
+      "svg_sha256": "5b924f11a5f72e16688257611a814b6e02b6b3c0c0f7d14468afa4cc959905b4"
+    },
+    {
+      "asset": "15-partly-cloudy-night",
+      "resource": "ic_weather_partly_night",
+      "png_sha256": "b0f2409fb77bb3508a5385a782992a8ee6c972d9592b18b0e24db5035762c15d",
+      "svg_sha256": "fd22b6a8f1a45b83d9655623ce430b4731d84ac263d2e613309d4be2fff1c6a4"
+    },
+    {
+      "asset": "16-partly-cloudy-night-wind",
+      "resource": "ic_weather_partly_night_wind",
+      "png_sha256": "d29a2aa1b572f35765f6e27215eada869c90075e293bf941c52b92b516cfe504",
+      "svg_sha256": "0e6d2da79ef636c78f41e91666cbca49dd5a855ef89926e26d62f353f46c6976"
+    }
+  ]
+}

@@ -6,6 +6,9 @@ coverage/
 __pycache__/
 *.py[cod]
 .DS_Store
+# local ide settings
+.idea/
+*.iml
 .weather-data/
 .weather-models/
 .env

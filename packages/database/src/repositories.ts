@@ -179,8 +179,11 @@ export interface CurrentQuery {
 export interface ForecastQuery {
   readonly asOf: string;
   readonly hours: number;
+  readonly productSelection?: ForecastProductSelection;
   readonly siteSlug: string;
 }
+
+export type ForecastProductSelection = "anchor-containing" | "latest";
 
 // bound one local-midnight pressure context read
 export interface ForecastPressureContextQuery {
@@ -1904,15 +1907,35 @@ export async function getWeatherForecast(
   query: ForecastQuery,
 ): Promise<readonly WeatherRecordRow[]> {
   const asOf = validateUtcInstant(query.asOf, "asOf");
+  const productSelection = query.productSelection ?? "latest";
 
   // require a bounded public horizon
   if (!Number.isSafeInteger(query.hours) || query.hours < 1 || query.hours > MAX_FORECAST_HOURS) {
     throw new RangeError(`forecast hours must be between 1 and ${String(MAX_FORECAST_HOURS)}`);
   }
 
+  // reject selectors outside the two reviewed product policies
+  if (productSelection !== "anchor-containing" && productSelection !== "latest") {
+    throw new RangeError("forecast product selection is invalid");
+  }
+
   const endExclusive = new Date(
     Date.parse(asOf) + query.hours * 3_600_000,
   ).toISOString();
+  // choose either the compatibility product or the newest anchor-bearing vintage
+  const productRunPredicate = productSelection === "anchor-containing"
+    ? `candidate.product_run_at = (
+            SELECT MAX(product.product_run_at)
+            FROM weather_records product
+            WHERE product.source_id = s.id
+              AND product.source_kind = 'forecast'
+              AND product.valid_at = $2
+          )`
+    : `candidate.product_run_at = (
+            SELECT MAX(product.product_run_at)
+            FROM weather_records product
+            WHERE product.source_id = s.id
+          )`;
   const rawResult = await pool.query<WeatherRecordRow>(
     `
       SELECT
@@ -1927,11 +1950,7 @@ export async function getWeatherForecast(
         WHERE candidate.source_id = s.id
           -- expose the existing identity-index prefix before filtering old runs
           AND candidate.source_kind = 'forecast'
-          AND candidate.product_run_at = (
-            SELECT MAX(product.product_run_at)
-            FROM weather_records product
-            WHERE product.source_id = s.id
-          )
+          AND ${productRunPredicate}
           AND candidate.valid_at >= $2
           AND candidate.valid_at < $3
         ORDER BY candidate.valid_at ASC, candidate.id ASC

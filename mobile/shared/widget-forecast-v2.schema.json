@@ -1,0 +1,483 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://weather.ballydidean.farm/schemas/weather-widget-v2.json",
+  "title": "Ballydidean weather widget forecast v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attribution",
+    "calendar",
+    "generatedAt",
+    "hours",
+    "receivedAt",
+    "schemaVersion",
+    "site",
+    "status"
+  ],
+  "properties": {
+    "attribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "licenseUrl",
+        "providerUrl"
+      ],
+      "properties": {
+        "label": {
+          "const": "Open-Meteo · CC BY 4.0"
+        },
+        "licenseUrl": {
+          "const": "https://creativecommons.org/licenses/by/4.0/"
+        },
+        "providerUrl": {
+          "const": "https://open-meteo.com/"
+        }
+      }
+    },
+    "calendar": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cutoff",
+        "date",
+        "dayEnd",
+        "dayStart",
+        "sunset"
+      ],
+      "properties": {
+        "cutoff": {
+          "$ref": "#/$defs/instant"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "dayEnd": {
+          "$ref": "#/$defs/instant"
+        },
+        "dayStart": {
+          "$ref": "#/$defs/instant"
+        },
+        "sunset": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "generatedAt": {
+      "$ref": "#/$defs/instant"
+    },
+    "hours": {
+      "type": "array",
+      "minItems": 23,
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cloudCoverPercent",
+          "end",
+          "rainMmPerHour",
+          "start",
+          "temperatureC",
+          "windSpeedMps"
+        ],
+        "properties": {
+          "cloudCoverPercent": {
+            "$ref": "#/$defs/cloudCoverField"
+          },
+          "end": {
+            "$ref": "#/$defs/instant"
+          },
+          "rainMmPerHour": {
+            "$ref": "#/$defs/rainField"
+          },
+          "start": {
+            "$ref": "#/$defs/instant"
+          },
+          "temperatureC": {
+            "$ref": "#/$defs/temperatureField"
+          },
+          "windSpeedMps": {
+            "$ref": "#/$defs/windSpeedField"
+          }
+        }
+      }
+    },
+    "receivedAt": {
+      "$ref": "#/$defs/instant"
+    },
+    "schemaVersion": {
+      "const": "weather-widget/v2"
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latitude",
+        "longitude",
+        "name",
+        "slug",
+        "timezone"
+      ],
+      "properties": {
+        "latitude": {
+          "const": 47.950429954185445
+        },
+        "longitude": {
+          "const": -122.42797012608193
+        },
+        "name": {
+          "const": "Ballydidean"
+        },
+        "slug": {
+          "const": "ballydidean"
+        },
+        "timezone": {
+          "const": "America/Los_Angeles"
+        }
+      }
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    }
+  },
+  "$defs": {
+    "instant": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "mode": {
+      "enum": [
+        "adjusted",
+        "raw",
+        "unavailable"
+      ]
+    },
+    "reason": {
+      "enum": [
+        "deadline_expired",
+        "deadline_unavailable",
+        "generic_adjustment",
+        "independent_adjustment",
+        "missing",
+        "rain_adjustment",
+        "raw_forecast"
+      ]
+    },
+    "status": {
+      "enum": [
+        "adjusted",
+        "mixed",
+        "raw",
+        "unavailable"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receivedAt",
+        "runAt"
+      ],
+      "properties": {
+        "receivedAt": {
+          "$ref": "#/$defs/instant"
+        },
+        "runAt": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "nullableSource": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/source"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "temperature": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 70
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "rain": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2000
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fieldBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "raw",
+        "rawSource",
+        "reason",
+        "selected",
+        "selectedSource",
+        "selectedUntil"
+      ],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "raw": {},
+        "rawSource": {
+          "$ref": "#/$defs/nullableSource"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "selected": {},
+        "selectedSource": {
+          "$ref": "#/$defs/nullableSource"
+        },
+        "selectedUntil": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {
+              "const": "adjusted"
+            },
+            "reason": {
+              "enum": [
+                "generic_adjustment",
+                "independent_adjustment",
+                "rain_adjustment"
+              ]
+            },
+            "selected": {
+              "type": "number"
+            },
+            "selectedSource": {
+              "$ref": "#/$defs/source"
+            },
+            "selectedUntil": {
+              "$ref": "#/$defs/instant"
+            }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "raw": {
+                  "type": "number"
+                },
+                "rawSource": {
+                  "$ref": "#/$defs/source"
+                }
+              }
+            },
+            {
+              "properties": {
+                "raw": {
+                  "type": "null"
+                },
+                "rawSource": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "raw"
+            },
+            "raw": {
+              "type": "number"
+            },
+            "rawSource": {
+              "$ref": "#/$defs/source"
+            },
+            "reason": {
+              "enum": [
+                "deadline_expired",
+                "deadline_unavailable",
+                "raw_forecast"
+              ]
+            },
+            "selected": {
+              "type": "number"
+            },
+            "selectedSource": {
+              "type": "null"
+            },
+            "selectedUntil": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "unavailable"
+            },
+            "raw": {
+              "type": "null"
+            },
+            "rawSource": {
+              "type": "null"
+            },
+            "reason": {
+              "const": "missing"
+            },
+            "selected": {
+              "type": "null"
+            },
+            "selectedSource": {
+              "type": "null"
+            },
+            "selectedUntil": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "temperatureField": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/fieldBase"
+        },
+        {
+          "properties": {
+            "raw": {
+              "$ref": "#/$defs/temperature"
+            },
+            "selected": {
+              "$ref": "#/$defs/temperature"
+            }
+          }
+        }
+      ]
+    },
+    "rainField": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/fieldBase"
+        },
+        {
+          "properties": {
+            "raw": {
+              "$ref": "#/$defs/rain"
+            },
+            "selected": {
+              "$ref": "#/$defs/rain"
+            }
+          }
+        }
+      ]
+    },
+    "cloudCover": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "windSpeed": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 150
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cloudCoverField": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/fieldBase"
+        },
+        {
+          "not": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "adjusted"
+              }
+            }
+          },
+          "properties": {
+            "raw": {
+              "$ref": "#/$defs/cloudCover"
+            },
+            "selected": {
+              "$ref": "#/$defs/cloudCover"
+            }
+          }
+        }
+      ]
+    },
+    "windSpeedField": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/fieldBase"
+        },
+        {
+          "properties": {
+            "raw": {
+              "$ref": "#/$defs/windSpeed"
+            },
+            "selected": {
+              "$ref": "#/$defs/windSpeed"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

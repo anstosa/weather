@@ -2,6 +2,12 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 
+import {
+  projectWidgetForecast,
+  WIDGET_FORECAST_MAX_BYTES,
+} from "../../apps/web/dist/widget-forecast.js";
+import { projectWidgetForecastV2 } from "../../apps/web/dist/widget-forecast-v2.js";
+import { projectWidgetForecastV3 } from "../../apps/web/dist/widget-forecast-v3.js";
 import { XweatherTileMemoryCache } from "./xweather-tile-cache.mjs";
 import { XweatherUsageBudget } from "./xweather-usage-budget.mjs";
 import { WeatherAdminStore } from "./weather-admin-store.mjs";
@@ -13,6 +19,9 @@ const compiledRoot = join(root, "apps/web/dist");
 const adminLoginPath = join(publicRoot, "admin-login.html");
 const adminSessionCookieName = "weather_admin_session";
 const maximumApiBytes = 1024 * 1024;
+const widgetForecastPath = "/api/v1/sites/ballydidean/widget-forecast";
+const widgetForecastV2Path = "/api/v2/sites/ballydidean/widget-forecast";
+const widgetForecastV3Path = "/api/v3/sites/ballydidean/widget-forecast";
 // allow the complete daily trends history
 const maximumTrendsApiBytes = 2 * 1024 * 1024;
 const maximumMapBytes = 4 * 1024 * 1024;
@@ -51,6 +60,9 @@ const assets = new Map([
   ["/trends/", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
   ["/settings", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
   ["/settings/", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
+  // keep the public policy readable without the application or analytics
+  ["/privacy", { analytics: false, cache: "no-cache", path: join(publicRoot, "privacy.html"), template: true, type: "text/html; charset=utf-8" }],
+  ["/privacy/", { analytics: false, cache: "no-cache", path: join(publicRoot, "privacy.html"), template: true, type: "text/html; charset=utf-8" }],
   ["/manifest.webmanifest", { cache: "no-cache", path: join(publicRoot, "manifest.webmanifest"), type: "application/manifest+json; charset=utf-8" }],
   ["/service-worker.js", { cache: "no-store", path: join(publicRoot, "service-worker.js"), template: true, type: "text/javascript; charset=utf-8" }],
   ["/brand/ballydidean-wide.svg", { cache: "public, max-age=86400", path: join(publicRoot, "brand/ballydidean-wide.svg"), type: "image/svg+xml" }],
@@ -60,6 +72,22 @@ const assets = new Map([
   ["/brand/ballydidean-weather-icon-192.png", { cache: "no-cache", path: join(publicRoot, "brand/ballydidean-weather-icon-192.png"), type: "image/png" }],
   ["/brand/ballydidean-weather-icon-512.png", { cache: "no-cache", path: join(publicRoot, "brand/ballydidean-weather-icon-512.png"), type: "image/png" }],
   ["/brand/ballydidean-weather-icon-maskable-512.png", { cache: "no-cache", path: join(publicRoot, "brand/ballydidean-weather-icon-maskable-512.png"), type: "image/png" }],
+  // expose only approved current-condition artwork
+  ["/weather-icons/01-sunny.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/01-sunny.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/02-sunny-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/02-sunny-wind.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/03-partly-cloudy.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/03-partly-cloudy.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/04-partly-cloudy-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/04-partly-cloudy-wind.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/05-cloudy.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/05-cloudy.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/06-cloudy-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/06-cloudy-wind.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/07-light-rain.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/07-light-rain.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/08-light-rain-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/08-light-rain-wind.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/09-heavy-rain.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/09-heavy-rain.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/10-heavy-rain-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/10-heavy-rain-wind.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/12-unavailable.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/12-unavailable.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/13-clear-night.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/13-clear-night.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/14-clear-night-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/14-clear-night-wind.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/15-partly-cloudy-night.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/15-partly-cloudy-night.svg"), type: "image/svg+xml" }],
+  ["/weather-icons/16-partly-cloudy-night-wind.svg", { cache: "no-cache", path: join(publicRoot, "weather-icons/16-partly-cloudy-night-wind.svg"), type: "image/svg+xml" }],
   ["/fonts/google-sans-flex-latin.woff2", { cache: "public, max-age=31536000, immutable", path: join(publicRoot, "fonts/google-sans-flex-latin.woff2"), type: "font/woff2" }],
   ["/fonts/LICENSE-google-sans-flex.txt", { cache: "public, max-age=86400", path: join(publicRoot, "fonts/LICENSE-google-sans-flex.txt"), type: "text/plain; charset=utf-8" }],
   ["/fonts/material-symbols-rounded-v4.woff2", { cache: "public, max-age=31536000, immutable", path: join(publicRoot, "fonts/material-symbols-rounded-v4.woff2"), type: "font/woff2" }],
@@ -134,6 +162,12 @@ const server = createServer(async (request, response) => {
     // update one layout entry behind the administrator session
     if (requestUrl.pathname.startsWith("/api/v1/admin/sites/ballydidean/property-sensor-layout/")) {
       await updatePropertySensorLayout(request, response, requestUrl.pathname);
+      return;
+    }
+
+    // isolate the closed widget route before the general api proxy
+    if (isWidgetForecastPath(requestUrl.pathname)) {
+      await serveWidgetForecast(request, response, requestUrl);
       return;
     }
 
@@ -215,6 +249,91 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, "0.0.0.0");
+
+// identify the exact widget route and its rejected near-matches
+function isWidgetForecastPath(pathname) {
+  return pathname === widgetForecastPath ||
+    pathname.startsWith(`${widgetForecastPath}/`) ||
+    /^\/api\/v1\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname) ||
+    pathname === widgetForecastV2Path ||
+    pathname.startsWith(`${widgetForecastV2Path}/`) ||
+    /^\/api\/v2\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname) ||
+    pathname === widgetForecastV3Path ||
+    pathname.startsWith(`${widgetForecastV3Path}/`) ||
+    /^\/api\/v3\/sites\/[^/]+\/widget-forecast(?:\/|$)/u.test(pathname);
+}
+
+// serve one bounded public widget snapshot
+async function serveWidgetForecast(request, response, requestUrl) {
+  // select only one reviewed versioned projection
+  const projector = requestUrl.pathname === widgetForecastPath
+    ? projectWidgetForecast
+    : requestUrl.pathname === widgetForecastV2Path
+      ? projectWidgetForecastV2
+      : requestUrl.pathname === widgetForecastV3Path
+        ? projectWidgetForecastV3
+        : null;
+
+  // reject every site and path outside the fixed public contract
+  if (projector === null) {
+    sendText(response, 404, "not found\n");
+    return;
+  }
+
+  // reject caller-controlled projection inputs
+  if (requestUrl.search !== "") {
+    sendText(response, 400, "bad request\n");
+    return;
+  }
+
+  // keep the public projection read-only
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    sendText(response, 405, "method not allowed\n", { Allow: "GET, HEAD" });
+    return;
+  }
+
+  try {
+    const settings = (await adminStore.readAdjustmentSettingsStatus()).settings;
+    // request the anchor-bearing product only for the overnight contract
+    const upstreamPath = requestUrl.pathname === widgetForecastV3Path
+      ? "/api/v1/sites/ballydidean/forecast?window=overnight"
+      : "/api/v1/sites/ballydidean/forecast?days=1";
+    const target = new URL(upstreamPath, apiOrigin);
+    const upstream = await fetch(target, {
+      headers: { Accept: "application/json" },
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(apiRequestTimeoutMs(target.pathname)),
+    });
+
+    // expose only a successfully validated upstream forecast
+    if (!upstream.ok) {
+      await upstream.body?.cancel();
+      throw new Error("widget forecast upstream failed");
+    }
+
+    const sourceBody = await readBoundedBody(upstream, maximumApiBytes, "API");
+    const filteredBody = filterForecastResponse(sourceBody, settings);
+    const filtered = JSON.parse(filteredBody.toString("utf8"));
+    const snapshot = projector(filtered, new Date().toISOString());
+    const body = Buffer.from(`${JSON.stringify(snapshot)}\n`);
+
+    // enforce the serialized edge response ceiling including its newline
+    if (body.byteLength > WIDGET_FORECAST_MAX_BYTES) {
+      throw new Error("widget forecast response exceeded the edge limit");
+    }
+
+    setSecurityHeaders(response);
+    response.writeHead(200, {
+      "Cache-Control": "no-store",
+      "Content-Length": String(body.byteLength),
+      "Content-Type": "application/json; charset=utf-8",
+    });
+    response.end(request.method === "HEAD" ? undefined : body);
+  } catch {
+    sendText(response, 502, "upstream unavailable\n");
+  }
+}
 
 // create one administrator browser session
 async function loginAdmin(request, response) {

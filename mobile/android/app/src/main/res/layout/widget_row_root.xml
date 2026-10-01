@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- identify the clipped root so compatible launchers retain its smaller radius -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/background"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:clipToOutline="true"
+    android:layoutDirection="ltr">
+    <ImageView
+        android:id="@+id/widget_panels"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:importantForAccessibility="no"
+        android:scaleType="fitXY" />
+    <!-- keep hourly marks decorative and fixed-height rather than stretching the panel bitmap -->
+    <ImageView
+        android:id="@+id/widget_hour_ticks"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:layout_gravity="top"
+        android:contentDescription="@null"
+        android:importantForAccessibility="no"
+        android:scaleType="fitXY" />
+    <LinearLayout
+        android:id="@+id/row_primary"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="horizontal" />
+</FrameLayout>

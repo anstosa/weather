@@ -1,0 +1,110 @@
+{
+  "bedtime": false,
+  "date": "2026-11-01",
+  "footer": {
+    "attribution": "Open-Meteo · CC BY 4.0",
+    "generatedAt": "2026-11-01T07:00:00.000Z",
+    "status": "raw",
+    "sunset": "2026-11-02T00:50:59.571Z"
+  },
+  "groups": [
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-01T10:00:00.000Z",
+      "hourCount": 3,
+      "isNow": true,
+      "start": "2026-11-01T07:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "50",
+        "maximum": 50,
+        "minimum": 50
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-01T13:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-11-01T10:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "51",
+        "maximum": 51,
+        "minimum": 51
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-01T16:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-11-01T13:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "51",
+        "maximum": 51,
+        "minimum": 51
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-01T19:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-11-01T16:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "52",
+        "maximum": 52,
+        "minimum": 52
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-01T22:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-11-01T19:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "52–53",
+        "maximum": 53,
+        "minimum": 52
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-02T01:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-11-01T22:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "53",
+        "maximum": 53,
+        "minimum": 53
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-11-02T04:00:00.000Z",
+      "hourCount": 3,
+      "isNow": false,
+      "start": "2026-11-02T01:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "53–54",
+        "maximum": 54,
+        "minimum": 53
+      }
+    }
+  ],
+  "hardExpired": false,
+  "now": "2026-11-01T07:30:00.000Z",
+  "presentation": "weather",
+  "schemaVersion": "weather-widget-semantic/v1",
+  "stale": false,
+  "status": "raw",
+  "unit": "fahrenheit"
+}

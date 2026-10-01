@@ -1,0 +1,768 @@
+{
+  "attribution": {
+    "label": "Open-Meteo · CC BY 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "providerUrl": "https://open-meteo.com/"
+  },
+  "calendar": {
+    "cutoff": "2026-09-13T03:00:00.000Z",
+    "date": "2026-09-12",
+    "dayEnd": "2026-09-13T07:00:00.000Z",
+    "dayStart": "2026-09-12T07:00:00.000Z",
+    "sunset": "2026-09-13T02:27:49.262Z"
+  },
+  "generatedAt": "2026-09-12T15:15:00.000Z",
+  "hours": [
+    {
+      "end": "2026-09-12T08:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T07:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10,
+        "selectedSource": {
+          "runAt": "2026-09-12T00:00:00.000Z",
+          "receivedAt": "2026-09-12T01:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T09:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.01,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.01,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T08:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.1,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.1,
+        "selectedSource": {
+          "runAt": "2026-09-12T01:00:00.000Z",
+          "receivedAt": "2026-09-12T02:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T10:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.02,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.02,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T09:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.2,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.2,
+        "selectedSource": {
+          "runAt": "2026-09-12T02:00:00.000Z",
+          "receivedAt": "2026-09-12T03:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T11:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.03,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.03,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T10:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.3,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.3,
+        "selectedSource": {
+          "runAt": "2026-09-12T03:00:00.000Z",
+          "receivedAt": "2026-09-12T04:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T12:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.04,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.04,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T11:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.4,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.4,
+        "selectedSource": {
+          "runAt": "2026-09-12T04:00:00.000Z",
+          "receivedAt": "2026-09-12T05:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T13:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T12:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.5,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.5,
+        "selectedSource": {
+          "runAt": "2026-09-12T05:00:00.000Z",
+          "receivedAt": "2026-09-12T06:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T14:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.06,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.06,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T13:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.6,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.6,
+        "selectedSource": {
+          "runAt": "2026-09-12T06:00:00.000Z",
+          "receivedAt": "2026-09-12T07:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T15:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.07,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.07,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T14:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.7,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.7,
+        "selectedSource": {
+          "runAt": "2026-09-12T07:00:00.000Z",
+          "receivedAt": "2026-09-12T08:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T16:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.08,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.08,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T15:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 10.8,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 10.8,
+        "selectedSource": {
+          "runAt": "2026-09-12T08:00:00.000Z",
+          "receivedAt": "2026-09-12T09:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T17:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.09,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.09,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T16:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": null,
+        "rawSource": null,
+        "reason": "independent_adjustment",
+        "selected": 10,
+        "selectedSource": {
+          "runAt": "2026-09-12T09:00:00.000Z",
+          "receivedAt": "2026-09-12T10:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T18:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T17:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11,
+        "selectedSource": {
+          "runAt": "2026-09-12T10:00:00.000Z",
+          "receivedAt": "2026-09-12T11:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T19:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.11,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.11,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T18:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.1,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.1,
+        "selectedSource": {
+          "runAt": "2026-09-12T11:00:00.000Z",
+          "receivedAt": "2026-09-12T12:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T20:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.12,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.12,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T19:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.2,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.2,
+        "selectedSource": {
+          "runAt": "2026-09-12T12:00:00.000Z",
+          "receivedAt": "2026-09-12T13:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T21:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.13,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.13,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T20:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.3,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.3,
+        "selectedSource": {
+          "runAt": "2026-09-12T13:00:00.000Z",
+          "receivedAt": "2026-09-12T14:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T22:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.14,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.14,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T21:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.4,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.4,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-12T23:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T22:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.5,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.5,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T00:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.16,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.16,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-12T23:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.6,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.6,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T01:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.17,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.17,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T00:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.7,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.7,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T02:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.18,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.18,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T01:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.8,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.8,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T03:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.19,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.19,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T02:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 11.9,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 11.9,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T04:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T03:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 12,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 12,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T05:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.21,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.21,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T04:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 12.1,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 12.1,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T06:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.22,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.22,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T05:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 12.2,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 12.2,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    },
+    {
+      "end": "2026-09-13T07:00:00.000Z",
+      "rainMmPerHour": {
+        "mode": "raw",
+        "raw": 0.23,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "raw_forecast",
+        "selected": 0.23,
+        "selectedSource": null,
+        "selectedUntil": null
+      },
+      "start": "2026-09-13T06:00:00.000Z",
+      "temperatureC": {
+        "mode": "adjusted",
+        "raw": 12.3,
+        "rawSource": {
+          "runAt": "2026-09-12T09:15:00.000Z",
+          "receivedAt": "2026-09-12T15:10:00.000Z"
+        },
+        "reason": "independent_adjustment",
+        "selected": 12.3,
+        "selectedSource": {
+          "runAt": "2026-09-12T14:00:00.000Z",
+          "receivedAt": "2026-09-12T15:00:00.000Z"
+        },
+        "selectedUntil": "2026-09-12T16:00:00.000Z"
+      }
+    }
+  ],
+  "receivedAt": "2026-09-12T15:15:01.000Z",
+  "schemaVersion": "weather-widget/v1",
+  "site": {
+    "latitude": 47.950429954185445,
+    "longitude": -122.42797012608193,
+    "name": "Ballydidean",
+    "slug": "ballydidean",
+    "timezone": "America/Los_Angeles"
+  },
+  "status": "mixed"
+}

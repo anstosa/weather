@@ -1,0 +1,93 @@
+{
+  "bedtime": true,
+  "date": "2026-09-12",
+  "footer": {
+    "attribution": "Open-Meteo · CC BY 4.0",
+    "generatedAt": "2026-09-12T15:15:00.000Z",
+    "status": "mixed",
+    "sunset": "2026-09-13T02:27:49.262Z"
+  },
+  "groups": [
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-12T18:00:00.000Z",
+      "hourCount": 2,
+      "isNow": true,
+      "start": "2026-09-12T16:00:00.000Z",
+      "status": "mixed",
+      "temperature": null
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-12T20:00:00.000Z",
+      "hourCount": 2,
+      "isNow": false,
+      "start": "2026-09-12T18:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "11",
+        "maximum": 11,
+        "minimum": 11
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-12T22:00:00.000Z",
+      "hourCount": 2,
+      "isNow": false,
+      "start": "2026-09-12T20:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "11",
+        "maximum": 11,
+        "minimum": 11
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-13T00:00:00.000Z",
+      "hourCount": 2,
+      "isNow": false,
+      "start": "2026-09-12T22:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "12",
+        "maximum": 12,
+        "minimum": 12
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-13T02:00:00.000Z",
+      "hourCount": 2,
+      "isNow": false,
+      "start": "2026-09-13T00:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "12",
+        "maximum": 12,
+        "minimum": 12
+      }
+    },
+    {
+      "condition": "sprinkle",
+      "end": "2026-09-13T03:00:00.000Z",
+      "hourCount": 1,
+      "isNow": false,
+      "start": "2026-09-13T02:00:00.000Z",
+      "status": "raw",
+      "temperature": {
+        "label": "12",
+        "maximum": 12,
+        "minimum": 12
+      }
+    }
+  ],
+  "hardExpired": false,
+  "now": "2026-09-12T16:00:00.000Z",
+  "presentation": "weather",
+  "schemaVersion": "weather-widget-semantic/v1",
+  "stale": false,
+  "status": "mixed",
+  "unit": "celsius"
+}
