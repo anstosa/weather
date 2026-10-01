@@ -14,6 +14,7 @@ const allGates = {
   deployIntegration: true,
   fullBrowser: true,
   nativeAndroid: true,
+  nativeIos: true,
 };
 const baselineOnly = {
   fullTests: false,
@@ -21,6 +22,7 @@ const baselineOnly = {
   deployIntegration: false,
   fullBrowser: false,
   nativeAndroid: false,
+  nativeIos: false,
 };
 
 // isolate one top-level workflow job
@@ -71,6 +73,7 @@ test("UI changes keep fast units and integration defaults but require full brows
     deployIntegration: false,
     fullBrowser: true,
     nativeAndroid: true,
+    nativeIos: true,
   });
 });
 
@@ -80,7 +83,21 @@ test("native platform paths preserve the mandatory linux baseline", () => {
     ...baselineOnly,
     nativeAndroid: true,
   });
-  assert.deepEqual(classifyPaths(["mobile/ios/WeatherApp/App.swift"]), allGates);
+  assert.deepEqual(classifyPaths(["mobile/ios/WeatherApp/App.swift"]), {
+    ...baselineOnly,
+    nativeIos: true,
+  });
+  assert.deepEqual(
+    classifyPaths([
+      "mobile/android/app/src/main/Main.kt",
+      "mobile/ios/WeatherApp/App.swift",
+    ]),
+    {
+      ...baselineOnly,
+      nativeAndroid: true,
+      nativeIos: true,
+    },
+  );
 });
 
 // shared contracts and renamed platform paths retain every affected native lane
@@ -88,19 +105,26 @@ test("shared mobile paths and renames select conservatively", () => {
   assert.deepEqual(classifyPaths(["mobile/shared/widget-forecast-v1.schema.json"]), {
     ...baselineOnly,
     nativeAndroid: true,
+    nativeIos: true,
   });
   assert.deepEqual(classifyPaths(["scripts/widget-fixtures.mjs"]), {
     ...baselineOnly,
     nativeAndroid: true,
+    nativeIos: true,
   });
   assert.deepEqual(classifyPaths(["mobile/scripts/native_https_fixture.py"]), {
     ...baselineOnly,
     nativeAndroid: true,
+    nativeIos: true,
   });
   const renamed = parseNameStatus(Buffer.from(
     "R100\0mobile/android/Old.kt\0mobile/ios/New.swift\0",
   ));
-  assert.deepEqual(classifyPaths(renamed), allGates);
+  assert.deepEqual(classifyPaths(renamed), {
+    ...baselineOnly,
+    nativeAndroid: true,
+    nativeIos: true,
+  });
 });
 
 // transitive boundaries select their dependent suites
@@ -117,7 +141,7 @@ test("UI, model, backend, and deployment changes select dependent suites", () =>
   assert.equal(classifyPaths([".github/workflows/check.yml"]).deployIntegration, true);
   assert.equal(classifyPaths(["package-lock.json"]).deployIntegration, true);
   assert.equal(classifyPaths(["deploy/compose.yaml"]).nativeAndroid, true);
-  assert.equal(classifyPaths(["config/sites/ballydidean.json"]).nativeAndroid, true);
+  assert.equal(classifyPaths(["config/sites/ballydidean.json"]).nativeIos, true);
 });
 
 // untrusted ancestry must replay all gates
@@ -134,10 +158,12 @@ test("missing or failed baseline Check forces full inherited coverage", () => {
   assert.throws(() => verifyRequiredJobs(
     {
       nativeAndroid: String(unverified.nativeAndroid),
+      nativeIos: String(unverified.nativeIos),
     },
     {
       changeSelection: "success",
       nativeAndroid: "skipped",
+      nativeIos: "skipped",
       qualityGates: "success",
     },
   ), /selected but finished as skipped/u);
@@ -148,47 +174,48 @@ test("Check aggregate rejects missing failed and malformed native evidence", () 
   const requiredResults = {
     changeSelection: "success",
     nativeAndroid: "success",
+    nativeIos: "success",
     qualityGates: "success",
   };
   assert.equal(verifyRequiredJobs(
-    { nativeAndroid: "true" },
+    { nativeAndroid: "true", nativeIos: "true" },
     requiredResults,
   ), true);
   assert.equal(verifyRequiredJobs(
-    { nativeAndroid: "false" },
-    { ...requiredResults, nativeAndroid: "skipped" },
+    { nativeAndroid: "false", nativeIos: "false" },
+    { ...requiredResults, nativeAndroid: "skipped", nativeIos: "skipped" },
   ), true);
 
   // reject every missing mandatory or selected result
   for (const [selection, results, pattern] of [
     [
-      { nativeAndroid: "true" },
+      { nativeAndroid: "true", nativeIos: "true" },
       { ...requiredResults, changeSelection: "failure" },
       /change selection/u,
     ],
     [
-      { nativeAndroid: "true" },
+      { nativeAndroid: "true", nativeIos: "true" },
       { ...requiredResults, qualityGates: "cancelled" },
       /quality gates/u,
     ],
     [
-      { nativeAndroid: "true" },
+      { nativeAndroid: "true", nativeIos: "true" },
       { ...requiredResults, nativeAndroid: "skipped" },
       /selected but finished as skipped/u,
     ],
     [
-      { nativeAndroid: "false" },
+      { nativeAndroid: "false", nativeIos: "true" },
       { ...requiredResults, nativeAndroid: "success" },
       /not selected but finished as success/u,
     ],
     [
-      { nativeAndroid: "" },
+      { nativeAndroid: "", nativeIos: "true" },
       requiredResults,
       /selection is missing or invalid/u,
     ],
     [
-      { nativeAndroid: "true" },
-      { ...requiredResults, nativeAndroid: "" },
+      { nativeAndroid: "true", nativeIos: "true" },
+      { ...requiredResults, nativeIos: "" },
       /selected but finished as missing/u,
     ],
   ]) {
@@ -199,13 +226,20 @@ test("Check aggregate rejects missing failed and malformed native evidence", () 
 // workflow wiring keeps native lanes parallel and the aggregate fail closed
 test("Check workflow binds selected native jobs to the exact commit", async () => {
   const workflow = await readFile(new URL("../.github/workflows/check.yml", import.meta.url), "utf8");
+  const preflight = await readFile(
+    new URL("../.github/workflows/mobile-preflight.yml", import.meta.url),
+    "utf8",
+  );
   const selection = workflowJob(workflow, "change-selection");
   const quality = workflowJob(workflow, "quality-gates");
   const android = workflowJob(workflow, "native-android");
+  const ios = workflowJob(workflow, "native-ios");
   const aggregate = workflowJob(workflow, "check-complete");
   assert.match(selection, /native_android:/u);
   assert.match(android, /needs: change-selection/u);
+  assert.match(ios, /needs: change-selection/u);
   assert.match(android, /if: needs\.change-selection\.outputs\.native_android == 'true'/u);
+  assert.match(ios, /if: needs\.change-selection\.outputs\.native_ios == 'true'/u);
   assert.match(
     android,
     /android-actions\/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407[\s\S]*packages: platform-tools/u,
@@ -219,8 +253,24 @@ test("Check workflow binds selected native jobs to the exact commit", async () =
   assert.match(android, /"tests": "29"/u);
   assert.match(android, /managedDevice\/debug\/widgetPhone\/TEST-widgetPhone\.xml/u);
   assert.match(quality, /python3 mobile\/scripts\/native_https_fixture_test\.py/u);
+  assert.match(ios, /timeout-minutes: 180/u);
+  assert.match(ios, /probe-widget-semantic-host\.sh/u);
+  assert.match(ios, /with-native-https-fixture\.sh[\s\S]*probe-webview-https\.sh/u);
+  assert.match(ios, /webview_https_journeys=passed/u);
+  assert.match(ios, /untrusted_tls_rejected=passed/u);
+  assert.match(ios, /https-fixture-untrusted-retry-webview-hierarchy/u);
+  assert.ok(ios.indexOf("probe-webview-https.sh") < ios.indexOf("verify-release-artifacts.sh"));
+  assert.match(ios, /post-https-release-receipts/u);
+  assert.match(ios, /visual-review-required\.txt/u);
+  assert.match(ios, /Weather-\$\{configuration\}-iphonesimulator\.app\.tar/u);
+  assert.match(ios, /app-bundles\.sha256/u);
+  assert.match(ios, /weather-ios-build\/retained-apps\/\*\*/u);
+  assert.doesNotMatch(ios, /probe-widget-host\.sh/u);
   assert.match(aggregate, /if: always\(\)[\s\S]*CI_CHANGES_MODE: aggregate/u);
-  assert.equal((workflow.match(/ref: \$\{\{ github\.sha \}\}/gu) ?? []).length, 4);
+  assert.equal((workflow.match(/ref: \$\{\{ github\.sha \}\}/gu) ?? []).length, 5);
   assert.doesNotMatch(workflow, /continue-on-error:/u);
-  assert.doesNotMatch(workflow, /native[-_]ios|CI_NATIVE_IOS/u);
+  assert.match(preflight, /workflow_dispatch:/u);
+  assert.doesNotMatch(preflight, /^  push:/mu);
+  assert.match(preflight, /mobile\/ios\/scripts\/probe-widget-host\.sh/u);
+  assert.match(preflight, /Enforce the iOS M0 evidence gate/u);
 });

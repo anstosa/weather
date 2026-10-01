@@ -10,6 +10,7 @@ const full = Object.freeze({
   deployIntegration: true,
   fullBrowser: true,
   nativeAndroid: true,
+  nativeIos: true,
 });
 
 // retain both paths for copies and renames, including deleted sources
@@ -65,6 +66,7 @@ export function classifyPaths(paths) {
     deployIntegration: false,
     fullBrowser: false,
     nativeAndroid: false,
+    nativeIos: false,
   };
 
   // apply the broadest matching dependency boundary
@@ -87,13 +89,14 @@ export function classifyPaths(paths) {
       return { ...full };
     }
 
-    // select the native consumer for the shared mobile contract
+    // select both consumers for the shared mobile contract
     if (
       path.startsWith("mobile/shared/") ||
       path === "scripts/widget-fixtures.mjs" ||
       path === "scripts/widget-fixtures.test.mjs"
     ) {
       result.nativeAndroid = true;
+      result.nativeIos = true;
       continue;
     }
 
@@ -103,14 +106,16 @@ export function classifyPaths(paths) {
       continue;
     }
 
-    // absent platform paths cannot narrow validation
+    // isolate one platform when only its native tree changes
     if (path.startsWith("mobile/ios/")) {
-      return { ...full };
+      result.nativeIos = true;
+      continue;
     }
 
-    // unknown shared mobile paths require the native lane
+    // unknown shared mobile paths require both native lanes
     if (path.startsWith("mobile/")) {
       result.nativeAndroid = true;
+      result.nativeIos = true;
       continue;
     }
 
@@ -127,10 +132,11 @@ export function classifyPaths(paths) {
       continue;
     }
 
-    // web changes affect the hosted shell and complete browser suite
+    // web changes affect both hosted shells and the complete browser suite
     if (path.startsWith("apps/web/")) {
       result.fullBrowser = true;
       result.nativeAndroid = true;
+      result.nativeIos = true;
       continue;
     }
 
@@ -195,6 +201,7 @@ export function verifyRequiredJobs(selection, results) {
   }
 
   requireSelectedResult("native Android", selection.nativeAndroid, results.nativeAndroid);
+  requireSelectedResult("native iOS", selection.nativeIos, results.nativeIos);
   return true;
 }
 
@@ -254,6 +261,7 @@ function classifyMain() {
     `deploy_integration=${result.deployIntegration}`,
     `full_browser=${result.fullBrowser}`,
     `native_android=${result.nativeAndroid}`,
+    `native_ios=${result.nativeIos}`,
   ];
   process.stdout.write(`${lines.join("\n")}\n`);
 
@@ -268,10 +276,12 @@ function aggregateMain() {
   verifyRequiredJobs(
     {
       nativeAndroid: process.env.CI_NATIVE_ANDROID,
+      nativeIos: process.env.CI_NATIVE_IOS,
     },
     {
       changeSelection: process.env.CI_CHANGE_SELECTION_RESULT,
       nativeAndroid: process.env.CI_NATIVE_ANDROID_RESULT,
+      nativeIos: process.env.CI_NATIVE_IOS_RESULT,
       qualityGates: process.env.CI_QUALITY_GATES_RESULT,
     },
   );

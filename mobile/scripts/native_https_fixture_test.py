@@ -562,6 +562,10 @@ class NativeHTTPSFixtureTest(unittest.TestCase):
                 "mobile/android/app/build",
                 "mobile/android/build",
                 "mobile/android/host-evidence",
+                "mobile/ios/.artifacts",
+                "mobile/ios/.derived-data",
+                "mobile/ios/.host-evidence",
+                "mobile/ios/.results",
             }.issubset(ignored)
         )
 

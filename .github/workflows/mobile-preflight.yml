@@ -1,0 +1,132 @@
+name: Manual Mobile M0 Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apple-platform-probe:
+    name: Apple M0 build and host evidence
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - id: apple-probe
+        name: Capture pinned Apple platform capabilities
+        continue-on-error: true
+        env:
+          MOBILE_M0_EVIDENCE_DIR: ${{ runner.temp }}/mobile-m0/apple-platform
+        run: mobile/scripts/collect-apple-platform-preflight.sh
+      - id: apple-receipt
+        name: Upload Apple platform receipt
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          if-no-files-found: error
+          name: apple-platform-preflight-${{ github.sha }}
+          path: ${{ runner.temp }}/mobile-m0/apple-platform
+          retention-days: 7
+      - id: ios-build
+        name: Build and test the iOS M0 targets
+        if: always() && steps.apple-probe.outcome == 'success'
+        continue-on-error: true
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios
+        run: mobile/ios/scripts/build-m0.sh
+      - id: ios-debug-compile
+        name: Verify the iOS Debug compile marker
+        if: always() && steps.apple-probe.outcome == 'success'
+        continue-on-error: true
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios
+        run: test -f "$RESULTS/debug-build-passed.txt"
+      - id: ios-release-validation
+        name: Verify the iOS Release validation marker
+        if: always() && steps.apple-probe.outcome == 'success'
+        continue-on-error: true
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios
+        run: test -f "$RESULTS/release-validation-passed.txt"
+      - id: ios-host-probe
+        name: Probe the WidgetKit Home Screen host
+        if: always() && steps.ios-debug-compile.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 55
+        env:
+          RESULTS: ${{ runner.temp }}/weather-ios/widget-host-probe
+        run: mobile/ios/scripts/probe-widget-host.sh
+      - name: Print bounded iOS M0 diagnostic markers
+        if: always()
+        env:
+          BUILD_RESULTS: ${{ runner.temp }}/weather-ios
+          HOST_RESULTS: ${{ runner.temp }}/weather-ios/widget-host-probe
+        run: |
+          # print only the bounded debug marker contracts
+          for receipt in \
+            "$BUILD_RESULTS/test-app-lifecycle.log" \
+            "$HOST_RESULTS/provider-and-route.log"; do
+            # skip receipts unavailable at the reached gate
+            if [[ ! -f "$receipt" ]]; then
+              continue
+            fi
+            grep -E 'm0-webview-lifecycle|m0-compiled-fixture' "$receipt" || true
+          done
+      - id: ios-receipt
+        name: Upload bounded iOS M0 evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          if-no-files-found: warn
+          name: ios-m0-evidence-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/weather-ios/toolchain.txt
+            ${{ runner.temp }}/weather-ios/project-list.json
+            ${{ runner.temp }}/weather-ios/simulator-boot.stderr
+            ${{ runner.temp }}/weather-ios/simulator-udid.txt
+            ${{ runner.temp }}/weather-ios/debug-build.log
+            ${{ runner.temp }}/weather-ios/debug-build-passed.txt
+            ${{ runner.temp }}/weather-ios/release-validation-passed.txt
+            ${{ runner.temp }}/weather-ios/test.log
+            ${{ runner.temp }}/weather-ios/test-status.txt
+            ${{ runner.temp }}/weather-ios/test-attachments-export.log
+            ${{ runner.temp }}/weather-ios/test-attachments-export-status.txt
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle.log
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle-start-status.txt
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle-process-status.txt
+            ${{ runner.temp }}/weather-ios/test-app-lifecycle-status.txt
+            ${{ runner.temp }}/weather-ios/test-attachments/**
+            ${{ runner.temp }}/weather-ios/Weather.xcresult
+            ${{ runner.temp }}/weather-ios/release-build-analyze.log
+            ${{ runner.temp }}/weather-ios/release-receipts/**
+            ${{ runner.temp }}/weather-ios/widget-host-probe/**
+            !${{ runner.temp }}/weather-ios/widget-host-probe/DerivedData/**
+          retention-days: 7
+      - name: Enforce the iOS M0 evidence gate
+        if: always()
+        env:
+          APPLE_PROBE_OUTCOME: ${{ steps.apple-probe.outcome }}
+          APPLE_RECEIPT_OUTCOME: ${{ steps.apple-receipt.outcome }}
+          IOS_BUILD_OUTCOME: ${{ steps.ios-build.outcome }}
+          IOS_DEBUG_COMPILE_OUTCOME: ${{ steps.ios-debug-compile.outcome }}
+          IOS_RELEASE_VALIDATION_OUTCOME: ${{ steps.ios-release-validation.outcome }}
+          IOS_HOST_PROBE_OUTCOME: ${{ steps.ios-host-probe.outcome }}
+          IOS_RECEIPT_OUTCOME: ${{ steps.ios-receipt.outcome }}
+        run: |
+          # reject missing build, receipt, or genuine host evidence
+          if [[ "${APPLE_PROBE_OUTCOME}" != "success" \
+            || "${APPLE_RECEIPT_OUTCOME}" != "success" \
+            || "${IOS_BUILD_OUTCOME}" != "success" \
+            || "${IOS_DEBUG_COMPILE_OUTCOME}" != "success" \
+            || "${IOS_RELEASE_VALIDATION_OUTCOME}" != "success" \
+            || "${IOS_HOST_PROBE_OUTCOME}" != "success" \
+            || "${IOS_RECEIPT_OUTCOME}" != "success" ]]; then
+            printf 'iOS M0 evidence is incomplete; inspect both uploaded receipts.\n' >&2
+            exit 1
+          fi

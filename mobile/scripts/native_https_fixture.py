@@ -912,6 +912,8 @@ def write_ready_files(runtime: Path, evidence: Path, public_ca: Path) -> None:
         "WEATHER_HTTPS_FIXTURE_ANDROID_UNTRUSTED_ORIGIN": f"https://10.0.2.2:{UNTRUSTED_PORT}",
         "WEATHER_HTTPS_FIXTURE_CA_PEM": str(public_ca.resolve()),
         "WEATHER_HTTPS_FIXTURE_EVIDENCE_DIR": str(evidence.resolve()),
+        "WEATHER_HTTPS_FIXTURE_IOS_ORIGIN": f"https://127.0.0.1:{TRUSTED_PORT}",
+        "WEATHER_HTTPS_FIXTURE_IOS_UNTRUSTED_ORIGIN": f"https://127.0.0.1:{UNTRUSTED_PORT}",
         "WEATHER_HTTPS_FIXTURE_PASSWORD": LOGIN_PASSWORD,
         "WEATHER_HTTPS_FIXTURE_USERNAME": LOGIN_USERNAME,
     }

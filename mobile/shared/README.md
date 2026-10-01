@@ -1,7 +1,7 @@
 # Weather widget shared contract
 
 `widget-forecast-v1.schema.json` is the closed public contract consumed by the
-Android widgets. Canonical JSON fixtures live under `fixtures/`. Each
+Android and iOS widgets. Canonical JSON fixtures live under `fixtures/`. Each
 fixture contains the filtered forecast input (`input.json`), the projected
 public bytes (`snapshot.json`), and an independently calculated native semantic
 oracle (`expected.json`).

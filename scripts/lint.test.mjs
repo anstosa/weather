@@ -16,17 +16,19 @@ test("lint scans authored native text without walking build artifacts", async ()
 
   try {
     await writeFile(join(root, "Weather.kt"), "val weather = true\n");
+    await writeFile(join(root, "Weather.swift"), "let weather = true\n");
     await writeFile(join(root, "GenerateBrandAssets.java"), "final class GenerateBrandAssets {}\n");
 
     // populate every ignored native output boundary with invalid text
-    for (const directory of [".gradle", "build", "host-evidence"]) {
+    for (const directory of [".artifacts", ".gradle", "build", "DerivedData", "host-evidence"]) {
       const generated = join(root, directory);
       await mkdir(generated);
       await writeFile(join(generated, "Generated.kt"), "val generated = true   \n");
+      await writeFile(join(generated, "Generated.swift"), "let generated = true   \n");
     }
 
     const result = await executeFile(process.execPath, [lintScript, root], { cwd: repoRoot });
-    assert.match(result.stdout, /Linted 2 files\./u);
+    assert.match(result.stdout, /Linted 3 files\./u);
 
     await writeFile(join(root, "Widget.kt"), "val widget = true   \n");
     await assert.rejects(

@@ -3,9 +3,11 @@ import { basename, extname, join, relative, resolve } from "node:path";
 
 const root = process.cwd();
 const ignoredDirectories = new Set([
+  ".artifacts",
   ".git",
   ".gradle",
   ".omx",
+  "DerivedData",
   "build",
   "coverage",
   "dist",
@@ -22,11 +24,15 @@ const textExtensions = new Set([
   ".kts",
   ".md",
   ".mjs",
+  ".plist",
   ".pro",
   ".properties",
   ".py",
   ".sh",
+  ".swift",
   ".ts",
+  ".xcconfig",
+  ".xcscheme",
   ".xml",
   ".yml",
   ".yaml",

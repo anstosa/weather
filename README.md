@@ -142,11 +142,12 @@ The current Weather tunnel origin is <https://weather.ballydidean.farm>.
 
 ## Native companions
 
-`mobile/android/` contains a credential-free native companion for the hosted
-Weather site and one native forecast widget. The widget validates a closed
-public snapshot and shared deterministic fixtures; cache, scheduling, grouping,
-and rendering adapters remain native. Android builds with the checked Gradle
-wrapper and JDK 17.
+`mobile/android/` and `mobile/ios/` contain credential-free native companions
+for the hosted Weather site and one platform-native forecast widget. Both
+widgets validate the same closed public snapshot and shared deterministic
+fixtures; platform cache, scheduling, grouping, and rendering adapters remain
+native. Android builds with the checked Gradle wrapper and JDK 17. iOS builds
+with the pinned Xcode and Simulator matrix without production signing.
 
 Native Debug and unsigned Release builds are test artifacts, not
 store-submittable binaries. Genuine host evidence and independent visual
