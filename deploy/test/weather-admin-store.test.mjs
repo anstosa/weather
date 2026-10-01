@@ -128,8 +128,8 @@ test("property layout defaults legacy sensor icons safely", async (t) => {
   assert.equal((await store.readLayout())[0]?.icon, null);
 });
 
-// persist every independent switch combination without weakening invalid state
-test("forecast adjustment switches retain all eight combinations and fail closed on corruption", async (t) => {
+// preserve the v1 envelope while using rain as the shared switch
+test("forecast adjustment settings canonicalize legacy state and fail closed on corruption", async (t) => {
   const options = await fixture(t);
   const store = new WeatherAdminStore(options);
   const path = join(dirname(options.layoutPath), "forecast-adjustment-settings.json");
@@ -146,15 +146,31 @@ test("forecast adjustment switches retain all eight combinations and fail closed
     error: null,
   });
 
-  // exercise every independent three-bit selection
+  await writeFile(path, JSON.stringify({
+    version: 1,
+    temperature: true,
+    wind: true,
+    rain: false,
+  }));
+  assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, {
+    version: 1,
+    temperature: false,
+    wind: false,
+    rain: false,
+  });
+
+  // canonicalize every legacy three-bit selection to its rain value
   for (let mask = 0; mask < 8; mask += 1) {
-    const settings = {
+    const legacySettings = {
       version: 1,
       temperature: Boolean(mask & 1),
       wind: Boolean(mask & 2),
       rain: Boolean(mask & 4),
     };
-    assert.deepEqual(await store.writeAdjustmentSettings(settings), settings);
+    const enabled = legacySettings.rain;
+    const settings = { version: 1, temperature: enabled, wind: enabled, rain: enabled };
+    assert.deepEqual(await store.writeAdjustmentSettings(legacySettings), settings);
+    assert.deepEqual(JSON.parse(await readFile(path, "utf8")), settings);
     assert.deepEqual((await store.readAdjustmentSettingsStatus()).settings, settings);
     assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, settings);
   }
@@ -199,7 +215,7 @@ test("forecast adjustment switches retain all eight combinations and fail closed
     temperature: true,
     wind: false,
     rain: false,
-  }), { version: 1, temperature: true, wind: false, rain: false });
+  }), { version: 1, temperature: false, wind: false, rain: false });
   assert.equal((await store.readAdjustmentSettingsStatus()).error, null);
 
   // keep damaged marker reads off until an authenticated rewrite repairs it
@@ -208,9 +224,13 @@ test("forecast adjustment switches retain all eight combinations and fail closed
     settings: { version: 1, temperature: false, wind: false, rain: false },
     error: "adjustment_settings_unavailable",
   });
-  const recovered = { version: 1, temperature: false, wind: true, rain: false };
-  assert.deepEqual(await store.writeAdjustmentSettings(recovered), recovered);
-  assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, recovered);
+  const recovered = { version: 1, temperature: false, wind: false, rain: true };
+  const canonicalRecovered = { version: 1, temperature: true, wind: true, rain: true };
+  assert.deepEqual(await store.writeAdjustmentSettings(recovered), canonicalRecovered);
+  assert.deepEqual(
+    (await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings,
+    canonicalRecovered,
+  );
 
   // losing the whole web volume cannot become a new enabled first run
   await Promise.all([
@@ -232,12 +252,16 @@ test("forecast adjustment switches retain all eight combinations and fail closed
 test("first-run adjustment initialization preserves a concurrent admin write", async (t) => {
   const options = await fixture(t);
   const store = new WeatherAdminStore(options);
-  const chosen = { version: 1, temperature: false, wind: true, rain: false };
+  const chosen = { version: 1, temperature: false, wind: false, rain: true };
+  const canonicalChosen = { version: 1, temperature: true, wind: true, rain: true };
   await store.bootstrap("test-bootstrap-token-with-32-bytes-minimum", "P@ssword-test");
 
   await Promise.all([
     store.readAdjustmentSettingsStatus(),
     store.writeAdjustmentSettings(chosen),
   ]);
-  assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, chosen);
+  assert.deepEqual(
+    (await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings,
+    canonicalChosen,
+  );
 });

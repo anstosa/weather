@@ -32,6 +32,8 @@ export const TEMPERATURE_MOS_DELAYED_RUNTIME_POLICY = Object.freeze({
 
 const SHORT_LEAD_CONTRACT_VERSION =
   "temperature-shortlead-models-research/v1" as const;
+export const TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION =
+  "temperature-permanent-model/v1" as const;
 const STRENGTH_CONTRACT_VERSION =
   "temperature-winner-extensions-research/v1" as const;
 const MILLISECONDS_PER_HOUR = 3_600_000;
@@ -80,14 +82,12 @@ export interface TemperatureMosRuntimeStrengthBand {
   readonly trainingCutoffUtc: string;
 }
 
-// describe the frozen winner material required for inference
-export interface TemperatureMosRuntimeModel {
+// describe shared fitted material required for inference
+interface TemperatureMosRuntimeModelMaterial {
   readonly adaptiveCoefficients: readonly number[] | null;
   readonly cohort: typeof TEMPERATURE_MOS_RUNTIME_POLICY.cohort;
-  readonly contractVersion: typeof SHORT_LEAD_CONTRACT_VERSION;
   readonly directCoefficients: readonly number[] | null;
   readonly learnedStrengthContractVersion: typeof STRENGTH_CONTRACT_VERSION;
-  readonly month: string;
   readonly scope:
     | typeof TEMPERATURE_MOS_RUNTIME_POLICY.scope
     | typeof TEMPERATURE_MOS_DELAYED_RUNTIME_POLICY.scope;
@@ -99,10 +99,27 @@ export interface TemperatureMosRuntimeModel {
   readonly trainingCutoffUtc: string;
 }
 
+// retain the exact monthly research identity
+export interface TemperatureMosRuntimeModel extends TemperatureMosRuntimeModelMaterial {
+  readonly contractVersion: typeof SHORT_LEAD_CONTRACT_VERSION;
+  readonly month: string;
+}
+
+// freeze one causal fit for all later valid months
+export interface TemperatureMosPermanentRuntimeModel extends TemperatureMosRuntimeModelMaterial {
+  readonly contractVersion: typeof TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION;
+  readonly effectiveFrom: string;
+  readonly latestTrainingValidAt: string;
+}
+
+export type TemperatureMosServingModel =
+  | TemperatureMosRuntimeModel
+  | TemperatureMosPermanentRuntimeModel;
+
 // bind every inference dependency explicitly
 export interface TemperatureMosRuntimeInput {
   readonly forecast: TemperatureMosRuntimeForecast;
-  readonly model: TemperatureMosRuntimeModel;
+  readonly model: TemperatureMosServingModel;
   readonly recentErrorState: TemperatureMosRuntimeRecentErrorState;
 }
 
@@ -389,14 +406,15 @@ function cutoffMatchesMonth(cutoff: number, month: string): boolean {
 // validate the original winner and learned-strength material
 function validateModel(
   forecast: TemperatureMosRuntimeForecast,
-  model: TemperatureMosRuntimeModel,
+  model: TemperatureMosServingModel,
   runInitializedAtMilliseconds: number,
 ): void {
   // require exact frozen contract identities
   if (
     model === null ||
     typeof model !== "object" ||
-    model.contractVersion !== SHORT_LEAD_CONTRACT_VERSION ||
+    (model.contractVersion !== SHORT_LEAD_CONTRACT_VERSION &&
+      model.contractVersion !== TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION) ||
     model.learnedStrengthContractVersion !== STRENGTH_CONTRACT_VERSION ||
     (model.scope !== TEMPERATURE_MOS_RUNTIME_POLICY.scope &&
       model.scope !== TEMPERATURE_MOS_DELAYED_RUNTIME_POLICY.scope)
@@ -404,12 +422,8 @@ function validateModel(
     fail("invalid_model");
   }
 
-  // bind provider and target month to the fitted model
-  if (
-    model.cohort !== forecast.cohort ||
-    !/^\d{4}-\d{2}$/u.test(model.month) ||
-    localCalendarFeaturesFor(forecast.validAt).localDate.slice(0, 7) !== model.month
-  ) {
+  // bind one fitted provider to its forecast cohort
+  if (model.cohort !== forecast.cohort) {
     fail("model_identity_mismatch");
   }
 
@@ -420,9 +434,39 @@ function validateModel(
     fail("model_not_yet_available");
   }
 
-  // require the exact seven-day local-month embargo
-  if (!cutoffMatchesMonth(cutoff, model.month)) {
-    fail("invalid_model");
+  // retain monthly embargo or enforce the static model's causal boundary
+  if (model.contractVersion === SHORT_LEAD_CONTRACT_VERSION) {
+    // reject use outside the fitted local month
+    if (
+      !/^\d{4}-\d{2}$/u.test(model.month) ||
+      localCalendarFeaturesFor(forecast.validAt).localDate.slice(0, 7) !== model.month
+    ) {
+      fail("model_identity_mismatch");
+    }
+
+    // require the exact historical seven-day embargo
+    if (!cutoffMatchesMonth(cutoff, model.month)) {
+      fail("invalid_model");
+    }
+  } else {
+    const effectiveFrom = instantMilliseconds(model.effectiveFrom, "invalid_model");
+    const latestTrainingValidAt = instantMilliseconds(
+      model.latestTrainingValidAt,
+      "invalid_model",
+    );
+
+    // prohibit future training labels and earlier serving
+    if (
+      latestTrainingValidAt + 7 * MILLISECONDS_PER_HOUR > cutoff ||
+      cutoff > effectiveFrom
+    ) {
+      fail("invalid_model");
+    }
+
+    // keep the new contract inactive before its declared serving epoch
+    if (instantMilliseconds(forecast.validAt, "invalid_forecast") < effectiveFrom) {
+      fail("model_not_yet_available");
+    }
   }
 
   // preserve raw for an unsupported original winner

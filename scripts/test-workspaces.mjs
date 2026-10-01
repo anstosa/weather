@@ -39,7 +39,7 @@ export const smokeNames = Object.freeze([
   "public navigation updates the URL and restores routed content from history",
   "anonymous home-network viewers see indoor and soil panels only while allowed",
   "admin login and logout work inside an iframe",
-  "admin forecast switches persist and hide the public toggle when all off",
+  "admin shared forecast switch persists and hides the public toggle when off",
 ]);
 
 // discover the same unit files selected by standalone workspace scripts

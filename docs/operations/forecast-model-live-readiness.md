@@ -1,5 +1,42 @@
 # Forecast model live-integration readiness
 
+## October 1, 2026 permanent serving policy
+
+The operator requested that the existing temperature and wind adjustments no
+longer expire. The temporary shared rain administrator switch has since been
+replaced by three independent temperature, wind, and rain checkboxes.
+New content-addressed permanent authorizations select a fixed cross-month
+temperature model and the unchanged wind candidate/report. The temperature
+coefficient vectors and learned strengths are byte-for-byte equal to the
+September fit, but its monthly identity is replaced by the explicit
+`temperature-permanent-model/v1` serving contract, effective from October 1
+local midnight. The September artifacts remain immutable and expired. These
+contracts change serving duration and temperature month eligibility, not
+training data or model qualification.
+
+The temperature fit uses the August 25, 2026 07:00 UTC cutoff, with latest
+training valid hour at August 25 00:00 UTC. Frozen-forward transfer replay over
+six launch vintages and their next two months covered 25,968 events and 546
+dates: equal-date MAE was 1.320443°C raw and 1.062427°C adjusted, a 19.5401%
+improvement. A 1,000-sample deterministic seven-day-block bootstrap gave a
+16.3029%–22.6588% 95% interval; p95 absolute error improved from 3.7000°C to
+2.8866°C. All 36 launch/offset/season/horizon cells met the preselected -2%
+floor, with the weakest at -1.8293%. The exact September fit on September
+1–6 showed +7.4097% overall skill, including positive skill in both serving
+bands. Replay digest:
+`a27f8e6c6f764cb19d232ca9fb7ecc89324bd5be61601b20b7f005b8a872691d`.
+This reuses development data, establishes a three-month transfer analogue,
+and does not prove perpetual skill or replace later as-issued monitoring.
+
+Each admin switch is a serving gate for its own model. Turning it off returns
+raw values for that metric alone. Turning it on does not bypass missing or stale
+source data, model identity checks, correction bounds, runtime verification, or
+raw fallback. A rain decision outside its operational window does not shut off
+eligible temperature or wind decisions. Independent emergency kill switches
+remain a separate fail-raw control for temperature and wind. Release validation
+must prove all eight independent on/off combinations and each emergency kill switch before
+the immutable image is deployed and verified on Blueberry.
+
 ## September 8, 2026 reviewed release 13 receipt
 
 Release `2026.09.08-13`, source commit

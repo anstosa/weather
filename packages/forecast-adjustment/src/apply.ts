@@ -30,6 +30,7 @@ import type {
   LoadedForecastAdjustmentRuntimeV1,
   LoadedForecastAdjustmentWindCanaryRuntimeV1,
 } from "./runtime-loader.js";
+import { FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2 } from "./wind-canary.js";
 
 // accept one unchanged raw v4 forecast row
 export interface ApplyForecastAdjustmentInputV1 {
@@ -58,17 +59,21 @@ export function applyForecastAdjustment(
   const candidate = bundle.candidate;
   const windCanary = "artifactKind" in bundle;
 
-  // enforce the canary window for every application after startup
+  // enforce canary authorization for every application after startup
   if (windCanary) {
     const evaluatedAt = Date.parse(input.evaluatedAt ?? new Date().toISOString());
     const activatedAt = Date.parse(bundle.authorization.activatedAt);
-    const expiresAt = Date.parse(bundle.authorization.expiresAt);
+    const expiresAt =
+      bundle.contractVersion ===
+      FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2
+        ? null
+        : Date.parse(bundle.authorization.expiresAt);
 
-    // fail raw outside the authorized half-open interval
+    // fail raw before activation or after a finite v1 deadline
     if (
       !Number.isFinite(evaluatedAt) ||
       evaluatedAt < activatedAt ||
-      evaluatedAt >= expiresAt
+      (expiresAt !== null && evaluatedAt >= expiresAt)
     ) {
       return createForecastAdjustmentFailRawDecision(
         "disabled",

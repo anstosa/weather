@@ -541,12 +541,12 @@ test("server image bakes only reviewed forecast adjustment config", () => {
     read("config/forecast-adjustments/ballydidean-wind-canary.json"),
   );
   assert.equal(windCanaryRegistry.contractVersion, "forecast-adjustment-wind-canary-registry/v1");
-  assert.equal(windCanaryRegistry.activeBundle.bundleSha256, "5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1");
+  assert.equal(windCanaryRegistry.activeBundle.bundleSha256, "51f8efd63bef678a7f02d11bdab91405ec48f19808f64d3fe8354036c9b302a2");
   const temperatureRegistry = JSON.parse(
     read("config/forecast-adjustments/ballydidean-temperature-canary.json"),
   );
   assert.equal(temperatureRegistry.contractVersion, "forecast-adjustment-temperature-canary-registry/v1");
-  assert.equal(temperatureRegistry.activeBundle.bundleSha256, "3e82073a266ca88c15f492f86bbefbca8b8cda029520af6cc78e0a0062ee50dd");
+  assert.equal(temperatureRegistry.activeBundle.bundleSha256, "4d4e229b42823e53d2db062ec18c625bb2d2378a8a46d641fa95fabb59501b0e");
   const temperatureBundle = JSON.parse(read(join("config/forecast-adjustments/ballydidean", temperatureRegistry.activeBundle.path)));
   assert.equal(temperatureBundle.model.scope, "assumed_delay6_next12");
   assert.equal(temperatureBundle.servedForecastIdentity.upstreamModel, "ecmwf_ifs");
@@ -993,13 +993,20 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(invalidWrite.status, 400);
     const adjustmentSettingsPath = join(fixtureRoot, "forecast-adjustment-settings.json");
 
-    // verify every admin combination against persisted and projected forecast state
+    // verify every legacy combination follows rain across persisted and projected state
     for (let mask = 0; mask < 8; mask += 1) {
       const switches = {
         version: 1,
         temperature: Boolean(mask & 1),
         wind: Boolean(mask & 2),
         rain: Boolean(mask & 4),
+      };
+      const enabled = switches.rain;
+      const canonicalSwitches = {
+        version: 1,
+        temperature: enabled,
+        wind: enabled,
+        rain: enabled,
       };
       const updated = await fetch(adminSwitchUrl, {
         body: JSON.stringify(switches),
@@ -1014,24 +1021,24 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       const row = projected.data[0];
 
       assert.equal(updated.status, 200);
-      assert.deepEqual(await updated.json(), { data: switches });
-      assert.deepEqual(await publicRead.json(), { data: switches });
-      assert.deepEqual(await adminRead.json(), { data: switches });
-      assert.deepEqual(JSON.parse(await readFile(adjustmentSettingsPath, "utf8")), switches);
-      assert.deepEqual(projected.adjustmentSettings, switches);
+      assert.deepEqual(await updated.json(), { data: canonicalSwitches });
+      assert.deepEqual(await publicRead.json(), { data: canonicalSwitches });
+      assert.deepEqual(await adminRead.json(), { data: canonicalSwitches });
+      assert.deepEqual(JSON.parse(await readFile(adjustmentSettingsPath, "utf8")), canonicalSwitches);
+      assert.deepEqual(projected.adjustmentSettings, canonicalSwitches);
       assert.equal(projectedResponse.headers.get("cache-control"), "no-store");
       assert.deepEqual(row.metrics, forecastFixture.data[0].metrics);
       assert.deepEqual(row.provenance, forecastFixture.data[0].provenance);
-      assert.equal(row.adjustment.state, switches.wind ? "active" : "disabled");
-      assert.equal(projected.adjustmentRuntime.state, switches.wind ? "active" : "disabled");
-      assert.equal(row.temperatureAdjustment.state, switches.temperature ? "active" : "disabled");
-      assert.equal(projected.temperatureAdjustmentRuntime.state, switches.temperature ? "active" : "disabled");
-      assert.equal(row.rainAdjustment.state, switches.rain ? "active" : "disabled");
-      assert.equal(projected.rainAdjustmentRuntime.state, switches.rain ? "active" : "disabled");
-      assert.equal(row.adjustment.adjustedMetrics.windSpeedMps, switches.wind ? 4 : undefined);
-      assert.equal(row.temperatureAdjustment.correctedTemperatureC, switches.temperature ? 13 : null);
-      assert.equal(row.rainAdjustment.correctedPrecipitationMm, switches.rain ? 1.5 : null);
-      assert.equal(rainStatus.data.modelEnabled, switches.rain);
+      assert.equal(row.adjustment.state, enabled ? "active" : "disabled");
+      assert.equal(projected.adjustmentRuntime.state, enabled ? "active" : "disabled");
+      assert.equal(row.temperatureAdjustment.state, enabled ? "active" : "disabled");
+      assert.equal(projected.temperatureAdjustmentRuntime.state, enabled ? "active" : "disabled");
+      assert.equal(row.rainAdjustment.state, enabled ? "active" : "disabled");
+      assert.equal(projected.rainAdjustmentRuntime.state, enabled ? "active" : "disabled");
+      assert.equal(row.adjustment.adjustedMetrics.windSpeedMps, enabled ? 4 : undefined);
+      assert.equal(row.temperatureAdjustment.correctedTemperatureC, enabled ? 13 : null);
+      assert.equal(row.rainAdjustment.correctedPrecipitationMm, enabled ? 1.5 : null);
+      assert.equal(rainStatus.data.modelEnabled, enabled);
       assert.equal(rainStatus.data.qualificationEnabled, false);
     }
 
@@ -1073,12 +1080,14 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       version: 1, temperature: false, wind: false, rain: false,
     });
     const repairedMarker = await fetch(adminSwitchUrl, {
-      body: JSON.stringify({ version: 1, temperature: false, wind: true, rain: false }),
+      body: JSON.stringify({ version: 1, temperature: false, wind: false, rain: true }),
       headers: { cookie: sessionCookie, "content-type": "application/json", origin: sameOrigin },
       method: "PUT",
     });
     assert.equal(repairedMarker.status, 200);
-    assert.equal((await (await fetch(publicSwitchUrl)).json()).data.wind, true);
+    assert.deepEqual((await (await fetch(publicSwitchUrl)).json()).data, {
+      version: 1, temperature: true, wind: true, rain: true,
+    });
     const logout = await fetch(`http://127.0.0.1:${webPort}/admin/logout`, {
       headers: {
         cookie: sessionCookie,

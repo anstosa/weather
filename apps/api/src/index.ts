@@ -705,8 +705,9 @@ function projectForecastAdjustmentRuntime(
   evaluatedAtInput: string,
 ): ApiForecastAdjustmentRuntime {
   const loadedAt = validateUtcInstant(loadedAtInput, "forecastAdjustment.loadedAt");
-  const evaluatedAt = Date.parse(
-    validateUtcInstant(evaluatedAtInput, "forecastAdjustment.evaluatedAt"),
+  const evaluatedAt = validateUtcInstant(
+    evaluatedAtInput,
+    "forecastAdjustment.evaluatedAt",
   );
 
   // redact all model content while the runtime is inactive
@@ -728,13 +729,16 @@ function projectForecastAdjustmentRuntime(
   }
 
   const canary = "artifactKind" in runtime.bundle;
-  const expiresAt = canary ? runtime.bundle.authorization.expiresAt : null;
+  const expiresAt = canary && "expiresAt" in runtime.bundle.authorization
+    ? runtime.bundle.authorization.expiresAt
+    : null;
+  const evaluatedAtMs = Date.parse(evaluatedAt);
 
-  // fail raw outside the canary window
+  // check only the cached authorization clock after startup validation
   if (
     canary &&
-    (evaluatedAt < Date.parse(runtime.bundle.authorization.activatedAt) ||
-      evaluatedAt >= Date.parse(runtime.bundle.authorization.expiresAt))
+    (evaluatedAtMs < Date.parse(runtime.bundle.authorization.activatedAt) ||
+      (expiresAt !== null && evaluatedAtMs >= Date.parse(expiresAt)))
   ) {
     return {
       activationMode: null,
@@ -793,11 +797,9 @@ function projectForecastTemperatureAdjustmentRuntime(
     loadedAtInput,
     "temperatureAdjustment.loadedAt",
   );
-  const evaluatedAt = Date.parse(
-    validateUtcInstant(
-      evaluatedAtInput,
-      "temperatureAdjustment.evaluatedAt",
-    ),
+  const evaluatedAt = validateUtcInstant(
+    evaluatedAtInput,
+    "temperatureAdjustment.evaluatedAt",
   );
 
   // redact artifact content while loader state is disabled
@@ -813,11 +815,12 @@ function projectForecastTemperatureAdjustmentRuntime(
     };
   }
 
-  // recheck cached authorization at request time
-  if (
-    evaluatedAt < Date.parse(runtime.bundle.authorization.activatedAt) ||
-    evaluatedAt >= Date.parse(runtime.bundle.authorization.expiresAt)
-  ) {
+  const expiresAt = runtime.bundle.authorization.expiresAt;
+  const evaluatedAtMs = Date.parse(evaluatedAt);
+
+  // check only the cached authorization clock after startup validation
+  if (evaluatedAtMs < Date.parse(runtime.bundle.authorization.activatedAt) ||
+    (expiresAt !== null && evaluatedAtMs >= Date.parse(expiresAt))) {
     return {
       activeBundle: null,
       authorizationSha256: null,
@@ -832,7 +835,7 @@ function projectForecastTemperatureAdjustmentRuntime(
   return {
     activeBundle: runtime.bundle.bundleSha256,
     authorizationSha256: runtime.bundle.authorization.authorizationSha256,
-    expiresAt: runtime.bundle.authorization.expiresAt,
+    expiresAt,
     loadedAt,
     reasonCode: null,
     source: projectTemperatureCanarySourceStatus(source),

@@ -5,11 +5,16 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  applyEcmwfTemperatureMosRuntime,
   applyForecastAdjustmentTemperatureCanary,
   canonicalJsonBytes,
+  canonicalObjectSha256,
+  createPermanentForecastAdjustmentTemperatureCanaryAuthorization,
+  createPermanentForecastAdjustmentTemperatureCanaryRuntimeBundle,
   createForecastAdjustmentTemperatureCanaryAuthorization,
   createForecastAdjustmentTemperatureCanaryRuntimeBundle,
   createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot,
+  forecastAdjustmentTemperatureCanaryIsActiveAt,
   forecastAdjustmentTemperatureCanaryIsKilled,
   runtimeCalendarFingerprint,
   validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks,
@@ -71,6 +76,31 @@ function createBundle() {
       sourceDelayHours: 6,
       upstreamModel: "ecmwf_ifs",
     },
+  });
+}
+
+// create one frozen cross-month bundle
+function createPermanentBundle() {
+  const finiteBundle = createBundle();
+  const { month: _month, ...fittedMaterial } = finiteBundle.model;
+  const authorization =
+    createPermanentForecastAdjustmentTemperatureCanaryAuthorization({
+      activatedAt: "2026-10-01T16:33:20.936Z",
+      authorizationReason: "Ansel requested temperature adjustments without expiry",
+      authorizedAt: "2026-10-01T16:33:20.936Z",
+      authorizedBy: "Ansel",
+    });
+  return createPermanentForecastAdjustmentTemperatureCanaryRuntimeBundle({
+    authorization,
+    evidence: finiteBundle.evidence,
+    model: {
+      ...fittedMaterial,
+      contractVersion: "temperature-permanent-model/v1",
+      effectiveFrom: "2026-10-01T07:00:00.000Z",
+      latestTrainingValidAt: "2026-08-25T00:00:00.000Z",
+    },
+    runtimeFingerprint: finiteBundle.runtimeFingerprint,
+    servedForecastIdentity: finiteBundle.servedForecastIdentity,
   });
 }
 
@@ -239,6 +269,150 @@ test("temperature authorization and bundle reject expiry and tampering", () => {
   );
 });
 
+test("permanent temperature model applies after September without expiry", async () => {
+  const finiteBundle = createBundle();
+  const bundle = createPermanentBundle();
+  assert.equal(bundle.contractVersion, "forecast-adjustment-temperature-canary-bundle/v2");
+  assert.equal(bundle.authorization.expiresAt, null);
+  assert.equal(bundle.authorization.permanent, true);
+  assert.deepEqual(bundle.evidence, finiteBundle.evidence);
+  assert.deepEqual(bundle.model.directCoefficients, finiteBundle.model.directCoefficients);
+  assert.deepEqual(bundle.model.adaptiveCoefficients, finiteBundle.model.adaptiveCoefficients);
+  assert.equal(bundle.model.contractVersion, "temperature-permanent-model/v1");
+  assert.deepEqual(bundle.runtimeFingerprint, finiteBundle.runtimeFingerprint);
+  assert.deepEqual(bundle.servedForecastIdentity, finiteBundle.servedForecastIdentity);
+  assert.equal(
+    forecastAdjustmentTemperatureCanaryIsActiveAt(
+      bundle,
+      "2026-10-01T16:33:20.935Z",
+    ),
+    false,
+  );
+  assert.equal(
+    forecastAdjustmentTemperatureCanaryIsActiveAt(
+      bundle,
+      "2100-01-01T00:00:00.000Z",
+    ),
+    true,
+  );
+  const octoberDecision = applyForecastAdjustmentTemperatureCanary(
+    { bundle, reasonCode: null, state: "active" },
+    {
+      evaluatedAt: "2026-10-01T18:10:00.000Z",
+      rawBestMatchTemperatureC: 17.2,
+      recentErrorState: {
+        ...createState(false),
+        targetRunInitializedAt: "2026-10-01T12:00:00.000Z",
+        windowEndValidAt: "2026-10-01T05:00:00.000Z",
+      },
+      sourceForecast: createSource({
+        firstReceivedAt: "2026-10-01T18:05:00.000Z",
+        runInitializedAt: "2026-10-01T12:00:00.000Z",
+        validAt: "2026-10-01T19:00:00.000Z",
+      }),
+      validAt: "2026-10-01T19:00:00.000Z",
+    },
+  );
+  assert.equal(octoberDecision.state, "active", octoberDecision.reasonCode);
+  assert.equal(octoberDecision.branch, "direct");
+  assert.equal(octoberDecision.reasonCode, null);
+  assert.notEqual(octoberDecision.correctedTemperatureC, null);
+
+  const root = await mkdtemp(join(tmpdir(), "weather-temperature-permanent-"));
+  await writeRuntimeTree(root, bundle);
+  assert.equal(
+    (await createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot(root, {
+      environmentKillSwitch: "0",
+      now: () => "2100-01-01T00:00:00.000Z",
+    }).load()).state,
+    "active",
+  );
+});
+
+// bind the frozen fit to causal training and serving boundaries
+test("permanent temperature bundles reject rehashed causal boundary violations", () => {
+  const original = createPermanentBundle();
+  const boundary = structuredClone(original);
+  boundary.model.effectiveFrom = boundary.model.trainingCutoffUtc;
+  boundary.bundleSha256 = canonicalObjectSha256(boundary, "bundleSha256");
+  assert.equal(
+    Date.parse(boundary.model.latestTrainingValidAt) + 7 * 3_600_000,
+    Date.parse(boundary.model.trainingCutoffUtc),
+  );
+  assert.doesNotThrow(() => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(boundary));
+
+  // reject either side of the causal fit by one millisecond
+  for (const overrides of [
+    { latestTrainingValidAt: "2026-08-25T00:00:00.001Z" },
+    { effectiveFrom: "2026-08-25T06:59:59.999Z" },
+  ]) {
+    const bundle = structuredClone(original);
+    Object.assign(bundle.model, overrides);
+    bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+    assert.throws(
+      () => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle),
+      /permanent temperature training boundary is invalid/u,
+    );
+  }
+});
+
+// preserve raw independently of bundle validation at numerical inference
+test("permanent temperature inference rejects future training and pre-effective forecasts", () => {
+  const original = createPermanentBundle();
+  const source = createSource();
+  const forecast = { ...source, cohort: original.model.cohort, key: "causal-boundary" };
+  const model = { ...original.model, effectiveFrom: forecast.validAt };
+  const recentErrorState = createState(false);
+  assert.equal(applyEcmwfTemperatureMosRuntime({ forecast, model, recentErrorState }).applied, true);
+  const cases = [
+    [{ latestTrainingValidAt: "2026-08-25T00:00:00.001Z" }, "invalid_model"],
+    [{ effectiveFrom: "2026-08-25T06:59:59.999Z" }, "invalid_model"],
+    [{ effectiveFrom: "2026-09-08T07:00:00.001Z" }, "model_not_yet_available"],
+  ];
+
+  // observe exact fail-raw reasons at each one-millisecond violation
+  for (const [overrides, reason] of cases) {
+    const result = applyEcmwfTemperatureMosRuntime({
+      forecast,
+      model: { ...model, ...overrides },
+      recentErrorState,
+    });
+    assert.equal(result.applied, false);
+    assert.equal(result.reason, reason);
+    assert.equal(result.predictionTemperatureC, forecast.rawTemperatureC);
+  }
+});
+
+// reject a validly hashed receipt issued after activation
+test("permanent temperature authorization cannot precede its operator approval", () => {
+  const bundle = structuredClone(createPermanentBundle());
+  bundle.authorization.authorizedAt = new Date(Date.parse(bundle.authorization.activatedAt) + 1).toISOString();
+  bundle.authorization.authorizationSha256 = canonicalObjectSha256(bundle.authorization, "authorizationSha256");
+  bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+  assert.throws(
+    () => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle),
+    /permanent temperature authorization is invalid/u,
+  );
+});
+
+test("permanent temperature authorization rejects rehashed finite substitution", () => {
+  const original = createPermanentBundle();
+  const authorization = {
+    ...original.authorization,
+    expiresAt: "2100-01-01T00:00:00.000Z",
+  };
+  authorization.authorizationSha256 = canonicalObjectSha256(
+    authorization,
+    "authorizationSha256",
+  );
+  const bundle = { ...original, authorization };
+  bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+  assert.throws(
+    () => verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle),
+    /permanent temperature authorization is invalid/u,
+  );
+});
+
 test("temperature loader defaults killed and isolates expiry and symlinks", async () => {
   const root = await mkdtemp(join(tmpdir(), "weather-temperature-canary-"));
   const bundle = createBundle();
@@ -301,7 +475,7 @@ test("committed temperature canary is sanitized and content addressed", async ()
   assert.equal(registryBytes, canonicalJsonBytes(registry));
   assert.equal(
     registry.activeBundle.bundleSha256,
-    "3e82073a266ca88c15f492f86bbefbca8b8cda029520af6cc78e0a0062ee50dd",
+    "4d4e229b42823e53d2db062ec18c625bb2d2378a8a46d641fa95fabb59501b0e",
   );
   const bundleBytes = await readFile(
     join(root, "ballydidean", registry.activeBundle.path),
@@ -313,12 +487,53 @@ test("committed temperature canary is sanitized and content addressed", async ()
     registry,
     bundle,
   );
+
+  const finiteBundleBytes = await readFile(
+    join(
+      root,
+      "ballydidean",
+      "temperature-canary-bundles",
+      "sha256-3e82073a266ca88c15f492f86bbefbca8b8cda029520af6cc78e0a0062ee50dd.json",
+    ),
+    "utf8",
+  );
+  const finiteBundle = JSON.parse(finiteBundleBytes);
+  const finiteRegistry = {
+    ...registry,
+    activeBundle: {
+      ...registry.activeBundle,
+      authorizationSha256: finiteBundle.authorization.authorizationSha256,
+      bundleSha256: finiteBundle.bundleSha256,
+      path: `temperature-canary-bundles/sha256-${finiteBundle.bundleSha256}.json`,
+    },
+  };
+  assert.equal(finiteBundleBytes, canonicalJsonBytes(finiteBundle));
+  validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks(
+    finiteRegistry,
+    finiteBundle,
+  );
   assert.equal(
     bundle.servedForecastIdentity.adapterVersion,
     "open-meteo-ecmwf-single-run/v1",
   );
   assert.equal(bundle.model.directCoefficients.length, 35);
   assert.equal(bundle.model.adaptiveCoefficients.length, 49);
+  assert.equal(bundle.model.contractVersion, "temperature-permanent-model/v1");
+  assert.equal(bundle.model.effectiveFrom, "2026-10-01T07:00:00.000Z");
+  assert.equal(bundle.authorization.authorizedBy, "Ansel");
+  assert.equal(bundle.authorization.expiresAt, null);
+  assert.equal(bundle.authorization.permanent, true);
+  assert.ok(
+    bundle.authorization.activatedAt >= "2026-10-01T00:00:00.000Z",
+  );
+  assert.deepEqual(finiteBundle.evidence, bundle.evidence);
+  assert.deepEqual(finiteBundle.model.directCoefficients, bundle.model.directCoefficients);
+  assert.deepEqual(finiteBundle.model.adaptiveCoefficients, bundle.model.adaptiveCoefficients);
+  assert.deepEqual(finiteBundle.runtimeFingerprint, bundle.runtimeFingerprint);
+  assert.deepEqual(
+    finiteBundle.servedForecastIdentity,
+    bundle.servedForecastIdentity,
+  );
   assert.doesNotMatch(
     bundleBytes,
     /trainingKeys|trajectory|\/dev\/shm|model-evidence|source\/results/u,
