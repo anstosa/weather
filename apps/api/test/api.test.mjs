@@ -14,6 +14,8 @@ import {
   createForecastAdjustmentRuntimeLoaderForRoot,
   FORECAST_ADJUSTMENT_CANONICAL_FORECAST_IDENTITY_V1,
   runtimeCalendarFingerprint,
+  verifyForecastAdjustmentTemperatureCanaryRuntimeBundle,
+  verifyForecastAdjustmentWindCanaryRuntimeBundle,
 } from "@weather/forecast-adjustment";
 
 import {
@@ -1478,6 +1480,103 @@ test("wind canary runtime status exposes only bounded activation metadata", asyn
     JSON.stringify(body.adjustmentRuntime),
     /coefficient|evidence|path|station|training/u,
   );
+});
+
+// keep public monitoring independent of already validated model payloads
+test("public runtime status does not traverse cached model payloads", async () => {
+  const wind = createPermanentWindCanaryRuntime();
+  const temperature = createPermanentTemperatureCanaryRuntime();
+  verifyForecastAdjustmentWindCanaryRuntimeBundle(wind.bundle);
+  verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(temperature.bundle);
+  const coefficients = wind.bundle.candidate.coefficients;
+  const model = temperature.bundle.model;
+  let modelPayloadReads = 0;
+  Object.defineProperty(wind.bundle.candidate, "coefficients", {
+    enumerable: true,
+    // observe payload traversal without changing the loaded artifact
+    get() {
+      modelPayloadReads += 1;
+      return coefficients;
+    },
+  });
+  Object.defineProperty(temperature.bundle, "model", {
+    enumerable: true,
+    // observe payload traversal without changing the loaded artifact
+    get() {
+      modelPayloadReads += 1;
+      return model;
+    },
+  });
+  const { handler } = createFixture({
+    // keep readiness independent of the future authorization clock
+    async getHealth() {
+      return {
+        database: "ready",
+        migration: { status: "current", version: "0001_initial_weather.sql" },
+        workerLastLoopAt: "2027-10-01T05:59:00.000Z",
+      };
+    },
+  }, {
+    forecastAdjustment: { loadedAt: wind.bundle.authorization.activatedAt, runtime: wind },
+    temperatureAdjustment: { loadedAt: temperature.bundle.authorization.activatedAt, runtime: temperature },
+    // keep both permanent authorizations active
+    now: () => new Date("2027-10-01T06:00:00.000Z"),
+  });
+  const response = await handler(new Request("http://weather.test/api/v1/health"));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.data.adjustmentRuntime.state, "active");
+  assert.equal(body.data.temperatureAdjustmentRuntime.state, "active");
+  assert.equal(modelPayloadReads, 0);
+});
+
+// preserve inclusive activation and exclusive finite deadlines without rehashing
+test("cached runtime status preserves finite and permanent authorization clocks", async () => {
+  const cases = [
+    ["wind", createWindCanaryRuntime()],
+    ["wind", createPermanentWindCanaryRuntime()],
+    ["temperature", createTemperatureCanaryRuntime()],
+    ["temperature", createPermanentTemperatureCanaryRuntime()],
+  ];
+
+  // exercise both model families and authorization generations
+  for (const [metric, runtime] of cases) {
+    const { activatedAt, expiresAt } = runtime.bundle.authorization;
+    const boundaries = [
+      [new Date(Date.parse(activatedAt) - 1).toISOString(), "disabled"],
+      [activatedAt, "active"],
+      [expiresAt ?? "2027-10-01T06:00:00.000Z", expiresAt === null ? "active" : "disabled"],
+    ];
+
+    // freeze the request clock at each authorization boundary
+    for (const [evaluatedAt, expectedState] of boundaries) {
+      const { handler } = createFixture({
+        // keep database readiness independent of the authorization clock
+        async getHealth() {
+          return {
+            database: "ready",
+            migration: { status: "current", version: "0001_initial_weather.sql" },
+            workerLastLoopAt: evaluatedAt,
+          };
+        },
+      }, {
+        [metric === "wind" ? "forecastAdjustment" : "temperatureAdjustment"]: {
+          loadedAt: activatedAt,
+          runtime,
+        },
+        // evaluate the cached authorization without advancing time
+        now: () => new Date(evaluatedAt),
+      });
+      const response = await handler(new Request("http://weather.test/api/v1/health"));
+      const body = await response.json();
+      const status = metric === "wind"
+        ? body.data.adjustmentRuntime
+        : body.data.temperatureAdjustmentRuntime;
+      assert.equal(response.status, 200);
+      assert.equal(status.state, expectedState, `${metric} at ${evaluatedAt}`);
+      assert.equal(status.reasonCode, expectedState === "active" ? null : "canary_expired");
+    }
+  }
 });
 
 // keep permanent authorization active without inventing an expiry timestamp

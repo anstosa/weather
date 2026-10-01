@@ -329,7 +329,7 @@ interface ForecastTemperatureAdjustmentRuntimeStatus {
   readonly state: "active" | "disabled";
 }
 
-// preserve the v1 shared-switch wire envelope
+// preserve the v1 independent-switch wire envelope
 export interface ForecastAdjustmentSettings {
   readonly version: 1;
   readonly temperature: boolean;
@@ -2112,7 +2112,7 @@ export function parseForecastRecordsResponse(value: unknown): ForecastRecordsRes
       ? DISABLED_FORECAST_ADJUSTMENT_SETTINGS
       : null);
   const safeRecords = (invalidRainDecision ? rainBaseRecords : rainRecords).map((record) => {
-    // apply the shared server switch at the browser boundary
+    // apply independent server switches at the browser boundary
     if (settings === null) {
       return record;
     }
@@ -2725,7 +2725,7 @@ export class WeatherDashboardController {
             buildPropertySensorLayoutUrl(this.#apiBaseUrl, site.slug),
           )
           : Promise.resolve(null),
-        // read the shared adjustment control only for the protected editor
+        // read adjustment settings only for the protected editor
         this.#view === "admin"
           ? getJson<unknown>(
             this.#fetcher,
@@ -3325,8 +3325,10 @@ function renderCredits(state: DashboardState, view: WeatherView): string {
   const forecastMapCredits = SHOW_FORECAST_WEATHER_MAP && view === "forecast"
     ? `<span>Map © <a href="https://www.openstreetmap.org/copyright" rel="noreferrer">OpenStreetMap contributors</a></span><span aria-hidden="true">·</span><a href="https://www.xweather.com/" rel="noreferrer">Weather maps by Xweather</a><span aria-hidden="true">·</span>`
     : "";
+  // credit adjusted temperature only while its serving control is enabled
   const temperatureCanaryCredit =
-    state.forecastTemperatureAdjustmentRuntime?.state === "active"
+    state.forecastTemperatureAdjustmentRuntime?.state === "active" &&
+    (state.forecastAdjustmentSettings?.temperature ?? true)
       ? `<span>Adjusted temperature uses ECMWF IFS single-run data; raw temperature uses Open-Meteo Best Match.</span><span aria-hidden="true">·</span>`
       : "";
 

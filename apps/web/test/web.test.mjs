@@ -1053,6 +1053,7 @@ test("temperature wind and rain settings gate their own adjusted values", () => 
     assert.equal(forecastMetricValue(row, "precipitationMm", false), raw.metrics.precipitationMm);
     assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour", false), raw.metrics.precipitationRateMmPerHour);
     assert.equal(html.includes("data-forecast-adjustment-toggle"), bits !== 0);
+    assert.equal(html.includes("Adjusted temperature uses ECMWF"), settings.temperature);
     assert.doesNotMatch(html, /experimental/i);
     assert.equal(html.includes("2.5 mm"), settings.rain);
   }
@@ -3789,9 +3790,9 @@ test("admin saves independent adjustment switches and verifies readback", async 
   assert.match(initialHtml, /name="wind" checked/u);
   assert.doesNotMatch(initialHtml, /name="rain" checked/u);
 
-  const enabled = { version: 1, temperature: false, wind: false, rain: true };
+  const enabled = { version: 1, temperature: false, wind: true, rain: true };
   await controller.saveForecastAdjustmentSettings({
-    version: 1, temperature: false, wind: false, rain: true,
+    version: 1, temperature: false, wind: true, rain: true,
   });
   assert.deepEqual(controller.state.forecastAdjustmentSettings, enabled);
   assert.equal(controller.state.adminAdjustmentSettingsMessage, "Forecast adjustments saved.");
@@ -3800,7 +3801,8 @@ test("admin saves independent adjustment switches and verifies readback", async 
   assert.deepEqual(JSON.parse(writes[0].body), enabled);
   const savedHtml = renderWeatherDashboard(controller.state, "admin", true);
   assert.match(savedHtml, /name="rain" checked/u);
-  assert.doesNotMatch(savedHtml, /name="temperature" checked|name="wind" checked/u);
+  assert.match(savedHtml, /name="wind" checked/u);
+  assert.doesNotMatch(savedHtml, /name="temperature" checked/u);
 
   staleReadback = true;
   await controller.saveForecastAdjustmentSettings(enabled);

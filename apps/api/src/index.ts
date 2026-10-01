@@ -30,8 +30,6 @@ import {
 import {
   applyForecastAdjustment,
   applyForecastAdjustmentTemperatureCanary,
-  forecastAdjustmentTemperatureCanaryIsActiveAt,
-  forecastAdjustmentWindCanaryIsActiveAt,
   type ApplyForecastAdjustmentInputV1,
   type ApplyTemperatureCanaryInputV1,
   type ForecastTemperatureCanaryDecisionV1,
@@ -726,11 +724,13 @@ function projectForecastAdjustmentRuntime(
   const expiresAt = canary && "expiresAt" in runtime.bundle.authorization
     ? runtime.bundle.authorization.expiresAt
     : null;
+  const evaluatedAtMs = Date.parse(evaluatedAt);
 
-  // fail raw outside the versioned authorization
+  // check only the cached authorization clock after startup validation
   if (
     canary &&
-    !forecastAdjustmentWindCanaryIsActiveAt(runtime.bundle, evaluatedAt)
+    (evaluatedAtMs < Date.parse(runtime.bundle.authorization.activatedAt) ||
+      (expiresAt !== null && evaluatedAtMs >= Date.parse(expiresAt)))
   ) {
     return {
       activationMode: null,
@@ -807,8 +807,12 @@ function projectForecastTemperatureAdjustmentRuntime(
     };
   }
 
-  // recheck cached authorization at request time
-  if (!forecastAdjustmentTemperatureCanaryIsActiveAt(runtime.bundle, evaluatedAt)) {
+  const expiresAt = runtime.bundle.authorization.expiresAt;
+  const evaluatedAtMs = Date.parse(evaluatedAt);
+
+  // check only the cached authorization clock after startup validation
+  if (evaluatedAtMs < Date.parse(runtime.bundle.authorization.activatedAt) ||
+    (expiresAt !== null && evaluatedAtMs >= Date.parse(expiresAt))) {
     return {
       activeBundle: null,
       authorizationSha256: null,
@@ -823,9 +827,7 @@ function projectForecastTemperatureAdjustmentRuntime(
   return {
     activeBundle: runtime.bundle.bundleSha256,
     authorizationSha256: runtime.bundle.authorization.authorizationSha256,
-    expiresAt: "expiresAt" in runtime.bundle.authorization
-      ? runtime.bundle.authorization.expiresAt
-      : null,
+    expiresAt,
     loadedAt,
     reasonCode: null,
     source: projectTemperatureCanarySourceStatus(source),

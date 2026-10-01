@@ -3028,6 +3028,20 @@ test("admin forecast switches persist independently and hide the public toggle w
     assert.equal(await finalForm.getByRole("checkbox", { name: "Temperature" }).isChecked(), false);
     assert.equal(await finalForm.getByRole("checkbox", { name: "Wind" }).isChecked(), false);
     assert.equal(await finalForm.getByRole("checkbox", { name: "Rain" }).isChecked(), true);
+
+    // distinguish temperature and wind through save and reload
+    await finalForm.getByRole("checkbox", { name: "Wind" }).check();
+    await finalForm.getByRole("button", { name: "Save adjustments" }).click();
+    await finalForm.getByText("Forecast adjustments saved.").waitFor();
+    assert.deepEqual(fixture.state.adjustmentSettings, {
+      version: 1, temperature: false, wind: true, rain: true,
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
+    const mixedForm = page.locator("[data-admin-forecast-adjustments]");
+    assert.equal(await mixedForm.getByRole("checkbox", { name: "Temperature" }).isChecked(), false);
+    assert.equal(await mixedForm.getByRole("checkbox", { name: "Wind" }).isChecked(), true);
+    assert.equal(await mixedForm.getByRole("checkbox", { name: "Rain" }).isChecked(), true);
   } finally {
     await browser?.close();
     fixture.server.close();
