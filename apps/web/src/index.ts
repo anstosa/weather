@@ -329,7 +329,7 @@ interface ForecastTemperatureAdjustmentRuntimeStatus {
   readonly state: "active" | "disabled";
 }
 
-// describe one independently controlled adjustment group
+// preserve the v1 shared-switch wire envelope
 export interface ForecastAdjustmentSettings {
   readonly version: 1;
   readonly temperature: boolean;
@@ -1298,9 +1298,8 @@ function parseForecastAdjustmentRuntime(
     enabledMetrics.length > 0 &&
     (runtime.expiresAt === null || isForecastAdjustmentInstant(runtime.expiresAt)) &&
     (runtime.activationMode !== "wind_canary" || (
-      isForecastAdjustmentInstant(runtime.expiresAt) &&
       enabledMetrics.every(
-        // confine a canary to wind metrics
+        // confine a permanent or bounded activation to wind metrics
         (metric) => metric === "windDirectionDegrees" ||
           metric === "windGustMps" ||
           metric === "windSpeedMps",
@@ -1422,7 +1421,7 @@ function parseForecastTemperatureAdjustmentRuntime(
     runtime.reasonCode === null &&
     isForecastAdjustmentSha256(runtime.activeBundle) &&
     isForecastAdjustmentSha256(runtime.authorizationSha256) &&
-    isForecastAdjustmentInstant(runtime.expiresAt)
+    (runtime.expiresAt === null || isForecastAdjustmentInstant(runtime.expiresAt))
   ) {
     return { ...runtime, source } as ForecastTemperatureAdjustmentRuntimeStatus;
   }
@@ -1733,7 +1732,7 @@ function parseForecastAdjustmentDecision(
     : parseForecastAdjustmentFailRawDecision(decision);
 }
 
-// accept only the three independent server controls
+// accept and canonicalize the compatible shared-switch envelope
 function parseForecastAdjustmentSettings(value: unknown): ForecastAdjustmentSettings | null {
   const settings = forecastAdjustmentObject(value);
 
@@ -1749,10 +1748,16 @@ function parseForecastAdjustmentSettings(value: unknown): ForecastAdjustmentSett
     return null;
   }
 
-  return settings as unknown as ForecastAdjustmentSettings;
+  const enabled = settings.rain;
+  return {
+    version: 1,
+    temperature: enabled,
+    wind: enabled,
+    rain: enabled,
+  };
 }
 
-// map legacy mixed adjustments onto the three admin groups
+// map compatible adjustments onto the shared admin control
 function forecastAdjustmentMetricEnabled(
   metric: ForecastAdjustmentMetric,
   settings: ForecastAdjustmentSettings | null,
@@ -2108,7 +2113,7 @@ export function parseForecastRecordsResponse(value: unknown): ForecastRecordsRes
       ? DISABLED_FORECAST_ADJUSTMENT_SETTINGS
       : null);
   const safeRecords = (invalidRainDecision ? rainBaseRecords : rainRecords).map((record) => {
-    // apply the three independent server switches at the browser boundary
+    // apply the shared server switch at the browser boundary
     if (settings === null) {
       return record;
     }
@@ -2528,7 +2533,7 @@ export class WeatherDashboardController {
     }
   }
 
-  // persist all three protected forecast switches together
+  // persist the shared forecast switch in its v1 envelope
   async saveForecastAdjustmentSettings(value: ForecastAdjustmentSettings): Promise<void> {
     // reject non-admin or concurrent updates
     if (!this.#isAdmin || this.#state.adminAdjustmentSettingsSaving) {
@@ -2721,7 +2726,7 @@ export class WeatherDashboardController {
             buildPropertySensorLayoutUrl(this.#apiBaseUrl, site.slug),
           )
           : Promise.resolve(null),
-        // read independent adjustment controls only for the protected editor
+        // read the shared adjustment control only for the protected editor
         this.#view === "admin"
           ? getJson<unknown>(
             this.#fetcher,
@@ -7074,7 +7079,7 @@ function propertySensorMarkerOffsets(
   return offsets;
 }
 
-// render three independently persisted forecast controls
+// render the shared persisted forecast control
 function renderForecastAdjustmentAdmin(state: DashboardState): string {
   const settings = state.forecastAdjustmentSettings ?? null;
   const disabled = settings === null || state.adminAdjustmentSettingsSaving;
@@ -7085,11 +7090,9 @@ function renderForecastAdjustmentAdmin(state: DashboardState): string {
       <div class="section-heading">
         <div><p class="eyebrow">Administration</p><h2 id="forecast-adjustment-admin-heading">Forecast adjustments</h2></div>
       </div>
-      <p class="property-admin-intro">Choose which adjustments are available in the forecast. Visitors can still switch between adjusted and raw values.</p>
+      <p class="property-admin-intro">Turn rain, temperature, and wind forecast adjustments on or off together. Visitors can still switch between adjusted and raw values.</p>
       <form data-admin-forecast-adjustments>
-        <label><input type="checkbox" name="temperature"${settings?.temperature ? " checked" : ""}${disabled ? " disabled" : ""}><span>Temperature</span></label>
-        <label><input type="checkbox" name="wind"${settings?.wind ? " checked" : ""}${disabled ? " disabled" : ""}><span>Wind</span></label>
-        <label><input type="checkbox" name="rain"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain</span></label>
+        <label><input type="checkbox" name="enabled"${settings?.rain ? " checked" : ""}${disabled ? " disabled" : ""}><span>Rain, temperature, and wind</span></label>
         <div class="forecast-adjustment-admin-actions">
           <button type="submit"${disabled ? " disabled" : ""}>${state.adminAdjustmentSettingsSaving ? "Saving…" : "Save adjustments"}</button>
           <span role="status" aria-live="polite">${message === null ? "" : escapeHtml(message)}</span>
@@ -8784,15 +8787,16 @@ function bindForecastAdjustmentAdmin(
     return;
   }
 
-  // submit one complete set of independent switches
+  // submit the shared switch in the compatible v1 envelope
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const data = new FormData(form);
+    const enabled = data.has("enabled");
     void controller.saveForecastAdjustmentSettings({
       version: 1,
-      temperature: data.has("temperature"),
-      wind: data.has("wind"),
-      rain: data.has("rain"),
+      temperature: enabled,
+      wind: enabled,
+      rain: enabled,
     });
   });
 }

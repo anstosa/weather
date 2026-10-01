@@ -45,6 +45,11 @@ export const FORECAST_ADJUSTMENT_WIND_CANARY_TRAINING_IDENTITY_V1 = {
 // cap one canary activation window
 export const FORECAST_ADJUSTMENT_WIND_CANARY_MAXIMUM_DURATION_MS =
   14 * 24 * 60 * 60 * 1_000;
+// identify permanent authorization contracts
+export const FORECAST_ADJUSTMENT_WIND_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2 =
+  "forecast-adjustment-wind-canary-authorization/v2" as const;
+export const FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2 =
+  "forecast-adjustment-wind-canary-runtime-bundle/v2" as const;
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const CANDIDATE_KEYS = [
@@ -92,6 +97,21 @@ const AUTHORIZATION_KEYS = [
   "expiresAt",
   "transferReportSha256",
 ] as const;
+const PERMANENT_AUTHORIZATION_KEYS = [
+  "activatedAt",
+  "artifactKind",
+  "authorizationReason",
+  "authorizationSha256",
+  "authorized",
+  "authorizedAt",
+  "authorizedBy",
+  "candidateArtifactSha256",
+  "contractVersion",
+  "enabledMetricBands",
+  "expiresAt",
+  "permanent",
+  "transferReportSha256",
+] as const;
 const BUNDLE_KEYS = [
   "artifactKind",
   "authorization",
@@ -135,6 +155,38 @@ const BRIDGE_SCORE_KEYS = [
   "rawLoss",
   "skill",
 ] as const;
+
+// record one permanent wind authorization
+export interface ForecastAdjustmentWindCanaryAuthorizationV2 {
+  readonly activatedAt: string;
+  readonly artifactKind: "wind_transfer_canary_authorization";
+  readonly authorizationReason: string;
+  readonly authorizationSha256: string;
+  readonly authorized: true;
+  readonly authorizedAt: string;
+  readonly authorizedBy: string;
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_WIND_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2;
+  readonly enabledMetricBands: readonly ForecastAdjustmentMetricBand[];
+  readonly expiresAt: null;
+  readonly permanent: true;
+  readonly transferReportSha256: string;
+}
+
+// package permanent authority with unchanged retained artifacts
+export interface ForecastAdjustmentWindCanaryRuntimeBundleV2
+  extends Omit<
+    ForecastAdjustmentWindCanaryRuntimeBundleV1,
+    "authorization" | "contractVersion"
+  > {
+  readonly authorization: ForecastAdjustmentWindCanaryAuthorizationV2;
+  readonly contractVersion: typeof FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2;
+}
+
+// accept finite and permanent runtime generations
+export type ForecastAdjustmentWindCanaryRuntimeBundle =
+  | ForecastAdjustmentWindCanaryRuntimeBundleV1
+  | ForecastAdjustmentWindCanaryRuntimeBundleV2;
 
 // accept fitted wind-only canary material
 export interface ForecastAdjustmentWindCanaryCandidateInputV1 {
@@ -408,6 +460,49 @@ export function createForecastAdjustmentWindCanaryAuthorization(input: {
   return authorization;
 }
 
+// create one explicit permanent operator authorization
+export function createPermanentForecastAdjustmentWindCanaryAuthorization(input: {
+  readonly activatedAt: string;
+  readonly authorizationReason: string;
+  readonly authorizedAt: string;
+  readonly authorizedBy: string;
+  readonly candidate: ForecastAdjustmentWindCanaryCandidateV1;
+  readonly transferReport: ForecastAdjustmentWindCanaryTransferReportV1;
+}): ForecastAdjustmentWindCanaryAuthorizationV2 {
+  verifyForecastAdjustmentWindCanaryTransferReport(
+    input.transferReport,
+    input.candidate,
+  );
+  const unsigned = {
+    activatedAt: validateUtcInstant(input.activatedAt, "activatedAt"),
+    artifactKind: "wind_transfer_canary_authorization" as const,
+    authorizationReason: validateText(
+      input.authorizationReason,
+      "authorizationReason",
+    ),
+    authorized: true as const,
+    authorizedAt: validateUtcInstant(input.authorizedAt, "authorizedAt"),
+    authorizedBy: validateText(input.authorizedBy, "authorizedBy"),
+    candidateArtifactSha256: input.candidate.candidateArtifactSha256,
+    contractVersion:
+      FORECAST_ADJUSTMENT_WIND_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2,
+    enabledMetricBands: cloneJson(input.candidate.enabledMetricBands),
+    expiresAt: null,
+    permanent: true as const,
+    transferReportSha256: input.transferReport.transferReportSha256,
+  };
+  const authorization = deepFreeze({
+    ...unsigned,
+    authorizationSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+  verifyPermanentForecastAdjustmentWindCanaryAuthorization(
+    authorization,
+    input.candidate,
+    input.transferReport,
+  );
+  return authorization;
+}
+
 // verify exact operator authorization links and duration
 export function verifyForecastAdjustmentWindCanaryAuthorization(
   authorization: ForecastAdjustmentWindCanaryAuthorizationV1,
@@ -466,6 +561,65 @@ export function verifyForecastAdjustmentWindCanaryAuthorization(
   }
 }
 
+// verify exact permanent operator authorization links
+export function verifyPermanentForecastAdjustmentWindCanaryAuthorization(
+  authorization: ForecastAdjustmentWindCanaryAuthorizationV2,
+  candidate: ForecastAdjustmentWindCanaryCandidateV1,
+  report: ForecastAdjustmentWindCanaryTransferReportV1,
+): void {
+  verifyForecastAdjustmentWindCanaryCandidate(candidate);
+  verifyForecastAdjustmentWindCanaryTransferReport(report, candidate);
+  requireExactKeys(
+    authorization,
+    PERMANENT_AUTHORIZATION_KEYS,
+    "permanent wind canary authorization",
+  );
+
+  // require one explicit immutable permanent authorization
+  if (
+    authorization.artifactKind !== "wind_transfer_canary_authorization" ||
+    authorization.contractVersion !==
+      FORECAST_ADJUSTMENT_WIND_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2 ||
+    authorization.authorized !== true ||
+    authorization.permanent !== true ||
+    authorization.expiresAt !== null ||
+    authorization.candidateArtifactSha256 !== candidate.candidateArtifactSha256 ||
+    authorization.transferReportSha256 !== report.transferReportSha256 ||
+    canonicalizeJson(authorization.enabledMetricBands as unknown as JsonValue) !==
+      canonicalizeJson(candidate.enabledMetricBands as unknown as JsonValue)
+  ) {
+    throw new RangeError("permanent wind canary authorization cross-link mismatch");
+  }
+
+  validateHash(authorization.authorizationSha256, "authorizationSha256");
+  validateText(authorization.authorizationReason, "authorizationReason");
+  validateText(authorization.authorizedBy, "authorizedBy");
+  const authorizedAt = Date.parse(
+    validateUtcInstant(authorization.authorizedAt, "authorizedAt"),
+  );
+  const activatedAt = Date.parse(
+    validateUtcInstant(authorization.activatedAt, "activatedAt"),
+  );
+
+  // require authority after evidence and before activation
+  if (
+    authorizedAt < Date.parse(report.bridgeEndExclusive) ||
+    activatedAt < authorizedAt
+  ) {
+    throw new RangeError("permanent wind canary authorization timing is invalid");
+  }
+
+  // reject any fully rehashed authorization mutation
+  if (
+    canonicalObjectSha256(
+      authorization as unknown as Readonly<Record<string, unknown>>,
+      "authorizationSha256",
+    ) !== authorization.authorizationSha256
+  ) {
+    throw new RangeError("wind canary authorization SHA-256 mismatch");
+  }
+}
+
 // package separately reviewed canary artifacts
 export function createForecastAdjustmentWindCanaryRuntimeBundle(input: {
   readonly authorization: ForecastAdjustmentWindCanaryAuthorizationV1;
@@ -500,17 +654,49 @@ export function createForecastAdjustmentWindCanaryRuntimeBundle(input: {
   return bundle;
 }
 
+// package separately reviewed artifacts with permanent authority
+export function createPermanentForecastAdjustmentWindCanaryRuntimeBundle(input: {
+  readonly authorization: ForecastAdjustmentWindCanaryAuthorizationV2;
+  readonly candidate: ForecastAdjustmentWindCanaryCandidateV1;
+  readonly transferReport: ForecastAdjustmentWindCanaryTransferReportV1;
+}): ForecastAdjustmentWindCanaryRuntimeBundleV2 {
+  verifyForecastAdjustmentWindCanaryCandidate(input.candidate);
+  verifyForecastAdjustmentWindCanaryTransferReport(
+    input.transferReport,
+    input.candidate,
+  );
+  verifyPermanentForecastAdjustmentWindCanaryAuthorization(
+    input.authorization,
+    input.candidate,
+    input.transferReport,
+  );
+  const unsigned = {
+    artifactKind: "wind_transfer_canary_runtime_bundle" as const,
+    authorization: cloneJson(input.authorization),
+    candidate: cloneJson(input.candidate),
+    contractVersion:
+      FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2,
+    siteKey: "ballydidean" as const,
+    timezone: "America/Los_Angeles" as const,
+    transferReport: cloneJson(input.transferReport),
+  };
+  const bundle = deepFreeze({
+    ...unsigned,
+    bundleSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+  verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle);
+  return bundle;
+}
+
 // verify every nested canary artifact and content hash
 export function verifyForecastAdjustmentWindCanaryRuntimeBundle(
-  bundle: ForecastAdjustmentWindCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentWindCanaryRuntimeBundle,
 ): void {
   requireExactKeys(bundle, BUNDLE_KEYS, "wind canary runtime bundle");
 
   // require the isolated runtime identity
   if (
     bundle.artifactKind !== "wind_transfer_canary_runtime_bundle" ||
-    bundle.contractVersion !==
-      FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryRuntimeBundle ||
     bundle.siteKey !== "ballydidean" ||
     bundle.timezone !== "America/Los_Angeles"
   ) {
@@ -523,11 +709,29 @@ export function verifyForecastAdjustmentWindCanaryRuntimeBundle(
     bundle.transferReport,
     bundle.candidate,
   );
-  verifyForecastAdjustmentWindCanaryAuthorization(
-    bundle.authorization,
-    bundle.candidate,
-    bundle.transferReport,
-  );
+
+  // preserve finite v1 receipts and admit only explicit permanent v2 receipts
+  if (
+    bundle.contractVersion ===
+    FORECAST_ADJUSTMENT_CONTRACT_VERSIONS.windCanaryRuntimeBundle
+  ) {
+    verifyForecastAdjustmentWindCanaryAuthorization(
+      bundle.authorization,
+      bundle.candidate,
+      bundle.transferReport,
+    );
+  } else if (
+    bundle.contractVersion ===
+    FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2
+  ) {
+    verifyPermanentForecastAdjustmentWindCanaryAuthorization(
+      bundle.authorization,
+      bundle.candidate,
+      bundle.transferReport,
+    );
+  } else {
+    throw new RangeError("wind canary runtime bundle identity mismatch");
+  }
 
   // reject outer bundle substitution
   if (
@@ -580,7 +784,7 @@ export function validateForecastAdjustmentWindCanaryRegistry(
 // validate a separately selected canary bundle
 export function validateForecastAdjustmentWindCanaryRuntimeBundleLinks(
   registry: ForecastAdjustmentWindCanaryRegistryV1,
-  bundle: ForecastAdjustmentWindCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentWindCanaryRuntimeBundle,
 ): void {
   validateForecastAdjustmentWindCanaryRegistry(registry);
   verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle);
@@ -604,16 +808,18 @@ export function validateForecastAdjustmentWindCanaryRuntimeBundleLinks(
   }
 }
 
-// report whether the current instant is inside the authorized window
+// report whether the current instant is authorized after activation
 export function forecastAdjustmentWindCanaryIsActiveAt(
-  bundle: ForecastAdjustmentWindCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentWindCanaryRuntimeBundle,
   now: string,
 ): boolean {
   verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle);
   const instant = Date.parse(validateUtcInstant(now, "now"));
   return (
     instant >= Date.parse(bundle.authorization.activatedAt) &&
-    instant < Date.parse(bundle.authorization.expiresAt)
+    (bundle.contractVersion ===
+      FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2 ||
+      instant < Date.parse(bundle.authorization.expiresAt))
   );
 }
 

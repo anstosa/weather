@@ -12,6 +12,8 @@ import {
   canonicalJsonBytes,
   canonicalObjectSha256,
   canonicalSha256,
+  createPermanentForecastAdjustmentWindCanaryAuthorization,
+  createPermanentForecastAdjustmentWindCanaryRuntimeBundle,
   createForecastAdjustmentWindCanaryAuthorization,
   createForecastAdjustmentWindCanaryCandidate,
   createForecastAdjustmentWindCanaryRuntimeBundle,
@@ -96,6 +98,24 @@ function createBundle() {
     authorization,
     candidate,
     transferReport,
+  });
+}
+
+// build one permanent bundle with unchanged reviewed artifacts
+function createPermanentBundle() {
+  const finiteBundle = createBundle();
+  const authorization = createPermanentForecastAdjustmentWindCanaryAuthorization({
+    activatedAt: "2026-10-01T16:33:20.936Z",
+    authorizationReason: "Ansel requested wind adjustments without expiry",
+    authorizedAt: "2026-10-01T16:33:20.936Z",
+    authorizedBy: "Ansel",
+    candidate: finiteBundle.candidate,
+    transferReport: finiteBundle.transferReport,
+  });
+  return createPermanentForecastAdjustmentWindCanaryRuntimeBundle({
+    authorization,
+    candidate: finiteBundle.candidate,
+    transferReport: finiteBundle.transferReport,
   });
 }
 
@@ -332,6 +352,76 @@ test("wind canary runtime expires at the exclusive deadline", async () => {
   );
 });
 
+test("permanent wind authorization retains activation and safety gates", async () => {
+  const finiteBundle = createBundle();
+  const bundle = createPermanentBundle();
+  assert.equal(
+    bundle.contractVersion,
+    "forecast-adjustment-wind-canary-runtime-bundle/v2",
+  );
+  assert.equal(bundle.authorization.expiresAt, null);
+  assert.equal(bundle.authorization.permanent, true);
+  assert.deepEqual(bundle.candidate, finiteBundle.candidate);
+  assert.deepEqual(bundle.transferReport, finiteBundle.transferReport);
+  assert.equal(
+    forecastAdjustmentWindCanaryIsActiveAt(
+      bundle,
+      "2026-10-01T16:33:20.935Z",
+    ),
+    false,
+  );
+  assert.equal(
+    applyForecastAdjustment(
+      { bundle, reasonCode: null, state: "active" },
+      {
+        evaluatedAt: "2026-10-01T16:33:20.935Z",
+        metrics: rawMetrics(),
+        rawForecastProvenance: rawProvenance(),
+      },
+    ).state,
+    "disabled",
+  );
+  assert.equal(
+    forecastAdjustmentWindCanaryIsActiveAt(bundle, "2100-01-01T00:00:00.000Z"),
+    true,
+  );
+
+  const root = await mkdtemp(join(tmpdir(), "weather-wind-canary-permanent-"));
+  await writeRuntimeTree(root, bundle);
+  assert.equal(
+    (await createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(root, {
+      now: () => "2100-01-01T00:00:00.000Z",
+    }).load()).state,
+    "active",
+  );
+  assert.equal(
+    applyForecastAdjustment(
+      { bundle, reasonCode: null, state: "active" },
+      {
+        evaluatedAt: "2100-01-01T00:00:00.000Z",
+        metrics: rawMetrics(),
+        rawForecastProvenance: rawProvenance(),
+      },
+    ).state,
+    "active",
+  );
+});
+
+test("permanent wind authorization rejects rehashed semantic substitution", () => {
+  const original = createPermanentBundle();
+  const authorization = { ...original.authorization, permanent: false };
+  authorization.authorizationSha256 = canonicalObjectSha256(
+    authorization,
+    "authorizationSha256",
+  );
+  const bundle = { ...original, authorization };
+  bundle.bundleSha256 = canonicalObjectSha256(bundle, "bundleSha256");
+  assert.throws(
+    () => verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle),
+    /permanent wind canary authorization cross-link mismatch/u,
+  );
+});
+
 test("wind canary kill switch only disables and fails raw", async () => {
   assert.equal(forecastAdjustmentWindCanaryIsKilled("1"), true);
   assert.equal(forecastAdjustmentWindCanaryIsKilled("0"), false);
@@ -360,21 +450,24 @@ test("wind canary kill switch only disables and fails raw", async () => {
   );
 });
 
-// require the renewed selection without mutating retained coefficients
-test("committed wind canary has a bounded renewed authorization", async () => {
+// require permanent selection without mutating retained coefficients
+test("committed wind canary has permanent authorization", async () => {
   const root = resolve(import.meta.dirname, "../../../config/forecast-adjustments");
   const registry = JSON.parse(await readFile(join(root, "ballydidean-wind-canary.json"), "utf8"));
   assert.equal(registry.contractVersion, "forecast-adjustment-wind-canary-registry/v1");
-  assert.equal(registry.activeBundle.bundleSha256, "5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1");
+  assert.equal(registry.activeBundle.bundleSha256, "51f8efd63bef678a7f02d11bdab91405ec48f19808f64d3fe8354036c9b302a2");
   const runtime = await createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(root, {
     environmentKillSwitch: "0",
-    // evaluate the immutable authorization within its fixed window
-    now: () => "2026-09-08T01:00:00.000Z",
+    // evaluate the immutable authorization well after activation
+    now: () => "2100-01-01T00:00:00.000Z",
   }).load();
   assert.equal(runtime.state, "active");
   assert.equal(runtime.reasonCode, null);
-  const previous = JSON.parse(await readFile(join(root, "ballydidean/wind-canary-bundles/sha256-8ada04b924326665b7c49be37876727e9fdc853e9b0eb3decc7fe68c62acc96b.json"), "utf8"));
+  const previous = JSON.parse(await readFile(join(root, "ballydidean/wind-canary-bundles/sha256-5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1.json"), "utf8"));
   assert.deepEqual(runtime.bundle.candidate, previous.candidate);
   assert.deepEqual(runtime.bundle.transferReport, previous.transferReport);
-  assert.equal(runtime.bundle.authorization.expiresAt, "2026-09-22T00:22:24.734Z");
+  assert.equal(runtime.bundle.authorization.authorizedBy, "Ansel");
+  assert.equal(runtime.bundle.authorization.expiresAt, null);
+  assert.equal(runtime.bundle.authorization.permanent, true);
+  assert.ok(runtime.bundle.authorization.activatedAt >= "2026-10-01T00:00:00.000Z");
 });

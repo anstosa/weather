@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -332,27 +333,25 @@ async function createActiveForecastRuntime() {
 
 // build one bounded canary status fixture
 function createWindCanaryRuntime() {
+  // use a verified immutable v1 bundle for request-time status checks
+  const bundle = JSON.parse(readFileSync(new URL(
+    "../../../config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1.json",
+    import.meta.url,
+  ), "utf8"));
   return {
-    bundle: {
-      artifactKind: "wind_transfer_canary_runtime_bundle",
-      authorization: {
-        activatedAt: "2026-09-03T05:00:00.000Z",
-        authorizationSha256: "e".repeat(64),
-        expiresAt: "2026-09-10T05:00:00.000Z",
-      },
-      bundleSha256: "a".repeat(64),
-      candidate: {
-        candidateArtifactSha256: "b".repeat(64),
-        enabledMetricBands: [
-          { leadBand: "001-024", metric: "windGustMps" },
-          { leadBand: "001-024", metric: "windSpeedMps" },
-        ],
-      },
-      transferReport: { transferReportSha256: "f".repeat(64) },
-    },
+    bundle,
     reasonCode: null,
     state: "active",
   };
+}
+
+// load the immutable permanent canary without mocking its hash links
+function createPermanentWindCanaryRuntime() {
+  const bundle = JSON.parse(readFileSync(new URL(
+    "../../../config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-51f8efd63bef678a7f02d11bdab91405ec48f19808f64d3fe8354036c9b302a2.json",
+    import.meta.url,
+  ), "utf8"));
+  return { bundle, reasonCode: null, state: "active" };
 }
 
 // build one active delayed temperature runtime
@@ -402,6 +401,15 @@ function createTemperatureCanaryRuntime() {
       upstreamModel: "ecmwf_ifs",
     },
   });
+  return { bundle, reasonCode: null, state: "active" };
+}
+
+// load the immutable cross-month temperature runtime
+function createPermanentTemperatureCanaryRuntime() {
+  const bundle = JSON.parse(readFileSync(new URL(
+    "../../../config/forecast-adjustments/ballydidean/temperature-canary-bundles/sha256-4d4e229b42823e53d2db062ec18c625bb2d2378a8a46d641fa95fabb59501b0e.json",
+    import.meta.url,
+  ), "utf8"));
   return { bundle, reasonCode: null, state: "active" };
 }
 
@@ -1048,6 +1056,28 @@ test("temperature canary exposes explicit ECMWF provenance without mutating raw"
   });
 });
 
+// preserve permanent authorization in the public runtime projection
+test("permanent temperature runtime remains active with a null expiry", async () => {
+  const runtime = createPermanentTemperatureCanaryRuntime();
+  const { handler } = createFixture({}, {
+    temperatureAdjustment: {
+      loadedAt: runtime.bundle.authorization.activatedAt,
+      runtime,
+    },
+    now: () => new Date("2027-10-01T06:00:00.000Z"),
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.temperatureAdjustmentRuntime.state, "active");
+  assert.equal(body.temperatureAdjustmentRuntime.activeBundle, runtime.bundle.bundleSha256);
+  assert.equal(body.temperatureAdjustmentRuntime.expiresAt, null);
+  assert.equal(body.temperatureAdjustmentRuntime.reasonCode, null);
+});
+
 // prove optional read faults remain observable without changing serving
 test("temperature canary read failures stay raw and emit bounded diagnostics", async () => {
   const diagnostics = [];
@@ -1419,10 +1449,10 @@ test("wind canary runtime status exposes only bounded activation metadata", asyn
           state: "not_applicable",
         };
       },
-      loadedAt: "2026-09-03T05:00:00.000Z",
+      loadedAt: "2026-09-09T05:00:00.000Z",
       runtime,
     },
-    now: () => new Date("2026-09-03T06:00:00.000Z"),
+    now: () => new Date("2026-09-09T06:00:00.000Z"),
   });
   const response = await handler(
     new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
@@ -1437,8 +1467,8 @@ test("wind canary runtime status exposes only bounded activation metadata", asyn
     candidateArtifactSha256: runtime.bundle.candidate.candidateArtifactSha256,
     enabledMetrics: ["windGustMps", "windSpeedMps"],
     evaluationReportSha256: null,
-    expiresAt: "2026-09-10T05:00:00.000Z",
-    loadedAt: "2026-09-03T05:00:00.000Z",
+    expiresAt: runtime.bundle.authorization.expiresAt,
+    loadedAt: "2026-09-09T05:00:00.000Z",
     qualificationReceiptSha256: null,
     reasonCode: null,
     state: "active",
@@ -1448,6 +1478,29 @@ test("wind canary runtime status exposes only bounded activation metadata", asyn
     JSON.stringify(body.adjustmentRuntime),
     /coefficient|evidence|path|station|training/u,
   );
+});
+
+// keep permanent authorization active without inventing an expiry timestamp
+test("permanent wind runtime remains active with a null expiry", async () => {
+  const runtime = createPermanentWindCanaryRuntime();
+  const { handler } = createFixture({}, {
+    forecastAdjustment: {
+      loadedAt: runtime.bundle.authorization.activatedAt,
+      runtime,
+    },
+    now: () => new Date("2027-10-01T06:00:00.000Z"),
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.adjustmentRuntime.state, "active");
+  assert.equal(body.adjustmentRuntime.activeBundle, runtime.bundle.bundleSha256);
+  assert.equal(body.adjustmentRuntime.expiresAt, null);
+  assert.equal(body.adjustmentRuntime.reasonCode, null);
+  assert.deepEqual(body.adjustmentRuntime.enabledMetrics, ["windGustMps", "windSpeedMps"]);
 });
 
 test("expired wind canary metadata and rows fail raw on the same clock", async () => {
@@ -1466,17 +1519,17 @@ test("expired wind canary metadata and rows fail raw on the same clock", async (
           state: "disabled",
         };
       },
-      loadedAt: "2026-09-03T05:00:00.000Z",
+      loadedAt: "2026-09-09T05:00:00.000Z",
       runtime,
     },
-    now: () => new Date("2026-09-10T05:00:00.000Z"),
+    now: () => new Date(runtime.bundle.authorization.expiresAt),
   });
   const response = await handler(
     new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
   );
   const body = await response.json();
 
-  assert.deepEqual(evaluatedAt, ["2026-09-10T05:00:00.000Z"]);
+  assert.deepEqual(evaluatedAt, [runtime.bundle.authorization.expiresAt]);
   assert.deepEqual(body.adjustmentRuntime, {
     activationMode: null,
     activeBundle: null,
@@ -1485,7 +1538,7 @@ test("expired wind canary metadata and rows fail raw on the same clock", async (
     enabledMetrics: [],
     evaluationReportSha256: null,
     expiresAt: null,
-    loadedAt: "2026-09-03T05:00:00.000Z",
+    loadedAt: "2026-09-09T05:00:00.000Z",
     qualificationReceiptSha256: null,
     reasonCode: "canary_expired",
     state: "disabled",

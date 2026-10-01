@@ -2975,7 +2975,7 @@ test("admin login and logout work inside an iframe", { timeout: 60_000 }, async 
   }
 });
 
-test("admin forecast switches persist and hide the public toggle when all off", { timeout: 60_000 }, async () => {
+test("admin shared forecast switch persists and hides the public toggle when off", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -2991,12 +2991,10 @@ test("admin forecast switches persist and hide the public toggle when all off", 
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
     const form = page.locator("[data-admin-forecast-adjustments]");
-    assert.equal(await form.getByRole("checkbox", { name: "Temperature" }).isChecked(), true);
-    assert.equal(await form.getByRole("checkbox", { name: "Wind" }).isChecked(), true);
-    assert.equal(await form.getByRole("checkbox", { name: "Rain" }).isChecked(), true);
-    await form.getByRole("checkbox", { name: "Temperature" }).uncheck();
-    await form.getByRole("checkbox", { name: "Wind" }).uncheck();
-    await form.getByRole("checkbox", { name: "Rain" }).uncheck();
+    const sharedSwitch = form.getByRole("checkbox", { name: "Rain, temperature, and wind" });
+    assert.equal(await sharedSwitch.isChecked(), true);
+    assert.equal(await form.getByRole("checkbox").count(), 1);
+    await sharedSwitch.uncheck();
     await form.getByRole("button", { name: "Save adjustments" }).click();
     await form.getByText("Forecast adjustments saved.").waitFor();
     assert.equal(fixture.state.adjustmentSettingsUpdates, 1);
@@ -3009,16 +3007,16 @@ test("admin forecast switches persist and hide the public toggle when all off", 
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
     await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
     const reopened = page.locator("[data-admin-forecast-adjustments]");
-    assert.equal(await reopened.getByRole("checkbox", { name: "Temperature" }).isChecked(), false);
-    assert.equal(await reopened.getByRole("checkbox", { name: "Wind" }).isChecked(), false);
-    assert.equal(await reopened.getByRole("checkbox", { name: "Rain" }).isChecked(), false);
-    await reopened.getByRole("checkbox", { name: "Rain" }).check();
+    const reopenedSwitch = reopened.getByRole("checkbox", { name: "Rain, temperature, and wind" });
+    assert.equal(await reopenedSwitch.isChecked(), false);
+    assert.equal(await reopened.getByRole("checkbox").count(), 1);
+    await reopenedSwitch.check();
     await reopened.getByRole("button", { name: "Save adjustments" }).click();
     await reopened.getByText("Forecast adjustments saved.").waitFor();
     await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
     assert.equal(await page.locator("[data-forecast-adjustment-toggle]").count(), 1);
     assert.deepEqual(fixture.state.adjustmentSettings, {
-      version: 1, temperature: false, wind: false, rain: true,
+      version: 1, temperature: true, wind: true, rain: true,
     });
   } finally {
     await browser?.close();

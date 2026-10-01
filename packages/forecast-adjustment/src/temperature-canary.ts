@@ -7,15 +7,23 @@ import {
 } from "./candidate.js";
 import { runtimeCalendarFingerprintMatches } from "./calendar.js";
 import {
+  TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION,
   TEMPERATURE_MOS_DELAYED_RUNTIME_POLICY,
   applyEcmwfTemperatureMosRuntime,
+  type TemperatureMosPermanentRuntimeModel,
   type TemperatureMosRuntimeModel,
   type TemperatureMosRuntimeRawReason,
   type TemperatureMosRuntimeRecentErrorState,
+  type TemperatureMosServingModel,
 } from "./temperature-mos-runtime.js";
 
 export const TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION =
   "forecast-adjustment-temperature-canary-bundle/v1" as const;
+// identify permanent authorization contracts
+export const TEMPERATURE_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2 =
+  "forecast-adjustment-temperature-canary-authorization/v2" as const;
+export const TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION_V2 =
+  "forecast-adjustment-temperature-canary-bundle/v2" as const;
 export const TEMPERATURE_CANARY_REGISTRY_CONTRACT_VERSION =
   "forecast-adjustment-temperature-canary-registry/v1" as const;
 export const TEMPERATURE_CANARY_DECISION_CONTRACT_VERSION =
@@ -46,6 +54,18 @@ const AUTHORIZATION_KEYS = [
   "authorizedBy",
   "expiresAt",
 ] as const;
+const PERMANENT_AUTHORIZATION_KEYS = [
+  "activatedAt",
+  "artifactKind",
+  "authorizationReason",
+  "authorizationSha256",
+  "authorized",
+  "authorizedAt",
+  "authorizedBy",
+  "contractVersion",
+  "expiresAt",
+  "permanent",
+] as const;
 const EVIDENCE_KEYS = [
   "modelSourceSha256",
   "researchSummarySha256",
@@ -74,6 +94,19 @@ const MODEL_KEYS = [
   "supported",
   "trainingCutoffUtc",
 ] as const;
+const PERMANENT_MODEL_KEYS = [
+  "adaptiveCoefficients",
+  "cohort",
+  "contractVersion",
+  "directCoefficients",
+  "effectiveFrom",
+  "latestTrainingValidAt",
+  "learnedStrengthContractVersion",
+  "scope",
+  "strengthBands",
+  "supported",
+  "trainingCutoffUtc",
+] as const;
 const STRENGTH_KEYS = ["alpha", "supported", "trainingCutoffUtc"] as const;
 const REGISTRY_KEYS = ["activeBundle", "contractVersion"] as const;
 const ACTIVE_REGISTRY_KEYS = [
@@ -92,6 +125,20 @@ export interface ForecastAdjustmentTemperatureCanaryAuthorizationV1 {
   readonly authorizedAt: string;
   readonly authorizedBy: string;
   readonly expiresAt: string;
+}
+
+// record one permanent temperature authorization
+export interface ForecastAdjustmentTemperatureCanaryAuthorizationV2 {
+  readonly activatedAt: string;
+  readonly artifactKind: "ecmwf_temperature_transfer_canary_authorization";
+  readonly authorizationReason: string;
+  readonly authorizationSha256: string;
+  readonly authorized: true;
+  readonly authorizedAt: string;
+  readonly authorizedBy: string;
+  readonly contractVersion: typeof TEMPERATURE_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2;
+  readonly expiresAt: null;
+  readonly permanent: true;
 }
 
 export interface ForecastAdjustmentTemperatureCanaryRuntimeBundleV1 {
@@ -126,6 +173,22 @@ export interface ForecastAdjustmentTemperatureCanaryRuntimeBundleV1 {
   };
 }
 
+// package the fixed cross-month model
+export interface ForecastAdjustmentTemperatureCanaryRuntimeBundleV2
+  extends Omit<
+    ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+    "authorization" | "contractVersion" | "model"
+  > {
+  readonly authorization: ForecastAdjustmentTemperatureCanaryAuthorizationV2;
+  readonly contractVersion: typeof TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION_V2;
+  readonly model: TemperatureMosPermanentRuntimeModel;
+}
+
+// accept finite and permanent runtime generations
+export type ForecastAdjustmentTemperatureCanaryRuntimeBundle =
+  | ForecastAdjustmentTemperatureCanaryRuntimeBundleV1
+  | ForecastAdjustmentTemperatureCanaryRuntimeBundleV2;
+
 export interface ForecastAdjustmentTemperatureCanaryRegistryV1 {
   readonly activeBundle: null | {
     readonly authorizationSha256: string;
@@ -139,7 +202,7 @@ export interface ForecastAdjustmentTemperatureCanaryRegistryV1 {
 
 export type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 =
   | {
-      readonly bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1;
+      readonly bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle;
       readonly reasonCode: null;
       readonly state: "active";
     }
@@ -242,6 +305,35 @@ export function createForecastAdjustmentTemperatureCanaryAuthorization(input: {
   return authorization;
 }
 
+// create one permanent immutable operator authorization
+export function createPermanentForecastAdjustmentTemperatureCanaryAuthorization(input: {
+  readonly activatedAt: string;
+  readonly authorizationReason: string;
+  readonly authorizedAt: string;
+  readonly authorizedBy: string;
+}): ForecastAdjustmentTemperatureCanaryAuthorizationV2 {
+  const unsigned = {
+    activatedAt: validateUtcInstant(input.activatedAt, "activatedAt"),
+    artifactKind: "ecmwf_temperature_transfer_canary_authorization" as const,
+    authorizationReason: validateText(
+      input.authorizationReason,
+      "authorizationReason",
+    ),
+    authorized: true as const,
+    authorizedAt: validateUtcInstant(input.authorizedAt, "authorizedAt"),
+    authorizedBy: validateText(input.authorizedBy, "authorizedBy"),
+    contractVersion: TEMPERATURE_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2,
+    expiresAt: null,
+    permanent: true as const,
+  };
+  const authorization = deepFreeze({
+    ...unsigned,
+    authorizationSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+  validatePermanentAuthorization(authorization);
+  return authorization;
+}
+
 // create one content-addressed sanitized canary bundle
 export function createForecastAdjustmentTemperatureCanaryRuntimeBundle(input: {
   readonly authorization: ForecastAdjustmentTemperatureCanaryAuthorizationV1;
@@ -273,16 +365,46 @@ export function createForecastAdjustmentTemperatureCanaryRuntimeBundle(input: {
   return bundle;
 }
 
+// create one content-addressed permanent canary bundle
+export function createPermanentForecastAdjustmentTemperatureCanaryRuntimeBundle(input: {
+  readonly authorization: ForecastAdjustmentTemperatureCanaryAuthorizationV2;
+  readonly evidence: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1["evidence"];
+  readonly model: TemperatureMosPermanentRuntimeModel;
+  readonly runtimeFingerprint: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1["runtimeFingerprint"];
+  readonly servedForecastIdentity: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1["servedForecastIdentity"];
+}): ForecastAdjustmentTemperatureCanaryRuntimeBundleV2 {
+  const unsigned = {
+    artifactKind: "ecmwf_temperature_transfer_canary" as const,
+    authorization: cloneJson(input.authorization),
+    contractVersion: TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION_V2,
+    evidence: cloneJson(input.evidence),
+    model: cloneJson(input.model),
+    runtimeFingerprint: cloneJson(input.runtimeFingerprint),
+    servedForecastIdentity: cloneJson(input.servedForecastIdentity),
+    siteKey: "ballydidean" as const,
+    timezone: "America/Los_Angeles" as const,
+    trainingForecastIdentity: {
+      cohort: "ecmwf_single_run_hindcast" as const,
+      scope: "assumed_delay6_next12" as const,
+    },
+  };
+  const bundle = deepFreeze({
+    ...unsigned,
+    bundleSha256: canonicalSha256(unsigned as unknown as JsonValue),
+  });
+  verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle);
+  return bundle;
+}
+
 // verify the closed sanitized model and authorization envelope
 export function verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(
-  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
 ): void {
   requireExactKeys(bundle, BUNDLE_KEYS, "temperature canary bundle");
 
   // bind the separate transfer-canary identity
   if (
     bundle.artifactKind !== "ecmwf_temperature_transfer_canary" ||
-    bundle.contractVersion !== TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION ||
     bundle.siteKey !== "ballydidean" ||
     bundle.timezone !== "America/Los_Angeles"
   ) {
@@ -290,7 +412,25 @@ export function verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(
   }
 
   validateHash(bundle.bundleSha256, "bundleSha256");
-  validateAuthorization(bundle.authorization);
+
+  // preserve finite v1 receipts and admit only explicit permanent v2 receipts
+  if (bundle.contractVersion === TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION) {
+    validateAuthorization(bundle.authorization);
+    // keep finite receipts tied to monthly material
+    if (bundle.model.contractVersion !== "temperature-shortlead-models-research/v1") {
+      throw new RangeError("temperature canary model contract mismatch");
+    }
+  } else if (
+    bundle.contractVersion === TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION_V2
+  ) {
+    validatePermanentAuthorization(bundle.authorization);
+    // require permanent receipts to carry static material
+    if (bundle.model.contractVersion !== TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION) {
+      throw new RangeError("temperature canary model contract mismatch");
+    }
+  } else {
+    throw new RangeError("temperature canary bundle identity mismatch");
+  }
   requireExactKeys(bundle.evidence, EVIDENCE_KEYS, "temperature canary evidence");
 
   // require immutable evidence identities
@@ -388,7 +528,7 @@ export function validateForecastAdjustmentTemperatureCanaryRegistry(
 // validate registry links without tolerating substituted evidence
 export function validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks(
   registry: ForecastAdjustmentTemperatureCanaryRegistryV1,
-  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
 ): void {
   validateForecastAdjustmentTemperatureCanaryRegistry(registry);
   verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle);
@@ -411,16 +551,17 @@ export function validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks(
   }
 }
 
-// report whether one instant remains inside authorization
+// report whether one instant is authorized after activation
 export function forecastAdjustmentTemperatureCanaryIsActiveAt(
-  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
   now: string,
 ): boolean {
   verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle);
   const instant = Date.parse(validateUtcInstant(now, "now"));
   return (
     instant >= Date.parse(bundle.authorization.activatedAt) &&
-    instant < Date.parse(bundle.authorization.expiresAt)
+    (bundle.contractVersion === TEMPERATURE_CANARY_BUNDLE_CONTRACT_VERSION_V2 ||
+      instant < Date.parse(bundle.authorization.expiresAt))
   );
 }
 
@@ -530,7 +671,7 @@ export function applyForecastAdjustmentTemperatureCanary(
 
 // validate one truthful live source receipt
 function validateSourceForecast(
-  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
   source: TemperatureCanarySourceForecast,
   input: ApplyTemperatureCanaryInputV1,
 ): void {
@@ -591,23 +732,45 @@ function validateSourceForecast(
 }
 
 // validate the sanitized exact-width delayed model
-function validateSanitizedModel(model: TemperatureMosRuntimeModel): void {
-  requireExactKeys(model, MODEL_KEYS, "temperature canary model");
+function validateSanitizedModel(model: TemperatureMosServingModel): void {
+  const permanent = model.contractVersion === TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION;
+  requireExactKeys(
+    model,
+    permanent ? PERMANENT_MODEL_KEYS : MODEL_KEYS,
+    "temperature canary model",
+  );
 
   // prohibit other research scopes and unsupported material
   if (
-    model.contractVersion !== "temperature-shortlead-models-research/v1" ||
+    (model.contractVersion !== "temperature-shortlead-models-research/v1" &&
+      model.contractVersion !== TEMPERATURE_PERMANENT_MODEL_CONTRACT_VERSION) ||
     model.learnedStrengthContractVersion !==
       "temperature-winner-extensions-research/v1" ||
     model.cohort !== "ecmwf_single_run_hindcast" ||
     model.scope !== TEMPERATURE_MOS_DELAYED_RUNTIME_POLICY.scope ||
-    model.supported !== true ||
-    !/^\d{4}-\d{2}$/u.test(model.month)
+    model.supported !== true
   ) {
     throw new RangeError("temperature canary model identity mismatch");
   }
 
-  validateUtcInstant(model.trainingCutoffUtc, "trainingCutoffUtc");
+  const cutoff = Date.parse(validateUtcInstant(model.trainingCutoffUtc, "trainingCutoffUtc"));
+
+  // preserve monthly identity or bind the permanent causal fit
+  if (permanent) {
+    const staticModel = model as TemperatureMosPermanentRuntimeModel;
+    const effectiveFrom = Date.parse(validateUtcInstant(staticModel.effectiveFrom, "effectiveFrom"));
+    const latestTrainingValidAt = Date.parse(validateUtcInstant(
+      staticModel.latestTrainingValidAt,
+      "latestTrainingValidAt",
+    ));
+
+    // reject future labels and serving before the frozen fit
+    if (latestTrainingValidAt + 7 * 3_600_000 > cutoff || cutoff > effectiveFrom) {
+      throw new RangeError("permanent temperature training boundary is invalid");
+    }
+  } else if (!/^\d{4}-\d{2}$/u.test((model as TemperatureMosRuntimeModel).month)) {
+    throw new RangeError("temperature canary model identity mismatch");
+  }
   validateCoefficientVector(model.directCoefficients, 35, "directCoefficients");
   validateCoefficientVector(model.adaptiveCoefficients, 49, "adaptiveCoefficients");
 
@@ -676,6 +839,50 @@ function validateAuthorization(
     expiresAt - activatedAt > TEMPERATURE_CANARY_MAXIMUM_DURATION_MS
   ) {
     throw new RangeError("temperature canary authorization window is invalid");
+  }
+
+  // reject authorization mutation
+  if (
+    canonicalObjectSha256(
+      authorization as unknown as Readonly<Record<string, unknown>>,
+      "authorizationSha256",
+    ) !== authorization.authorizationSha256
+  ) {
+    throw new RangeError("temperature canary authorization SHA-256 mismatch");
+  }
+}
+
+// validate one permanent authorization receipt
+function validatePermanentAuthorization(
+  authorization: ForecastAdjustmentTemperatureCanaryAuthorizationV2,
+): void {
+  requireExactKeys(
+    authorization,
+    PERMANENT_AUTHORIZATION_KEYS,
+    "permanent temperature authorization",
+  );
+  validateHash(authorization.authorizationSha256, "authorizationSha256");
+  validateText(authorization.authorizedBy, "authorizedBy");
+  validateText(authorization.authorizationReason, "authorizationReason");
+  const authorizedAt = Date.parse(
+    validateUtcInstant(authorization.authorizedAt, "authorizedAt"),
+  );
+  const activatedAt = Date.parse(
+    validateUtcInstant(authorization.activatedAt, "activatedAt"),
+  );
+
+  // require explicit permanent authority before activation
+  if (
+    authorization.artifactKind !==
+      "ecmwf_temperature_transfer_canary_authorization" ||
+    authorization.contractVersion !==
+      TEMPERATURE_CANARY_AUTHORIZATION_CONTRACT_VERSION_V2 ||
+    authorization.authorized !== true ||
+    authorization.permanent !== true ||
+    authorization.expiresAt !== null ||
+    authorizedAt > activatedAt
+  ) {
+    throw new RangeError("permanent temperature authorization is invalid");
   }
 
   // reject authorization mutation
@@ -770,7 +977,7 @@ function cloneJson<T>(value: T): T {
 
 // expose loader fingerprint validation without model leakage
 export function temperatureCanaryRuntimeFingerprintMatches(
-  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
 ): boolean {
   verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle);
   return runtimeCalendarFingerprintMatches(bundle.runtimeFingerprint);

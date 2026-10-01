@@ -207,14 +207,20 @@ test("built server and web images enforce the adjustment filesystem boundary", {
     assert.equal(server.windCanaryRegistry, expectedWindCanaryRegistry);
     const windCanaryRegistry = JSON.parse(server.windCanaryRegistry);
     assert.equal(windCanaryRegistry.contractVersion, "forecast-adjustment-wind-canary-registry/v1");
-    assert.equal(windCanaryRegistry.activeBundle.bundleSha256, "5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1");
+    assert.equal(windCanaryRegistry.activeBundle.bundleSha256, "51f8efd63bef678a7f02d11bdab91405ec48f19808f64d3fe8354036c9b302a2");
     assert.equal(server.temperatureCanaryRegistry, await readFile(join(repoRoot, "config/forecast-adjustments/ballydidean-temperature-canary.json"), "utf8"));
     assert.deepEqual(server.temperatureCanaryBundleNodes, [{
       path: "config/forecast-adjustments/ballydidean/temperature-canary-bundles/sha256-3e82073a266ca88c15f492f86bbefbca8b8cda029520af6cc78e0a0062ee50dd.json",
       type: "file",
+    }, {
+      path: "config/forecast-adjustments/ballydidean/temperature-canary-bundles/sha256-4d4e229b42823e53d2db062ec18c625bb2d2378a8a46d641fa95fabb59501b0e.json",
+      type: "file",
     }]);
-    // retain both immutable authorizations without modifying fitted material
+    // retain historical and permanent immutable bundles
     assert.deepEqual(server.windCanaryBundleNodes, [{
+      path: "config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-51f8efd63bef678a7f02d11bdab91405ec48f19808f64d3fe8354036c9b302a2.json",
+      type: "file",
+    }, {
       path: "config/forecast-adjustments/ballydidean/wind-canary-bundles/sha256-5e8b2e3932111621af6785a1b16dfd22edc0a2d26059c6e396654c70119abbe1.json",
       type: "file",
     }, {

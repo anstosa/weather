@@ -30,6 +30,8 @@ import {
 import {
   applyForecastAdjustment,
   applyForecastAdjustmentTemperatureCanary,
+  forecastAdjustmentTemperatureCanaryIsActiveAt,
+  forecastAdjustmentWindCanaryIsActiveAt,
   type ApplyForecastAdjustmentInputV1,
   type ApplyTemperatureCanaryInputV1,
   type ForecastTemperatureCanaryDecisionV1,
@@ -697,8 +699,9 @@ function projectForecastAdjustmentRuntime(
   evaluatedAtInput: string,
 ): ApiForecastAdjustmentRuntime {
   const loadedAt = validateUtcInstant(loadedAtInput, "forecastAdjustment.loadedAt");
-  const evaluatedAt = Date.parse(
-    validateUtcInstant(evaluatedAtInput, "forecastAdjustment.evaluatedAt"),
+  const evaluatedAt = validateUtcInstant(
+    evaluatedAtInput,
+    "forecastAdjustment.evaluatedAt",
   );
 
   // redact all model content while the runtime is inactive
@@ -720,13 +723,14 @@ function projectForecastAdjustmentRuntime(
   }
 
   const canary = "artifactKind" in runtime.bundle;
-  const expiresAt = canary ? runtime.bundle.authorization.expiresAt : null;
+  const expiresAt = canary && "expiresAt" in runtime.bundle.authorization
+    ? runtime.bundle.authorization.expiresAt
+    : null;
 
-  // fail raw outside the canary window
+  // fail raw outside the versioned authorization
   if (
     canary &&
-    (evaluatedAt < Date.parse(runtime.bundle.authorization.activatedAt) ||
-      evaluatedAt >= Date.parse(runtime.bundle.authorization.expiresAt))
+    !forecastAdjustmentWindCanaryIsActiveAt(runtime.bundle, evaluatedAt)
   ) {
     return {
       activationMode: null,
@@ -785,11 +789,9 @@ function projectForecastTemperatureAdjustmentRuntime(
     loadedAtInput,
     "temperatureAdjustment.loadedAt",
   );
-  const evaluatedAt = Date.parse(
-    validateUtcInstant(
-      evaluatedAtInput,
-      "temperatureAdjustment.evaluatedAt",
-    ),
+  const evaluatedAt = validateUtcInstant(
+    evaluatedAtInput,
+    "temperatureAdjustment.evaluatedAt",
   );
 
   // redact artifact content while loader state is disabled
@@ -806,10 +808,7 @@ function projectForecastTemperatureAdjustmentRuntime(
   }
 
   // recheck cached authorization at request time
-  if (
-    evaluatedAt < Date.parse(runtime.bundle.authorization.activatedAt) ||
-    evaluatedAt >= Date.parse(runtime.bundle.authorization.expiresAt)
-  ) {
+  if (!forecastAdjustmentTemperatureCanaryIsActiveAt(runtime.bundle, evaluatedAt)) {
     return {
       activeBundle: null,
       authorizationSha256: null,
@@ -824,7 +823,9 @@ function projectForecastTemperatureAdjustmentRuntime(
   return {
     activeBundle: runtime.bundle.bundleSha256,
     authorizationSha256: runtime.bundle.authorization.authorizationSha256,
-    expiresAt: runtime.bundle.authorization.expiresAt,
+    expiresAt: "expiresAt" in runtime.bundle.authorization
+      ? runtime.bundle.authorization.expiresAt
+      : null,
     loadedAt,
     reasonCode: null,
     source: projectTemperatureCanarySourceStatus(source),

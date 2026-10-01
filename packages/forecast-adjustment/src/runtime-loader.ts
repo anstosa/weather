@@ -7,7 +7,6 @@ import {
   type ForecastAdjustmentRegistryV1,
   type ForecastAdjustmentRuntimeBundleV2,
   type ForecastAdjustmentWindCanaryRegistryV1,
-  type ForecastAdjustmentWindCanaryRuntimeBundleV1,
   validateForecastAdjustmentRegistry,
   validateForecastAdjustmentRuntimeBundleLinks,
   type JsonValue,
@@ -24,7 +23,7 @@ import {
   validateForecastAdjustmentTemperatureCanaryRuntimeBundleLinks,
   verifyForecastAdjustmentTemperatureCanaryRuntimeBundle,
   type ForecastAdjustmentTemperatureCanaryRegistryV1,
-  type ForecastAdjustmentTemperatureCanaryRuntimeBundleV1,
+  type ForecastAdjustmentTemperatureCanaryRuntimeBundle,
   type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
 } from "./temperature-canary.js";
 import {
@@ -33,6 +32,7 @@ import {
   validateForecastAdjustmentWindCanaryRegistry,
   validateForecastAdjustmentWindCanaryRuntimeBundleLinks,
   verifyForecastAdjustmentWindCanaryRuntimeBundle,
+  type ForecastAdjustmentWindCanaryRuntimeBundle,
 } from "./wind-canary.js";
 
 export const FORECAST_ADJUSTMENT_RUNTIME_ROOT =
@@ -67,7 +67,7 @@ export interface ForecastAdjustmentRuntimeLoaderV1 {
 // cache one startup wind-canary state
 export type LoadedForecastAdjustmentWindCanaryRuntimeV1 =
   | {
-      readonly bundle: ForecastAdjustmentWindCanaryRuntimeBundleV1;
+      readonly bundle: ForecastAdjustmentWindCanaryRuntimeBundle;
       readonly reasonCode: null;
       readonly state: "active";
     }
@@ -266,7 +266,7 @@ async function loadRuntimeFromRoot(
   }
 }
 
-// load one separately reviewed short-lived canary bundle
+// load one separately reviewed canary bundle
 async function loadWindCanaryRuntimeFromRoot(
   root: string,
   options: ForecastAdjustmentWindCanaryRuntimeOptionsV1,
@@ -333,7 +333,7 @@ async function loadWindCanaryRuntimeFromRoot(
       throw new RangeError("wind canary bundle path escapes the site root");
     }
 
-    const bundle = await readRegularJson<ForecastAdjustmentWindCanaryRuntimeBundleV1>(
+    const bundle = await readRegularJson<ForecastAdjustmentWindCanaryRuntimeBundle>(
       bundlePath,
       absoluteRoot,
     );
@@ -347,7 +347,7 @@ async function loadWindCanaryRuntimeFromRoot(
 
     const now = options.now?.() ?? new Date().toISOString();
 
-    // fail raw outside the explicit short-lived window
+    // fail raw outside the explicit authorization
     if (!forecastAdjustmentWindCanaryIsActiveAt(bundle, now)) {
       return disabledWindCanary("canary_expired");
     }
@@ -432,7 +432,7 @@ async function loadTemperatureCanaryRuntimeFromRoot(
     }
 
     const bundle =
-      await readRegularJson<ForecastAdjustmentTemperatureCanaryRuntimeBundleV1>(
+      await readRegularJson<ForecastAdjustmentTemperatureCanaryRuntimeBundle>(
         bundlePath,
         absoluteRoot,
       );
@@ -446,7 +446,7 @@ async function loadTemperatureCanaryRuntimeFromRoot(
 
     const now = options.now?.() ?? new Date().toISOString();
 
-    // fail raw outside the explicit short-lived window
+    // fail raw outside the explicit authorization
     if (!forecastAdjustmentTemperatureCanaryIsActiveAt(bundle, now)) {
       return disabledTemperatureCanary("canary_expired");
     }
