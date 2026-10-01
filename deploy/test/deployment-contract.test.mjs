@@ -993,20 +993,13 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(invalidWrite.status, 400);
     const adjustmentSettingsPath = join(fixtureRoot, "forecast-adjustment-settings.json");
 
-    // verify every legacy combination follows rain across persisted and projected state
+    // verify every independent combination across persisted and projected state
     for (let mask = 0; mask < 8; mask += 1) {
       const switches = {
         version: 1,
         temperature: Boolean(mask & 1),
         wind: Boolean(mask & 2),
         rain: Boolean(mask & 4),
-      };
-      const enabled = switches.rain;
-      const canonicalSwitches = {
-        version: 1,
-        temperature: enabled,
-        wind: enabled,
-        rain: enabled,
       };
       const updated = await fetch(adminSwitchUrl, {
         body: JSON.stringify(switches),
@@ -1021,24 +1014,24 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       const row = projected.data[0];
 
       assert.equal(updated.status, 200);
-      assert.deepEqual(await updated.json(), { data: canonicalSwitches });
-      assert.deepEqual(await publicRead.json(), { data: canonicalSwitches });
-      assert.deepEqual(await adminRead.json(), { data: canonicalSwitches });
-      assert.deepEqual(JSON.parse(await readFile(adjustmentSettingsPath, "utf8")), canonicalSwitches);
-      assert.deepEqual(projected.adjustmentSettings, canonicalSwitches);
+      assert.deepEqual(await updated.json(), { data: switches });
+      assert.deepEqual(await publicRead.json(), { data: switches });
+      assert.deepEqual(await adminRead.json(), { data: switches });
+      assert.deepEqual(JSON.parse(await readFile(adjustmentSettingsPath, "utf8")), switches);
+      assert.deepEqual(projected.adjustmentSettings, switches);
       assert.equal(projectedResponse.headers.get("cache-control"), "no-store");
       assert.deepEqual(row.metrics, forecastFixture.data[0].metrics);
       assert.deepEqual(row.provenance, forecastFixture.data[0].provenance);
-      assert.equal(row.adjustment.state, enabled ? "active" : "disabled");
-      assert.equal(projected.adjustmentRuntime.state, enabled ? "active" : "disabled");
-      assert.equal(row.temperatureAdjustment.state, enabled ? "active" : "disabled");
-      assert.equal(projected.temperatureAdjustmentRuntime.state, enabled ? "active" : "disabled");
-      assert.equal(row.rainAdjustment.state, enabled ? "active" : "disabled");
-      assert.equal(projected.rainAdjustmentRuntime.state, enabled ? "active" : "disabled");
-      assert.equal(row.adjustment.adjustedMetrics.windSpeedMps, enabled ? 4 : undefined);
-      assert.equal(row.temperatureAdjustment.correctedTemperatureC, enabled ? 13 : null);
-      assert.equal(row.rainAdjustment.correctedPrecipitationMm, enabled ? 1.5 : null);
-      assert.equal(rainStatus.data.modelEnabled, enabled);
+      assert.equal(row.adjustment.state, switches.wind ? "active" : "disabled");
+      assert.equal(projected.adjustmentRuntime.state, switches.wind ? "active" : "disabled");
+      assert.equal(row.temperatureAdjustment.state, switches.temperature ? "active" : "disabled");
+      assert.equal(projected.temperatureAdjustmentRuntime.state, switches.temperature ? "active" : "disabled");
+      assert.equal(row.rainAdjustment.state, switches.rain ? "active" : "disabled");
+      assert.equal(projected.rainAdjustmentRuntime.state, switches.rain ? "active" : "disabled");
+      assert.equal(row.adjustment.adjustedMetrics.windSpeedMps, switches.wind ? 4 : undefined);
+      assert.equal(row.temperatureAdjustment.correctedTemperatureC, switches.temperature ? 13 : null);
+      assert.equal(row.rainAdjustment.correctedPrecipitationMm, switches.rain ? 1.5 : null);
+      assert.equal(rainStatus.data.modelEnabled, switches.rain);
       assert.equal(rainStatus.data.qualificationEnabled, false);
     }
 
@@ -1086,7 +1079,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     });
     assert.equal(repairedMarker.status, 200);
     assert.deepEqual((await (await fetch(publicSwitchUrl)).json()).data, {
-      version: 1, temperature: true, wind: true, rain: true,
+      version: 1, temperature: false, wind: false, rain: true,
     });
     const logout = await fetch(`http://127.0.0.1:${webPort}/admin/logout`, {
       headers: {

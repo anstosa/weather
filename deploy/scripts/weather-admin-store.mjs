@@ -223,7 +223,7 @@ export class WeatherAdminStore {
     }
   }
 
-  // replace the shared switch in its compatible three-field envelope
+  // replace the three independent adjustment switches
   async writeAdjustmentSettings(input) {
     const settings = parseAdjustmentSettings(input);
     const marker = await readOptionalText(this.#adjustmentSettingsMarkerPath);
@@ -334,7 +334,7 @@ export class WeatherAdminStore {
   }
 }
 
-// require and canonicalize one versioned shared-switch record
+// require one versioned independent-switch record
 function parseAdjustmentSettings(value) {
   // reject missing, extra, or non-boolean fields
   if (
@@ -348,12 +348,11 @@ function parseAdjustmentSettings(value) {
     throw new RangeError("forecast adjustment settings are invalid");
   }
 
-  const enabled = value.rain;
   return {
     version: ADJUSTMENT_SETTINGS_VERSION,
-    temperature: enabled,
-    wind: enabled,
-    rain: enabled,
+    temperature: value.temperature,
+    wind: value.wind,
+    rain: value.rain,
   };
 }
 

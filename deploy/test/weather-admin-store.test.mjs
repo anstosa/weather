@@ -128,8 +128,8 @@ test("property layout defaults legacy sensor icons safely", async (t) => {
   assert.equal((await store.readLayout())[0]?.icon, null);
 });
 
-// preserve the v1 envelope while using rain as the shared switch
-test("forecast adjustment settings canonicalize legacy state and fail closed on corruption", async (t) => {
+// preserve independent v1 settings and fail closed on corruption
+test("forecast adjustment settings persist independent state and fail closed on corruption", async (t) => {
   const options = await fixture(t);
   const store = new WeatherAdminStore(options);
   const path = join(dirname(options.layoutPath), "forecast-adjustment-settings.json");
@@ -154,22 +154,20 @@ test("forecast adjustment settings canonicalize legacy state and fail closed on 
   }));
   assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, {
     version: 1,
-    temperature: false,
-    wind: false,
+    temperature: true,
+    wind: true,
     rain: false,
   });
 
-  // canonicalize every legacy three-bit selection to its rain value
+  // preserve every independent three-bit selection
   for (let mask = 0; mask < 8; mask += 1) {
-    const legacySettings = {
+    const settings = {
       version: 1,
       temperature: Boolean(mask & 1),
       wind: Boolean(mask & 2),
       rain: Boolean(mask & 4),
     };
-    const enabled = legacySettings.rain;
-    const settings = { version: 1, temperature: enabled, wind: enabled, rain: enabled };
-    assert.deepEqual(await store.writeAdjustmentSettings(legacySettings), settings);
+    assert.deepEqual(await store.writeAdjustmentSettings(settings), settings);
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")), settings);
     assert.deepEqual((await store.readAdjustmentSettingsStatus()).settings, settings);
     assert.deepEqual((await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings, settings);
@@ -215,7 +213,7 @@ test("forecast adjustment settings canonicalize legacy state and fail closed on 
     temperature: true,
     wind: false,
     rain: false,
-  }), { version: 1, temperature: false, wind: false, rain: false });
+  }), { version: 1, temperature: true, wind: false, rain: false });
   assert.equal((await store.readAdjustmentSettingsStatus()).error, null);
 
   // keep damaged marker reads off until an authenticated rewrite repairs it
@@ -225,11 +223,10 @@ test("forecast adjustment settings canonicalize legacy state and fail closed on 
     error: "adjustment_settings_unavailable",
   });
   const recovered = { version: 1, temperature: false, wind: false, rain: true };
-  const canonicalRecovered = { version: 1, temperature: true, wind: true, rain: true };
-  assert.deepEqual(await store.writeAdjustmentSettings(recovered), canonicalRecovered);
+  assert.deepEqual(await store.writeAdjustmentSettings(recovered), recovered);
   assert.deepEqual(
     (await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings,
-    canonicalRecovered,
+    recovered,
   );
 
   // losing the whole web volume cannot become a new enabled first run
@@ -253,7 +250,6 @@ test("first-run adjustment initialization preserves a concurrent admin write", a
   const options = await fixture(t);
   const store = new WeatherAdminStore(options);
   const chosen = { version: 1, temperature: false, wind: false, rain: true };
-  const canonicalChosen = { version: 1, temperature: true, wind: true, rain: true };
   await store.bootstrap("test-bootstrap-token-with-32-bytes-minimum", "P@ssword-test");
 
   await Promise.all([
@@ -262,6 +258,6 @@ test("first-run adjustment initialization preserves a concurrent admin write", a
   ]);
   assert.deepEqual(
     (await new WeatherAdminStore(options).readAdjustmentSettingsStatus()).settings,
-    canonicalChosen,
+    chosen,
   );
 });
