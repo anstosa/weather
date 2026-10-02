@@ -39,6 +39,66 @@ const shellPaths = [
   `/assets/${release}/units.js`
 ];
 const shellPathSet = new Set(shellPaths);
+const dashboardPaths = new Set(["/", "/logs", "/map", "/forecast", "/trends", "/settings"]);
+const analyticsSources = new Set([
+  "https://www.googletagmanager.com",
+  "https://*.google-analytics.com",
+  "https://*.google.com",
+]);
+
+// remove analytics sources from one policy
+function sanitizeAnalyticsPolicy(policy) {
+  return policy
+    .split(";")
+    .map(
+      // remove analytics sources from one directive
+      (directive) => directive
+        .trim()
+        .split(/\s+/u)
+        .filter(
+          // retain non-analytics sources
+          (source) => !analyticsSources.has(source),
+        )
+        .join(" "),
+    )
+    .filter(
+      // discard empty directives
+      (directive) => directive.length > 0,
+    )
+    .join("; ");
+}
+
+// build one analytics-free offline document
+async function sanitizeOfflineNavigation(response) {
+  const body = await response.clone().text();
+  const safeBody = body.replaceAll('data-weather-analytics="true"', 'data-weather-analytics="false"');
+  const policy = response.headers.get("content-security-policy");
+  const safePolicy = policy === null ? null : sanitizeAnalyticsPolicy(policy);
+
+  // retain already-safe static responses exactly
+  if (safeBody === body && safePolicy === policy) {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+
+  // remove analytics network permissions
+  if (safePolicy !== null) {
+    headers.set("content-security-policy", safePolicy);
+  }
+
+  // remove body metadata invalidated by rewriting
+  if (safeBody !== body || headers.has("content-encoding")) {
+    headers.delete("content-encoding");
+    headers.delete("content-length");
+  }
+
+  return new Response(safeBody, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
 
 // reject user-specific navigation responses
 function canCacheNavigation(response) {
@@ -48,7 +108,13 @@ function canCacheNavigation(response) {
       // normalize one cache directive name
       (directive) => directive.trim().split("=", 1)[0]?.toLowerCase(),
     );
-  return response.ok && !directives.includes("private") && !directives.includes("no-store");
+  const contentType = response.headers.get("content-type")?.toLowerCase();
+  return (
+    response.ok &&
+    contentType?.startsWith("text/html") === true &&
+    !directives.includes("private") &&
+    !directives.includes("no-store")
+  );
 }
 
 // cache the versioned application shell
@@ -60,6 +126,26 @@ self.addEventListener("install", (event) => {
       (path) => new Request(path, { credentials: "omit" }),
     );
     await cache.addAll(shellRequests);
+
+    // sanitize each precached dashboard document
+    for (const request of shellRequests) {
+      const pathname = new URL(request.url).pathname;
+
+      // preserve static documents and assets
+      if (!dashboardPaths.has(pathname)) {
+        continue;
+      }
+
+      const response = await cache.match(request);
+
+      // fail installation before activating an unsafe shell
+      if (response === undefined) {
+        throw new Error(`Missing precached dashboard response for ${pathname}`);
+      }
+
+      await cache.put(request, await sanitizeOfflineNavigation(response));
+    }
+
     await self.skipWaiting();
   })());
 });
@@ -128,7 +214,7 @@ async function networkFirstNavigation(request) {
 
     // retain only public route shells
     if (canCacheNavigation(response)) {
-      await cache.put(request, response.clone());
+      await cache.put(request, await sanitizeOfflineNavigation(response.clone()));
     }
 
     return response;
