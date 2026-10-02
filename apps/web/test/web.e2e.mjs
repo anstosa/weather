@@ -1031,6 +1031,7 @@ async function startFixtureServer() {
                 : "",
             )
             .replaceAll("__WEATHER_ROUTE_PRELOAD__", "")
+            .replaceAll("__WEATHER_ANALYTICS__", "false")
           : source,
       );
       return;
@@ -2766,6 +2767,89 @@ test("wind adjustment keeps an Adjusted accessible name and persists the raw cho
   }
 });
 
+// enforce both the server production marker and the exact public origin
+test("google tag is production-only and initializes once without blocking navigation", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  try {
+    browser = await launchBrowser();
+    // keep real analytics traffic out of fixture validation
+    for (const { origin, enabled, admin = false, blocked = false, tracked } of [
+      { origin: "https://weather.ballydidean.farm", enabled: true, tracked: true },
+      { origin: "https://weather.ballydidean.farm", enabled: true, blocked: true, tracked: true },
+      { origin: "https://weather.ballydidean.farm", enabled: false, tracked: false },
+      { origin: "https://weather.ballydidean.farm", enabled: true, admin: true, tracked: false },
+      { origin: fixture.origin, enabled: true, tracked: false },
+      { origin: "https://preview.example", enabled: true, tracked: false },
+      { origin: "https://weather.ballydidean.farm.preview.example", enabled: true, tracked: false },
+    ]) {
+      const page = await createFixturePage(browser, { serviceWorkers: "block", viewport: { height: 900, width: 390 } });
+      const errors = [];
+      const tagRequests = [];
+      // record uncaught application failures even when the tag is blocked
+      page.on("pageerror", (error) => errors.push(error.message));
+      // serve only disposable fixture bytes under the tested origin
+      await page.route(`${origin}/**`, async (route) => {
+        const url = new URL(route.request().url());
+        const response = await route.fetch({ url: `${fixture.origin}${url.pathname}${url.search}` });
+        // model the server's HTML marker without changing other response bytes
+        if (response.headers()["content-type"]?.includes("text/html")) {
+          const body = (await response.text())
+            .replace('data-weather-analytics="false"', `data-weather-analytics="${String(enabled)}"`)
+            .replace('data-weather-admin="false"', `data-weather-admin="${String(admin)}"`);
+          await route.fulfill({ response, body });
+          return;
+        }
+        await route.fulfill({ response });
+      });
+      // stub the third-party loader so tests never send production events
+      await page.route("https://www.googletagmanager.com/**", async (route) => {
+        tagRequests.push(route.request().url());
+        // simulate an ad blocker without changing the application shell
+        if (blocked) {
+          await route.abort("blockedbyclient");
+          return;
+        }
+        await route.fulfill({ status: 200, contentType: "text/javascript", body: "" });
+      });
+      await page.goto(origin, { waitUntil: "networkidle" });
+      await page.locator(".current-conditions").waitFor();
+      assert.deepEqual(tagRequests, tracked ? ["https://www.googletagmanager.com/gtag/js?id=G-NYT2EZS8BX"] : []);
+      assert.equal(await page.locator("#weather-google-tag").count(), tracked ? 1 : 0);
+      const commands = await page.evaluate(
+        // inspect the queued bootstrap independently of the stubbed loader
+        () => (window.dataLayer ?? []).map((command) => Array.from(command)),
+      );
+      assert.equal(commands.length, tracked ? 2 : 0);
+      // require the exact requested destination and disable advertising features
+      if (tracked) {
+        assert.equal(commands[0][0], "js");
+        assert.deepEqual(commands[1], ["config", "G-NYT2EZS8BX", {
+          allow_google_signals: false,
+          allow_ad_personalization_signals: false,
+        }]);
+      }
+      await page.getByRole("link", { name: "Forecast", exact: true }).click();
+      await page.waitForURL(`${origin}/forecast`);
+      await page.locator(".forecast-panel").waitFor();
+      await page.goBack();
+      await page.locator(".current-conditions").waitFor();
+      assert.equal(tagRequests.length, tracked ? 1 : 0);
+      assert.equal(await page.evaluate(
+        // leave page-view events to enhanced measurement rather than duplicating them
+        () => window.dataLayer?.length ?? 0,
+      ), tracked ? 2 : 0);
+      assert.deepEqual(errors, []);
+      await page.close();
+    }
+  } finally {
+    // release only the disposable fixture and browser
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // verify public navigation preserves one document and browser history
 test("public navigation updates the URL and restores routed content from history", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -2987,9 +3071,9 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator(".condition-status-light").count(), 0);
     assert.equal(
       await page.locator("[data-condition='humidity'] .condition-status-color rect").getAttribute("fill"),
-      "rgb(239, 126, 31)",
+      "rgb(67, 151, 86)",
     );
-    assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Very humid/u);
+    assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Comfortable/u);
     assert.equal(
       await page.locator(".condition-status-dark").first().evaluate(
         // require maximum contrast over mid-tone bands
@@ -5642,6 +5726,70 @@ test("bootstrap and administrator reads use in-place skeletons", { timeout: 120_
   }
 });
 
+// make humidity discomfort depend on paired air temperature at every screen size
+test("humidity colors stay comfortable in cool air and warn only in hot humid air", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  try {
+    browser = await launchBrowser();
+    // cover both compact and wide card layouts
+    for (const width of [320, 1440]) {
+      const page = await createFixturePage(browser, { viewport: { height: 900, width } });
+      await page.clock.setFixedTime(new Date("2026-08-21T20:00:00Z"));
+      let temperatureC = 16;
+      // retain the numeric humidity while varying only its paired air temperature
+      await page.route("**/api/v1/sites/ballydidean/current", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.data = body.data.map(
+          // prevent a feels-like value from acting as the humidity heat gate
+          (record) => ({ ...record, metrics: { ...record.metrics, relativeHumidityPercent: 85, temperatureC, apparentTemperatureC: 35 } }),
+        );
+        await route.fulfill({ response, json: body });
+      });
+      // keep the humidity maximum cold while another forecast hour is hot
+      await page.route("**/api/v1/sites/ballydidean/forecast", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.data = [[95, 16], [75, 30], [85, null], [85, 30]].map(
+          // align each humidity and temperature pair with its own hourly color stop
+          ([relativeHumidityPercent, temperature], index) => ({
+            ...body.data[index],
+            validAt: `2026-08-21T${String(18 + index)}:00:00.000Z`,
+            metrics: { ...body.data[index].metrics, relativeHumidityPercent, temperatureC: temperature },
+          }),
+        );
+        await route.fulfill({ response, json: body });
+      });
+      // test known comfort, actual hot humidity and missing temperature separately
+      for (const [temperature, color, label] of [
+        [16, "rgb(67, 151, 86)", "Comfortable"],
+        [30, "rgb(207, 67, 55)", "Very humid"],
+        [null, "rgb(136, 136, 130)", "Unavailable"],
+      ]) {
+        temperatureC = temperature;
+        await page.goto(fixture.origin, { waitUntil: "networkidle" });
+        const card = page.locator("[data-condition='humidity']");
+        assert.equal(await card.locator(".condition-color rect").getAttribute("fill"), color);
+        assert.equal(await card.locator(".condition-status").innerText(), label);
+        assert.equal(await card.locator(".condition-primary").innerText(), "85%");
+        assert.equal(await card.locator(".condition-forecast-reading").getAttribute("class"), "condition-forecast-reading condition-forecast-tone-green");
+        assert.match(await card.locator(".condition-forecast-reading").innerText(), /^Max\s*95%$/u);
+      }
+      await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+      assert.deepEqual(await page.locator("#forecast-line-humidity-0 stop").evaluateAll(
+        // include the terminal repeated stop in the pairing check
+        (stops) => stops.map((stop) => stop.getAttribute("stop-color")),
+      ), ["rgb(67, 151, 86)", "rgb(239, 126, 31)", "rgb(136, 136, 130)", "rgb(207, 67, 55)", "rgb(207, 67, 55)"]);
+      await page.close();
+    }
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // distinguish current pressure movement from the strongest change across today
 test("pressure tile colors three-hour speed and shows the whole-day maximum", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -6002,8 +6150,8 @@ test("clouds secondary shows overall only when its clearest time range differs",
   }
 });
 
-// clip both hourly edges to the farm's sunrise and sunset
-test("clouds range stays within sunrise and sunset on desktop and mobile", { timeout: 60_000 }, async () => {
+// round the daylight-selected range without changing sunset precision
+test("clouds range rounds sunrise and sunset to hours on desktop and mobile", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -6028,11 +6176,12 @@ test("clouds range stays within sunrise and sunset on desktop and mobile", { tim
       });
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const tile = page.locator("[data-condition='clouds']");
-      assert.equal((await tile.locator(".condition-secondary > strong").innerText()).replace(/\s+/gu, " "), "6:50 AM–7:17PM");
+      assert.equal((await tile.locator(".condition-secondary > strong").innerText()).replace(/\s+/gu, " "), "7 AM–7PM");
       assert.equal(await tile.locator(".condition-secondary-comparison strong").innerText(), "12–1AM");
+      assert.equal(await page.locator("[data-condition='sunset'] .condition-primary").innerText(), "7:17PM");
       assert.deepEqual(await tile.locator(".condition-forecast-reading").allTextContents(), ["Max 100%", "Min 0%"]);
       assert.equal(await tile.locator(".condition-secondary").evaluate(
-        // retain the minute-precise range without clipping its reserved row
+        // retain the rounded range without clipping its reserved row
         (element) => element.scrollWidth <= element.clientWidth && element.scrollHeight <= element.clientHeight,
       ), true, `sunrise–sunset range clips at ${width}px`);
       await page.close();
@@ -6707,7 +6856,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(0, 0, 0)", condition: "rain", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
-        { color: "rgb(239, 126, 31)", condition: "humidity", opacity: "0.75" },
+        { color: "rgb(67, 151, 86)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },

@@ -6,6 +6,37 @@ import {
 
 const root = document.querySelector<HTMLElement>("#weather-app");
 
+// initialize one google tag only on the public production origin
+function initializeProductionAnalytics(isAdmin: boolean): void {
+  // keep development, previews and authenticated shells out of production analytics
+  if (document.documentElement.dataset.weatherAnalytics !== "true" ||
+    window.location.origin !== "https://weather.ballydidean.farm" ||
+    isAdmin || document.getElementById("weather-google-tag") !== null) {
+    return;
+  }
+
+  const analyticsWindow = window as Window & {
+    dataLayer?: unknown[];
+    gtag?: (...parameters: unknown[]) => void;
+  };
+  const dataLayer = analyticsWindow.dataLayer ??= [];
+  // preserve the google tag's arguments-based queue before its async script loads
+  analyticsWindow.gtag = function (..._parameters: unknown[]): void {
+    dataLayer.push(arguments);
+  };
+  analyticsWindow.gtag("js", new Date());
+  // retain automatic page views without duplicate manual history events
+  analyticsWindow.gtag("config", "G-NYT2EZS8BX", {
+    allow_google_signals: false,
+    allow_ad_personalization_signals: false,
+  });
+  const script = document.createElement("script");
+  script.id = "weather-google-tag";
+  script.async = true;
+  script.src = "https://www.googletagmanager.com/gtag/js?id=G-NYT2EZS8BX";
+  document.head.append(script);
+}
+
 // register the installable offline shell
 async function registerServiceWorker(): Promise<void> {
   // skip unsupported browsers
@@ -160,6 +191,11 @@ const isAdmin = document.documentElement.dataset.weatherAdmin === "true" || view
 if (root !== null) {
   const controller = mountWeatherDashboard(root, { isAdmin, view });
   bindBrowserNavigation(root, controller);
+  try {
+    initializeProductionAnalytics(isAdmin);
+  } catch {
+    // keep optional analytics from interrupting the weather application
+  }
 }
 
 registerServiceWorker().catch(
