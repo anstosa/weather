@@ -1336,6 +1336,23 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
         // wait for any width-dependent font layout
         async () => await document.fonts.ready,
       );
+      await page.waitForFunction(
+        // wait for the resize observer to pair the switch with the fitted title
+        () => {
+          const masthead = document.querySelector(".home-masthead");
+          const heading = masthead?.querySelector("h1");
+
+          // require the complete responsive header
+          if (!(masthead instanceof HTMLElement) || !(heading instanceof HTMLElement)) {
+            return false;
+          }
+
+          return masthead.style.getPropertyValue("--adjustment-switch-height") ===
+            getComputedStyle(heading).fontSize;
+        },
+        undefined,
+        { polling: 10 },
+      );
       const layout = await captureHeaderAndNow();
       const baselineHeight = baselineHeights.get(width);
 
@@ -4763,6 +4780,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       viewport: { height: 844, width: 390 },
     });
     await page.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
+    await assertSkeletonLoadingSettled(page);
     const grid = page.locator("[data-forecast-charts]");
     const line = page.locator(".forecast-shared-crosshair");
     const currentLine = page.locator(".forecast-current-time-line");
@@ -5064,6 +5082,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       // restore the one-day interaction fixture
       () => document.querySelectorAll(".forecast-x-tick").length === 24,
     );
+    await assertSkeletonLoadingSettled(page);
     assert.deepEqual(
       await page.locator(".forecast-chart").evaluateAll(
         // retain the requested stable raw-unit chart domains
