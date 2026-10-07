@@ -13,6 +13,8 @@ const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 const providedServerImage = process.env.WEATHER_TEST_SERVER_IMAGE;
 const providedWebImage = process.env.WEATHER_TEST_WEB_IMAGE;
 const providedBuildPackageRoot = process.env.WEATHER_TEST_BUILD_PACKAGE_ROOT;
+const publicScorecardContractPath =
+  "deploy/scripts/forecast-adjustment-scorecard-contract.mjs";
 
 // hash the exact server package files expected from the build stage
 async function collectExpectedPackageFiles(
@@ -80,6 +82,7 @@ const { lstatSync, readFileSync, readdirSync, realpathSync } = require("node:fs"
 const { join, relative } = require("node:path");
 const root = "/opt/weather";
 const nodes = [];
+const publicForecastAdjustmentPaths = new Set([${JSON.stringify(publicScorecardContractPath)}]);
 // collect nodes without following links
 function walk(directory) {
   // inspect deterministic child nodes
@@ -109,11 +112,22 @@ function hashes(directory) {
   return output;
 }
 walk(root);
-const forbidden = nodes.filter(({ path }) => /forecast-adjustment|(?:^|\\\/)\\.weather-(?:data|models)(?:\\\/|$)|(?:^|\\\/)model-evidence(?:\\\/|$)|sha256-[a-f0-9]{64}\\.json$|training[_-]export[_-]password|(?:decrypt|encrypt)(?:ion)?[-_]?key/iu.test(path));
+// identify every sensitive adjustment or private-data node
+const sensitiveNodes = nodes.filter(({ path }) => /forecast-adjustment|(?:^|\\\/)\\.weather-(?:data|models)(?:\\\/|$)|(?:^|\\\/)model-evidence(?:\\\/|$)|sha256-[a-f0-9]{64}\\.json$|training[_-]export[_-]password|(?:decrypt|encrypt)(?:ion)?[-_]?key/iu.test(path));
+// permit only the shared public scorecard contract
+const forbidden = sensitiveNodes.filter(({ path }) => !publicForecastAdjustmentPaths.has(path));
+// bind the allowed path to its exact image bytes and node type
+const publicForecastAdjustmentNodes = sensitiveNodes
+  .filter(({ path }) => publicForecastAdjustmentPaths.has(path))
+  .map(({ path, type }) => ({
+    path,
+    sha256: type === "file" ? createHash("sha256").update(readFileSync(join(root, path))).digest("hex") : null,
+    type,
+  }));
 const mode = process.argv[1];
 // return only the requested bounded inspection
 if (mode === "web") {
-  process.stdout.write(JSON.stringify({ forbidden }));
+  process.stdout.write(JSON.stringify({ forbidden, publicForecastAdjustmentNodes }));
 } else {
   const packageRoot = join(root, "packages/forecast-adjustment");
   const packageLink = join(root, "node_modules/@weather/forecast-adjustment");
@@ -185,6 +199,14 @@ test("built server and web images enforce the adjustment filesystem boundary", {
 
     const web = await inspectImage(webImage, "web");
     assert.deepEqual(web.forbidden, []);
+    // require the copied public validator to match the source contract
+    assert.deepEqual(web.publicForecastAdjustmentNodes, [{
+      path: publicScorecardContractPath,
+      sha256: createHash("sha256").update(await readFile(
+        join(repoRoot, publicScorecardContractPath),
+      )).digest("hex"),
+      type: "file",
+    }]);
     const server = await inspectImage(serverImage, "server");
     assert.equal(server.linkType, "link");
     assert.equal(

@@ -1160,7 +1160,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
       const rollbackTranscript = join(releaseRoot, "rollback-transcript");
       await executeFile("mkdir", ["-p", releases, releaseState]);
 
-      // create three immutable lifecycle states
+      // create three immutable version-twelve lifecycle states
       for (const release of ["2026.08.22-1", "2026.08.22-2", "2026.08.22-3"]) {
         // select lifecycle image digests
         const digestKeys = release.endsWith("-3")
@@ -1179,7 +1179,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
             "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
             "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
             `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
-            "WEATHER_CONTROL_PLANE_VERSION=11",
+            "WEATHER_CONTROL_PLANE_VERSION=12",
             "",
           ].join("\n"),
           { mode: 0o600 },
