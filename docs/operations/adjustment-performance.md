@@ -198,11 +198,18 @@ The root-owned helper is hash-pinned by the root-ops wrapper and refuses changed
 release, control-plane, common-helper, contract or predecessor-installer bytes.
 It does not modify the pinned deployment tree, release metadata or serving state.
 
-At the next reviewed control-plane release containing the canonical installer
-fix, return the root-ops scorecard arm to the deployment-tree installer first.
-Verify bounded publication through the forced SSH route, then retire only the
-exact isolated helper and its empty directory. Retain rollback backups and
-published evidence; never edit published control identities in place.
+The reviewed password-only convergence uses
+`install-adjustment-evaluation-control-plane.sh --repair-password-v12` only
+against release `2026.10.07-2` and its exact version-twelve control identity.
+It installs exactly the canonical scorecard installer, admin store, web server
+and update guard, with update installed last. Retain the complete private backup;
+use `--recover-password-v12 BACKUP` only for exact crash recovery.
+
+After that handoff succeeds, return the root-ops scorecard arm to the
+deployment-tree installer and verify one bounded publication through the forced
+SSH route. Retire only the exact isolated helper and its empty directory after
+that proof. Retain rollback backups and published evidence; never edit published
+control identities or release environments in place.
 
 ## Capacity and release safety
 

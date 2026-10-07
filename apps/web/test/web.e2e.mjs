@@ -861,7 +861,9 @@ async function startFixtureServer() {
       }
 
       const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
-      const authenticated = form.get("username") === "admin" &&
+      // require one password-only fixture form
+      const authenticated = form.size === 1 &&
+        form.getAll("password").length === 1 &&
         form.get("password") === "test-admin-password";
       response.statusCode = 303;
       response.setHeader("location", authenticated ? "/admin" : "/admin?error=invalid");
@@ -1199,7 +1201,7 @@ async function startFixtureServer() {
             .replaceAll(
               "__WEATHER_ADMIN_LOGIN_ERROR__",
               url.searchParams.get("error") === "invalid"
-                ? '<p class="admin-login-error" role="alert">The username or password is incorrect.</p>'
+                ? '<p class="admin-login-error" role="alert">The password is incorrect.</p>'
                 : "",
             )
             .replaceAll("__WEATHER_ROUTE_PRELOAD__", "")
@@ -4631,7 +4633,6 @@ test("admin forecast switches persist independently and hide the public toggle w
       viewport: { height: 850, width: 1100 },
     });
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
-    await page.getByLabel("Username").fill("admin");
     await page.getByLabel("Password").fill("test-admin-password");
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
@@ -4709,7 +4710,6 @@ test("admin adjustment scorecard stays review-only and fails closed", { timeout:
       viewport: { height: 900, width: 390 },
     });
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
-    await page.getByLabel("Username").fill("admin");
     await page.getByLabel("Password").fill("test-admin-password");
     await page.getByRole("button", { name: "Sign in" }).click();
     const scorecard = page.locator(".adjustment-scorecard[data-scorecard-state='ready']");
@@ -4764,10 +4764,11 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
     assert.equal(await page.getByRole("heading", { name: "Admin sign in" }).isVisible(), true);
     assert.equal(await page.locator(".admin-login-icon").textContent(), "settings");
-    assert.equal(await page.getByLabel("Username").inputValue(), "admin");
+    assert.equal(await page.locator('input[name="username"]').count(), 0);
+    assert.equal(await page.locator('input[name="password"]').count(), 1);
     await page.getByLabel("Password").fill("wrong-password");
     await page.getByRole("button", { name: "Sign in" }).click();
-    assert.equal(await page.getByRole("alert").textContent(), "The username or password is incorrect.");
+    assert.equal(await page.getByRole("alert").textContent(), "The password is incorrect.");
     await page.getByLabel("Password").fill("test-admin-password");
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("heading", { name: "Property sensors" }).waitFor();

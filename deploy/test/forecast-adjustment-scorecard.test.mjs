@@ -287,7 +287,7 @@ test("admin scorecard route is authenticated, queryless, read-only and fail-clos
     });
     assert.equal(bootstrap.status, 201);
     const login = await fetch(`http://127.0.0.1:${String(port)}/admin/login`, {
-      body: new URLSearchParams({ password: "test-admin-password", username: "admin" }),
+      body: new URLSearchParams({ password: "test-admin-password" }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
       redirect: "manual",

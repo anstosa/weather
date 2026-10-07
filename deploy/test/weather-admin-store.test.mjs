@@ -40,16 +40,21 @@ test("admin bootstrap creates one non-reversible credential and bounded sessions
   assert.deepEqual(await store.bootstrap("test-bootstrap-token-with-32-bytes-minimum", "P@ssword-test"), {
     status: "configured",
   });
-  const session = await store.startSession("admin", "P@ssword-test");
-  assert.equal(await store.startSession("admin", "wrong-password"), null);
-  assert.equal(await store.startSession("operator", "P@ssword-test"), null);
+  const authState = await readFile(options.authPath, "utf8");
+  assert.equal(JSON.parse(authState).username, "admin");
+  const compatibleStore = new WeatherAdminStore({ ...options, now: () => now });
+  const compatibleSession = await compatibleStore.startSession("P@ssword-test");
+  assert.equal(compatibleStore.authenticateSession(compatibleSession?.token), true);
+  assert.equal(await readFile(options.authPath, "utf8"), authState);
+  const session = await store.startSession("P@ssword-test");
+  assert.equal(await store.startSession("wrong-password"), null);
   assert.equal(typeof session?.token, "string");
   assert.equal(session?.maximumAgeSeconds, ADMIN_SESSION_TTL_SECONDS);
   assert.equal(store.authenticateSession(session?.token), true);
   assert.equal(store.authenticateSession("not-a-session"), false);
   now += ADMIN_SESSION_TTL_SECONDS * 1_000 + 1;
   assert.equal(store.authenticateSession(session?.token), false);
-  const revocable = await store.startSession("admin", "P@ssword-test");
+  const revocable = await store.startSession("P@ssword-test");
   assert.equal(store.authenticateSession(revocable?.token), true);
   store.revokeSession(revocable?.token);
   assert.equal(store.authenticateSession(revocable?.token), false);

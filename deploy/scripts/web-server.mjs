@@ -371,7 +371,7 @@ async function loginAdmin(request, response) {
 
   try {
     const form = await readRequestForm(request, 2_048);
-    const session = await adminStore.startSession(form.username, form.password);
+    const session = await adminStore.startSession(form.password);
 
     // return invalid credentials to the framed login page
     if (session === null) {
@@ -763,18 +763,17 @@ async function readRequestForm(request, maximumBytes) {
   const parameters = new URLSearchParams(
     (await readRequestBody(request, maximumBytes)).toString("utf8"),
   );
-  const usernames = parameters.getAll("username");
   const passwords = parameters.getAll("password");
 
-  // require exactly one bounded credential pair
-  if (usernames.length !== 1 || passwords.length !== 1 || [...parameters.keys()].some(
+  // require exactly one bounded password field
+  if (passwords.length !== 1 || [...parameters.keys()].some(
     // reject every unexpected form field
-    (key) => key !== "username" && key !== "password",
+    (key) => key !== "password",
   )) {
     throw new RangeError("login form is invalid");
   }
 
-  return { password: passwords[0], username: usernames[0] };
+  return { password: passwords[0] };
 }
 
 // read one bounded request body
@@ -854,7 +853,7 @@ function renderHtmlTemplate(source, pathname, isAdmin, analyticsEnabled) {
 // render one bounded login error state
 function renderAdminLoginTemplate(source, invalidCredentials) {
   const error = invalidCredentials
-    ? '<p class="admin-login-error" role="alert">The username or password is incorrect.</p>'
+    ? '<p class="admin-login-error" role="alert">The password is incorrect.</p>'
     : "";
   return source
     .replaceAll("__WEATHER_ASSET_VERSION__", release)

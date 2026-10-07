@@ -619,7 +619,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
   );
   await writeFile(
     join(fixtureRoot, "apps/web/public/admin-login.html"),
-    '<!doctype html><title>Admin sign in</title>__WEATHER_ADMIN_LOGIN_ERROR__<form action="/admin/login" method="post"><input name="username"><input name="password" type="password"><button>Sign in</button></form><link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">\n',
+    '<!doctype html><title>Admin sign in</title>__WEATHER_ADMIN_LOGIN_ERROR__<form action="/admin/login" method="post"><input name="password" type="password"><button>Sign in</button></form><link rel="stylesheet" href="/assets/__WEATHER_ASSET_VERSION__/styles.css">\n',
   );
   await writeFile(
     join(fixtureRoot, "apps/web/public/privacy.html"),
@@ -912,7 +912,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
       method: "PUT",
     });
     const invalidLogin = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
-      body: new URLSearchParams({ password: "wrong-password", username: "admin" }),
+      body: new URLSearchParams({ password: "wrong-password" }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
       method: "POST",
       redirect: "manual",
@@ -920,8 +920,26 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const invalidLoginPage = await fetch(
       `http://127.0.0.1:${webPort}${invalidLogin.headers.get("location")}`,
     );
-    const login = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
+    const duplicatePasswordLogin = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
+      body: "password=test-admin-password&password=test-admin-password",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      redirect: "manual",
+    });
+    const extraFieldLogin = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
+      body: new URLSearchParams({ password: "test-admin-password", remember: "yes" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      redirect: "manual",
+    });
+    const legacyUsernameLogin = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
       body: new URLSearchParams({ password: "test-admin-password", username: "admin" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      method: "POST",
+      redirect: "manual",
+    });
+    const login = await fetch(`http://127.0.0.1:${webPort}/admin/login`, {
+      body: new URLSearchParams({ password: "test-admin-password" }),
       headers: {
         "content-type": "application/x-www-form-urlencoded",
         "x-forwarded-proto": "https",
@@ -1188,6 +1206,12 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(basicMutation.status, 401);
     assert.equal(invalidLogin.status, 303);
     assert.equal(invalidLogin.headers.get("location"), "/admin?error=invalid");
+    assert.equal(duplicatePasswordLogin.status, 400);
+    assert.equal(duplicatePasswordLogin.headers.get("set-cookie"), null);
+    assert.equal(extraFieldLogin.status, 400);
+    assert.equal(extraFieldLogin.headers.get("set-cookie"), null);
+    assert.equal(legacyUsernameLogin.status, 400);
+    assert.equal(legacyUsernameLogin.headers.get("set-cookie"), null);
     assert.equal(login.status, 303);
     assert.equal(login.headers.get("location"), "/admin");
     assert.match(sessionCookieHeader, /^weather_admin_session=[A-Za-z0-9_-]{43};/u);
@@ -1249,10 +1273,12 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.match(adminBody, /data-weather-admin="true"/u);
     assert.match(adminLoginBody, /<title>Admin sign in<\/title>/u);
     assert.match(adminLoginBody, /action="\/admin\/login" method="post"/u);
+    assert.match(adminLoginBody, /name="password"/u);
+    assert.doesNotMatch(adminLoginBody, /name="username"/u);
     assert.doesNotMatch(adminLoginBody, /incorrect/u);
     assert.match(basicAdminBody, /<title>Admin sign in<\/title>/u);
     assert.doesNotMatch(basicAdminBody, /data-weather-admin="true"/u);
-    assert.match(invalidLoginBody, /username or password is incorrect/u);
+    assert.match(invalidLoginBody, /password is incorrect/u);
     assert.match(loggedOutAdminBody, /<title>Admin sign in<\/title>/u);
     assert.match(homeBody, /rel="manifest" href="\/manifest\.webmanifest"/u);
     assert.match(homeBody, /\/assets\/2026\.08\.25-7\/styles\.css/u);

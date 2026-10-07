@@ -32,6 +32,8 @@ previous_control_plane_version=11
 previous_control_plane_sha256=ae098ea591868b9f0d093815fa94d05082af96ece7e9f6fd62e1d903bb8179eb
 previous_v12_release=2026.10.07-1
 previous_v12_control_plane_sha256=9a48c7e5c7450dfeee12c0813bf343f24f6c0f68e6472338bf33dde5c6fea2c0
+password_previous_v12_release=2026.10.07-2
+password_previous_v12_control_plane_sha256=5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8
 legacy_control_plane_version=6
 legacy_control_plane_sha256=c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5
 migration_authorization_version=1
@@ -278,6 +280,15 @@ require_control_plane_compatibility() {
     "$expected_digest" == "$previous_v12_control_plane_sha256" ]]; then
     expected_release=$(env_value "$env_file" WEATHER_RELEASE)
     [[ "$expected_release" == "$previous_v12_release" ]] ||
+      die "deployment control-plane identity is unsupported without an exact versioned allowlisted handoff"
+    return
+  fi
+
+  # accept only the exact password-only patch predecessor
+  if [[ "$expected_version" == "$control_plane_version" &&
+    "$expected_digest" == "$password_previous_v12_control_plane_sha256" ]]; then
+    expected_release=$(env_value "$env_file" WEATHER_RELEASE)
+    [[ "$expected_release" == "$password_previous_v12_release" ]] ||
       die "deployment control-plane identity is unsupported without an exact versioned allowlisted handoff"
     return
   fi

@@ -96,9 +96,9 @@ export class WeatherAdminStore {
   }
 
   // exchange one valid password for a bounded opaque session
-  async startSession(username, password) {
-    // reject every invalid credential pair
-    if (!(await this.#authenticateCredentials(username, password))) {
+  async startSession(password) {
+    // reject every invalid password
+    if (!(await this.#authenticateCredentials(password))) {
       return null;
     }
 
@@ -155,10 +155,9 @@ export class WeatherAdminStore {
   }
 
   // verify one submitted login form against the stored hash
-  async #authenticateCredentials(username, password) {
-    // reject malformed form fields before touching persistent state
+  async #authenticateCredentials(password) {
+    // reject malformed passwords before touching persistent state
     if (
-      username !== "admin" ||
       typeof password !== "string" ||
       password.length < 1 ||
       password.length > 256 ||

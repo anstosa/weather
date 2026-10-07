@@ -857,6 +857,38 @@ test("release operations accept only current and exact reviewed predecessor cont
     await writeFile(
       release,
       [
+        "WEATHER_RELEASE=2026.10.07-2",
+        "WEATHER_CONTROL_PLANE_SHA256=5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8",
+        "WEATHER_CONTROL_PLANE_VERSION=12",
+        "",
+      ].join("\n"),
+    );
+    const passwordPredecessorAccepted = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.equal(passwordPredecessorAccepted.status, 0, passwordPredecessorAccepted.stderr);
+    await writeFile(
+      release,
+      [
+        "WEATHER_RELEASE=2026.10.07-3",
+        "WEATHER_CONTROL_PLANE_SHA256=5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8",
+        "WEATHER_CONTROL_PLANE_VERSION=12",
+        "",
+      ].join("\n"),
+    );
+    const passwordPredecessorReleaseRejected = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.notEqual(passwordPredecessorReleaseRejected.status, 0);
+    assert.match(
+      passwordPredecessorReleaseRejected.stderr,
+      /unsupported without an exact versioned allowlisted handoff/u,
+    );
+    await writeFile(
+      release,
+      [
         "WEATHER_CONTROL_PLANE_SHA256=ae098ea591868b9f0d093815fa94d05082af96ece7e9f6fd62e1d903bb8179eb",
         "WEATHER_CONTROL_PLANE_VERSION=11",
         "",
