@@ -1687,6 +1687,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(update, /0014_rain_collection\.sql/u);
   assert.match(update, /0015_rain_station_access\.sql/u);
   assert.match(update, /0016_rain_adjustment\.sql/u);
+  // retain the latest export schema in compatibility proof
+  assert.match(update, /0017_adjustment_evaluation_export\.sql/u);
   assert.match(update, /DROP VIEW IF EXISTS rain_collection_status_v1/u);
   assert.match(update, /DROP TABLE IF EXISTS rain_adjustment_runs/u);
   assert.match(update, /DROP TABLE IF EXISTS rain_capture_receipts/u);
@@ -1730,6 +1732,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(composeIntegration, /0014_rain_collection\.sql/u);
   assert.match(composeIntegration, /0015_rain_station_access\.sql/u);
   assert.match(composeIntegration, /0016_rain_adjustment\.sql/u);
+  // bind the new migration at both image boundaries
+  assert.match(composeIntegration, /0017_adjustment_evaluation_export\.sql/u);
   assert.match(composeIntegration, /9999_candidate_contract\.sql/u);
   assert.match(
     read("docs/operations/raspberry-pi.md"),

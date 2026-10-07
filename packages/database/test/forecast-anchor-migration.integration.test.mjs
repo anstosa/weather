@@ -168,6 +168,7 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
     );
 
     assert.deepEqual(upgraded.current, legacyMigrationNames);
+    // require the exact immutable 0009-through-0017 suffix
     assert.deepEqual(upgraded.applied, [
       "0009_forecast_anchor_records.sql",
       "0010_forecast_training_export.sql",
@@ -177,6 +178,7 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
       "0014_rain_collection.sql",
       "0015_rain_station_access.sql",
       "0016_rain_adjustment.sql",
+      "0017_adjustment_evaluation_export.sql",
     ]);
     assert.deepEqual(after.rows[0].record, before.rows[0].record);
     assert.equal(

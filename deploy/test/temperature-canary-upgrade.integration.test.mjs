@@ -114,6 +114,7 @@ test(
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
+        "0017_adjustment_evaluation_export.sql",
       ]);
       await applyRuntimeAcl(server, runtimeAclPath, "runtime-acl-v2-upgraded.sql");
 

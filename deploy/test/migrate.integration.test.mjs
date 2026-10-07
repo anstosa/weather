@@ -103,11 +103,14 @@ const exportAuthoritySnapshotSql = `
     ) AS database_settings
 `;
 
+// retain the exact four-view read-only export authority
 const expectedExportAuthoritySnapshot = {
   database_privileges: ["CONNECT"],
   database_settings: [],
   executable_functions: [],
   relation_privileges: [
+    "public.adjustment_evaluation_export_manifest_v1:SELECT",
+    "public.adjustment_evaluation_export_rows_v1:SELECT",
     "public.forecast_training_export_manifest_v1:SELECT",
     "public.forecast_training_export_rows_v1:SELECT",
   ],
@@ -324,6 +327,7 @@ test(
       const secondEvent = JSON.parse(second.stdout.trim());
 
       assert.equal(firstEvent.event, "migrations_complete");
+      // require the complete immutable 0017 ledger
       assert.deepEqual(firstEvent.applied, [
         "0001_initial_weather.sql",
         "0002_worker_migration_readiness.sql",
@@ -341,6 +345,7 @@ test(
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
+        "0017_adjustment_evaluation_export.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -362,6 +367,7 @@ test(
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
+        "0017_adjustment_evaluation_export.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondEvent.ecowittBootstrap, firstEvent.ecowittBootstrap);
@@ -394,6 +400,7 @@ test(
         { name: "0014_rain_collection.sql" },
         { name: "0015_rain_station_access.sql" },
         { name: "0016_rain_adjustment.sql" },
+        { name: "0017_adjustment_evaluation_export.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -657,12 +664,15 @@ test(
           "contract_epoch",
         ],
       );
+      // deny both export families to the API role
       for (const deniedApiQuery of [
         "SELECT source_config_fingerprint FROM sources",
         "SELECT * FROM ingestion_runs",
         "SELECT * FROM forecast_anchor_records",
         "SELECT * FROM forecast_training_export_rows_v1",
         "SELECT * FROM forecast_training_export_manifest_v1",
+        "SELECT * FROM adjustment_evaluation_export_rows_v1",
+        "SELECT * FROM adjustment_evaluation_export_manifest_v1",
       ]) {
         // deny every training or ingestion authority
         await assertPrivilegeDenied(apiPool.query(deniedApiQuery));
@@ -957,6 +967,7 @@ test(
         { name: "0014_rain_collection.sql" },
         { name: "0015_rain_station_access.sql" },
         { name: "0016_rain_adjustment.sql" },
+        { name: "0017_adjustment_evaluation_export.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(

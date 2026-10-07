@@ -335,9 +335,13 @@ test("rain station access upgrades the exact policy without mutating prior evide
     await assert.rejects(insertStation(ingest, station, priorPolicy, OLD_POLICY_SHA),
       /station access is not authorized/u);
 
-    // append 0015 without replaying or rewriting the published prefix
+    // apply the exact 0015-through-0017 suffix without rewriting evidence
     const upgraded = await runMigrations(owner, migrationDirectory);
-    assert.deepEqual(upgraded.applied, ["0015_rain_station_access.sql", "0016_rain_adjustment.sql"]);
+    assert.deepEqual(upgraded.applied, [
+      "0015_rain_station_access.sql",
+      "0016_rain_adjustment.sql",
+      "0017_adjustment_evaluation_export.sql",
+    ]);
     await applyAcl(server);
     const after = (await ingest.query(`
       SELECT c.id, c.policy, c.policy_sha256, r.body_sha256, r.compressed_body

@@ -72,7 +72,7 @@ test(
     let successfulBackfillIdentity;
 
     try {
-      // verify initial migration and checksum ledger
+      // verify the complete 0017 migration and checksum ledger
       await context.test("I-DB-01 empty database migrates with checksums", async () => {
         const result = await runMigrations(pool, migrationDirectory);
         const ledger = await pool.query(
@@ -96,9 +96,10 @@ test(
           "0014_rain_collection.sql",
           "0015_rain_station_access.sql",
           "0016_rain_adjustment.sql",
+          "0017_adjustment_evaluation_export.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 16);
+        assert.equal(ledger.rowCount, 17);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -135,7 +136,8 @@ test(
             "0013_ecmwf_temperature_canary.sql",
             "0014_rain_collection.sql",
             "0015_rain_station_access.sql",
-          "0016_rain_adjustment.sql",
+            "0016_rain_adjustment.sql",
+            "0017_adjustment_evaluation_export.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -155,7 +157,7 @@ test(
         }
       });
 
-      // verify concurrent first migration serialization
+      // verify concurrent serialization through migration 0017
       await context.test("I-DB-03 concurrent migrators serialize", async () => {
         const database = `weather_concurrent_${process.pid}`;
         await adminPool.query(`CREATE DATABASE ${database} OWNER weather_owner`);
@@ -167,8 +169,8 @@ test(
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 16);
-          assert.equal(first.current.length + second.current.length, 16);
+          assert.equal(first.applied.length + second.applied.length, 17);
+          assert.equal(first.current.length + second.current.length, 17);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -401,7 +403,7 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0016_rain_adjustment.sql" },
+            { version: "0017_adjustment_evaluation_export.sql" },
           );
           try {
             // reject unproven candidate history
@@ -432,7 +434,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0016_rain_adjustment.sql" },
+              { version: "0017_adjustment_evaluation_export.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
