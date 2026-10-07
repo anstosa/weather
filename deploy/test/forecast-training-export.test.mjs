@@ -111,6 +111,10 @@ const rainAdjustmentMigration = {
   checksum: "9fa5659c032dc21fdf82dca693fa962d8b5212d1192ae35c4cfd04bef94be5f9",
   name: "0016_rain_adjustment.sql",
 };
+const adjustmentEvaluationExportMigration = {
+  checksum: "6f18210453a18f0deefe95a0b70657cc4c4dd3fc20d0bab72f847ee04958ab90",
+  name: "0017_adjustment_evaluation_export.sql",
+};
 const stationProviders = new Map([
   ["ambient-maxweather", "ambient"],
   ["ambient-merlin", "ambient"],
@@ -693,6 +697,13 @@ test("package migration ledger matches immutable repository bytes", async () => 
     join(repoRoot, "packages/database/migrations", rainAdjustmentMigration.name),
   );
   assert.equal(createHash("sha256").update(adjustmentMigration).digest("hex"), rainAdjustmentMigration.checksum);
+  const adjustmentExportMigration = await readFile(
+    join(repoRoot, "packages/database/migrations", adjustmentEvaluationExportMigration.name),
+  );
+  assert.equal(
+    createHash("sha256").update(adjustmentExportMigration).digest("hex"),
+    adjustmentEvaluationExportMigration.checksum,
+  );
 });
 
 // preserve retained snapshots while allowing the exact additive migration
@@ -833,6 +844,57 @@ test("package verifies the exact 16 migration ledger and rejects a forged adjust
     ]);
 
     // reject a self-consistent but unreviewed migration identity
+    envelope.payload.migration_checksums[envelope.payload.migration_checksums.length - 1] = hashA;
+    envelope.payload.migration_history_sha256 = createHash("sha256")
+      .update(envelope.payload.migration_names.map((name, index) =>
+        `${name}:${envelope.payload.migration_checksums[index]}`).join("\n"))
+      .digest("hex");
+    lines[0] = JSON.stringify(envelope);
+    await writeFile(input, `${lines.join("\n")}\n`);
+    const forged = runHelper(["build", input, join(directory, "forged"), "2026-08-23", "2026-08-24"]);
+    assert.notEqual(forged.status, 0);
+    assert.match(forged.stderr, /checked repository ledger/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// keep existing target export usable after the private evaluation migration
+test("package verifies the exact 17 migration ledger and rejects a forged evaluation checksum", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-training-evaluation-ledger-"));
+
+  try {
+    const input = join(directory, "transaction.jsonl");
+    await writeTransaction(input);
+    const lines = (await readFile(input, "utf8")).trimEnd().split("\n");
+    const envelope = JSON.parse(lines[0]);
+    const additions = [
+      rainCollectionMigration,
+      rainStationAccessMigration,
+      rainAdjustmentMigration,
+      adjustmentEvaluationExportMigration,
+    ];
+    envelope.payload.migration_names.push(...additions.map((migration) => migration.name));
+    envelope.payload.migration_checksums.push(...additions.map((migration) => migration.checksum));
+    envelope.payload.migration_history_sha256 = createHash("sha256")
+      .update(envelope.payload.migration_names.map((name, index) =>
+        `${name}:${envelope.payload.migration_checksums[index]}`).join("\n"))
+      .digest("hex");
+    lines[0] = JSON.stringify(envelope);
+    await writeFile(input, `${lines.join("\n")}\n`);
+
+    const output = join(directory, "package");
+    const built = runHelper(["build", input, output, "2026-08-23", "2026-08-24"]);
+    assert.equal(built.status, 0, built.stderr);
+    const verified = runHelper(["verify", output]);
+    assert.equal(verified.status, 0, verified.stderr);
+    const packageManifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"));
+    assert.deepEqual(packageManifest.databaseManifest.migration_names, [
+      ...migrationNames,
+      ...additions.map((migration) => migration.name),
+    ]);
+
+    // reject a self-consistent forged evaluation migration identity
     envelope.payload.migration_checksums[envelope.payload.migration_checksums.length - 1] = hashA;
     envelope.payload.migration_history_sha256 = createHash("sha256")
       .update(envelope.payload.migration_names.map((name, index) =>

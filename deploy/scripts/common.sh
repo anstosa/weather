@@ -292,6 +292,22 @@ verify_runtime_database_acl() {
         AND NOT has_schema_privilege('weather_training_export', 'public', 'CREATE')
         AND has_table_privilege('weather_training_export', 'forecast_training_export_rows_v1', 'SELECT')
         AND has_table_privilege('weather_training_export', 'forecast_training_export_manifest_v1', 'SELECT')
+        AND (
+          (
+            to_regclass('public.adjustment_evaluation_export_rows_v1') IS NULL
+            AND to_regclass('public.adjustment_evaluation_export_manifest_v1') IS NULL
+          )
+          OR (
+            to_regclass('public.adjustment_evaluation_export_rows_v1') IS NOT NULL
+            AND to_regclass('public.adjustment_evaluation_export_manifest_v1') IS NOT NULL
+            AND has_table_privilege('weather_training_export', 'adjustment_evaluation_export_rows_v1', 'SELECT')
+            AND has_table_privilege('weather_training_export', 'adjustment_evaluation_export_manifest_v1', 'SELECT')
+            AND NOT has_table_privilege('weather_api', 'adjustment_evaluation_export_rows_v1', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            AND NOT has_table_privilege('weather_api', 'adjustment_evaluation_export_manifest_v1', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            AND NOT has_table_privilege('weather_ingest', 'adjustment_evaluation_export_rows_v1', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+            AND NOT has_table_privilege('weather_ingest', 'adjustment_evaluation_export_manifest_v1', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+          )
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM pg_namespace namespace
@@ -334,7 +350,9 @@ verify_runtime_database_acl() {
               namespace.nspname = 'public'
               AND relation.relname IN (
                 'forecast_training_export_rows_v1',
-                'forecast_training_export_manifest_v1'
+                'forecast_training_export_manifest_v1',
+                'adjustment_evaluation_export_rows_v1',
+                'adjustment_evaluation_export_manifest_v1'
               )
               AND privilege.name = 'SELECT'
             )

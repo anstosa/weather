@@ -3466,6 +3466,227 @@ h2 {
   margin-bottom: 1rem;
 }
 
+.adjustment-scorecard {
+  width: min(70rem, 100%);
+  margin-bottom: 1rem;
+}
+
+.adjustment-scorecard-guardrail {
+  margin: 0.65rem 0 0;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid color-mix(in srgb, var(--md-sys-color-primary) 35%, var(--md-sys-color-outline-variant));
+  border-radius: var(--md-sys-shape-medium);
+  color: var(--md-sys-color-on-surface);
+  background: color-mix(in srgb, var(--md-sys-color-primary-container) 42%, transparent);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.adjustment-scorecard-publication,
+.adjustment-scorecard-identities,
+.adjustment-scorecard-support,
+.adjustment-scorecard-diagnostic dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.55rem;
+  margin: 0.8rem 0 0;
+}
+
+.adjustment-scorecard-publication > div,
+.adjustment-scorecard-identities > div,
+.adjustment-scorecard-support > div,
+.adjustment-scorecard-diagnostic dl > div {
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: var(--md-sys-shape-medium);
+  background: var(--md-sys-color-surface-container-lowest);
+}
+
+.adjustment-scorecard-publication dt,
+.adjustment-scorecard-identities dt,
+.adjustment-scorecard-support dt,
+.adjustment-scorecard-diagnostic dt {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.adjustment-scorecard-publication dd,
+.adjustment-scorecard-identities dd,
+.adjustment-scorecard-support dd,
+.adjustment-scorecard-diagnostic dd {
+  min-width: 0;
+  margin: 0.22rem 0 0;
+  font-size: 0.72rem;
+  overflow-wrap: anywhere;
+}
+
+.adjustment-scorecard code {
+  font-size: 0.65rem;
+}
+
+.adjustment-scorecard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.adjustment-scorecard-card {
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-large);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.adjustment-scorecard-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.adjustment-scorecard-card-heading h3,
+.adjustment-scorecard-diagnostic h4,
+.adjustment-scorecard-rain h4,
+.adjustment-scorecard-reliability h5 {
+  margin: 0;
+}
+
+.adjustment-scorecard-comparison,
+.adjustment-scorecard-statuses span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.45rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: var(--md-sys-shape-full);
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-highest);
+  font-size: 0.59rem;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.adjustment-scorecard-comparison[data-status="better"],
+.adjustment-scorecard-statuses span[data-status="sufficient"],
+.adjustment-scorecard-statuses span[data-status="supported"],
+.adjustment-scorecard-statuses span[data-status="authorized_active"] {
+  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-secondary-container);
+}
+
+.adjustment-scorecard-comparison[data-status="worse"],
+.adjustment-scorecard-statuses span[data-status="invalid"],
+.adjustment-scorecard-statuses span[data-status="rejected"],
+.adjustment-scorecard-statuses span[data-status="fail_raw"] {
+  color: var(--md-sys-color-error);
+  background: var(--md-sys-color-error-container);
+}
+
+.adjustment-scorecard-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.65rem;
+}
+
+.adjustment-scorecard-table-scroll {
+  max-width: 100%;
+  margin-top: 0.75rem;
+  overflow-x: auto;
+}
+
+.adjustment-scorecard-metrics {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.64rem;
+  white-space: nowrap;
+}
+
+.adjustment-scorecard-metrics th,
+.adjustment-scorecard-metrics td {
+  padding: 0.38rem 0.45rem;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  text-align: right;
+}
+
+.adjustment-scorecard-metrics th:first-child,
+.adjustment-scorecard-metrics td:first-child {
+  text-align: left;
+}
+
+.adjustment-scorecard-metrics thead th {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.57rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.adjustment-scorecard-skill,
+.adjustment-scorecard-reasons,
+.adjustment-scorecard-note,
+.adjustment-scorecard-diagnostic p {
+  margin: 0.6rem 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+.adjustment-scorecard-skill span {
+  margin-left: 0.35rem;
+}
+
+.adjustment-scorecard-details {
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.adjustment-scorecard-details > summary {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 0.67rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.adjustment-scorecard-rain h4 {
+  margin-top: 0.8rem;
+  font-size: 0.72rem;
+}
+
+.adjustment-scorecard-reliability {
+  margin-top: 0.7rem;
+}
+
+.adjustment-scorecard-reliability h5 {
+  font-size: 0.67rem;
+}
+
+.adjustment-scorecard-reliability ol {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.adjustment-scorecard-reliability li {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+  padding: 0.35rem;
+  border-radius: var(--md-sys-shape-small);
+  background: var(--md-sys-color-surface-container-lowest);
+  font-size: 0.59rem;
+}
+
+.adjustment-scorecard-unavailable {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
 .forecast-adjustment-admin form {
   display: flex;
   flex-wrap: wrap;
@@ -4997,6 +5218,21 @@ td small {
 }
 
 @media (max-width: 42rem) {
+  .adjustment-scorecard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .adjustment-scorecard-publication,
+  .adjustment-scorecard-identities,
+  .adjustment-scorecard-support,
+  .adjustment-scorecard-diagnostic dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .adjustment-scorecard-reliability li {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .property-map-panel {
     margin-bottom: 1rem;
   }

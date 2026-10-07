@@ -238,6 +238,7 @@ services:
       HOST: 0.0.0.0
       PORT: "3000"
       WEATHER_API_ORIGIN: http://api:3001
+      WEATHER_ADJUSTMENT_EVIDENCE_ROOT: /var/lib/weather/xweather/adjustment-evidence
       WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
       WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
       WEATHER_XWEATHER_USAGE_PATH: /var/lib/weather/xweather/usage.json

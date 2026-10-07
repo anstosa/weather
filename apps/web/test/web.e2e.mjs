@@ -180,6 +180,151 @@ const adjustmentHashes = {
   receipt: "d".repeat(64),
   source: "e".repeat(64),
 };
+
+// create one browser-visible aggregate scorecard
+function adjustmentScorecardFixture() {
+  const support = {
+    dateCount: 30,
+    validHourCount: 240,
+    vintageCount: 12,
+    targetRowCount: 260,
+    rowCount: 240,
+    eventCount: 18,
+    wetDateCount: 14,
+    wetRowCount: 52,
+    effectiveWeightSum: 231.5,
+    fallbackCount: 3,
+    gapCount: 5,
+    excludedCount: 20,
+    exclusionReasons: { missing_observation: 20 },
+    fallbackReasons: { unsupported_lead: 3 },
+  };
+  // create one unit-bound aggregate metric
+  const metric = (unit) => ({
+    unit,
+    rawMae: 2,
+    adjustedMae: 1.75,
+    deltaMae: -0.25,
+    rawBias: 0.4,
+    adjustedBias: 0.1,
+    rawRmse: 2.7,
+    adjustedRmse: 2.3,
+    rawP95: 5.4,
+    adjustedP95: 4.8,
+    skillPercent: 12.5,
+    skillInterval95: { lower: 4.2, upper: 19.1 },
+  });
+  // create one closed family card
+  const family = (name, overrides = {}) => {
+    const unit = name === "temperature"
+      ? "celsius"
+      : name === "wind"
+        ? "meters_per_second"
+        : "millimeters_per_hour";
+    return {
+      family: name,
+      servingIdentitySha256: "4".repeat(64),
+      evidenceClass: "as_issued",
+      evidenceCutoffAt: "2026-09-30T23:59:59.000Z",
+      supportState: "sufficient",
+      comparisonState: "better",
+      qualificationState: "supported",
+      servingState: "authorized_active",
+      recommendation: "retain",
+      support,
+      metrics: metric(unit),
+      slices: [{ dimension: "horizon", label: "001-024", rowCount: 120, metrics: metric(unit) }],
+      rainDiagnostics: null,
+      bestMatchDiagnostic: name === "wind" ? null : {
+        rowCount: 120,
+        dateCount: 24,
+        bestMatchRawMae: 2.2,
+        sourceRawMae: 2,
+        sourceAdjustedMae: 1.75,
+        unit,
+      },
+      ...overrides,
+    };
+  };
+  const reliability = Array.from({ length: 10 },
+    // preserve every fixed reliability bin
+    (_, index) => ({
+      count: index,
+      meanProbability: index === 0 ? null : index / 10,
+      observedFrequency: index === 0 ? null : Math.min(1, index / 10 + 0.02),
+    }),
+  );
+  const rainDiagnostics = {
+    annualBalancedVolumeRatio: 0.98,
+    winterBalancedVolumeRatio: 1.04,
+    wetRawMae: 1.2,
+    wetAdjustedMae: 1.1,
+    heavyRawMae: 3.2,
+    heavyAdjustedMae: 3,
+    probabilityOrderViolationCount: 0,
+    thresholds: [0.1, 1, 2.5].map(
+      // create one fixed rain threshold
+      (thresholdMmPerHour) => ({
+        thresholdMmPerHour,
+        rawBrier: 0.2,
+        adjustedBrier: 0.18,
+        hits: 20,
+        misses: 4,
+        falseAlarms: 3,
+        pod: 0.83,
+        far: 0.13,
+        csi: 0.74,
+        reliability,
+      }),
+    ),
+    accumulations: [6, 12, 23].map(
+      // create one fixed same-run accumulation window
+      (hours) => ({ hours, completeWindows: 14, rawMae: 2.4, adjustedMae: 2.1 }),
+    ),
+  };
+  return {
+    contractVersion: "forecast-adjustment-scorecard/v1",
+    siteKey: "ballydidean",
+    generatedAt: "2026-10-01T00:00:00.000Z",
+    validThrough: "2099-10-08T00:00:00.000Z",
+    servingChanged: false,
+    automaticActivationEligible: false,
+    operatorApprovalRequired: true,
+    inputs: {
+      adjustmentEvidenceManifestSha256: "a".repeat(64),
+      adjustmentEvidenceWatermarkSha256: "b".repeat(64),
+      forecastTrainingManifestSha256: "c".repeat(64),
+      localDateFrom: "2026-09-01",
+      localDateTo: "2026-09-30",
+      reportSha256s: {
+        temperature: "d".repeat(64),
+        wind: "e".repeat(64),
+        rain: "f".repeat(64),
+      },
+      sourceRevision: "a".repeat(40),
+      targetCutoffAt: "2026-09-30T23:59:59.000Z",
+    },
+    families: {
+      temperature: family("temperature"),
+      wind: family("wind", {
+        evidenceClass: "prospective_receipt",
+        supportState: "insufficient",
+        comparisonState: "mixed",
+        qualificationState: "pending_support",
+        servingState: "admin_disabled",
+        recommendation: "review_candidate",
+      }),
+      rain: family("rain", {
+        evidenceClass: "retrospective_counterfactual",
+        comparisonState: "worse",
+        qualificationState: "rejected",
+        servingState: "fail_raw",
+        recommendation: "review_disable",
+        rainDiagnostics,
+      }),
+    },
+  };
+}
 const dailyPrecipitation = {
   accumulationMm: 2.54,
   source: {
@@ -680,6 +825,8 @@ async function assertForecastTitleClearance(page) {
 async function startFixtureServer() {
   const state = {
     adjustmentMode: "inactive",
+    adjustmentScorecard: adjustmentScorecardFixture(),
+    adjustmentScorecardStatus: 200,
     adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
     adjustmentSettingsUpdates: 0,
     adminUpdates: 0,
@@ -748,6 +895,31 @@ async function startFixtureServer() {
         `weather_admin_session=; Path=/; HttpOnly; Max-Age=0; ${cookieContext}`,
       );
       response.end();
+      return;
+    }
+
+    // serve one authenticated review-only scorecard
+    if (url.pathname === "/api/v1/admin/sites/ballydidean/forecast-adjustment-scorecard") {
+      // require an authenticated browser session
+      if (!isAdmin) {
+        sendJson(response, { error: { code: "unauthorized" } }, 401);
+        return;
+      }
+
+      // retain a queryless read-only resource
+      if ((request.method !== "GET" && request.method !== "HEAD") || url.search !== "") {
+        sendJson(response, { error: { code: "method_not_allowed" } }, 405);
+        return;
+      }
+
+      response.setHeader("cache-control", "private, no-store");
+      sendJson(
+        response,
+        state.adjustmentScorecardStatus === 200
+          ? { data: state.adjustmentScorecard }
+          : { error: { code: "unavailable" } },
+        state.adjustmentScorecardStatus,
+      );
       return;
     }
 
@@ -4464,6 +4636,8 @@ test("admin forecast switches persist independently and hide the public toggle w
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
     const form = page.locator("[data-admin-forecast-adjustments]");
+    // wait beyond the heading-only loading skeleton
+    await form.waitFor();
     assert.equal(await form.getByRole("checkbox").count(), 3);
     assert.equal(await form.getByRole("checkbox", { name: "Temperature" }).isChecked(), true);
     assert.equal(await form.getByRole("checkbox", { name: "Wind" }).isChecked(), true);
@@ -4483,6 +4657,8 @@ test("admin forecast switches persist independently and hide the public toggle w
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
     await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
     const reopened = page.locator("[data-admin-forecast-adjustments]");
+    // require the loaded editor before counting controls
+    await reopened.waitFor();
     assert.equal(await reopened.getByRole("checkbox").count(), 3);
     assert.equal(await reopened.getByRole("checkbox", { name: "Temperature" }).isChecked(), false);
     assert.equal(await reopened.getByRole("checkbox", { name: "Wind" }).isChecked(), false);
@@ -4515,6 +4691,59 @@ test("admin forecast switches persist independently and hide the public toggle w
     assert.equal(await mixedForm.getByRole("checkbox", { name: "Temperature" }).isChecked(), false);
     assert.equal(await mixedForm.getByRole("checkbox", { name: "Wind" }).isChecked(), true);
     assert.equal(await mixedForm.getByRole("checkbox", { name: "Rain" }).isChecked(), true);
+  } finally {
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+test("admin adjustment scorecard stays review-only and fails closed", { timeout: 60_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 390 },
+    });
+    await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
+    await page.getByLabel("Username").fill("admin");
+    await page.getByLabel("Password").fill("test-admin-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    const scorecard = page.locator(".adjustment-scorecard[data-scorecard-state='ready']");
+    await scorecard.waitFor();
+    assert.equal(await scorecard.locator("[data-adjustment-family]").count(), 3);
+    assert.deepEqual(
+      await scorecard.locator("[data-adjustment-family] h3").allTextContents(),
+      ["Temperature", "Wind", "Rain"],
+    );
+    assert.equal(await scorecard.getByText("Worse", { exact: true }).count(), 1);
+    assert.equal(await scorecard.getByText("95% interval 4.2% to 19.1%", { exact: false }).count(), 3);
+    assert.equal(await scorecard.locator("button, form, input, select, textarea").count(), 0);
+    assert.equal(await scorecard.getByText("Serving unchanged.", { exact: false }).count(), 1);
+    assert.equal(await page.evaluate(
+      // reject scorecard-induced horizontal viewport overflow
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ), true);
+    await scorecard.locator("[data-adjustment-family='rain'] summary", { hasText: "Rain diagnostics" }).click();
+    assert.equal(await scorecard.getByRole("columnheader", { name: "Raw Brier" }).count(), 1);
+    assert.equal(fixture.state.requests.filter(
+      // count only the dedicated queryless protected read
+      (entry) => entry === "GET /api/v1/admin/sites/ballydidean/forecast-adjustment-scorecard",
+    ).length, 1);
+
+    fixture.state.adjustmentScorecardStatus = 503;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(".adjustment-scorecard[data-scorecard-state='unavailable']").waitFor();
+    assert.equal(await page.getByText("No validated scorecard is available.", { exact: false }).count(), 1);
+
+    fixture.state.adjustmentScorecardStatus = 403;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator(".adjustment-scorecard[data-scorecard-state='unauthorized']").waitFor();
+    assert.equal(await page.getByText("Administrator session is unavailable.", { exact: false }).count(), 1);
+    await page.close();
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -5720,7 +5949,7 @@ test("bootstrap and administrator reads use in-place skeletons", { timeout: 120_
       },
     );
     await adminPage.route(
-      /\/api\/v1\/(?:sites\/ballydidean\/(?:current|property-sensor-layout)|admin\/sites\/ballydidean\/forecast-adjustment-settings)$/u,
+      /\/api\/v1\/(?:sites\/ballydidean\/(?:current|property-sensor-layout)|admin\/sites\/ballydidean\/(?:forecast-adjustment-settings|forecast-adjustment-scorecard))$/u,
       // hold the complete administrator read set
       async (route) => {
         await adminReadsReleased;
@@ -5731,6 +5960,7 @@ test("bootstrap and administrator reads use in-place skeletons", { timeout: 120_
     await assertSkeletonLoadingState(adminPage, ".forecast-adjustment-admin.skeleton-region");
     assert.equal(await adminPage.locator(".property-admin.skeleton-region").count(), 1);
     assert.equal(await adminPage.locator(".forecast-adjustment-admin .skeleton-field").count(), 3);
+    assert.equal(await adminPage.locator(".adjustment-scorecard .adjustment-scorecard-card").count(), 3);
     assert.equal(await adminPage.locator(".property-admin .skeleton-field").count(), 6);
     assert.equal(await adminPage.locator(".property-admin-map.skeleton-map").count(), 1);
     releaseAdminReads();

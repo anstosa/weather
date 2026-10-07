@@ -120,6 +120,29 @@ test("UI, model, backend, and deployment changes select dependent suites", () =>
   assert.equal(classifyPaths(["config/sites/ballydidean.json"]).nativeAndroid, true);
 });
 
+// preserve expensive gates for the new evidence and research boundaries
+test("adjustment scorecard paths cannot narrow relevant coverage", () => {
+  // retain all platform checks at shared deployment and migration boundaries
+  for (const path of [
+    "deploy/scripts/adjustment-evaluation-export.sh",
+    "deploy/scripts/adjustment-evidence-store.mjs",
+    "packages/database/migrations/0017_adjustment_evaluation_export.sql",
+  ]) {
+    assert.deepEqual(classifyPaths([path]), allGates);
+  }
+  // retain backend and model checks for numerical and paired scoring work
+  for (const path of [
+    "packages/forecast-adjustment/src/performance-scorecard.ts",
+    "apps/worker/src/forecast-adjustment-performance-cli.ts",
+    "scripts/research/temperature_refresh.py",
+  ]) {
+    const selected = classifyPaths([path]);
+    assert.equal(selected.fullTests, true);
+    assert.equal(selected.integration, !path.startsWith("scripts/research/"));
+    assert.equal(selected.deployIntegration, false);
+  }
+});
+
 // untrusted ancestry must replay all gates
 test("missing or failed baseline Check forces full inherited coverage", () => {
   const base = "a".repeat(40);

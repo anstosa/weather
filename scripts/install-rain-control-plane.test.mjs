@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -9,6 +9,8 @@ import test from "node:test";
 const repoRoot = resolve(import.meta.dirname, "..");
 const installer = join(repoRoot, "scripts/install-rain-control-plane.sh");
 const previousCommit = "f1c02d3e4f09e1e5d5dde94114440e6cbb337607";
+// freeze the original v11 candidate independently of later control generations
+const candidateCommit = "972c849444f537247fd55f2a180c65801d788658";
 const previousDigest = "b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722";
 const controlFiles = [
   "compose.yaml",
@@ -80,9 +82,11 @@ async function createFixture() {
   ].join("\n"), { mode: 0o600 });
   await writeFile(join(installed, "deploy/.env"), "PRIVATE_EXISTING_BOOTSTRAP=unchanged\n", { mode: 0o600 });
 
-  // overlay only the reviewed new production files
+  // overlay only the original reviewed v11 production files
   for (const file of controlFiles) {
-    await copyFile(join(repoRoot, "deploy", file), join(candidate, "deploy", file));
+    await writeFile(join(candidate, "deploy", file), execFileSync("git", [
+      "show", `${candidateCommit}:deploy/${file}`,
+    ], { cwd: repoRoot }));
     await chmod(join(candidate, "deploy", file), file === "compose.yaml" || file.endsWith(".sql") ||
       file === "scripts/weather-admin-store.mjs" || file === "scripts/web-server.mjs" ? 0o644 : 0o755);
   }

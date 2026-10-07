@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   airQualityBand,
+  buildAdminForecastAdjustmentScorecardUrl,
   buildCurrentUrl,
   buildDailyPrecipitationUrl,
   buildForecastUrl,
@@ -27,6 +28,7 @@ import {
   interpolateForecastValue,
   loadUnitPreferences,
   parseForecastRecordsResponse,
+  parseForecastAdjustmentScorecard,
   pressureBand,
   pressureChangeBand,
   renderWeatherDashboard,
@@ -748,6 +750,151 @@ function forecastState(records, runtime, forecastDays = 1) {
     trendGeneratedAt: null,
     trends: [],
     units: DEFAULT_UNIT_PREFERENCES,
+  };
+}
+
+// create one complete aggregate-only administrator scorecard
+function adjustmentScorecard() {
+  const support = {
+    dateCount: 30,
+    validHourCount: 240,
+    vintageCount: 12,
+    targetRowCount: 260,
+    rowCount: 240,
+    eventCount: 18,
+    wetDateCount: 14,
+    wetRowCount: 52,
+    effectiveWeightSum: 231.5,
+    fallbackCount: 3,
+    gapCount: 5,
+    excludedCount: 20,
+    exclusionReasons: { missing_observation: 20 },
+    fallbackReasons: { unsupported_lead: 3 },
+  };
+  // create one unit-bound metric block
+  const metric = (unit, skillPercent = 12.5) => ({
+    unit,
+    rawMae: 2,
+    adjustedMae: 1.75,
+    deltaMae: -0.25,
+    rawBias: 0.4,
+    adjustedBias: 0.1,
+    rawRmse: 2.7,
+    adjustedRmse: 2.3,
+    rawP95: 5.4,
+    adjustedP95: 4.8,
+    skillPercent,
+    skillInterval95: { lower: 4.2, upper: 19.1 },
+  });
+  // create one closed family card
+  const family = (name, overrides = {}) => {
+    const unit = name === "temperature"
+      ? "celsius"
+      : name === "wind"
+        ? "meters_per_second"
+        : "millimeters_per_hour";
+    return {
+      family: name,
+      servingIdentitySha256: "4".repeat(64),
+      evidenceClass: "as_issued",
+      evidenceCutoffAt: "2026-09-30T23:59:59.000Z",
+      supportState: "sufficient",
+      comparisonState: "better",
+      qualificationState: "supported",
+      servingState: "authorized_active",
+      recommendation: "retain",
+      support,
+      metrics: metric(unit),
+      slices: [{ dimension: "horizon", label: "001-024", rowCount: 120, metrics: metric(unit, 10) }],
+      rainDiagnostics: null,
+      bestMatchDiagnostic: name === "wind" ? null : {
+        rowCount: 120,
+        dateCount: 24,
+        bestMatchRawMae: 2.2,
+        sourceRawMae: 2,
+        sourceAdjustedMae: 1.75,
+        unit,
+      },
+      ...overrides,
+    };
+  };
+  const reliability = Array.from({ length: 10 },
+    // retain every fixed reliability decile
+    (_, index) => ({
+      count: index,
+      meanProbability: index === 0 ? null : index / 10,
+      observedFrequency: index === 0 ? null : Math.min(1, index / 10 + 0.02),
+    }),
+  );
+  const rainDiagnostics = {
+    annualBalancedVolumeRatio: 0.98,
+    winterBalancedVolumeRatio: 1.04,
+    wetRawMae: 1.2,
+    wetAdjustedMae: 1.1,
+    heavyRawMae: 3.2,
+    heavyAdjustedMae: 3,
+    probabilityOrderViolationCount: 0,
+    thresholds: [0.1, 1, 2.5].map(
+      // create one fixed probability threshold
+      (thresholdMmPerHour) => ({
+        thresholdMmPerHour,
+        rawBrier: 0.2,
+        adjustedBrier: 0.18,
+        hits: 20,
+        misses: 4,
+        falseAlarms: 3,
+        pod: 0.83,
+        far: 0.13,
+        csi: 0.74,
+        reliability,
+      }),
+    ),
+    accumulations: [6, 12, 23].map(
+      // create one fixed same-run accumulation window
+      (hours) => ({ hours, completeWindows: 14, rawMae: 2.4, adjustedMae: 2.1 }),
+    ),
+  };
+  return {
+    contractVersion: "forecast-adjustment-scorecard/v1",
+    siteKey: "ballydidean",
+    generatedAt: "2026-10-01T00:00:00.000Z",
+    validThrough: "2099-10-08T00:00:00.000Z",
+    servingChanged: false,
+    automaticActivationEligible: false,
+    operatorApprovalRequired: true,
+    inputs: {
+      adjustmentEvidenceManifestSha256: "a".repeat(64),
+      adjustmentEvidenceWatermarkSha256: "b".repeat(64),
+      forecastTrainingManifestSha256: "c".repeat(64),
+      localDateFrom: "2026-09-01",
+      localDateTo: "2026-09-30",
+      reportSha256s: {
+        temperature: "d".repeat(64),
+        wind: "e".repeat(64),
+        rain: "f".repeat(64),
+      },
+      sourceRevision: "a".repeat(40),
+      targetCutoffAt: "2026-09-30T23:59:59.000Z",
+    },
+    families: {
+      temperature: family("temperature"),
+      wind: family("wind", {
+        evidenceClass: "prospective_receipt",
+        supportState: "insufficient",
+        comparisonState: "mixed",
+        qualificationState: "pending_support",
+        servingState: "admin_disabled",
+        recommendation: "review_candidate",
+      }),
+      rain: family("rain", {
+        evidenceClass: "retrospective_counterfactual",
+        comparisonState: "worse",
+        qualificationState: "rejected",
+        servingState: "fail_raw",
+        recommendation: "review_disable",
+        rainDiagnostics,
+      }),
+    },
   };
 }
 
@@ -4113,6 +4260,97 @@ test("admin saves independent adjustment switches and verifies readback", async 
   await controller.saveForecastAdjustmentSettings({ version: 1, temperature: false, wind: false, rain: false });
   assert.deepEqual(controller.state.forecastAdjustmentSettings, enabled);
   assert.match(controller.state.adminAdjustmentSettingsMessage, /status 403/u);
+});
+
+test("admin scorecard parses and renders three review-only model families", () => {
+  const scorecard = adjustmentScorecard();
+  assert.equal(parseForecastAdjustmentScorecard(scorecard), scorecard);
+  assert.equal(
+    buildAdminForecastAdjustmentScorecardUrl("/api/v1", "ballydidean"),
+    "/api/v1/admin/sites/ballydidean/forecast-adjustment-scorecard",
+  );
+  assert.equal(
+    parseForecastAdjustmentScorecard({ ...scorecard, servingChanged: true }),
+    null,
+  );
+  assert.equal(
+    parseForecastAdjustmentScorecard({ ...scorecard, validThrough: "2026-10-01T00:00:01.000Z" }, Date.parse("2026-10-02T00:00:00.000Z")),
+    null,
+  );
+
+  const state = {
+    ...forecastState([], null),
+    adminAdjustmentScorecard: scorecard,
+    adminAdjustmentScorecardState: "ready",
+  };
+  const html = renderWeatherDashboard(state, "admin", true);
+  const scorecardHtml = html.match(/<section class="panel adjustment-scorecard"[\s\S]*?<\/section>/u)?.[0] ?? "";
+  assert.match(scorecardHtml, /data-scorecard-state="ready"/u);
+  assert.equal((scorecardHtml.match(/data-adjustment-family=/gu) ?? []).length, 3);
+  assert.match(scorecardHtml, /Temperature[\s\S]*Wind[\s\S]*Rain/u);
+  assert.match(scorecardHtml, /95% interval 4\.2% to 19\.1%/u);
+  assert.match(scorecardHtml, /Best Match diagnostic/u);
+  assert.match(scorecardHtml, /Rain diagnostics/u);
+  assert.match(scorecardHtml, /data-status="worse">Worse/u);
+  assert.match(scorecardHtml, /Serving unchanged\./u);
+  assert.match(scorecardHtml, /Ansel approval is required/u);
+  assert.doesNotMatch(scorecardHtml, /<button|<form|<input/u);
+});
+
+test("admin scorecard read is isolated and fails closed by response state", async () => {
+  const scorecard = adjustmentScorecard();
+  const scorecardRequests = [];
+
+  // serve protected administrator panels and one scorecard
+  async function fetcher(input, init = {}) {
+    const url = String(input);
+
+    // record the dedicated queryless scorecard request
+    if (url.endsWith("/admin/sites/ballydidean/forecast-adjustment-scorecard")) {
+      scorecardRequests.push({ url, init });
+      return Response.json({ data: scorecard });
+    }
+
+    // serve adjustment settings independently
+    if (url.endsWith("/admin/sites/ballydidean/forecast-adjustment-settings")) {
+      return Response.json({ data: { version: 1, temperature: true, wind: true, rain: true } });
+    }
+
+    // serve current conditions for the admin shell
+    if (url.endsWith("/sites/ballydidean/current")) {
+      return Response.json({ data: [record], site });
+    }
+
+    // serve an empty position list
+    if (url.endsWith("/sites/ballydidean/property-sensor-layout")) {
+      return Response.json({ data: [] });
+    }
+
+    return Response.json({ data: [], site });
+  }
+
+  const controller = new WeatherDashboardController({ fetcher, isAdmin: true, view: "admin" });
+  await controller.initialize();
+  assert.equal(controller.state.adminAdjustmentScorecardState, "ready");
+  assert.deepEqual(controller.state.adminAdjustmentScorecard, scorecard);
+  assert.equal(scorecardRequests.length, 1);
+  assert.equal(scorecardRequests[0].url.includes("?"), false);
+  assert.equal(scorecardRequests[0].init.cache, "no-store");
+  assert.equal(scorecardRequests[0].init.credentials, "same-origin");
+
+  const unavailable = renderWeatherDashboard({
+    ...controller.state,
+    adminAdjustmentScorecard: null,
+    adminAdjustmentScorecardState: "unavailable",
+  }, "admin", true);
+  assert.match(unavailable, /No validated scorecard is available/u);
+  assert.match(unavailable, /Forecast serving and settings are unchanged/u);
+  const unauthorized = renderWeatherDashboard({
+    ...controller.state,
+    adminAdjustmentScorecard: null,
+    adminAdjustmentScorecardState: "unauthorized",
+  }, "admin", true);
+  assert.match(unauthorized, /Administrator session is unavailable/u);
 });
 
 test("failed next-page reads keep the prior page label and cursor", async () => {

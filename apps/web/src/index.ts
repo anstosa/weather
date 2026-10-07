@@ -374,6 +374,149 @@ interface ForecastRainAdjustmentRuntimeStatus {
   };
 }
 
+// name the published model families
+export type ForecastAdjustmentScorecardFamilyName = "temperature" | "wind" | "rain";
+
+// describe one aggregate scorecard metric
+export interface ForecastAdjustmentScorecardMetric {
+  readonly unit: "celsius" | "meters_per_second" | "millimeters_per_hour";
+  readonly rawMae: number | null;
+  readonly adjustedMae: number | null;
+  readonly deltaMae: number | null;
+  readonly rawBias: number | null;
+  readonly adjustedBias: number | null;
+  readonly rawRmse: number | null;
+  readonly adjustedRmse: number | null;
+  readonly rawP95: number | null;
+  readonly adjustedP95: number | null;
+  readonly skillPercent: number | null;
+  readonly skillInterval95: null | {
+    readonly lower: number;
+    readonly upper: number;
+  };
+}
+
+// describe one aggregate support summary
+export interface ForecastAdjustmentScorecardSupport {
+  readonly dateCount: number;
+  readonly validHourCount: number;
+  readonly vintageCount: number;
+  readonly targetRowCount: number;
+  readonly rowCount: number;
+  readonly eventCount: number;
+  readonly wetDateCount: number;
+  readonly wetRowCount: number;
+  readonly effectiveWeightSum: number;
+  readonly fallbackCount: number;
+  readonly gapCount: number;
+  readonly excludedCount: number;
+  readonly exclusionReasons: Readonly<Record<string, number>>;
+  readonly fallbackReasons: Readonly<Record<string, number>>;
+}
+
+// describe one closed scorecard slice
+export interface ForecastAdjustmentScorecardSlice {
+  readonly dimension: "horizon" | "month" | "season" | "daypart";
+  readonly label: string;
+  readonly rowCount: number;
+  readonly metrics: ForecastAdjustmentScorecardMetric;
+}
+
+// describe one separately matched best-match comparison
+export interface ForecastAdjustmentBestMatchDiagnostic {
+  readonly rowCount: number;
+  readonly dateCount: number;
+  readonly bestMatchRawMae: number | null;
+  readonly sourceRawMae: number | null;
+  readonly sourceAdjustedMae: number | null;
+  readonly unit: ForecastAdjustmentScorecardMetric["unit"];
+}
+
+// describe one rain reliability bin
+export interface ForecastAdjustmentRainReliabilityBin {
+  readonly count: number;
+  readonly meanProbability: number | null;
+  readonly observedFrequency: number | null;
+}
+
+// describe one reviewed rain threshold
+export interface ForecastAdjustmentRainThreshold {
+  readonly thresholdMmPerHour: number;
+  readonly rawBrier: number | null;
+  readonly adjustedBrier: number | null;
+  readonly hits: number;
+  readonly misses: number;
+  readonly falseAlarms: number;
+  readonly pod: number | null;
+  readonly far: number | null;
+  readonly csi: number | null;
+  readonly reliability: readonly ForecastAdjustmentRainReliabilityBin[];
+}
+
+// describe one same-run rain accumulation window
+export interface ForecastAdjustmentRainAccumulation {
+  readonly hours: number;
+  readonly completeWindows: number;
+  readonly rawMae: number | null;
+  readonly adjustedMae: number | null;
+}
+
+// describe rain-only scorecard diagnostics
+export interface ForecastAdjustmentRainDiagnostics {
+  readonly annualBalancedVolumeRatio: number | null;
+  readonly winterBalancedVolumeRatio: number | null;
+  readonly wetRawMae: number | null;
+  readonly wetAdjustedMae: number | null;
+  readonly heavyRawMae: number | null;
+  readonly heavyAdjustedMae: number | null;
+  readonly probabilityOrderViolationCount: number;
+  readonly thresholds: readonly ForecastAdjustmentRainThreshold[];
+  readonly accumulations: readonly ForecastAdjustmentRainAccumulation[];
+}
+
+// describe one complete model-family review card
+export interface ForecastAdjustmentScorecardFamily {
+  readonly family: ForecastAdjustmentScorecardFamilyName;
+  readonly servingIdentitySha256: string | null;
+  readonly evidenceClass: "as_issued" | "prospective_receipt" | "retrospective_counterfactual" | "development";
+  readonly evidenceCutoffAt: string | null;
+  readonly supportState: "sufficient" | "insufficient" | "invalid";
+  readonly comparisonState: "unscored" | "better" | "mixed" | "worse";
+  readonly qualificationState: "development_only" | "counterfactual_only" | "pending_support" | "supported" | "rejected";
+  readonly servingState: "authorized_active" | "admin_disabled" | "fail_raw" | "pending_review";
+  readonly recommendation: "retain" | "review_candidate" | "review_disable" | "none";
+  readonly support: ForecastAdjustmentScorecardSupport;
+  readonly metrics: ForecastAdjustmentScorecardMetric;
+  readonly slices: readonly ForecastAdjustmentScorecardSlice[];
+  readonly rainDiagnostics: ForecastAdjustmentRainDiagnostics | null;
+  readonly bestMatchDiagnostic: ForecastAdjustmentBestMatchDiagnostic | null;
+}
+
+// describe the authenticated aggregate-only scorecard
+export interface ForecastAdjustmentScorecard {
+  readonly contractVersion: "forecast-adjustment-scorecard/v1";
+  readonly siteKey: "ballydidean";
+  readonly generatedAt: string;
+  readonly validThrough: string;
+  readonly servingChanged: false;
+  readonly automaticActivationEligible: false;
+  readonly operatorApprovalRequired: true;
+  readonly inputs: {
+    readonly adjustmentEvidenceManifestSha256: string;
+    readonly adjustmentEvidenceWatermarkSha256: string;
+    readonly forecastTrainingManifestSha256: string;
+    readonly localDateFrom: string;
+    readonly localDateTo: string;
+    readonly reportSha256s: Readonly<Record<ForecastAdjustmentScorecardFamilyName, string>>;
+    readonly sourceRevision: string;
+    readonly targetCutoffAt: string;
+  };
+  readonly families: Readonly<Record<ForecastAdjustmentScorecardFamilyName, ForecastAdjustmentScorecardFamily>>;
+}
+
+// name safe protected scorecard outcomes
+export type ForecastAdjustmentScorecardLoadState = "loading" | "ready" | "unavailable" | "unauthorized";
+
 export interface PropertySensorSnapshot {
   readonly channel: number | null;
   readonly key: string;
@@ -438,6 +581,8 @@ export interface DashboardState {
   readonly forecastTemperatureAdjustmentRuntime: ForecastTemperatureAdjustmentRuntimeStatus | null;
   readonly adminAdjustmentSettingsSaving: boolean;
   readonly adminAdjustmentSettingsMessage: string | null;
+  readonly adminAdjustmentScorecard: ForecastAdjustmentScorecard | null;
+  readonly adminAdjustmentScorecardState: ForecastAdjustmentScorecardLoadState;
   readonly forecast: readonly WeatherRecord[];
   readonly forecastPressureContext: readonly WeatherRecord[];
   readonly forecastDays: ForecastDays;
@@ -594,6 +739,8 @@ const EMPTY_STATE: DashboardState = {
   forecastTemperatureAdjustmentRuntime: null,
   adminAdjustmentSettingsSaving: false,
   adminAdjustmentSettingsMessage: null,
+  adminAdjustmentScorecard: null,
+  adminAdjustmentScorecardState: "loading",
   forecast: [],
   forecastPressureContext: [],
   forecastDays: 1,
@@ -912,6 +1059,126 @@ const FORECAST_ADJUSTMENT_SETTINGS_KEYS = new Set([
   "temperature",
   "wind",
   "rain",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_FAMILIES: readonly ForecastAdjustmentScorecardFamilyName[] = [
+  "temperature",
+  "wind",
+  "rain",
+];
+const FORECAST_ADJUSTMENT_SCORECARD_KEYS = new Set([
+  "automaticActivationEligible",
+  "contractVersion",
+  "families",
+  "generatedAt",
+  "inputs",
+  "operatorApprovalRequired",
+  "servingChanged",
+  "siteKey",
+  "validThrough",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_INPUT_KEYS = new Set([
+  "adjustmentEvidenceManifestSha256",
+  "adjustmentEvidenceWatermarkSha256",
+  "forecastTrainingManifestSha256",
+  "localDateFrom",
+  "localDateTo",
+  "reportSha256s",
+  "sourceRevision",
+  "targetCutoffAt",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_FAMILY_KEYS = new Set([
+  "bestMatchDiagnostic",
+  "comparisonState",
+  "evidenceClass",
+  "evidenceCutoffAt",
+  "family",
+  "metrics",
+  "qualificationState",
+  "rainDiagnostics",
+  "recommendation",
+  "servingIdentitySha256",
+  "servingState",
+  "slices",
+  "support",
+  "supportState",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_SUPPORT_KEYS = new Set([
+  "dateCount",
+  "effectiveWeightSum",
+  "eventCount",
+  "excludedCount",
+  "exclusionReasons",
+  "fallbackCount",
+  "fallbackReasons",
+  "gapCount",
+  "rowCount",
+  "targetRowCount",
+  "validHourCount",
+  "vintageCount",
+  "wetDateCount",
+  "wetRowCount",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_METRIC_KEYS = new Set([
+  "adjustedBias",
+  "adjustedMae",
+  "adjustedP95",
+  "adjustedRmse",
+  "deltaMae",
+  "rawBias",
+  "rawMae",
+  "rawP95",
+  "rawRmse",
+  "skillInterval95",
+  "skillPercent",
+  "unit",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_SLICE_KEYS = new Set([
+  "dimension",
+  "label",
+  "metrics",
+  "rowCount",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_BEST_MATCH_KEYS = new Set([
+  "bestMatchRawMae",
+  "dateCount",
+  "rowCount",
+  "sourceAdjustedMae",
+  "sourceRawMae",
+  "unit",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_RAIN_KEYS = new Set([
+  "accumulations",
+  "annualBalancedVolumeRatio",
+  "heavyAdjustedMae",
+  "heavyRawMae",
+  "probabilityOrderViolationCount",
+  "thresholds",
+  "wetAdjustedMae",
+  "wetRawMae",
+  "winterBalancedVolumeRatio",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_THRESHOLD_KEYS = new Set([
+  "adjustedBrier",
+  "csi",
+  "falseAlarms",
+  "far",
+  "hits",
+  "misses",
+  "pod",
+  "rawBrier",
+  "reliability",
+  "thresholdMmPerHour",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_RELIABILITY_KEYS = new Set([
+  "count",
+  "meanProbability",
+  "observedFrequency",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_ACCUMULATION_KEYS = new Set([
+  "adjustedMae",
+  "completeWindows",
+  "hours",
+  "rawMae",
 ]);
 const FORECAST_RAIN_RUNTIME_KEYS = new Set([
   "state",
@@ -1822,6 +2089,336 @@ function parseForecastAdjustmentSettings(value: unknown): ForecastAdjustmentSett
   };
 }
 
+// validate one bounded aggregate count
+function isForecastAdjustmentScorecardCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 1_000_000_000;
+}
+
+// validate one nullable finite scorecard value
+function isForecastAdjustmentScorecardNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+// validate one nonnegative nullable scorecard value
+function isForecastAdjustmentScorecardNonnegative(value: unknown): value is number | null {
+  return isForecastAdjustmentScorecardNumber(value) && (value === null || value >= 0);
+}
+
+// validate one canonical scorecard UTC instant
+function isForecastAdjustmentScorecardInstant(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.endsWith("Z") &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value;
+}
+
+// validate one closed reason-count map
+function isForecastAdjustmentScorecardReasonMap(value: unknown): boolean {
+  const reasons = forecastAdjustmentObject(value);
+
+  // reject nonobjects and unbounded diagnostic sets
+  if (reasons === null || Object.keys(reasons).length > 64) {
+    return false;
+  }
+
+  return Object.entries(reasons).every(
+    // accept only safe codes and aggregate counts
+    ([code, count]) => /^[a-z][a-z0-9_]{0,79}$/u.test(code) &&
+      isForecastAdjustmentScorecardCount(count),
+  );
+}
+
+// validate one aggregate metric block
+function isForecastAdjustmentScorecardMetric(
+  value: unknown,
+  unit: ForecastAdjustmentScorecardMetric["unit"],
+): value is ForecastAdjustmentScorecardMetric {
+  const metric = forecastAdjustmentObject(value);
+
+  // require the exact shared metric shape
+  if (
+    metric === null ||
+    !hasExactForecastAdjustmentKeys(metric, FORECAST_ADJUSTMENT_SCORECARD_METRIC_KEYS) ||
+    metric.unit !== unit ||
+    !isForecastAdjustmentScorecardNonnegative(metric.rawMae) ||
+    !isForecastAdjustmentScorecardNonnegative(metric.adjustedMae) ||
+    !isForecastAdjustmentScorecardNumber(metric.deltaMae) ||
+    !isForecastAdjustmentScorecardNumber(metric.rawBias) ||
+    !isForecastAdjustmentScorecardNumber(metric.adjustedBias) ||
+    !isForecastAdjustmentScorecardNonnegative(metric.rawRmse) ||
+    !isForecastAdjustmentScorecardNonnegative(metric.adjustedRmse) ||
+    !isForecastAdjustmentScorecardNonnegative(metric.rawP95) ||
+    !isForecastAdjustmentScorecardNonnegative(metric.adjustedP95) ||
+    !isForecastAdjustmentScorecardNumber(metric.skillPercent)
+  ) {
+    return false;
+  }
+
+  // accept explicit interval absence
+  if (metric.skillInterval95 === null) {
+    return true;
+  }
+
+  const interval = forecastAdjustmentObject(metric.skillInterval95);
+  return interval !== null &&
+    hasExactForecastAdjustmentKeys(interval, new Set(["lower", "upper"])) &&
+    typeof interval.lower === "number" && Number.isFinite(interval.lower) &&
+    typeof interval.upper === "number" && Number.isFinite(interval.upper) &&
+    interval.lower <= interval.upper;
+}
+
+// validate one family support summary
+function isForecastAdjustmentScorecardSupport(value: unknown): value is ForecastAdjustmentScorecardSupport {
+  const support = forecastAdjustmentObject(value);
+
+  // require every closed support field
+  if (support === null ||
+    !hasExactForecastAdjustmentKeys(support, FORECAST_ADJUSTMENT_SCORECARD_SUPPORT_KEYS)) {
+    return false;
+  }
+
+  const countKeys = [
+    "dateCount",
+    "eventCount",
+    "excludedCount",
+    "fallbackCount",
+    "gapCount",
+    "rowCount",
+    "targetRowCount",
+    "validHourCount",
+    "vintageCount",
+    "wetDateCount",
+    "wetRowCount",
+  ];
+  return countKeys.every(
+    // require one bounded count
+    (key) => isForecastAdjustmentScorecardCount(support[key]),
+  ) &&
+    typeof support.effectiveWeightSum === "number" &&
+    Number.isFinite(support.effectiveWeightSum) &&
+    support.effectiveWeightSum >= 0 &&
+    isForecastAdjustmentScorecardReasonMap(support.exclusionReasons) &&
+    isForecastAdjustmentScorecardReasonMap(support.fallbackReasons);
+}
+
+// validate one separately matched best-match block
+function isForecastAdjustmentBestMatchDiagnostic(
+  value: unknown,
+  unit: ForecastAdjustmentScorecardMetric["unit"],
+  family: ForecastAdjustmentScorecardFamilyName,
+): value is ForecastAdjustmentBestMatchDiagnostic | null {
+  // wind already uses best match as its primary baseline
+  if (family === "wind") {
+    return value === null;
+  }
+
+  // preserve honest diagnostic absence
+  if (value === null) {
+    return true;
+  }
+
+  const diagnostic = forecastAdjustmentObject(value);
+  return diagnostic !== null &&
+    hasExactForecastAdjustmentKeys(diagnostic, FORECAST_ADJUSTMENT_SCORECARD_BEST_MATCH_KEYS) &&
+    diagnostic.unit === unit &&
+    isForecastAdjustmentScorecardCount(diagnostic.rowCount) &&
+    isForecastAdjustmentScorecardCount(diagnostic.dateCount) &&
+    isForecastAdjustmentScorecardNonnegative(diagnostic.bestMatchRawMae) &&
+    isForecastAdjustmentScorecardNonnegative(diagnostic.sourceRawMae) &&
+    isForecastAdjustmentScorecardNonnegative(diagnostic.sourceAdjustedMae);
+}
+
+// validate rain-only aggregate diagnostics
+function isForecastAdjustmentRainDiagnostics(value: unknown): value is ForecastAdjustmentRainDiagnostics {
+  const rain = forecastAdjustmentObject(value);
+
+  // require the exact rain diagnostic envelope
+  if (rain === null ||
+    !hasExactForecastAdjustmentKeys(rain, FORECAST_ADJUSTMENT_SCORECARD_RAIN_KEYS) ||
+    !isForecastAdjustmentScorecardNonnegative(rain.annualBalancedVolumeRatio) ||
+    !isForecastAdjustmentScorecardNonnegative(rain.winterBalancedVolumeRatio) ||
+    !isForecastAdjustmentScorecardNonnegative(rain.wetRawMae) ||
+    !isForecastAdjustmentScorecardNonnegative(rain.wetAdjustedMae) ||
+    !isForecastAdjustmentScorecardNonnegative(rain.heavyRawMae) ||
+    !isForecastAdjustmentScorecardNonnegative(rain.heavyAdjustedMae) ||
+    !isForecastAdjustmentScorecardCount(rain.probabilityOrderViolationCount) ||
+    !Array.isArray(rain.thresholds) || rain.thresholds.length !== 3 ||
+    !Array.isArray(rain.accumulations) || rain.accumulations.length !== 3
+  ) {
+    return false;
+  }
+
+  const thresholdValues = [0.1, 1, 2.5];
+  const thresholdsValid = rain.thresholds.every(
+    // validate one fixed threshold and its complete reliability deciles
+    (value, index) => {
+      const threshold = forecastAdjustmentObject(value);
+
+      // reject malformed threshold aggregates
+      if (threshold === null ||
+        !hasExactForecastAdjustmentKeys(threshold, FORECAST_ADJUSTMENT_SCORECARD_THRESHOLD_KEYS) ||
+        threshold.thresholdMmPerHour !== thresholdValues[index] ||
+        !isForecastAdjustmentScorecardNonnegative(threshold.rawBrier) ||
+        !isForecastAdjustmentScorecardNonnegative(threshold.adjustedBrier) ||
+        !isForecastAdjustmentScorecardCount(threshold.hits) ||
+        !isForecastAdjustmentScorecardCount(threshold.misses) ||
+        !isForecastAdjustmentScorecardCount(threshold.falseAlarms) ||
+        !isForecastAdjustmentScorecardNonnegative(threshold.pod) ||
+        !isForecastAdjustmentScorecardNonnegative(threshold.far) ||
+        !isForecastAdjustmentScorecardNonnegative(threshold.csi) ||
+        !Array.isArray(threshold.reliability) || threshold.reliability.length !== 10
+      ) {
+        return false;
+      }
+
+      return [threshold.rawBrier, threshold.adjustedBrier, threshold.pod, threshold.far, threshold.csi].every(
+        // keep probability measures within their physical range
+        (metric) => metric === null || metric <= 1,
+      ) && threshold.reliability.every(
+        // validate one fixed reliability bin
+        (binValue) => {
+          const bin = forecastAdjustmentObject(binValue);
+          return bin !== null &&
+            hasExactForecastAdjustmentKeys(bin, FORECAST_ADJUSTMENT_SCORECARD_RELIABILITY_KEYS) &&
+            isForecastAdjustmentScorecardCount(bin.count) &&
+            isForecastAdjustmentScorecardNonnegative(bin.meanProbability) &&
+            isForecastAdjustmentScorecardNonnegative(bin.observedFrequency) &&
+            (bin.meanProbability === null || bin.meanProbability <= 1) &&
+            (bin.observedFrequency === null || bin.observedFrequency <= 1);
+        },
+      );
+    },
+  );
+
+  // stop before validating accumulation windows
+  if (!thresholdsValid) {
+    return false;
+  }
+
+  const accumulationHours = [6, 12, 23];
+  return rain.accumulations.every(
+    // validate one fixed same-run accumulation window
+    (value, index) => {
+      const accumulation = forecastAdjustmentObject(value);
+      return accumulation !== null &&
+        hasExactForecastAdjustmentKeys(accumulation, FORECAST_ADJUSTMENT_SCORECARD_ACCUMULATION_KEYS) &&
+        accumulation.hours === accumulationHours[index] &&
+        isForecastAdjustmentScorecardCount(accumulation.completeWindows) &&
+        isForecastAdjustmentScorecardNonnegative(accumulation.rawMae) &&
+        isForecastAdjustmentScorecardNonnegative(accumulation.adjustedMae);
+    },
+  );
+}
+
+// validate one closed model-family card
+function isForecastAdjustmentScorecardFamily(
+  value: unknown,
+  family: ForecastAdjustmentScorecardFamilyName,
+): value is ForecastAdjustmentScorecardFamily {
+  const card = forecastAdjustmentObject(value);
+  const unit = family === "temperature"
+    ? "celsius"
+    : family === "wind"
+      ? "meters_per_second"
+      : "millimeters_per_hour";
+
+  // require the exact family states and identities
+  if (
+    card === null ||
+    !hasExactForecastAdjustmentKeys(card, FORECAST_ADJUSTMENT_SCORECARD_FAMILY_KEYS) ||
+    card.family !== family ||
+    (card.servingIdentitySha256 !== null && !isForecastAdjustmentSha256(card.servingIdentitySha256)) ||
+    !["as_issued", "prospective_receipt", "retrospective_counterfactual", "development"].includes(card.evidenceClass as string) ||
+    (card.evidenceCutoffAt !== null && !isForecastAdjustmentScorecardInstant(card.evidenceCutoffAt)) ||
+    !["sufficient", "insufficient", "invalid"].includes(card.supportState as string) ||
+    !["unscored", "better", "mixed", "worse"].includes(card.comparisonState as string) ||
+    !["development_only", "counterfactual_only", "pending_support", "supported", "rejected"].includes(card.qualificationState as string) ||
+    !["authorized_active", "admin_disabled", "fail_raw", "pending_review"].includes(card.servingState as string) ||
+    !["retain", "review_candidate", "review_disable", "none"].includes(card.recommendation as string) ||
+    !isForecastAdjustmentScorecardSupport(card.support) ||
+    !isForecastAdjustmentScorecardMetric(card.metrics, unit) ||
+    !isForecastAdjustmentBestMatchDiagnostic(card.bestMatchDiagnostic, unit, family) ||
+    !Array.isArray(card.slices) || card.slices.length > 256
+  ) {
+    return false;
+  }
+
+  const slicesValid = card.slices.every(
+    // validate one bounded aggregate slice
+    (value) => {
+      const slice = forecastAdjustmentObject(value);
+      return slice !== null &&
+        hasExactForecastAdjustmentKeys(slice, FORECAST_ADJUSTMENT_SCORECARD_SLICE_KEYS) &&
+        ["horizon", "month", "season", "daypart"].includes(slice.dimension as string) &&
+        typeof slice.label === "string" && /^[a-z0-9][a-z0-9_.:+-]{0,79}$/u.test(slice.label) &&
+        isForecastAdjustmentScorecardCount(slice.rowCount) &&
+        isForecastAdjustmentScorecardMetric(slice.metrics, unit);
+    },
+  );
+
+  // preserve rain-only diagnostics
+  if (!slicesValid) {
+    return false;
+  }
+
+  return family === "rain"
+    ? isForecastAdjustmentRainDiagnostics(card.rainDiagnostics)
+    : card.rainDiagnostics === null;
+}
+
+// parse one authenticated closed scorecard response
+export function parseForecastAdjustmentScorecard(value: unknown, now = Date.now()): ForecastAdjustmentScorecard | null {
+  const scorecard = forecastAdjustmentObject(value);
+
+  // require immutable top-level invariants and a fresh validity window
+  if (
+    scorecard === null ||
+    !hasExactForecastAdjustmentKeys(scorecard, FORECAST_ADJUSTMENT_SCORECARD_KEYS) ||
+    scorecard.contractVersion !== "forecast-adjustment-scorecard/v1" ||
+    scorecard.siteKey !== "ballydidean" ||
+    !isForecastAdjustmentScorecardInstant(scorecard.generatedAt) ||
+    !isForecastAdjustmentScorecardInstant(scorecard.validThrough) ||
+    Date.parse(scorecard.validThrough as string) <= Date.parse(scorecard.generatedAt as string) ||
+    Date.parse(scorecard.validThrough as string) <= now ||
+    scorecard.servingChanged !== false ||
+    scorecard.automaticActivationEligible !== false ||
+    scorecard.operatorApprovalRequired !== true
+  ) {
+    return null;
+  }
+
+  const inputs = forecastAdjustmentObject(scorecard.inputs);
+  const reportSha256s = forecastAdjustmentObject(inputs?.reportSha256s);
+  const families = forecastAdjustmentObject(scorecard.families);
+
+  // require aggregate-only inputs and all three family reports
+  if (
+    inputs === null ||
+    !hasExactForecastAdjustmentKeys(inputs, FORECAST_ADJUSTMENT_SCORECARD_INPUT_KEYS) ||
+    !isForecastAdjustmentSha256(inputs.adjustmentEvidenceManifestSha256) ||
+    !isForecastAdjustmentSha256(inputs.adjustmentEvidenceWatermarkSha256) ||
+    !isForecastAdjustmentSha256(inputs.forecastTrainingManifestSha256) ||
+    typeof inputs.localDateFrom !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(inputs.localDateFrom) ||
+    typeof inputs.localDateTo !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(inputs.localDateTo) ||
+    inputs.localDateFrom > inputs.localDateTo ||
+    typeof inputs.sourceRevision !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(inputs.sourceRevision) ||
+    !isForecastAdjustmentScorecardInstant(inputs.targetCutoffAt) ||
+    reportSha256s === null ||
+    !hasExactForecastAdjustmentKeys(reportSha256s, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES)) ||
+    families === null ||
+    !hasExactForecastAdjustmentKeys(families, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES))
+  ) {
+    return null;
+  }
+
+  const valid = FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.every(
+    // bind one immutable report to one closed family card
+    (family) => isForecastAdjustmentSha256(reportSha256s[family]) &&
+      isForecastAdjustmentScorecardFamily(families[family], family),
+  );
+  return valid ? scorecard as unknown as ForecastAdjustmentScorecard : null;
+}
+
 // map adjusted metrics onto their admin controls
 function forecastAdjustmentMetricEnabled(
   metric: ForecastAdjustmentMetric,
@@ -2728,7 +3325,15 @@ export class WeatherDashboardController {
       return;
     }
 
-    this.patch({ error: null, homeNetwork: false, loading: true, propertySensorLayoutLoading: false });
+    this.patch({
+      error: null,
+      homeNetwork: false,
+      loading: true,
+      propertySensorLayoutLoading: false,
+      adminAdjustmentScorecardState: this.#view === "admin"
+        ? "loading"
+        : this.#state.adminAdjustmentScorecardState,
+    });
 
     // start the private location check without delaying weather rendering
     if (this.#view === "home" && !this.#isAdmin) {
@@ -2759,7 +3364,16 @@ export class WeatherDashboardController {
           return response;
         })
         : null;
-      const [current, dailyPrecipitation, forecast, tides, trends, propertySensorLayout, adminSettings] = await Promise.all([
+      const [
+        current,
+        dailyPrecipitation,
+        forecast,
+        tides,
+        trends,
+        propertySensorLayout,
+        adminSettings,
+        adminScorecard,
+      ] = await Promise.all([
         pendingCurrent,
         // load today's gauge total only on home
         needsDailyPrecipitation
@@ -2807,6 +3421,13 @@ export class WeatherDashboardController {
           ).then((value) => parseForecastAdjustmentSettings(forecastAdjustmentObject(value)?.data))
             .catch(() => null)
           : Promise.resolve(null),
+        // read the review-only scorecard independently of every weather panel
+        this.#view === "admin"
+          ? getAdminForecastAdjustmentScorecard(
+            this.#fetcher,
+            buildAdminForecastAdjustmentScorecardUrl(this.#apiBaseUrl, site.slug),
+          )
+          : Promise.resolve(null),
       ]);
       const responseSite = requireProductSite(
         current?.site ?? dailyPrecipitation?.site ?? forecast?.site ?? tides?.site ?? trends?.site ?? site,
@@ -2830,6 +3451,11 @@ export class WeatherDashboardController {
         adminAdjustmentSettingsMessage: this.#view === "admin" && adminSettings === null
           ? "Forecast adjustment settings could not be loaded."
           : this.#state.adminAdjustmentSettingsMessage,
+        // clear any prior publication after a failed protected read
+        adminAdjustmentScorecard: adminScorecard === null
+          ? this.#state.adminAdjustmentScorecard
+          : adminScorecard.scorecard,
+        adminAdjustmentScorecardState: adminScorecard?.state ?? this.#state.adminAdjustmentScorecardState,
         loading: false,
         propertySensorLayout: propertySensorLayout?.data ?? this.#state.propertySensorLayout,
         selectedSite: responseSite,
@@ -3039,6 +3665,14 @@ export function buildAdminForecastAdjustmentSettingsUrl(
   siteSlug: string,
 ): string {
   return `${normalizeBaseUrl(apiBaseUrl)}/admin/sites/${encodeURIComponent(siteSlug)}/forecast-adjustment-settings`;
+}
+
+// construct the authenticated queryless scorecard endpoint
+export function buildAdminForecastAdjustmentScorecardUrl(
+  apiBaseUrl: string,
+  siteSlug: string,
+): string {
+  return `${normalizeBaseUrl(apiBaseUrl)}/admin/sites/${encodeURIComponent(siteSlug)}/forecast-adjustment-scorecard`;
 }
 
 // construct one bounded trend endpoint
@@ -3380,7 +4014,7 @@ function forecastAdjustmentsAvailable(state: DashboardState): boolean {
 function renderWeatherView(state: DashboardState, view: WeatherView, isAdmin: boolean): string {
   // render the authenticated property sensor editor
   if (view === "admin") {
-    return `${renderForecastAdjustmentAdmin(state)}${renderPropertySensorAdmin(state)}`;
+    return `${renderForecastAdjustmentAdmin(state)}${renderForecastAdjustmentScorecard(state)}${renderPropertySensorAdmin(state)}`;
   }
 
   // render historical records alone
@@ -7349,6 +7983,336 @@ function propertySensorMarkerOffsets(
   }
 
   return offsets;
+}
+
+const FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS = {
+  evidence: {
+    as_issued: "As issued",
+    prospective_receipt: "Prospective receipt",
+    retrospective_counterfactual: "Retrospective counterfactual",
+    development: "Development",
+  },
+  support: {
+    sufficient: "Sufficient support",
+    insufficient: "Insufficient support",
+    invalid: "Invalid support",
+  },
+  comparison: {
+    unscored: "Unscored",
+    better: "Better",
+    mixed: "Mixed",
+    worse: "Worse",
+  },
+  qualification: {
+    development_only: "Development only",
+    counterfactual_only: "Counterfactual only",
+    pending_support: "Pending support",
+    supported: "Supported",
+    rejected: "Rejected",
+  },
+  serving: {
+    authorized_active: "Authorized active",
+    admin_disabled: "Admin disabled",
+    fail_raw: "Failing raw",
+    pending_review: "Pending review",
+  },
+  recommendation: {
+    retain: "Retain",
+    review_candidate: "Review candidate",
+    review_disable: "Review disabling",
+    none: "No recommendation",
+  },
+} as const;
+
+// format one scorecard unit
+function forecastAdjustmentScorecardUnit(unit: ForecastAdjustmentScorecardMetric["unit"]): string {
+  return unit === "celsius" ? "°C" : unit === "meters_per_second" ? "m/s" : "mm/h";
+}
+
+// format one aggregate metric without inventing missing evidence
+function formatForecastAdjustmentScorecardMetric(
+  value: number | null,
+  unit: ForecastAdjustmentScorecardMetric["unit"],
+): string {
+  return value === null ? "—" : `${formatNumber(value, 2)} ${forecastAdjustmentScorecardUnit(unit)}`;
+}
+
+// format one scorecard percentage
+function formatForecastAdjustmentScorecardPercent(value: number | null): string {
+  return value === null ? "—" : `${formatNumber(value, 1)}%`;
+}
+
+// shorten one immutable digest while retaining its complete accessible identity
+function renderForecastAdjustmentScorecardHash(value: string | null): string {
+  return value === null
+    ? '<span class="adjustment-scorecard-unavailable">Unavailable</span>'
+    : `<code title="${escapeHtml(value)}">${escapeHtml(value.slice(0, 12))}…</code>`;
+}
+
+// render bounded reason counts
+function renderForecastAdjustmentScorecardReasons(reasons: Readonly<Record<string, number>>): string {
+  const entries = Object.entries(reasons);
+
+  // state honest absence instead of omitting the diagnostic
+  if (entries.length === 0) {
+    return "None";
+  }
+
+  return entries.map(
+    // render one safe code as an operator-readable count
+    ([code, count]) => `${escapeHtml(code.replaceAll("_", " "))} (${String(count)})`,
+  ).join(", ");
+}
+
+// render raw and adjusted aggregate errors together
+function renderForecastAdjustmentScorecardMetrics(metrics: ForecastAdjustmentScorecardMetric): string {
+  const interval = metrics.skillInterval95 === null
+    ? "—"
+    : `${formatNumber(metrics.skillInterval95.lower, 1)}% to ${formatNumber(metrics.skillInterval95.upper, 1)}%`;
+  return `
+    <div class="adjustment-scorecard-table-scroll">
+      <table class="adjustment-scorecard-metrics">
+        <thead><tr><th scope="col">Metric</th><th scope="col">Raw</th><th scope="col">Adjusted</th><th scope="col">Change</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">MAE</th><td>${formatForecastAdjustmentScorecardMetric(metrics.rawMae, metrics.unit)}</td><td>${formatForecastAdjustmentScorecardMetric(metrics.adjustedMae, metrics.unit)}</td><td>${formatForecastAdjustmentScorecardMetric(metrics.deltaMae, metrics.unit)}</td></tr>
+          <tr><th scope="row">Bias</th><td>${formatForecastAdjustmentScorecardMetric(metrics.rawBias, metrics.unit)}</td><td>${formatForecastAdjustmentScorecardMetric(metrics.adjustedBias, metrics.unit)}</td><td>—</td></tr>
+          <tr><th scope="row">RMSE</th><td>${formatForecastAdjustmentScorecardMetric(metrics.rawRmse, metrics.unit)}</td><td>${formatForecastAdjustmentScorecardMetric(metrics.adjustedRmse, metrics.unit)}</td><td>—</td></tr>
+          <tr><th scope="row">95th percentile error</th><td>${formatForecastAdjustmentScorecardMetric(metrics.rawP95, metrics.unit)}</td><td>${formatForecastAdjustmentScorecardMetric(metrics.adjustedP95, metrics.unit)}</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="adjustment-scorecard-skill"><strong>MAE skill</strong> ${formatForecastAdjustmentScorecardPercent(metrics.skillPercent)} <span>95% interval ${interval}</span></p>
+  `;
+}
+
+// render one card's evidence support
+function renderForecastAdjustmentScorecardSupport(support: ForecastAdjustmentScorecardSupport): string {
+  return `
+    <dl class="adjustment-scorecard-support">
+      <div><dt>Rows</dt><dd>${String(support.rowCount)} / ${String(support.targetRowCount)}</dd></div>
+      <div><dt>Valid hours</dt><dd>${String(support.validHourCount)}</dd></div>
+      <div><dt>Vintages</dt><dd>${String(support.vintageCount)}</dd></div>
+      <div><dt>Dates</dt><dd>${String(support.dateCount)}</dd></div>
+      <div><dt>Events</dt><dd>${String(support.eventCount)}</dd></div>
+      <div><dt>Effective weight</dt><dd>${formatNumber(support.effectiveWeightSum, 2)}</dd></div>
+      <div><dt>Wet rows</dt><dd>${String(support.wetRowCount)}</dd></div>
+      <div><dt>Wet dates</dt><dd>${String(support.wetDateCount)}</dd></div>
+      <div><dt>Gaps</dt><dd>${String(support.gapCount)}</dd></div>
+      <div><dt>Fallbacks</dt><dd>${String(support.fallbackCount)}</dd></div>
+      <div><dt>Excluded</dt><dd>${String(support.excludedCount)}</dd></div>
+    </dl>
+    <p class="adjustment-scorecard-reasons"><strong>Fallback reasons</strong> ${renderForecastAdjustmentScorecardReasons(support.fallbackReasons)}</p>
+    <p class="adjustment-scorecard-reasons"><strong>Exclusion reasons</strong> ${renderForecastAdjustmentScorecardReasons(support.exclusionReasons)}</p>
+  `;
+}
+
+// render bounded scorecard slices
+function renderForecastAdjustmentScorecardSlices(slices: readonly ForecastAdjustmentScorecardSlice[]): string {
+  // state honest slice absence
+  if (slices.length === 0) {
+    return '<p class="empty-panel">No slice metrics are available.</p>';
+  }
+
+  const rows = slices.map(
+    // render one aggregate slice
+    (slice) => `
+      <tr>
+        <th scope="row">${escapeHtml(slice.dimension)}: ${escapeHtml(slice.label)}</th>
+        <td>${String(slice.rowCount)}</td>
+        <td>${formatForecastAdjustmentScorecardMetric(slice.metrics.rawMae, slice.metrics.unit)}</td>
+        <td>${formatForecastAdjustmentScorecardMetric(slice.metrics.adjustedMae, slice.metrics.unit)}</td>
+        <td>${formatForecastAdjustmentScorecardPercent(slice.metrics.skillPercent)}</td>
+      </tr>
+    `,
+  ).join("");
+  return `<div class="adjustment-scorecard-table-scroll"><table class="adjustment-scorecard-metrics"><thead><tr><th scope="col">Slice</th><th scope="col">Rows</th><th scope="col">Raw MAE</th><th scope="col">Adjusted MAE</th><th scope="col">Skill</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+// render one nonqualification best-match diagnostic
+function renderForecastAdjustmentBestMatchDiagnostic(
+  diagnostic: ForecastAdjustmentBestMatchDiagnostic | null,
+): string {
+  // preserve honest absence when matching rows were not recorded
+  if (diagnostic === null) {
+    return '<p class="adjustment-scorecard-note"><strong>Best Match diagnostic</strong> Unavailable for a same-paired subcohort.</p>';
+  }
+
+  return `
+    <div class="adjustment-scorecard-diagnostic">
+      <h4>Best Match diagnostic</h4>
+      <p>Nonqualification comparison on ${String(diagnostic.rowCount)} rows across ${String(diagnostic.dateCount)} dates.</p>
+      <dl>
+        <div><dt>Best Match raw MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostic.bestMatchRawMae, diagnostic.unit)}</dd></div>
+        <div><dt>Source raw MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostic.sourceRawMae, diagnostic.unit)}</dd></div>
+        <div><dt>Source adjusted MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostic.sourceAdjustedMae, diagnostic.unit)}</dd></div>
+      </dl>
+    </div>
+  `;
+}
+
+// render rain-only verification diagnostics
+function renderForecastAdjustmentRainDiagnostics(
+  diagnostics: ForecastAdjustmentRainDiagnostics | null,
+): string {
+  // omit rain diagnostics from temperature and wind cards
+  if (diagnostics === null) {
+    return "";
+  }
+
+  const thresholdRows = diagnostics.thresholds.map(
+    // render one fixed event threshold
+    (threshold) => `
+      <tr>
+        <th scope="row">${formatNumber(threshold.thresholdMmPerHour, 1)} mm/h</th>
+        <td>${threshold.rawBrier === null ? "—" : formatNumber(threshold.rawBrier, 3)}</td>
+        <td>${threshold.adjustedBrier === null ? "—" : formatNumber(threshold.adjustedBrier, 3)}</td>
+        <td>${String(threshold.hits)} / ${String(threshold.misses)} / ${String(threshold.falseAlarms)}</td>
+        <td>${formatForecastAdjustmentScorecardPercent(threshold.pod === null ? null : threshold.pod * 100)}</td>
+        <td>${formatForecastAdjustmentScorecardPercent(threshold.far === null ? null : threshold.far * 100)}</td>
+        <td>${formatForecastAdjustmentScorecardPercent(threshold.csi === null ? null : threshold.csi * 100)}</td>
+      </tr>
+    `,
+  ).join("");
+  const accumulationRows = diagnostics.accumulations.map(
+    // render one fixed accumulation window
+    (accumulation) => `
+      <tr><th scope="row">${String(accumulation.hours)} hours</th><td>${String(accumulation.completeWindows)}</td><td>${accumulation.rawMae === null ? "—" : `${formatNumber(accumulation.rawMae, 2)} mm`}</td><td>${accumulation.adjustedMae === null ? "—" : `${formatNumber(accumulation.adjustedMae, 2)} mm`}</td></tr>
+    `,
+  ).join("");
+  const reliability = diagnostics.thresholds.map(
+    // render complete deciles for one threshold
+    (threshold) => `
+      <section class="adjustment-scorecard-reliability">
+        <h5>${formatNumber(threshold.thresholdMmPerHour, 1)} mm/h</h5>
+        <ol>${threshold.reliability.map(
+          // preserve every empty or populated reliability bin
+          (bin, index) => `<li><span>${String(index * 10)}–${String((index + 1) * 10)}%</span><span>${String(bin.count)} rows</span><span>predicted ${formatForecastAdjustmentScorecardPercent(bin.meanProbability === null ? null : bin.meanProbability * 100)}</span><span>observed ${formatForecastAdjustmentScorecardPercent(bin.observedFrequency === null ? null : bin.observedFrequency * 100)}</span></li>`,
+        ).join("")}</ol>
+      </section>
+    `,
+  ).join("");
+  return `
+    <details class="adjustment-scorecard-details adjustment-scorecard-rain">
+      <summary>Rain diagnostics</summary>
+      <dl class="adjustment-scorecard-support">
+        <div><dt>Annual volume ratio</dt><dd>${diagnostics.annualBalancedVolumeRatio === null ? "—" : formatNumber(diagnostics.annualBalancedVolumeRatio, 3)}</dd></div>
+        <div><dt>Winter volume ratio</dt><dd>${diagnostics.winterBalancedVolumeRatio === null ? "—" : formatNumber(diagnostics.winterBalancedVolumeRatio, 3)}</dd></div>
+        <div><dt>Wet raw MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostics.wetRawMae, "millimeters_per_hour")}</dd></div>
+        <div><dt>Wet adjusted MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostics.wetAdjustedMae, "millimeters_per_hour")}</dd></div>
+        <div><dt>Heavy raw MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostics.heavyRawMae, "millimeters_per_hour")}</dd></div>
+        <div><dt>Heavy adjusted MAE</dt><dd>${formatForecastAdjustmentScorecardMetric(diagnostics.heavyAdjustedMae, "millimeters_per_hour")}</dd></div>
+        <div><dt>Probability order violations</dt><dd>${String(diagnostics.probabilityOrderViolationCount)}</dd></div>
+      </dl>
+      <h4>Event thresholds</h4>
+      <div class="adjustment-scorecard-table-scroll"><table class="adjustment-scorecard-metrics"><thead><tr><th scope="col">Threshold</th><th scope="col">Raw Brier</th><th scope="col">Adjusted Brier</th><th scope="col">Hits / misses / false alarms</th><th scope="col">POD</th><th scope="col">FAR</th><th scope="col">CSI</th></tr></thead><tbody>${thresholdRows}</tbody></table></div>
+      <h4>Accumulations</h4>
+      <div class="adjustment-scorecard-table-scroll"><table class="adjustment-scorecard-metrics"><thead><tr><th scope="col">Window</th><th scope="col">Complete</th><th scope="col">Raw MAE</th><th scope="col">Adjusted MAE</th></tr></thead><tbody>${accumulationRows}</tbody></table></div>
+      <details class="adjustment-scorecard-details"><summary>Reliability bins</summary>${reliability}</details>
+    </details>
+  `;
+}
+
+// render one complete family review card
+function renderForecastAdjustmentScorecardFamily(
+  card: ForecastAdjustmentScorecardFamily,
+  reportSha256: string,
+  timezone: string,
+): string {
+  const title = card.family === "temperature" ? "Temperature" : card.family === "wind" ? "Wind" : "Rain";
+  return `
+    <article class="adjustment-scorecard-card" data-adjustment-family="${card.family}">
+      <div class="adjustment-scorecard-card-heading">
+        <div><p class="eyebrow">${escapeHtml(FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS.recommendation[card.recommendation])}</p><h3>${title}</h3></div>
+        <span class="adjustment-scorecard-comparison" data-status="${card.comparisonState}">${escapeHtml(FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS.comparison[card.comparisonState])}</span>
+      </div>
+      <div class="adjustment-scorecard-statuses" aria-label="${title} review states">
+        <span data-status="${card.supportState}">${escapeHtml(FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS.support[card.supportState])}</span>
+        <span data-status="${card.qualificationState}">${escapeHtml(FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS.qualification[card.qualificationState])}</span>
+        <span data-status="${card.servingState}">${escapeHtml(FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS.serving[card.servingState])}</span>
+        <span data-status="${card.evidenceClass}">${escapeHtml(FORECAST_ADJUSTMENT_SCORECARD_STATE_LABELS.evidence[card.evidenceClass])}</span>
+      </div>
+      <dl class="adjustment-scorecard-identities">
+        <div><dt>Serving identity</dt><dd>${renderForecastAdjustmentScorecardHash(card.servingIdentitySha256)}</dd></div>
+        <div><dt>Family report</dt><dd>${renderForecastAdjustmentScorecardHash(reportSha256)}</dd></div>
+        <div><dt>Evidence cutoff</dt><dd>${card.evidenceCutoffAt === null ? "Unavailable" : formatInstant(card.evidenceCutoffAt, timezone)}</dd></div>
+      </dl>
+      ${renderForecastAdjustmentScorecardSupport(card.support)}
+      ${renderForecastAdjustmentScorecardMetrics(card.metrics)}
+      ${card.family === "wind" ? '<p class="adjustment-scorecard-note"><strong>Best Match diagnostic</strong> Best Match is the primary wind baseline.</p>' : renderForecastAdjustmentBestMatchDiagnostic(card.bestMatchDiagnostic)}
+      <details class="adjustment-scorecard-details"><summary>Slice metrics (${String(card.slices.length)})</summary>${renderForecastAdjustmentScorecardSlices(card.slices)}</details>
+      ${renderForecastAdjustmentRainDiagnostics(card.rainDiagnostics)}
+    </article>
+  `;
+}
+
+// render the review-only administrator scorecard
+function renderForecastAdjustmentScorecard(state: DashboardState): string {
+  const loadState = state.adminAdjustmentScorecardState ?? "unavailable";
+  const timezone = state.selectedSite?.timezone ?? PRODUCT_SITE.timezone;
+
+  // reserve all three family cards during the independent protected read
+  if (loadState === "loading" && state.loading) {
+    return `
+      <section class="panel adjustment-scorecard skeleton-region" aria-labelledby="adjustment-scorecard-heading" aria-busy="true">
+        <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+        <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Ansel approval is required before any activation or serving change.</p>
+        <div class="adjustment-scorecard-grid">${Array.from({ length: 3 },
+          // reserve one stable family card
+          () => `<div class="adjustment-scorecard-card">${renderSkeletonFields()}</div>`,
+        ).join("")}</div>
+      </section>
+    `;
+  }
+
+  // distinguish an expired protected session
+  if (loadState === "unauthorized") {
+    return `
+      <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="unauthorized">
+        <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+        <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Ansel approval is required before any activation or serving change.</p>
+        <p class="empty-panel">Administrator session is unavailable. Sign in again to review performance.</p>
+      </section>
+    `;
+  }
+
+  const scorecard = state.adminAdjustmentScorecard ?? null;
+
+  // collapse absent, stale or corrupt publications into one safe state
+  if (loadState !== "ready" || scorecard === null) {
+    return `
+      <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="unavailable">
+        <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+        <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Ansel approval is required before any activation or serving change.</p>
+        <p class="empty-panel">No validated scorecard is available. Forecast serving and settings are unchanged.</p>
+      </section>
+    `;
+  }
+
+  const cards = FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.map(
+    // render all existing model tracks without action controls
+    (family) => renderForecastAdjustmentScorecardFamily(
+      scorecard.families[family],
+      scorecard.inputs.reportSha256s[family],
+      timezone,
+    ),
+  ).join("");
+  return `
+    <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="ready">
+      <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+      <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Automatic activation is not eligible. Ansel approval is required before any activation or serving change.</p>
+      <dl class="adjustment-scorecard-publication">
+        <div><dt>Evaluation dates</dt><dd>${escapeHtml(scorecard.inputs.localDateFrom)} through ${escapeHtml(scorecard.inputs.localDateTo)}</dd></div>
+        <div><dt>Target cutoff</dt><dd>${formatInstant(scorecard.inputs.targetCutoffAt, timezone)}</dd></div>
+        <div><dt>Generated</dt><dd>${formatInstant(scorecard.generatedAt, timezone)}</dd></div>
+        <div><dt>Valid through</dt><dd>${formatInstant(scorecard.validThrough, timezone)}</dd></div>
+        <div><dt>Source revision</dt><dd><code>${escapeHtml(scorecard.inputs.sourceRevision)}</code></dd></div>
+        <div><dt>Evidence manifest</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.adjustmentEvidenceManifestSha256)}</dd></div>
+        <div><dt>Evidence watermark</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.adjustmentEvidenceWatermarkSha256)}</dd></div>
+        <div><dt>Training manifest</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.forecastTrainingManifestSha256)}</dd></div>
+      </dl>
+      <div class="adjustment-scorecard-grid">${cards}</div>
+    </section>
+  `;
 }
 
 // render three persisted forecast controls
@@ -12009,6 +12973,41 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+// load one protected scorecard without affecting other administrator panels
+async function getAdminForecastAdjustmentScorecard(
+  fetcher: typeof fetch,
+  url: string,
+): Promise<Readonly<{
+  scorecard: ForecastAdjustmentScorecard | null;
+  state: Exclude<ForecastAdjustmentScorecardLoadState, "loading">;
+}>> {
+  try {
+    const response = await fetcher(url, {
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { accept: "application/json" },
+    });
+
+    // distinguish an expired administrator session without exposing server detail
+    if (response.status === 401 || response.status === 403) {
+      return { scorecard: null, state: "unauthorized" };
+    }
+
+    // collapse missing, stale and corrupt publications into one safe state
+    if (!response.ok) {
+      return { scorecard: null, state: "unavailable" };
+    }
+
+    const body = forecastAdjustmentObject(await response.json());
+    const scorecard = parseForecastAdjustmentScorecard(body?.data);
+    return scorecard === null
+      ? { scorecard: null, state: "unavailable" }
+      : { scorecard, state: "ready" };
+  } catch {
+    return { scorecard: null, state: "unavailable" };
+  }
 }
 
 // load one JSON contract

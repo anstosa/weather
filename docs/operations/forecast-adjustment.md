@@ -1,5 +1,9 @@
 # Forecast adjustment operations and governance
 
+For the current admin-only temperature, wind/gust and rain scorecard and bounded
+review-only research workflows, see [Adjustment performance and review](adjustment-performance.md).
+Measurement does not authorize a serving-model replacement or band disablement.
+
 Weather can evaluate a hyperlocal correction for the existing Open-Meteo v4
 forecast from a frozen network of eleven physical weather stations. The initial
 registry is intentionally inactive:

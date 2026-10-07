@@ -20,6 +20,7 @@
     "clean": "node scripts/clean.mjs",
     "lint": "node scripts/lint.mjs .editorconfig .gitignore .github .npmrc .nvmrc README.md package.json package-lock.json tsconfig.base.json config scripts apps mobile packages",
     "remote:activate": "deploy/scripts/ssh-run.sh activate",
+    "remote:adjustment-evaluation:export": "deploy/scripts/ssh-run.sh adjustment-evaluation-export",
     "remote:backup": "deploy/scripts/ssh-run.sh backup",
     "remote:backup:pull": "deploy/scripts/pull-backup.sh",
     "remote:deploy": "deploy/scripts/ssh-run.sh yolo",
@@ -54,6 +55,9 @@
     "weather:forecast-adjustment:evaluate": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evaluate-cli.js",
     "weather:forecast-adjustment:evaluate-retained": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evaluate-retained-cli.js",
     "weather:forecast-adjustment:evidence": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-evidence-cli.js",
+    "weather:forecast-adjustment:performance": "npm run build --workspace @weather/worker && node apps/worker/dist/forecast-adjustment-performance-cli.js",
+    "weather:forecast-adjustment:pull-evaluation": "deploy/scripts/pull-adjustment-evaluation-export.sh",
+    "weather:forecast-adjustment:publish-scorecard": "deploy/scripts/publish-adjustment-scorecard.sh",
     "weather:public-stations:backfill": "npm run weather:public-stations:backfill --workspace @weather/worker --",
     "weather:tides:backfill": "npm run weather:tides:backfill --workspace @weather/worker --",
     "weather:tempest:backfill": "npm run weather:tempest:backfill --workspace @weather/worker --"

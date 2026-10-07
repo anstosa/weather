@@ -200,6 +200,23 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO weather_ingest;
 
 GRANT SELECT ON forecast_training_export_rows_v1 TO weather_training_export;
 GRANT SELECT ON forecast_training_export_manifest_v1 TO weather_training_export;
+-- grant the paired evaluation export only after its complete migration exists
+DO $adjustment_evaluation_export_acl$
+BEGIN
+  -- retain compatibility while control v12 hands off schema 0016
+  IF to_regclass('public.adjustment_evaluation_export_rows_v1') IS NOT NULL
+    AND to_regclass('public.adjustment_evaluation_export_manifest_v1') IS NOT NULL THEN
+    GRANT SELECT ON adjustment_evaluation_export_rows_v1 TO weather_training_export;
+    GRANT SELECT ON adjustment_evaluation_export_manifest_v1 TO weather_training_export;
+    REVOKE ALL ON adjustment_evaluation_export_rows_v1,
+      adjustment_evaluation_export_manifest_v1 FROM weather_api, weather_ingest;
+  -- reject a partially installed export contract
+  ELSIF to_regclass('public.adjustment_evaluation_export_rows_v1') IS NOT NULL
+    OR to_regclass('public.adjustment_evaluation_export_manifest_v1') IS NOT NULL THEN
+    RAISE EXCEPTION 'adjustment evaluation export schema is incomplete';
+  END IF;
+END;
+$adjustment_evaluation_export_acl$;
 
 ALTER ROLE weather_training_export
   WITH LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;

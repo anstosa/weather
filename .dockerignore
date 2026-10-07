@@ -5,6 +5,17 @@ node_modules
 **/node_modules
 **/dist
 
+# exclude private adjustment evidence and operator credentials
+.weather-data
+.weather-models
+.env
+.env.*
+deploy/.env
+deploy/releases
+deploy/state
+deploy/secrets
+deploy/backups
+
 # exclude native build and local host evidence from the production context
 mobile/android/.gradle
 mobile/android/.kotlin

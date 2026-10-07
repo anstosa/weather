@@ -54,5 +54,20 @@ case "$action" in
     validate_calendar_date_range "$1" "$2" 450
     exec "$deploy_dir/scripts/forecast-training-export.sh" "$1" "$2"
     ;;
+  # export only one fixed Ballydidean evaluation window
+  adjustment-evaluation-export)
+    (($# == 2)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
+    validate_calendar_date_range "$1" "$2" 14
+    exec "$deploy_dir/scripts/adjustment-evaluation-export.sh" "$1" "$2"
+    ;;
+  # install only one hash-bound sanitized scorecard from standard input
+  install-adjustment-scorecard)
+    (($# == 1)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
+    [[ "$1" =~ ^[a-f0-9]{64}$ ]] || {
+      printf 'error: invalid scorecard hash\n' >&2
+      exit 2
+    }
+    exec "$deploy_dir/scripts/install-adjustment-scorecard.sh" "$1"
+    ;;
   *) printf 'error: operation denied\n' >&2; exit 126 ;;
 esac

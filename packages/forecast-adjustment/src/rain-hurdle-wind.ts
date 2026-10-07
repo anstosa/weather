@@ -86,6 +86,26 @@ export interface RainWindPredictionResult {
   readonly hours: readonly RainWindPredictionHour[];
 }
 
+export interface RainHurdleWindFeaturePerformance {
+  readonly correctedPrecipitationMm: number;
+  readonly occurrenceProbabilityAtLeast0_1: number;
+  readonly occurrenceProbabilityAtLeast1_0: number;
+  readonly occurrenceProbabilityAtLeast2_5: number;
+}
+
+export interface RainWindPerformanceHour extends RainWindPredictionHour {
+  readonly occurrenceProbabilities: {
+    readonly atLeast0_1: number;
+    readonly atLeast1_0: number;
+    readonly atLeast2_5: number;
+  } | null;
+}
+
+export interface RainWindPerformanceResult
+  extends Omit<RainWindPredictionResult, "hours"> {
+  readonly hours: readonly RainWindPerformanceHour[];
+}
+
 interface PreparedRun {
   readonly initializedMs: number;
   readonly completedMs: number;
@@ -443,8 +463,10 @@ function scoreHead(head: NativeHead, features: Float32Array): number {
   return Math.fround(prediction);
 }
 
-// project frozen event rules, raw blend and category-specific amount scales
-export function predictRainHurdleWindFeatures(features: Float32Array): number {
+// project the frozen amount and only the three named binary probabilities
+export function predictRainHurdleWindFeaturesWithProbabilities(
+  features: Float32Array,
+): RainHurdleWindFeaturePerformance {
   if (features.length !== 107 || features.some((value) => value === Infinity || value === -Infinity)) {
     throw new RangeError("rain model feature vector invalid");
   }
@@ -469,8 +491,13 @@ export function predictRainHurdleWindFeatures(features: Float32Array): number {
       category = index + 1;
     }
   }
+  const probabilities = {
+    occurrenceProbabilityAtLeast0_1: scores[0]!,
+    occurrenceProbabilityAtLeast1_0: scores[1]!,
+    occurrenceProbabilityAtLeast2_5: scores[2]!,
+  };
   if (category === 0) {
-    return 0;
+    return { correctedPrecipitationMm: 0, ...probabilities };
   }
   const amount = Math.min(30, Math.max(0.1, scoreHead(ARTIFACT.heads.amount, features)));
   const base = Math.min(30, Math.max(0, 0.25 * raw + 0.75 * amount));
@@ -481,11 +508,19 @@ export function predictRainHurdleWindFeatures(features: Float32Array): number {
   if (!Number.isFinite(projected) || projected < 0 || projected > 30) {
     throw new RangeError("rain model amount projection invalid");
   }
-  return projected;
+  return { correctedPrecipitationMm: projected, ...probabilities };
 }
 
-// serve only first-day hours known at the fixed causal decision time
-export function predictRainHurdleWind(input: RainWindPredictionInput): RainWindPredictionResult {
+// retain the serving amount-only feature interface
+export function predictRainHurdleWindFeatures(features: Float32Array): number {
+  return predictRainHurdleWindFeaturesWithProbabilities(features)
+    .correctedPrecipitationMm;
+}
+
+// replay first-day hours and retain named probabilities only on applied rows
+export function predictRainHurdleWindPerformance(
+  input: RainWindPredictionInput,
+): RainWindPerformanceResult {
   const nowMs = Date.parse(input.nowUtc);
   const initializedMs = exactHour(input.currentRun.runInitializedAt);
   const decisionMs = initializedMs + DECISION_DELAY_HOURS * HOUR_MS;
@@ -506,7 +541,7 @@ export function predictRainHurdleWind(input: RainWindPredictionInput): RainWindP
     prior.set(prepared.initializedMs, prepared);
   }
   const stations = prepareStations(input.stationHours, decisionMs);
-  const hours: RainWindPredictionHour[] = [];
+  const hours: RainWindPerformanceHour[] = [];
   // forecast leads 9–31 are the only trained output scope
   for (let modelLeadHours = 1; modelLeadHours <= 23; modelLeadHours += 1) {
     const sourceLead = DECISION_DELAY_HOURS + modelLeadHours;
@@ -517,15 +552,19 @@ export function predictRainHurdleWind(input: RainWindPredictionInput): RainWindP
     }
     const validAt = new Date(initializedMs + sourceLead * HOUR_MS).toISOString();
     if (temperature <= 2) {
-      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: raw, applied: false, reasonCode: "phase_unsupported" });
+      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: raw, applied: false, reasonCode: "phase_unsupported", occurrenceProbabilities: null });
       continue;
     }
     try {
       const features = buildRainHurdleWindFeatures(current, prior, stations, modelLeadHours);
-      const corrected = predictRainHurdleWindFeatures(features);
-      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: corrected, applied: true, reasonCode: null });
+      const prediction = predictRainHurdleWindFeaturesWithProbabilities(features);
+      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: prediction.correctedPrecipitationMm, applied: true, reasonCode: null, occurrenceProbabilities: {
+        atLeast0_1: prediction.occurrenceProbabilityAtLeast0_1,
+        atLeast1_0: prediction.occurrenceProbabilityAtLeast1_0,
+        atLeast2_5: prediction.occurrenceProbabilityAtLeast2_5,
+      } });
     } catch {
-      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: raw, applied: false, reasonCode: "prediction_invalid" });
+      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: raw, applied: false, reasonCode: "prediction_invalid", occurrenceProbabilities: null });
     }
   }
   return {
@@ -533,5 +572,25 @@ export function predictRainHurdleWind(input: RainWindPredictionInput): RainWindP
     modelMonth: ARTIFACT.modelMonth,
     decisionAt: new Date(decisionMs).toISOString(),
     hours,
+  };
+}
+
+// serve the unchanged amount, applied and reason projection
+export function predictRainHurdleWind(
+  input: RainWindPredictionInput,
+): RainWindPredictionResult {
+  const result = predictRainHurdleWindPerformance(input);
+  return {
+    decisionAt: result.decisionAt,
+    hours: result.hours.map((hour) => ({
+      applied: hour.applied,
+      correctedPrecipitationMm: hour.correctedPrecipitationMm,
+      modelLeadHours: hour.modelLeadHours,
+      rawPrecipitationMm: hour.rawPrecipitationMm,
+      reasonCode: hour.reasonCode,
+      validAt: hour.validAt,
+    })),
+    modelMonth: result.modelMonth,
+    modelSha256: result.modelSha256,
   };
 }

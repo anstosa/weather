@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 # print SSH usage
 usage() {
   cat <<'EOF'
-Usage: ssh-run.sh [--config SSH_CONFIG] status|yolo RELEASE|stage RELEASE|activate RELEASE|rollback|recover|backup|backup-stream|preflight|tempest-backfill|public-stations-backfill|tide-backfill|forecast-training-export FROM_DATE TO_DATE
+Usage: ssh-run.sh [--config SSH_CONFIG] status|yolo RELEASE|stage RELEASE|activate RELEASE|rollback|recover|backup|backup-stream|preflight|tempest-backfill|public-stations-backfill|tide-backfill|forecast-training-export FROM_DATE TO_DATE|adjustment-evaluation-export FROM_DATE TO_DATE|install-adjustment-scorecard SHA256
 
 Runs one allowlisted operation through a loaded SSH agent and the isolated
 weather-ssh forced-command account.
@@ -39,6 +39,16 @@ case "$action" in
   forecast-training-export)
     (($# == 2)) || die "$action requires FROM_DATE TO_DATE"
     validate_calendar_date_range "$1" "$2" 450
+    ;;
+  # forward only one bounded evaluation interval
+  adjustment-evaluation-export)
+    (($# == 2)) || die "$action requires FROM_DATE TO_DATE"
+    validate_calendar_date_range "$1" "$2" 14
+    ;;
+  # forward only one content-addressed scorecard identity
+  install-adjustment-scorecard)
+    (($# == 1)) || die "$action requires SHA256"
+    [[ "$1" =~ ^[a-f0-9]{64}$ ]] || die "scorecard SHA256 is invalid"
     ;;
   --help|-h)
     usage

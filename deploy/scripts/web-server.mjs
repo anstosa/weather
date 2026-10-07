@@ -1,6 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   projectWidgetForecast,
@@ -12,6 +14,15 @@ import { XweatherTileMemoryCache } from "./xweather-tile-cache.mjs";
 import { XweatherUsageBudget } from "./xweather-usage-budget.mjs";
 import { WeatherAdminStore } from "./weather-admin-store.mjs";
 import { HomeNetworkMatcher } from "./home-network.mjs";
+import {
+  ADJUSTMENT_EVIDENCE_DEFAULT_ROOT,
+  AdjustmentEvidenceStore,
+  normalizeAdjustmentEvidenceWindow,
+} from "./adjustment-evidence-store.mjs";
+import {
+  FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+  parseForecastAdjustmentScorecard,
+} from "./forecast-adjustment-scorecard-contract.mjs";
 
 const root = resolve(process.cwd());
 const publicRoot = join(root, "apps/web/public");
@@ -25,6 +36,9 @@ const widgetForecastV3Path = "/api/v3/sites/ballydidean/widget-forecast";
 // allow the complete daily trends history
 const maximumTrendsApiBytes = 2 * 1024 * 1024;
 const maximumMapBytes = 4 * 1024 * 1024;
+const adjustmentEvidenceRoot = resolve(
+  process.env.WEATHER_ADJUSTMENT_EVIDENCE_ROOT ?? ADJUSTMENT_EVIDENCE_DEFAULT_ROOT,
+);
 const apiOrigin = parseApiOrigin(process.env.WEATHER_API_ORIGIN);
 const xweatherOrigin = parseXweatherOrigin(
   process.env.WEATHER_XWEATHER_MAP_ORIGIN ?? "https://maps.api.xweather.com",
@@ -45,6 +59,9 @@ const adminStore = new WeatherAdminStore({
   center: forecastMapPreloadSite ?? { latitude: 47.95043, longitude: -122.42797 },
   layoutPath: process.env.WEATHER_PROPERTY_SENSOR_LAYOUT_PATH ?? "/var/lib/weather/xweather/property-sensor-layout.json",
 });
+const adjustmentEvidenceStore = await new AdjustmentEvidenceStore({
+  root: adjustmentEvidenceRoot,
+}).initialize();
 const assetPrefix = `/assets/${release}/`;
 const assets = new Map([
   ["/", { cache: "no-cache", path: join(publicRoot, "index.html"), template: true, type: "text/html; charset=utf-8" }],
@@ -157,6 +174,12 @@ const server = createServer(async (request, response) => {
     // protect adjustment switch reads and writes with the admin session
     if (requestUrl.pathname === "/api/v1/admin/sites/ballydidean/forecast-adjustment-settings") {
       await serveForecastAdjustmentSettings(request, response, true);
+      return;
+    }
+
+    // expose only the installed aggregate scorecard to administrators
+    if (requestUrl.pathname === "/api/v1/admin/sites/ballydidean/forecast-adjustment-scorecard") {
+      await serveForecastAdjustmentScorecard(request, response, requestUrl);
       return;
     }
 
@@ -284,7 +307,7 @@ async function serveWidgetForecast(request, response, requestUrl) {
   }
 
   // reject caller-controlled projection inputs
-  if (requestUrl.search !== "") {
+  if (requestUrl.search !== "" || (request.url ?? "").includes("?")) {
     sendText(response, 400, "bad request\n");
     return;
   }
@@ -539,6 +562,106 @@ async function serveForecastAdjustmentSettings(request, response, admin) {
     } else {
       sendText(response, 500, "internal server error\n");
     }
+  }
+}
+
+// serve one authenticated aggregate-only adjustment scorecard
+async function serveForecastAdjustmentScorecard(request, response, requestUrl) {
+  // authenticate before disclosing scorecard availability
+  if (!adminStore.authenticateSession(readAdminSessionCookie(request.headers.cookie))) {
+    sendAdminUnauthorized(response);
+    return;
+  }
+
+  // reject caller-controlled scorecard selection
+  if (requestUrl.search !== "" || (request.url ?? "").includes("?")) {
+    sendText(response, 400, "bad request\n");
+    return;
+  }
+
+  // keep the private endpoint strictly read-only
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    sendText(response, 405, "method not allowed\n", { Allow: "GET, HEAD" });
+    return;
+  }
+
+  try {
+    const scorecard = await readInstalledForecastAdjustmentScorecard(
+      adjustmentEvidenceRoot,
+      new Date().toISOString(),
+    );
+    sendJson(response, 200, { data: scorecard }, request.method === "HEAD", {
+      "Cache-Control": "private, no-store",
+    });
+  } catch {
+    sendText(response, 503, "scorecard unavailable\n", {
+      "Cache-Control": "private, no-store",
+      "Retry-After": "300",
+    });
+  }
+}
+
+// read one hash-addressed scorecard through the fixed pointer
+async function readInstalledForecastAdjustmentScorecard(root, now) {
+  const scorecardDirectory = join(root, "scorecards");
+  const [rootDetails, directoryDetails, canonicalRoot, canonicalDirectory] = await Promise.all([
+    lstat(root),
+    lstat(scorecardDirectory),
+    realpath(root),
+    realpath(scorecardDirectory),
+  ]);
+
+  // reject linked roots and scorecard directory escapes
+  if (!rootDetails.isDirectory() || rootDetails.isSymbolicLink() ||
+    (rootDetails.mode & 0o777) !== 0o700 ||
+    !directoryDetails.isDirectory() || directoryDetails.isSymbolicLink() ||
+    (directoryDetails.mode & 0o777) !== 0o700 ||
+    dirname(canonicalDirectory) !== canonicalRoot) {
+    throw new Error("scorecard directory is invalid");
+  }
+
+  const pointerBytes = await readPrivateRegularFile(
+    join(root, "current.json"),
+    128,
+  );
+  const pointer = JSON.parse(pointerBytes.toString("utf8"));
+
+  // require the exact hash-only pointer contract
+  if (pointer === null || Array.isArray(pointer) || typeof pointer !== "object" ||
+    Object.keys(pointer).length !== 1 ||
+    typeof pointer.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(pointer.sha256)) {
+    throw new Error("scorecard pointer is invalid");
+  }
+
+  const scorecardBytes = await readPrivateRegularFile(
+    join(scorecardDirectory, `sha256-${pointer.sha256}.json`),
+    FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+  );
+  const actualSha256 = createHash("sha256").update(scorecardBytes).digest("hex");
+
+  // bind the pointer to the exact validated publication bytes
+  if (actualSha256 !== pointer.sha256) {
+    throw new Error("scorecard content hash is invalid");
+  }
+
+  return parseForecastAdjustmentScorecard(scorecardBytes, { now });
+}
+
+// read one bounded regular file without following links
+async function readPrivateRegularFile(path, maximumBytes) {
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+
+  try {
+    const details = await handle.stat();
+
+    if (!details.isFile() || (details.mode & 0o777) !== 0o600 ||
+      details.size > maximumBytes) {
+      throw new Error("private file is invalid");
+    }
+
+    return await handle.readFile();
+  } finally {
+    await handle.close();
   }
 }
 
@@ -901,6 +1024,12 @@ async function proxyApi(request, response, requestUrl) {
       request.method === "HEAD" && !projectsAdjustmentSettings
         ? boundedContentLength(upstream.headers.get("content-length"), maximumResponseBytes)
         : body.byteLength;
+    const preparedEvidence = upstream.ok && isForecast && request.method === "GET"
+      ? adjustmentEvidenceStore.prepare(
+          body,
+          normalizeAdjustmentEvidenceWindow(requestUrl),
+        )
+      : null;
     setSecurityHeaders(response);
     response.writeHead(upstream.status, {
       "Cache-Control": upstream.ok && !projectsAdjustmentSettings ? apiCacheControl(requestUrl.pathname) : "no-store",
@@ -910,6 +1039,12 @@ async function proxyApi(request, response, requestUrl) {
         : upstream.headers.get("content-type") ?? "application/json; charset=utf-8",
       Vary: "Accept",
     });
+
+    // register the finish handler before sending response bytes
+    if (upstream.ok && isForecast && request.method === "GET") {
+      adjustmentEvidenceStore.trackResponse(response, preparedEvidence);
+    }
+
     response.end(request.method === "HEAD" ? undefined : body);
   } catch {
     sendText(response, 502, "upstream unavailable\n");

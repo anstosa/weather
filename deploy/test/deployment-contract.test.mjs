@@ -1943,6 +1943,10 @@ test("image builds share one compilation and export exact comparison bytes", () 
   assert.ok(ignored.includes("**/dist"));
   assert.ok(ignored.includes("node_modules"));
   assert.ok(ignored.includes(".omx"));
+  // keep private research and deployment state out of the build context
+  for (const path of [".weather-data", ".weather-models", "deploy/backups", "deploy/secrets", "deploy/releases", "deploy/state"]) {
+    assert.ok(ignored.includes(path));
+  }
 });
 
 // verify canonical PostgreSQL version output
@@ -2090,12 +2094,16 @@ test("all deployment shell entrypoints have stable names", () => {
     .map((path) => basename(path))
     .sort();
   assert.deepEqual(names, [
+    "adjustment-evaluation-export.sh",
     "backup-stream.sh",
     "backup.sh",
     "common.sh",
     "forecast-training-export.sh",
+    "install-adjustment-scorecard.sh",
     "preflight-capacity.sh",
     "public-stations-backfill.sh",
+    "publish-adjustment-scorecard.sh",
+    "pull-adjustment-evaluation-export.sh",
     "pull-backup.sh",
     "pull-forecast-training-export.sh",
     "remote-ops.sh",

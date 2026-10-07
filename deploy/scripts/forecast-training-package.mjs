@@ -105,6 +105,22 @@ const ALLOWED_MIGRATION_LEDGERS = [
     ],
     names: [...EXPECTED_MIGRATIONS.names, "0014_rain_collection.sql", "0015_rain_station_access.sql", "0016_rain_adjustment.sql"],
   },
+  {
+    checksums: [
+      ...EXPECTED_MIGRATIONS.checksums,
+      "2a311e2effcc975442c1011c627c125521cc4396323b32f0d0c4f92ea1ccba04",
+      "2f560ccec001246a3caa5d27476900b2694dfb7cc0701b35181265ef1fb78822",
+      "9fa5659c032dc21fdf82dca693fa962d8b5212d1192ae35c4cfd04bef94be5f9",
+      "6f18210453a18f0deefe95a0b70657cc4c4dd3fc20d0bab72f847ee04958ab90",
+    ],
+    names: [
+      ...EXPECTED_MIGRATIONS.names,
+      "0014_rain_collection.sql",
+      "0015_rain_station_access.sql",
+      "0016_rain_adjustment.sql",
+      "0017_adjustment_evaluation_export.sql",
+    ],
+  },
 ];
 const ROW_KEYS = [
   "adapter_contracts",

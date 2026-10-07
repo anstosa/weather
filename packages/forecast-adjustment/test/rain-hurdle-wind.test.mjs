@@ -8,7 +8,9 @@ import {
   RAIN_HURDLE_WIND_MODEL_SHA256,
   buildRainHurdleWindFeatures,
   predictRainHurdleWind,
+  predictRainHurdleWindFeaturesWithProbabilities,
   predictRainHurdleWindFeatures,
+  predictRainHurdleWindPerformance,
 } from "../dist/rain-hurdle-wind.js";
 
 const INITIALIZED_AT = "2026-09-13T00:00:00.000Z";
@@ -64,6 +66,25 @@ test("portable rain hurdle matches frozen native predictions", () => {
   }
 });
 
+test("rain performance helper exposes only named binary probabilities with amount parity", () => {
+  for (let index = 0; index < PARITY.features.length; index += 1) {
+    const features = Float32Array.from(
+      PARITY.features[index].map((value) => value === null ? Number.NaN : value),
+    );
+    const performance = predictRainHurdleWindFeaturesWithProbabilities(features);
+    assert.equal(
+      performance.correctedPrecipitationMm,
+      predictRainHurdleWindFeatures(features),
+    );
+    assert.ok(performance.occurrenceProbabilityAtLeast0_1 >= 0 &&
+      performance.occurrenceProbabilityAtLeast0_1 <= 1);
+    assert.ok(performance.occurrenceProbabilityAtLeast1_0 >= 0 &&
+      performance.occurrenceProbabilityAtLeast1_0 <= 1);
+    assert.ok(performance.occurrenceProbabilityAtLeast2_5 >= 0 &&
+      performance.occurrenceProbabilityAtLeast2_5 <= 1);
+  }
+});
+
 // preserve all 107 native feature calculations on invented source profiles
 test("portable rain feature builder matches the frozen native projection", () => {
   const source = FEATURE_PARITY.currentRun;
@@ -101,12 +122,14 @@ test("portable rain feature builder matches the frozen native projection", () =>
 
 // serve genuinely adjusted first-day rain with fixed model provenance
 test("rain runtime applies the frozen fit to causal first-day hours", () => {
-  const result = predictRainHurdleWind({
+  const input = {
     currentRun: currentRun(),
     priorRuns: [],
     stationHours: stationHours(),
     nowUtc: DECISION_AT,
-  });
+  };
+  const result = predictRainHurdleWind(input);
+  const performance = predictRainHurdleWindPerformance(input);
   assert.equal(result.modelSha256, RAIN_HURDLE_WIND_MODEL_SHA256);
   assert.equal(result.decisionAt, DECISION_AT);
   assert.equal(result.hours.length, 23);
@@ -116,6 +139,11 @@ test("rain runtime applies the frozen fit to causal first-day hours", () => {
   assert.ok(result.hours.every((hour) => hour.applied && hour.reasonCode === null));
   assert.ok(result.hours.some((hour) => hour.correctedPrecipitationMm !== hour.rawPrecipitationMm));
   assert.ok(result.hours.every((hour) => hour.correctedPrecipitationMm >= 0 && hour.correctedPrecipitationMm <= 30));
+  assert.deepEqual(
+    performance.hours.map(({ occurrenceProbabilities: _unused, ...hour }) => hour),
+    result.hours,
+  );
+  assert.ok(performance.hours.every((hour) => hour.occurrenceProbabilities !== null));
 });
 
 // keep cold-phase hours raw rather than extrapolating the trained warm-rain scope
