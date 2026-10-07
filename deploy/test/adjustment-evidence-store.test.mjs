@@ -553,16 +553,36 @@ test("web edge captures only a finished normal forecast GET without changing byt
     const forecast = await fetch(`${origin}/api/v1/sites/ballydidean/forecast`);
     const edgeBytes = Buffer.from(await forecast.arrayBuffer());
     assert.equal(forecast.status, 200);
+    const expectedReceiptName = `sha256-${createAdjustmentEvidenceCapture(
+      edgeBytes,
+      "days=1",
+    ).edgeReceiptIdentitySha256}.json`;
     const duplicate = await fetch(`${origin}/api/v1/sites/ballydidean/forecast`);
     assert.deepEqual(Buffer.from(await duplicate.arrayBuffer()), edgeBytes);
 
-    let snapshot;
+    let receiptNames;
+    let receiptDirectoryObserved = false;
 
-    // wait for the asynchronous finish handler only
+    // wait for the asynchronous receipt publication only
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      snapshot = await freezeAdjustmentEvidenceSnapshot({ root: evidenceRoot });
+      try {
+        receiptNames = (await readdir(join(evidenceRoot, "receipts"))).sort();
+        receiptDirectoryObserved = true;
+      } catch (error) {
+        // tolerate only directory creation still in progress
+        if (error?.code !== "ENOENT" || receiptDirectoryObserved) {
+          throw error;
+        }
+        receiptNames = [];
+      }
+      const unexpectedNames = receiptNames.filter(
+        // allow only the writer's private temporary before publication
+        (name) => name !== expectedReceiptName && !/^\.capture-[a-f0-9-]+\.tmp$/u.test(name),
+      );
+      assert.deepEqual(unexpectedNames, []);
 
-      if (snapshot.entries.length === 1) {
+      // freeze only after the exact final remains alone
+      if (receiptNames.length === 1 && receiptNames[0] === expectedReceiptName) {
         break;
       }
 
@@ -572,6 +592,8 @@ test("web edge captures only a finished normal forecast GET without changing byt
       );
     }
 
+    assert.deepEqual(receiptNames, [expectedReceiptName]);
+    const snapshot = await freezeAdjustmentEvidenceSnapshot({ root: evidenceRoot });
     assert.equal(snapshot.entries.length, 1);
     const head = await fetch(`${origin}/api/v1/sites/ballydidean/forecast`, {
       method: "HEAD",
