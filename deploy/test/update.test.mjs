@@ -810,7 +810,7 @@ start_release 2026.08.22-1`,
   }
 });
 
-test("release operations accept only current and exact version-eleven predecessor control planes", async () => {
+test("release operations accept only current and exact reviewed predecessor control planes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
   const release = join(directory, "release.env");
 
@@ -822,6 +822,38 @@ test("release operations accept only current and exact version-eleven predecesso
     );
     const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
     assert.equal(accepted.status, 0, accepted.stderr);
+    await writeFile(
+      release,
+      [
+        "WEATHER_RELEASE=2026.10.07-1",
+        "WEATHER_CONTROL_PLANE_SHA256=9a48c7e5c7450dfeee12c0813bf343f24f6c0f68e6472338bf33dde5c6fea2c0",
+        "WEATHER_CONTROL_PLANE_VERSION=12",
+        "",
+      ].join("\n"),
+    );
+    const firstV12Accepted = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.equal(firstV12Accepted.status, 0, firstV12Accepted.stderr);
+    await writeFile(
+      release,
+      [
+        "WEATHER_RELEASE=2026.10.07-2",
+        "WEATHER_CONTROL_PLANE_SHA256=9a48c7e5c7450dfeee12c0813bf343f24f6c0f68e6472338bf33dde5c6fea2c0",
+        "WEATHER_CONTROL_PLANE_VERSION=12",
+        "",
+      ].join("\n"),
+    );
+    const firstV12ReleaseRejected = runBash(
+      'source "$1"; require_control_plane_compatibility "$2"',
+      [release],
+    );
+    assert.notEqual(firstV12ReleaseRejected.status, 0);
+    assert.match(
+      firstV12ReleaseRejected.stderr,
+      /unsupported without an exact versioned allowlisted handoff/u,
+    );
     await writeFile(
       release,
       [

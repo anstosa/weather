@@ -38,6 +38,8 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const OBJECT_FILENAME_PATTERN = /^sha256-([a-f0-9]{64})\.json\.gz$/u;
 const RECEIPT_FILENAME_PATTERN = /^sha256-([a-f0-9]{64})\.json$/u;
 const WINDOWS = ["days=1", "days=5", "days=10", "overnight"];
+const WIND_DECISION_STATES = ["active", "disabled", "not_applicable"];
+const SOURCE_DECISION_STATES = ["active", "disabled", "raw_fallback"];
 const RAW_METRICS = [
   "precipitationMm",
   "temperatureC",
@@ -640,7 +642,7 @@ function projectWindAdjustment(value) {
     candidateArtifactSha256: nullableSha256(decision.candidateArtifactSha256),
     leadBand: nullableBoundedString(decision.leadBand, "row.adjustment.leadBand"),
     reasonCode: nullableBoundedString(decision.reasonCode, "row.adjustment.reasonCode"),
-    state: requireState(decision.state, "row.adjustment.state"),
+    state: requireState(decision.state, "row.adjustment.state", WIND_DECISION_STATES),
   };
 }
 
@@ -663,7 +665,7 @@ function projectTemperatureAdjustment(value) {
       "row.temperatureAdjustment.reasonCode",
     ),
     sourceForecast: projectTemperatureSource(decision.sourceForecast),
-    state: requireState(decision.state, "row.temperatureAdjustment.state"),
+    state: requireState(decision.state, "row.temperatureAdjustment.state", SOURCE_DECISION_STATES),
   };
 }
 
@@ -710,7 +712,7 @@ function projectRainAdjustment(value) {
     ),
     reasonCode: nullableBoundedString(decision.reasonCode, "row.rainAdjustment.reasonCode"),
     sourceForecast: projectRainSource(decision.sourceForecast),
-    state: requireState(decision.state, "row.rainAdjustment.state"),
+    state: requireState(decision.state, "row.rainAdjustment.state", SOURCE_DECISION_STATES),
   };
 }
 
@@ -1278,9 +1280,10 @@ function requireDecision(value, path) {
   return requirePlainObject(value, path);
 }
 
-// require one reviewed decision state
-function requireState(value, path) {
-  if (!["active", "disabled", "raw_fallback"].includes(value)) {
+// require the exact public state union for this family
+function requireState(value, path, states) {
+  // reject unknown and cross-family states
+  if (!states.includes(value)) {
     throw new TypeError(`${path} is invalid`);
   }
   return value;

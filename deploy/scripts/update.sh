@@ -30,6 +30,8 @@ capacity_evidence=/var/lib/weather/preflight-latest.json
 control_plane_version=12
 previous_control_plane_version=11
 previous_control_plane_sha256=ae098ea591868b9f0d093815fa94d05082af96ece7e9f6fd62e1d903bb8179eb
+previous_v12_release=2026.10.07-1
+previous_v12_control_plane_sha256=9a48c7e5c7450dfeee12c0813bf343f24f6c0f68e6472338bf33dde5c6fea2c0
 legacy_control_plane_version=6
 legacy_control_plane_sha256=c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5
 migration_authorization_version=1
@@ -252,7 +254,7 @@ source_canary_kill_switch() {
 # require the installed deployment contract
 require_control_plane_compatibility() {
   local env_file=$1
-  local expected_version expected_digest current_digest
+  local expected_version expected_digest expected_release current_digest
   grep -q '^WEATHER_CONTROL_PLANE_VERSION=' "$env_file" ||
     die "release state lacks deployment control-plane version metadata"
   grep -q '^WEATHER_CONTROL_PLANE_SHA256=' "$env_file" ||
@@ -268,6 +270,15 @@ require_control_plane_compatibility() {
 
   # accept only the reviewed version-eleven production handoff
   if [[ "$expected_version" == "$previous_control_plane_version" && "$expected_digest" == "$previous_control_plane_sha256" ]]; then
+    return
+  fi
+
+  # accept only the exact first version-twelve patch predecessor
+  if [[ "$expected_version" == "$control_plane_version" &&
+    "$expected_digest" == "$previous_v12_control_plane_sha256" ]]; then
+    expected_release=$(env_value "$env_file" WEATHER_RELEASE)
+    [[ "$expected_release" == "$previous_v12_release" ]] ||
+      die "deployment control-plane identity is unsupported without an exact versioned allowlisted handoff"
     return
   fi
 

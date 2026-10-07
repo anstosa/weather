@@ -187,6 +187,40 @@ test("capture excludes generated, freshness, loaded and mutable received times",
   assert.equal(first.object.rows[0].provenanceComplete, false);
 });
 
+// retain each family's exact public decision states
+test("capture accepts wind not_applicable without widening source-family states", () => {
+  const fallback = forecastRow(0, {
+    adjustment: {
+      adjustedMetrics: {},
+      appliedMetrics: [],
+      reasonCode: "unsupported_lead",
+      state: "not_applicable",
+    },
+    rainAdjustment: { ...forecastRow().rainAdjustment, state: "raw_fallback" },
+    temperatureAdjustment: { ...forecastRow().temperatureAdjustment, state: "raw_fallback" },
+  });
+  const capture = createAdjustmentEvidenceCapture(forecastBody([fallback, forecastRow(1)]), "days=1");
+  assert.equal(capture.object.rows[0].windAdjustment.state, "not_applicable");
+  assert.equal(capture.object.rows[0].rainAdjustment.state, "raw_fallback");
+  assert.equal(capture.object.rows[0].temperatureAdjustment.state, "raw_fallback");
+  assert.equal(capture.object.rows[1].windAdjustment.state, "active");
+
+  // reject states belonging only to another family
+  for (const [family, state] of [
+    ["adjustment", "raw_fallback"],
+    ["temperatureAdjustment", "not_applicable"],
+    ["rainAdjustment", "not_applicable"],
+    ["adjustment", "unknown"],
+    ["temperatureAdjustment", "unknown"],
+    ["rainAdjustment", "unknown"],
+    ["adjustment", null],
+  ]) {
+    const row = forecastRow();
+    row[family] = { ...row[family], state };
+    assert.throws(() => createAdjustmentEvidenceCapture(forecastBody([row]), "days=1"), /state is invalid/u);
+  }
+});
+
 // detect stable identity collisions without mutating record identity
 test("same stable row identity with changed scoring content creates a different object", () => {
   const first = createAdjustmentEvidenceCapture(forecastBody(), "days=1");
@@ -501,7 +535,17 @@ async function waitForServer(origin) {
 test("web edge captures only a finished normal forecast GET without changing bytes", async () => {
   const root = await mkdtemp(join(tmpdir(), "weather-adjustment-edge-"));
   const evidenceRoot = join(root, "evidence");
-  const upstreamBody = forecastBody();
+  const upstreamBody = forecastBody([
+    forecastRow(0, {
+      adjustment: {
+        adjustedMetrics: {},
+        appliedMetrics: [],
+        reasonCode: "unsupported_lead",
+        state: "not_applicable",
+      },
+    }),
+    forecastRow(1),
+  ]);
   const upstream = createHttpServer(
     // serve one exact successful forecast body
     (request, response) => {
