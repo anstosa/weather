@@ -20,8 +20,11 @@ import {
   scoreBalancedForecastAdjustmentPairs,
   type ForecastAdjustmentPerformancePair,
 } from "@weather/forecast-adjustment";
-import type { ForecastObservationStationKey } from "@weather/domain";
-import type { CanonicalWeatherMetrics } from "@weather/domain";
+import {
+  forecastLeadBandFor,
+  type CanonicalWeatherMetrics,
+  type ForecastObservationStationKey,
+} from "@weather/domain";
 import type { RainAdjustmentCapture } from "@weather/database";
 
 import { rainForecastProfile, rainStationHours } from "./rain-adjustment.js";
@@ -982,6 +985,9 @@ async function createWindReport(
   const issuedByBand = new Map<string, ForecastAdjustmentPerformancePair[]>(
     enabled.map((pair) => [`${pair.metric}:${pair.leadBand}`, []]),
   );
+  const enabledWindMetrics = new Set(enabled.map((pair) => pair.metric));
+  const issuedNonActiveReasons = { disabled: 0, not_applicable: 0 };
+  let issuedNonActiveCount = 0;
   const forecasts = packages.forecastRows.filter((row) =>
     row.record_kind === "legacy_v4_retrieval_snapshot");
 
@@ -1087,15 +1093,51 @@ async function createWindReport(
     const raw = object(edge.row.raw, "edge wind raw metrics");
     const adjusted = object(adjustment.adjustedMetrics, "edge adjusted wind metrics");
     const validAt = text(record.validAt, "edge wind validAt");
-    const productRunAt = text(record.productRunAt, "edge wind product run");
-    const horizonHours = (Date.parse(validAt) - Date.parse(productRunAt)) / 3_600_000;
-    const leadBand = text(adjustment.leadBand, "edge wind lead band");
     const appliedMetrics = adjustment.appliedMetrics;
+    const state = text(adjustment.state, "edge wind state");
 
     // reject malformed serving details before descriptive scoring
-    if (!Number.isInteger(horizonHours) || horizonHours < 1 ||
-      !Array.isArray(appliedMetrics)) {
+    if (!Number.isFinite(Date.parse(validAt)) || !Array.isArray(appliedMetrics)) {
       throw new Error("edge wind adjustment identity is invalid");
+    }
+
+    // reject unknown states instead of treating them as raw fallbacks
+    if (state !== "active" && state !== "disabled" && state !== "not_applicable") {
+      throw new Error("edge wind adjustment state is invalid");
+    }
+
+    // count fail-raw decisions as unscored fallback gaps without inventing a band
+    if (state !== "active") {
+      // count each captured enabled raw metric once
+      for (const metric of ["windSpeedMps", "windGustMps"] as const) {
+        // ignore metrics outside the exact active mask or absent from this row
+        if (!enabledWindMetrics.has(metric) || raw[metric] === null ||
+          raw[metric] === undefined) {
+          continue;
+        }
+
+        finite(raw[metric], "edge raw wind value");
+        issuedNonActiveReasons[state] += 1;
+        issuedNonActiveCount += 1;
+      }
+      continue;
+    }
+
+    const productRunAt = text(record.productRunAt, "edge wind product run");
+    const continuousHorizonHours =
+      (Date.parse(validAt) - Date.parse(productRunAt)) / 3_600_000;
+
+    // require a finite positive runtime lead only for an active decision
+    if (!Number.isFinite(continuousHorizonHours) || continuousHorizonHours <= 0) {
+      throw new Error("edge wind adjustment identity is invalid");
+    }
+
+    const horizonHours = Math.ceil(continuousHorizonHours);
+    const leadBand = text(adjustment.leadBand, "edge wind lead band");
+
+    // bind the captured band to the runtime's ceiling-based lead policy
+    if (leadBand !== forecastLeadBandFor(horizonHours)) {
+      throw new Error("edge wind lead band is invalid");
     }
 
     // score each enabled metric independently on its captured raw row
@@ -1156,9 +1198,10 @@ async function createWindReport(
     (sum, pairs) => sum + pairs.length,
     0,
   );
-  const evidenceClass = issuedRowCount > 0
+  const issuedInputRowCount = issuedRowCount + issuedNonActiveCount;
+  const evidenceClass = issuedInputRowCount > 0
     ? "as_issued" : "retrospective_counterfactual";
-  const byBand = issuedRowCount > 0 ? issuedByBand : counterfactualByBand;
+  const byBand = issuedInputRowCount > 0 ? issuedByBand : counterfactualByBand;
 
   const allPreparedRows: ForecastAdjustmentPerformancePair[] = [];
   const pairReviews: JsonObject[] = [];
@@ -1214,6 +1257,18 @@ async function createWindReport(
       rowCount: prepared.rows.length,
       supportState: evaluation?.supportState ?? "insufficient",
     });
+  }
+
+  inputRows += issuedNonActiveCount;
+  fallbackCount += issuedNonActiveCount;
+  excludedCount += issuedNonActiveCount;
+
+  // preserve each fail-raw state as an explicit exclusion reason
+  for (const [state, count] of Object.entries(issuedNonActiveReasons)) {
+    // omit absent states instead of manufacturing zero-valued diagnostics
+    if (count > 0) {
+      combinedExclusions[state] = count;
+    }
   }
 
   const everyPairSupported = pairReviews.every((review) =>

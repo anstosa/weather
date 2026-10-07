@@ -241,6 +241,7 @@ function issuedWindCohort(bundle, definitions, repetitions, adjustedDelta) {
             adjustedMetrics: { [metric]: rawValue + adjustedDelta },
             appliedMetrics: [metric],
             leadBand,
+            state: "active",
           },
         },
         rowIndex: 0,
@@ -657,8 +658,8 @@ test("temperature loader preserves native inputs and matched Best Match diagnost
 test("wind command evaluates all thirteen active pairs without changing serving", async () => {
   const root = await privateTestDirectory("weather-performance-wind-");
   const output = join(root, "wind.json");
-  const validAt = "2026-10-08T00:00:00.000Z";
-  const referenceAt = "2026-10-07T23:00:00.000Z";
+  const validAt = "2026-10-07T19:00:00.000Z";
+  const referenceAt = "2026-10-07T18:00:00.000Z";
   const forecast = {
     adapter_contracts: ["forecast-daily/v4"],
     content_hashes: [HASH],
@@ -684,7 +685,7 @@ test("wind command evaluates all thirteen active pairs without changing serving"
   ].map(([physical_station_key, value]) => ({
     content_hashes: [HASH],
     physical_station_key,
-    received_at: "2026-10-08T01:00:00.000Z",
+    received_at: "2026-10-07T20:00:00.000Z",
     record_kind: "station_hour",
     source_keys: [`${physical_station_key}-source`],
     valid_at: validAt,
@@ -749,14 +750,14 @@ test("wind command evaluates all thirteen active pairs without changing serving"
         wind: { activeBundle: report.family.servingIdentitySha256 },
       },
       edgeReceiptIdentitySha256: HASH,
-      firstEdgeCommittedAt: "2026-10-07T23:30:00.000Z",
+      firstEdgeCommittedAt: "2026-10-07T18:30:00.000Z",
       objectSha256: HASH,
       row: {
         provenanceComplete: false,
         raw: { windGustMps: 8, windSpeedMps: 5 },
         record: {
           id: "issued-row",
-          productRunAt: referenceAt,
+          productRunAt: "2026-10-07T17:07:05.934Z",
           revisionCount: 1,
           validAt,
         },
@@ -764,11 +765,39 @@ test("wind command evaluates all thirteen active pairs without changing serving"
           adjustedMetrics: { windGustMps: 7.5, windSpeedMps: 4.5 },
           appliedMetrics: ["windGustMps", "windSpeedMps"],
           leadBand: "001-024",
+          state: "active",
         },
       },
       rowIndex: 0,
       settingsSha256: HASH,
-      sourceReceiptAt: "2026-10-07T23:20:00.000Z",
+      sourceReceiptAt: "2026-10-07T18:20:00.000Z",
+    }, {
+      bundleIdentities: {
+        wind: { activeBundle: report.family.servingIdentitySha256 },
+      },
+      edgeReceiptIdentitySha256: "c".repeat(64),
+      firstEdgeCommittedAt: "2026-10-07T18:31:00.000Z",
+      objectSha256: "d".repeat(64),
+      row: {
+        provenanceComplete: true,
+        raw: { windGustMps: 8, windSpeedMps: 5 },
+        record: {
+          id: "not-applicable-row",
+          productRunAt: "2026-10-07T17:07:05.934Z",
+          revisionCount: 1,
+          validAt: "2026-10-07T17:00:00.000Z",
+        },
+        windAdjustment: {
+          adjustedMetrics: {},
+          appliedMetrics: [],
+          leadBand: null,
+          reasonCode: "unsupported_lead",
+          state: "not_applicable",
+        },
+      },
+      rowIndex: 0,
+      settingsSha256: "e".repeat(64),
+      sourceReceiptAt: "2026-10-07T18:21:00.000Z",
     }],
   };
   await runForecastAdjustmentPerformanceCli([
@@ -785,7 +814,58 @@ test("wind command evaluates all thirteen active pairs without changing serving"
   assert.equal(issuedReport.family.evidenceClass, "as_issued");
   assert.equal(issuedReport.family.qualificationState, "pending_support");
   assert.equal(issuedReport.family.support.exclusionReasons.provenance_incomplete, 2);
-  assert.equal(issuedReport.family.support.excludedCount, 0);
+  assert.equal(issuedReport.family.support.exclusionReasons.not_applicable, 2);
+  assert.equal(issuedReport.family.support.excludedCount, 2);
+  assert.equal(issuedReport.family.support.fallbackCount, 2);
+  assert.deepEqual(issuedReport.family.support.fallbackReasons, { raw_fallback: 2 });
+  assert.equal(issuedReport.family.support.gapCount, 4);
+  assert.equal(issuedReport.family.support.rowCount, 4);
+  assert.equal(issuedReport.family.support.targetRowCount, 2);
+
+  const nonActiveOutput = join(root, "wind-only-not-applicable.json");
+  await runForecastAdjustmentPerformanceCli([
+    "wind-requalify",
+    "--forecast-package", "forecast",
+    "--adjustment-package", "adjustment",
+    "--source-revision", SOURCE_REVISION,
+    "--output", nonActiveOutput,
+  ], {
+    loadPackages: async () => ({
+      ...issuedPackages,
+      edgeRows: issuedPackages.edgeRows.slice(1),
+    }),
+    now: () => NOW,
+  });
+  const nonActiveReport = JSON.parse(await readFile(nonActiveOutput, "utf8"));
+  assert.equal(nonActiveReport.family.evidenceClass, "as_issued");
+  assert.equal(nonActiveReport.family.support.rowCount, 2);
+  assert.equal(nonActiveReport.family.support.targetRowCount, 0);
+  assert.ok(nonActiveReport.pairReviews.every((review) => review.rowCount === 0));
+
+  const invalidActivePackages = structuredClone(issuedPackages);
+  invalidActivePackages.edgeRows[0].row.windAdjustment.leadBand = null;
+  await assert.rejects(() => runForecastAdjustmentPerformanceCli([
+    "wind-requalify",
+    "--forecast-package", "forecast",
+    "--adjustment-package", "adjustment",
+    "--source-revision", SOURCE_REVISION,
+    "--output", join(root, "wind-invalid-active-band.json"),
+  ], {
+    loadPackages: async () => invalidActivePackages,
+    now: () => NOW,
+  }), /edge wind lead band must be a nonempty string/u);
+
+  invalidActivePackages.edgeRows[0].row.windAdjustment.leadBand = "999-999";
+  await assert.rejects(() => runForecastAdjustmentPerformanceCli([
+    "wind-requalify",
+    "--forecast-package", "forecast",
+    "--adjustment-package", "adjustment",
+    "--source-revision", SOURCE_REVISION,
+    "--output", join(root, "wind-invalid-active-band-name.json"),
+  ], {
+    loadPackages: async () => invalidActivePackages,
+    now: () => NOW,
+  }), /edge wind lead band is invalid/u);
 
   const diluted = issuedWindCohort(
     report.family.servingIdentitySha256,
