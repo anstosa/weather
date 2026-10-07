@@ -190,6 +190,20 @@ forecast or existing admin controls. The public forecast never fetches it.
 
 Review the deployed result at <https://weather.ballydidean.farm/admin>.
 
+### Temporary publisher repair
+
+A reviewed host repair may route only `install-adjustment-scorecard` through
+`/usr/local/lib/weather/adjustment-scorecard-install-v1/install-adjustment-scorecard.sh`.
+The root-owned helper is hash-pinned by the root-ops wrapper and refuses changed
+release, control-plane, common-helper, contract or predecessor-installer bytes.
+It does not modify the pinned deployment tree, release metadata or serving state.
+
+At the next reviewed control-plane release containing the canonical installer
+fix, return the root-ops scorecard arm to the deployment-tree installer first.
+Verify bounded publication through the forced SSH route, then retire only the
+exact isolated helper and its empty directory. Retain rollback backups and
+published evidence; never edit published control identities in place.
+
 ## Capacity and release safety
 
 The evidence ledger has a 64 MiB allocated-byte cap. Before writes, exports and

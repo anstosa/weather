@@ -14,14 +14,20 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
 } from "../scripts/forecast-adjustment-scorecard-contract.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
+const fixedExecutablePath =
+  `${dirname(process.execPath)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+const installerTestName =
+  "installer consumes exact stdin bytes and fails closed before publication";
+const rootChildMarker = "WEATHER_SCORECARD_INSTALLER_ROOT_CHILD";
 
 // build one complete aggregate metric
 function metric(unit) {
@@ -248,8 +254,7 @@ exec "$@"
   ]);
   return {
     environment: {
-      ...process.env,
-      PATH: `${commands}:${process.env.PATH}`,
+      PATH: `${commands}:${fixedExecutablePath}`,
       WEATHER_ADJUSTMENT_SCORECARD_ROOT: scorecardRoot,
     },
     installer: join(scripts, "install-adjustment-scorecard.sh"),
@@ -257,18 +262,33 @@ exec "$@"
   };
 }
 
-test("installer consumes exact stdin bytes and fails closed before publication", async () => {
+// invoke the copied installer directly inside an already-root process
+function runInstallerDirectly(harness, sha256, input) {
+  return spawnSync(harness.installer, [sha256], {
+    encoding: "utf8",
+    env: harness.environment,
+    input,
+  });
+}
+
+// invoke the copied installer inside a disposable user namespace
+function runInstallerInNamespace(harness, sha256, input) {
+  return spawnSync("unshare", ["-Ur", harness.installer, sha256], {
+    encoding: "utf8",
+    env: harness.environment,
+    input,
+  });
+}
+
+// exercise the complete publication and fail-closed matrix in one owner process
+async function verifyInstallerPublication(runInstaller) {
   const root = await mkdtemp(join(tmpdir(), "weather-scorecard-installer-"));
 
   try {
     const bytes = Buffer.from(`${JSON.stringify(scorecard())}\n`);
     const digest = createHash("sha256").update(bytes).digest("hex");
     const valid = await installerHarness(join(root, "valid"));
-    const result = spawnSync("unshare", ["-Ur", valid.installer, digest], {
-      encoding: "utf8",
-      env: valid.environment,
-      input: bytes,
-    });
+    const result = runInstaller(valid, digest, bytes);
     assert.equal(result.status, 0, result.stderr);
     assert.deepEqual(
       await readFile(join(valid.scorecardRoot, "scorecards", `sha256-${digest}.json`)),
@@ -300,11 +320,7 @@ test("installer consumes exact stdin bytes and fails closed before publication",
     // prove every rejected payload leaves no selected or immutable object
     for (const failure of failures) {
       const harness = await installerHarness(join(root, failure.name));
-      const failed = spawnSync(
-        "unshare",
-        ["-Ur", harness.installer, failure.sha256],
-        { encoding: "utf8", env: harness.environment, input: failure.input },
-      );
+      const failed = runInstaller(harness, failure.sha256, failure.input);
       assert.notEqual(failed.status, 0, failure.name);
       assert.deepEqual(await readdir(join(harness.scorecardRoot, "scorecards")), []);
       await assert.rejects(
@@ -319,6 +335,61 @@ test("installer consumes exact stdin bytes and fails closed before publication",
   } finally {
     await rm(root, { force: true, recursive: true });
   }
+}
+
+// format one bounded privilege-child failure without hiding its exit evidence
+function childFailure(result, operation) {
+  return [
+    `${operation} failed`,
+    result.error?.message ?? "",
+    result.stderr ?? "",
+    result.stdout ?? "",
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+test(installerTestName, async () => {
+  const uid = process.getuid?.();
+  const isRoot = uid === 0;
+  const isRequestedRootChild = process.env[rootChildMarker] === "1";
+
+  // reject a forged child marker before any fixture creation
+  if (isRequestedRootChild && !isRoot) {
+    assert.fail("scorecard installer root child is not root");
+  }
+
+  // keep root-owned fixtures and cleanup wholly inside the root child
+  if (isRoot) {
+    await verifyInstallerPublication(runInstallerDirectly);
+    return;
+  }
+
+  const namespaceProbe = spawnSync("unshare", ["-Ur", "true"], {
+    encoding: "utf8",
+    env: { PATH: fixedExecutablePath },
+    timeout: 5_000,
+  });
+
+  // prefer the unprivileged namespace when the host permits uid mapping
+  if (namespaceProbe.status === 0) {
+    await verifyInstallerPublication(runInstallerInNamespace);
+    return;
+  }
+
+  const rootChild = spawnSync("sudo", [
+    "-n",
+    "/usr/bin/env",
+    `PATH=${fixedExecutablePath}`,
+    `${rootChildMarker}=1`,
+    process.execPath,
+    "--test",
+    `--test-name-pattern=^${installerTestName}$`,
+    fileURLToPath(import.meta.url),
+  ], {
+    encoding: "utf8",
+    env: { PATH: fixedExecutablePath },
+    timeout: 30_000,
+  });
+  assert.equal(rootChild.status, 0, childFailure(rootChild, "scorecard installer root child"));
 });
 
 test("publisher hashes and transports the exact bounded no-follow capture", async () => {
