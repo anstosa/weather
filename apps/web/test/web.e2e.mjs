@@ -4894,6 +4894,8 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
     assert.equal(fixture.state.propertySensorLayout[0].icon, "air-quality");
     await page.getByRole("link", { name: "Now" }).click();
     await page.getByRole("heading", { name: "Indoor temperatures" }).waitFor();
+    // wait for populated house data
+    await page.locator("[data-indoor-house][aria-busy='false']").waitFor();
     assert.deepEqual(
       await page.locator(".indoor-house-level").allTextContents(),
       ["Second floor71°F", "First floor68°F", "Basement62°F"],
@@ -4955,6 +4957,10 @@ test("admin editor signs in, names, and places a reporting EcoWitt sensor", { ti
       },
     );
     await page.setViewportSize({ height: 844, width: 390 });
+    await page.evaluate(
+      // wait one paint for responsive observers
+      async () => await new Promise((resolveFrame) => requestAnimationFrame(() => resolveFrame())),
+    );
     assert.equal(
       await page.locator(".indoor-house-illustration").evaluate(
         // preserve the roof join at the phone breakpoint
