@@ -42,8 +42,9 @@ trap 'exit 130' HUP INT TERM
 # read, hash, and validate one bounded document from standard input
 actual_sha256=$(node --input-type=module - \
   "$deploy_dir/scripts/forecast-adjustment-scorecard-contract.mjs" \
-  "$temporary" <<'NODE'
+  "$temporary" 3<&0 <<'NODE'
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { open } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
@@ -54,9 +55,10 @@ const {
 } = await import(pathToFileURL(contractPath));
 const chunks = [];
 let bytes = 0;
+const input = createReadStream("", { autoClose: false, fd: 3 });
 
 // stop reading immediately after the reviewed bound
-for await (const chunk of process.stdin) {
+for await (const chunk of input) {
   bytes += chunk.length;
   if (bytes > FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES) {
     throw new Error("forecast adjustment scorecard is too large");

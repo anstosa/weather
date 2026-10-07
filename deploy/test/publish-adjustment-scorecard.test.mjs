@@ -7,7 +7,9 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -186,6 +188,138 @@ fi
   ]);
   return join(scripts, "publish-adjustment-scorecard.sh");
 }
+
+// create one isolated root-namespace installer with privileged commands stubbed
+async function installerHarness(root) {
+  const scripts = join(root, "deploy/scripts");
+  const commands = join(root, "commands");
+  const scorecardRoot = join(root, "adjustment-evidence");
+  await Promise.all([
+    mkdir(scripts, { recursive: true }),
+    mkdir(commands, { recursive: true }),
+  ]);
+  await Promise.all([
+    cp(join(repoRoot, "deploy/scripts/common.sh"), join(scripts, "common.sh")),
+    cp(
+      join(repoRoot, "deploy/scripts/forecast-adjustment-scorecard-contract.mjs"),
+      join(scripts, "forecast-adjustment-scorecard-contract.mjs"),
+    ),
+    cp(
+      join(repoRoot, "deploy/scripts/install-adjustment-scorecard.sh"),
+      join(scripts, "install-adjustment-scorecard.sh"),
+    ),
+    writeFile(join(commands, "chown"), `#!/usr/bin/env bash
+set -euo pipefail
+exit 0
+`),
+    writeFile(join(commands, "install"), `#!/usr/bin/env bash
+set -euo pipefail
+mode=
+# strip privileged directory options in the isolated namespace
+while (($#)); do
+  case "$1" in
+    -d) shift ;;
+    -o|-g) shift 2 ;;
+    -m) mode=$2; shift 2 ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+mkdir -p -- "$@"
+# apply the requested private mode without host ownership changes
+if [[ -n "$mode" ]]; then
+  chmod "$mode" "$@"
+fi
+`),
+    writeFile(join(commands, "setpriv"), `#!/usr/bin/env bash
+set -euo pipefail
+# strip identity switches before the isolated readability check
+while (($#)) && [[ "$1" == --* ]]; do
+  shift
+done
+exec "$@"
+`),
+  ]);
+  await Promise.all([
+    chmod(join(scripts, "install-adjustment-scorecard.sh"), 0o700),
+    chmod(join(commands, "chown"), 0o700),
+    chmod(join(commands, "install"), 0o700),
+    chmod(join(commands, "setpriv"), 0o700),
+  ]);
+  return {
+    environment: {
+      ...process.env,
+      PATH: `${commands}:${process.env.PATH}`,
+      WEATHER_ADJUSTMENT_SCORECARD_ROOT: scorecardRoot,
+    },
+    installer: join(scripts, "install-adjustment-scorecard.sh"),
+    scorecardRoot,
+  };
+}
+
+test("installer consumes exact stdin bytes and fails closed before publication", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-scorecard-installer-"));
+
+  try {
+    const bytes = Buffer.from(`${JSON.stringify(scorecard())}\n`);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const valid = await installerHarness(join(root, "valid"));
+    const result = spawnSync("unshare", ["-Ur", valid.installer, digest], {
+      encoding: "utf8",
+      env: valid.environment,
+      input: bytes,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      await readFile(join(valid.scorecardRoot, "scorecards", `sha256-${digest}.json`)),
+      bytes,
+    );
+    assert.equal(
+      await readFile(join(valid.scorecardRoot, "current.json"), "utf8"),
+      `{"sha256":"${digest}"}\n`,
+    );
+    assert.equal(
+      (await stat(join(valid.scorecardRoot, "scorecards", `sha256-${digest}.json`))).mode &
+        0o777,
+      0o600,
+    );
+    assert.equal((await stat(join(valid.scorecardRoot, "current.json"))).mode & 0o777, 0o600);
+    assert.equal((await stat(valid.scorecardRoot)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(valid.scorecardRoot, "scorecards"))).mode & 0o777, 0o700);
+
+    const failures = [
+      { input: bytes, name: "wrong-sha", sha256: "0".repeat(64) },
+      {
+        input: Buffer.alloc(FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES + 1, 0x20),
+        name: "oversized",
+        sha256: digest,
+      },
+      { input: Buffer.from("{}\n"), name: "corrupt", sha256: digest },
+    ];
+
+    // prove every rejected payload leaves no selected or immutable object
+    for (const failure of failures) {
+      const harness = await installerHarness(join(root, failure.name));
+      const failed = spawnSync(
+        "unshare",
+        ["-Ur", harness.installer, failure.sha256],
+        { encoding: "utf8", env: harness.environment, input: failure.input },
+      );
+      assert.notEqual(failed.status, 0, failure.name);
+      assert.deepEqual(await readdir(join(harness.scorecardRoot, "scorecards")), []);
+      await assert.rejects(
+        readFile(join(harness.scorecardRoot, "current.json")),
+        (error) => error.code === "ENOENT",
+      );
+      assert.deepEqual(
+        (await readdir(harness.scorecardRoot)).filter((name) => name.endsWith(".partial")),
+        [],
+      );
+    }
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
 
 test("publisher hashes and transports the exact bounded no-follow capture", async () => {
   const root = await mkdtemp(join(tmpdir(), "weather-scorecard-publisher-"));
