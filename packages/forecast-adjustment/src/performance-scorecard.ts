@@ -145,6 +145,23 @@ export interface ForecastAdjustmentRainGaugeTarget {
   readonly stationCount: number;
 }
 
+// describe one retained backward-reporting rain interval
+export interface ForecastAdjustmentRainGaugeInterval {
+  readonly precipitationMm: number;
+  readonly reportIntervalMinutes: number;
+  readonly reportedAt: string;
+  readonly stationId: number;
+}
+
+// report one phase-gated fixed-gauge hourly target
+export interface ForecastAdjustmentRainHourlyTarget
+  extends ForecastAdjustmentRainGaugeTarget {
+  readonly eligible: boolean;
+  readonly reason: "eligible" | "cold_or_unknown_forecast_phase" | "unsupported_target";
+}
+
+export const FORECAST_ADJUSTMENT_RAIN_FROZEN_DEVELOPMENT_ROWS = 32_896 as const;
+
 export interface ForecastAdjustmentRainProbability {
   readonly atLeast0_1: number;
   readonly atLeast1_0: number;
@@ -795,7 +812,7 @@ export function createEcowittTargetDiagnostic(
   return value !== undefined && Number.isFinite(value) ? value : null;
 }
 
-// build the fixed twelve-gauge target while reporting incomplete tiling
+// build the fixed twelve-gauge weighted-median target
 export function createFixedRainGaugeTarget(
   values: readonly ForecastAdjustmentRainGaugeValue[],
 ): ForecastAdjustmentRainGaugeTarget {
@@ -851,13 +868,150 @@ export function createFixedRainGaugeTarget(
     const distance = 6_371_000 * 2 * Math.asin(Math.sqrt(a));
     return { ...row, weight: 1 / (1 + (distance / 2_000) ** 2) };
   });
-  const totalWeight = weighted.reduce((sum, row) => sum + row.weight, 0);
-  const precipitationMm = weighted.reduce(
-    (sum, row) => sum + row.value * row.weight / totalWeight,
-    0,
-  );
+  const ordered = weighted.sort((left, right) =>
+    left.value - right.value || left.id - right.id);
+  const totalWeight = ordered.reduce((sum, row) => sum + row.weight, 0);
+  let cumulativeWeight = 0;
+  let precipitationMm: number | null = null;
+
+  // choose the lower value at the first half-mass boundary
+  for (const row of ordered) {
+    cumulativeWeight += row.weight;
+
+    // retain the served left-continuous weighted median
+    if (cumulativeWeight >= totalWeight / 2) {
+      precipitationMm = row.value;
+      break;
+    }
+  }
+
+  // retain the compiler-proven nonempty supported gauge set
+  if (precipitationMm === null) {
+    throw new Error("rain gauge weighted median is empty");
+  }
 
   return { complete: true, precipitationMm, stationCount: available.length };
+}
+
+// tile one exact backward hour for every supplied gauge
+export function tileBackwardRainGaugeHour(
+  intervals: readonly ForecastAdjustmentRainGaugeInterval[],
+  validAt: string,
+): readonly ForecastAdjustmentRainGaugeValue[] {
+  const target = instant(validAt, "validAt");
+  const byStation = new Map<number, ForecastAdjustmentRainGaugeInterval[]>();
+
+  // require one exact forecast target hour
+  if (target % 3_600_000 !== 0) {
+    throw new RangeError("rain gauge target must be an exact UTC hour");
+  }
+
+  // validate and partition retained physical intervals
+  for (const interval of intervals) {
+    // reject unknown gauges and malformed interval amounts
+    if (
+      !RAIN_GAUGE_IDS.has(interval.stationId) ||
+      !Number.isFinite(interval.precipitationMm) ||
+      interval.precipitationMm < 0 ||
+      !Number.isInteger(interval.reportIntervalMinutes) ||
+      interval.reportIntervalMinutes < 1 ||
+      interval.reportIntervalMinutes > 5
+    ) {
+      throw new RangeError("rain gauge interval is invalid");
+    }
+
+    const reportedAt = instant(interval.reportedAt, "reportedAt");
+
+    // preserve exact provider minute endpoints
+    if (reportedAt % 60_000 !== 0) {
+      throw new RangeError("rain gauge interval endpoint must be an exact minute");
+    }
+    const stationRows = byStation.get(interval.stationId) ?? [];
+    stationRows.push(interval);
+    byStation.set(interval.stationId, stationRows);
+  }
+
+  const values: ForecastAdjustmentRainGaugeValue[] = [];
+
+  // retain one explicit complete-or-missing value per supplied station
+  for (const [stationId, stationRows] of byStation) {
+    const byEnd = new Map<number, ForecastAdjustmentRainGaugeInterval>();
+
+    // bind every station endpoint to one physical interval
+    for (const interval of stationRows) {
+      const end = instant(interval.reportedAt, "reportedAt");
+
+      // reject inconsistent duplicate interval endpoints
+      if (byEnd.has(end)) {
+        throw new RangeError("rain gauge interval endpoint is duplicated");
+      }
+
+      byEnd.set(end, interval);
+    }
+
+    const eligibleEnds = [...byEnd.keys()].filter((end) =>
+      end <= target && target - end <= 5 * 60_000);
+    const end = eligibleEnds.sort((left, right) => right - left)[0];
+
+    // preserve missing endpoint support without filling dry values
+    if (end === undefined) {
+      values.push({ precipitationMm: null, stationId });
+      continue;
+    }
+
+    const start = end - 60 * 60_000;
+    let wanted = end;
+    let amount = 0;
+    let complete = true;
+
+    // walk exact nonoverlapping intervals backward from the retained endpoint
+    while (wanted > start) {
+      const interval = byEnd.get(wanted);
+
+      // reject gaps and interval overhangs without prorating
+      if (
+        interval === undefined ||
+        wanted - interval.reportIntervalMinutes * 60_000 < start
+      ) {
+        complete = false;
+        break;
+      }
+
+      amount += interval.precipitationMm;
+      wanted -= interval.reportIntervalMinutes * 60_000;
+    }
+
+    values.push({ precipitationMm: complete ? amount : null, stationId });
+  }
+
+  return values.sort((left, right) => left.stationId - right.stationId);
+}
+
+// apply the raw issued target-hour liquid-phase gate
+export function createEligibleFixedRainGaugeHourlyTarget(input: {
+  readonly intervals: readonly ForecastAdjustmentRainGaugeInterval[];
+  readonly rawTargetHourTemperatureC: number | null;
+  readonly validAt: string;
+}): ForecastAdjustmentRainHourlyTarget {
+  const target = createFixedRainGaugeTarget(
+    tileBackwardRainGaugeHour(input.intervals, input.validAt),
+  );
+
+  // keep incomplete fixed-gauge tiling pending before phase eligibility
+  if (!target.complete) {
+    return { ...target, eligible: false, reason: "unsupported_target" };
+  }
+
+  const eligible =
+    input.rawTargetHourTemperatureC !== null &&
+    Number.isFinite(input.rawTargetHourTemperatureC) &&
+    input.rawTargetHourTemperatureC > 2;
+
+  return {
+    ...target,
+    eligible,
+    reason: eligible ? "eligible" : "cold_or_unknown_forecast_phase",
+  };
 }
 
 // compute one weighted conditional MAE without inventing empty support

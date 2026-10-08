@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   constants,
@@ -91,6 +92,32 @@ const EXPECTED_MIGRATION_HISTORY_SHA256 = createHash("sha256").update(
   EXPECTED_MIGRATION_NAMES.map((name, index) =>
     `${name}:${EXPECTED_MIGRATION_CHECKSUMS[index]}`).join("\n"),
 ).digest("hex");
+const EXPECTED_COMPLETE_MIGRATION_NAMES = [
+  ...EXPECTED_MIGRATION_NAMES,
+  "0018_adjustment_maintenance_v2.sql",
+];
+const EXPECTED_COMPLETE_MIGRATION_CHECKSUMS = [
+  ...EXPECTED_MIGRATION_CHECKSUMS,
+  "c13d2c2c39096887712ae97f0b863f8a7ab52074ca320575f8c4c1f9b72a50a3",
+];
+const EXPECTED_COMPLETE_MIGRATION_HISTORY_SHA256 = createHash("sha256").update(
+  EXPECTED_COMPLETE_MIGRATION_NAMES.map(
+    // serialize the exact additive ledger in database order
+    (name, index) => `${name}:${EXPECTED_COMPLETE_MIGRATION_CHECKSUMS[index]}`,
+  ).join("\n"),
+).digest("hex");
+const EXPECTED_MIGRATION_LEDGERS = [
+  {
+    checksums: EXPECTED_MIGRATION_CHECKSUMS,
+    historySha256: EXPECTED_MIGRATION_HISTORY_SHA256,
+    names: EXPECTED_MIGRATION_NAMES,
+  },
+  {
+    checksums: EXPECTED_COMPLETE_MIGRATION_CHECKSUMS,
+    historySha256: EXPECTED_COMPLETE_MIGRATION_HISTORY_SHA256,
+    names: EXPECTED_COMPLETE_MIGRATION_NAMES,
+  },
+];
 const ROW_KINDS = new Set([
   "rain_adjustment_run",
   "rain_claim",
@@ -183,6 +210,416 @@ const PAYLOAD_KEYS = new Map([
     "validAt",
   ]],
 ]);
+
+export const ADJUSTMENT_RELEASE_CAPACITY_VERSION = "adjustment-release-capacity/v3";
+export const ADJUSTMENT_RELEASE_INVENTORY_VERSION = "adjustment-release-inventory/v1";
+export const BLUEBERRY_PROTECTED_FREE_BYTES = 2_030_043_136;
+export const BLUEBERRY_NEXT_CAPTURE_BYTES = 4_112_384;
+export const ADJUSTMENT_RUNTIME_PACKAGE_MAX_BYTES = 8 * 1_024 * 1_024;
+export const ADJUSTMENT_RELEASE_CONTROL_MAX_BYTES = 4 * 1_024 * 1_024 * 1_024;
+export const ADJUSTMENT_RELEASE_FUTURE_STATE_BYTES = 1 * 1_024 * 1_024;
+export const ADJUSTMENT_RELEASE_ENGINE_METADATA_BYTES = 64 * 1_024 * 1_024;
+export const ADJUSTMENT_RELEASE_PULL_SCRATCH_BYTES = 64 * 1_024 * 1_024;
+export const ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES = 64 * 1_024 * 1_024;
+export const ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_INODES = 4_096;
+export const ADJUSTMENT_RELEASE_ENGINE_METADATA_INODES = 4_096;
+export const ADJUSTMENT_RELEASE_CONTROL_GROWTH_INODES = 128;
+const ADJUSTMENT_RELEASE_MAXIMUM_COMPRESSED_IMAGE_BYTES = 2 * 1_024 * 1_024 * 1_024;
+const ADJUSTMENT_RELEASE_MAXIMUM_UNPACKED_LAYER_BYTES = 4 * 1_024 * 1_024 * 1_024;
+const ADJUSTMENT_RELEASE_MAXIMUM_LAYER_INODES = 1_000_000;
+const ADJUSTMENT_RELEASE_BLOCK_BYTES = 4_096;
+const ADJUSTMENT_RELEASE_ROLES = ["source", "target", "compensating"];
+const ADJUSTMENT_RELEASE_RUNTIMES = ["server", "web"];
+const ADJUSTMENT_RELEASE_SOURCE_RELEASE = "2026.10.07-3";
+const ADJUSTMENT_RELEASE_COMPENSATION_SCOPE =
+  "fixed-inert-v13-whole-release-source-restore";
+const ADJUSTMENT_RELEASE_SOURCE_REFERENCES = new Map([
+  ["server", "ghcr.io/anstosa/weather-server@sha256:d0688756c33875940f67fbb782d9e67a2405a811d2aca40bd155f6ceffa71a74"],
+  ["web", "ghcr.io/anstosa/weather-web@sha256:739d063cd911bcd7c6637082e356889ef60ac7a76caabc737070703fdf83746f"],
+]);
+const ADJUSTMENT_RELEASE_REFERENCE =
+  /^ghcr\.io\/anstosa\/weather-(server|web)@sha256:([a-f0-9]{64})$/u;
+const ADJUSTMENT_RELEASE_DIGEST = /^sha256:[a-f0-9]{64}$/u;
+
+// round a capacity value to host filesystem blocks
+function adjustmentReleaseAllocated(bytes) {
+  // unknown or inexact values cannot authorize a release
+  if (!Number.isSafeInteger(bytes) || bytes < 0 ||
+    bytes > Number.MAX_SAFE_INTEGER - ADJUSTMENT_RELEASE_BLOCK_BYTES) {
+    throw new RangeError("invalid measured release bytes");
+  }
+  return Math.ceil(bytes / ADJUSTMENT_RELEASE_BLOCK_BYTES) *
+    ADJUSTMENT_RELEASE_BLOCK_BYTES;
+}
+
+// preserve exact aggregate accounting
+function adjustmentReleaseSum(...values) {
+  let total = 0;
+
+  // reject precision loss in every bucket
+  for (const value of values) {
+    total += value;
+    if (!Number.isSafeInteger(total)) {
+      throw new RangeError("release capacity accounting overflow");
+    }
+  }
+  return total;
+}
+
+// freeze Docker parent-chain identities
+export function dockerChainIdentity(diffIds) {
+  // one diff-id beneath a different parent is separate storage
+  if (!Array.isArray(diffIds) || diffIds.length === 0 ||
+    diffIds.some((value) => !ADJUSTMENT_RELEASE_DIGEST.test(value))) {
+    throw new RangeError("invalid docker layer chain");
+  }
+  let identity = diffIds[0];
+
+  // match Docker's recursive parent-plus-diff identity
+  for (const diffId of diffIds.slice(1)) {
+    identity = `sha256:${createHash("sha256").update(`${identity} ${diffId}`).digest("hex")}`;
+  }
+  return identity;
+}
+
+// bind raw OCI manifests and configs to one closed release inventory
+export function collectAdjustmentReleaseCapacityInventory(record) {
+  const expectedKeys = [
+    "compensationScope",
+    "freeBytes",
+    "freeInodes",
+    "images",
+    "inventory",
+    "measuredAt",
+    "retainedControlBytes",
+    "runtimePackageBytes",
+    "sourceRelease",
+    "version",
+  ];
+  requireExactKeys(record, expectedKeys, "release capacity collection");
+
+  // admit only the fixed inert v13 whole-release recovery transaction
+  if (record.version !== ADJUSTMENT_RELEASE_INVENTORY_VERSION ||
+    record.sourceRelease !== ADJUSTMENT_RELEASE_SOURCE_RELEASE ||
+    record.compensationScope !== ADJUSTMENT_RELEASE_COMPENSATION_SCOPE ||
+    !Array.isArray(record.images) || record.images.length !== 6 ||
+    !Array.isArray(record.inventory) || record.inventory.length > 256) {
+    throw new Error("release capacity collection scope is invalid");
+  }
+  const inventory = record.inventory.map((entry) => {
+    requireExactKeys(entry, ["allocatedBytes", "chainId"], "allocated Docker layer");
+    if (!ADJUSTMENT_RELEASE_DIGEST.test(entry.chainId) ||
+      adjustmentReleaseAllocated(entry.allocatedBytes) !== entry.allocatedBytes) {
+      throw new Error("allocated Docker layer is invalid");
+    }
+    return { allocatedBytes: entry.allocatedBytes, chainId: entry.chainId };
+  });
+  const inventoryChains = new Set(inventory.map(({ chainId }) => chainId));
+
+  // reject duplicate physical inventory claims
+  if (inventoryChains.size !== inventory.length) {
+    throw new Error("allocated Docker layer is duplicated");
+  }
+  const images = record.images.map((entry) => {
+    requireExactKeys(entry, [
+      "configBytes",
+      "manifestBytes",
+      "reference",
+      "role",
+      "runtime",
+      "unpackedLayers",
+    ], "release image collection");
+    const reference = ADJUSTMENT_RELEASE_REFERENCE.exec(entry.reference);
+
+    // bind each fixed repository to its runtime and one immutable manifest
+    if (reference === null || reference[1] !== entry.runtime ||
+      !ADJUSTMENT_RELEASE_ROLES.includes(entry.role) ||
+      !ADJUSTMENT_RELEASE_RUNTIMES.includes(entry.runtime) ||
+      typeof entry.manifestBytes !== "string" ||
+      typeof entry.configBytes !== "string" ||
+      Buffer.byteLength(entry.manifestBytes) > 1_048_576 ||
+      Buffer.byteLength(entry.configBytes) > 4_194_304 ||
+      !Array.isArray(entry.unpackedLayers) || entry.unpackedLayers.length > 128) {
+      throw new Error("release image collection is invalid");
+    }
+    const manifestDigest = `sha256:${createHash("sha256").update(entry.manifestBytes).digest("hex")}`;
+
+    // verify the exact raw manifest against the pinned reference
+    if (manifestDigest !== `sha256:${reference[2]}`) {
+      throw new Error("release image manifest digest differs");
+    }
+    const manifest = JSON.parse(entry.manifestBytes);
+    const config = JSON.parse(entry.configBytes);
+    requireExactKeys(manifest, ["config", "layers", "mediaType", "schemaVersion"], "OCI manifest");
+
+    // require the closed single-platform OCI manifest layout
+    if (manifest.schemaVersion !== 2 ||
+      manifest.mediaType !== "application/vnd.oci.image.manifest.v1+json" ||
+      !Array.isArray(manifest.layers) || manifest.layers.length < 1 ||
+      manifest.layers.length > 128 ||
+      typeof manifest.config !== "object" || manifest.config === null ||
+      manifest.config.mediaType !== "application/vnd.oci.image.config.v1+json" ||
+      !ADJUSTMENT_RELEASE_DIGEST.test(manifest.config.digest) ||
+      manifest.config.size !== Buffer.byteLength(entry.configBytes) ||
+      `sha256:${createHash("sha256").update(entry.configBytes).digest("hex")}` !==
+        manifest.config.digest ||
+      config.architecture !== "arm64" || config.os !== "linux" ||
+      config.rootfs?.type !== "layers" || !Array.isArray(config.rootfs.diff_ids) ||
+      config.rootfs.diff_ids.length !== manifest.layers.length ||
+      entry.unpackedLayers.length !== manifest.layers.length) {
+      throw new Error("release image OCI/config identity is invalid");
+    }
+    const diffIds = [];
+    const layers = manifest.layers.map((layer, index) => {
+      requireExactKeys(layer, ["digest", "mediaType", "size"], "OCI layer descriptor");
+      const unpacked = entry.unpackedLayers[index];
+      requireExactKeys(unpacked, ["allocatedBytes", "blobDigest", "entryInodes"],
+        "unpacked OCI layer measurement");
+
+      // accept only measured gzip layers bound to their exact descriptor
+      if (layer.mediaType !== "application/vnd.oci.image.layer.v1.tar+gzip" ||
+        !ADJUSTMENT_RELEASE_DIGEST.test(layer.digest) ||
+        !Number.isSafeInteger(layer.size) || layer.size < 1 ||
+        unpacked.blobDigest !== layer.digest ||
+        adjustmentReleaseAllocated(unpacked.allocatedBytes) !== unpacked.allocatedBytes ||
+        !Number.isSafeInteger(unpacked.entryInodes) || unpacked.entryInodes < 1) {
+        throw new Error("release image layer measurement is invalid");
+      }
+      const diffId = config.rootfs.diff_ids[index];
+      diffIds.push(diffId);
+      return {
+        blobDigest: layer.digest,
+        chainId: dockerChainIdentity(diffIds),
+        compressedBytes: layer.size,
+        diffId,
+        entryInodes: unpacked.entryInodes,
+        unpackedBytes: unpacked.allocatedBytes,
+      };
+    });
+    return {
+      digest: manifestDigest,
+      layers,
+      metadataBytes: adjustmentReleaseSum(
+        adjustmentReleaseAllocated(Buffer.byteLength(entry.manifestBytes)),
+        adjustmentReleaseAllocated(Buffer.byteLength(entry.configBytes)),
+      ),
+      reference: entry.reference,
+      role: entry.role,
+      runtime: entry.runtime,
+    };
+  });
+  const roles = new Map(images.map((image) => [`${image.role}/${image.runtime}`, image]));
+
+  // require all six roles and literal source reuse only in this fixed rollback scope
+  for (const role of ADJUSTMENT_RELEASE_ROLES) {
+    for (const runtime of ADJUSTMENT_RELEASE_RUNTIMES) {
+      if (!roles.has(`${role}/${runtime}`)) {
+        throw new Error("release image roles are incomplete");
+      }
+    }
+  }
+  for (const runtime of ADJUSTMENT_RELEASE_RUNTIMES) {
+    const sourceReference = roles.get(`source/${runtime}`).reference;
+
+    // bind the one reviewed predecessor and its whole-release restoration images
+    if (sourceReference !== ADJUSTMENT_RELEASE_SOURCE_REFERENCES.get(runtime) ||
+      sourceReference !== roles.get(`compensating/${runtime}`).reference) {
+      throw new Error("fixed inert v13 compensation must restore the exact reviewed source image");
+    }
+  }
+  return {
+    engineMetadataBytes: ADJUSTMENT_RELEASE_ENGINE_METADATA_BYTES,
+    freeBytes: record.freeBytes,
+    freeInodes: record.freeInodes,
+    futureStateBytes: ADJUSTMENT_RELEASE_FUTURE_STATE_BYTES,
+    images: images.map(({ reference: _reference, ...image }) => image),
+    inventory,
+    maximumOwnedBytes: ADJUSTMENT_RELEASE_CONTROL_MAX_BYTES,
+    measuredAt: record.measuredAt,
+    nextStateInodes: 1_004,
+    pullScratchBytes: ADJUSTMENT_RELEASE_PULL_SCRATCH_BYTES,
+    retainedControlBytes: record.retainedControlBytes,
+    runtimePackageBytes: record.runtimePackageBytes,
+  };
+}
+
+// account persistent source, target and exact fixed-scope compensation ownership
+export function evaluateAdjustmentReleaseCapacity(input) {
+  const keys = ["engineMetadataBytes", "freeBytes", "freeInodes", "futureStateBytes",
+    "images", "inventory", "maximumOwnedBytes", "measuredAt", "nextStateInodes",
+    "pullScratchBytes", "retainedControlBytes", "runtimePackageBytes"];
+  requireExactKeys(input, keys, "release capacity inventory");
+  adjustmentReleaseAllocated(input.freeBytes);
+  const available = Math.floor(input.freeBytes / ADJUSTMENT_RELEASE_BLOCK_BYTES) *
+    ADJUSTMENT_RELEASE_BLOCK_BYTES;
+  adjustmentReleaseAllocated(input.engineMetadataBytes);
+  adjustmentReleaseAllocated(input.futureStateBytes);
+  adjustmentReleaseAllocated(input.pullScratchBytes);
+  adjustmentReleaseAllocated(input.retainedControlBytes);
+  adjustmentReleaseAllocated(input.runtimePackageBytes);
+  adjustmentReleaseAllocated(input.maximumOwnedBytes);
+  const observationMilliseconds = Date.parse(input.measuredAt);
+
+  // bind a canonical observation and all integer inode measurements
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(input.measuredAt) ||
+    !Number.isFinite(observationMilliseconds) ||
+    new Date(observationMilliseconds).toISOString() !== input.measuredAt ||
+    input.futureStateBytes !== ADJUSTMENT_RELEASE_FUTURE_STATE_BYTES ||
+    !Number.isSafeInteger(input.freeInodes) || !Number.isSafeInteger(input.nextStateInodes) ||
+    input.freeInodes < 0 || input.nextStateInodes < 0 ||
+    !Array.isArray(input.inventory) || !Array.isArray(input.images) || input.images.length !== 6) {
+    throw new RangeError("invalid exact release inventory");
+  }
+  const inventory = new Map();
+
+  // retain literal current allocated layer measurements
+  for (const layer of input.inventory) {
+    requireExactKeys(layer, ["allocatedBytes", "chainId"], "allocated Docker layer");
+    if (!ADJUSTMENT_RELEASE_DIGEST.test(layer.chainId) || inventory.has(layer.chainId) ||
+      adjustmentReleaseAllocated(layer.allocatedBytes) !== layer.allocatedBytes) {
+      throw new RangeError("invalid allocated docker inventory");
+    }
+    inventory.set(layer.chainId, layer.allocatedBytes);
+  }
+  const owned = new Map();
+  const layerInodes = new Map();
+  const newCompressed = new Map();
+  const metadata = new Map();
+  const manifests = new Map();
+  const roles = new Set();
+
+  // require all literal images to coexist through restart and compensation
+  for (const image of input.images) {
+    requireExactKeys(image, ["digest", "layers", "metadataBytes", "role", "runtime"],
+      "release capacity image");
+    if (!ADJUSTMENT_RELEASE_DIGEST.test(image.digest) ||
+      !ADJUSTMENT_RELEASE_ROLES.includes(image.role) ||
+      !ADJUSTMENT_RELEASE_RUNTIMES.includes(image.runtime) ||
+      roles.has(`${image.role}/${image.runtime}`) ||
+      !Array.isArray(image.layers) || image.layers.length === 0) {
+      throw new RangeError("release images must contain both runtimes for source, target and compensation");
+    }
+    roles.add(`${image.role}/${image.runtime}`);
+    const previousMetadata = metadata.get(image.digest);
+    const bytes = adjustmentReleaseAllocated(image.metadataBytes);
+    if (previousMetadata !== undefined && previousMetadata !== bytes) {
+      throw new RangeError("image metadata measurement differs");
+    }
+    metadata.set(image.digest, bytes);
+    const diffIds = [];
+
+    // deduplicate only complete parent chains
+    for (const layer of image.layers) {
+      requireExactKeys(layer, ["blobDigest", "chainId", "compressedBytes", "diffId",
+        "entryInodes", "unpackedBytes"], "release capacity layer");
+      diffIds.push(layer.diffId);
+      const chainId = dockerChainIdentity(diffIds);
+      if (!ADJUSTMENT_RELEASE_DIGEST.test(layer.blobDigest) || layer.chainId !== chainId ||
+        !Number.isSafeInteger(layer.entryInodes) || layer.entryInodes < 1) {
+        throw new RangeError("image layer identity differs");
+      }
+      const unpacked = adjustmentReleaseAllocated(layer.unpackedBytes);
+      const prior = owned.get(chainId);
+      if (prior !== undefined && prior !== unpacked) {
+        throw new RangeError("shared layer measurement differs");
+      }
+      owned.set(chainId, unpacked);
+      const priorInodes = layerInodes.get(chainId);
+      if (priorInodes !== undefined && priorInodes !== layer.entryInodes) {
+        throw new RangeError("shared layer inode measurement differs");
+      }
+      layerInodes.set(chainId, layer.entryInodes);
+      const compressed = adjustmentReleaseAllocated(layer.compressedBytes);
+
+      // only absent chains consume pull growth
+      if (!inventory.has(chainId)) {
+        const oldCompressed = newCompressed.get(layer.blobDigest);
+        if (oldCompressed !== undefined && oldCompressed !== compressed) {
+          throw new RangeError("compressed blob measurement differs");
+        }
+        newCompressed.set(layer.blobDigest, compressed);
+      }
+    }
+    const manifest = JSON.stringify(image.layers.map(
+      // bind all immutable and bounded layer facts
+      ({ blobDigest, chainId, compressedBytes, diffId, entryInodes, unpackedBytes }) =>
+        [blobDigest, chainId, compressedBytes, diffId, entryInodes, unpackedBytes],
+    ));
+    if (manifests.has(image.digest) && manifests.get(image.digest) !== manifest) {
+      throw new RangeError("immutable image manifest measurement differs");
+    }
+    manifests.set(image.digest, manifest);
+  }
+  let retainedLayerBytes = 0;
+  let newLayerBytes = 0;
+  let newLayerInodes = 0;
+
+  // use actual existing blocks and measured absent-chain bounds
+  for (const [chainId, bound] of owned) {
+    const measured = inventory.get(chainId);
+    retainedLayerBytes = adjustmentReleaseSum(retainedLayerBytes, measured ?? bound);
+    if (measured === undefined) {
+      newLayerBytes = adjustmentReleaseSum(newLayerBytes, bound);
+      newLayerInodes = adjustmentReleaseSum(newLayerInodes, layerInodes.get(chainId));
+    }
+  }
+  const metadataBytes = adjustmentReleaseSum(...metadata.values());
+  const packageBytes = adjustmentReleaseAllocated(input.runtimePackageBytes);
+  const futureStateBytes = adjustmentReleaseAllocated(input.futureStateBytes);
+  const retainedControlBytes = adjustmentReleaseAllocated(input.retainedControlBytes);
+  const persistentOwnedBytes = adjustmentReleaseSum(retainedLayerBytes, metadataBytes,
+    adjustmentReleaseAllocated(input.engineMetadataBytes), packageBytes,
+    retainedControlBytes, futureStateBytes);
+  const persistentGrowthBytes = adjustmentReleaseSum(newLayerBytes, metadataBytes,
+    adjustmentReleaseAllocated(input.engineMetadataBytes), packageBytes, futureStateBytes);
+  const compressedPeakBytes = adjustmentReleaseSum(...newCompressed.values());
+  const pullPeakGrowthBytes = adjustmentReleaseSum(persistentGrowthBytes,
+    compressedPeakBytes, adjustmentReleaseAllocated(input.pullScratchBytes));
+  const compatibilityPeakGrowthBytes = adjustmentReleaseSum(
+    persistentGrowthBytes, ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES);
+  const releaseTransactionPeakGrowthBytes = Math.max(
+    pullPeakGrowthBytes, compatibilityPeakGrowthBytes);
+  const requiredFreeBytes = adjustmentReleaseSum(BLUEBERRY_PROTECTED_FREE_BYTES,
+    BLUEBERRY_NEXT_CAPTURE_BYTES, releaseTransactionPeakGrowthBytes);
+  const requiredFreeInodes = adjustmentReleaseSum(32_768, input.nextStateInodes,
+    newLayerInodes, ADJUSTMENT_RELEASE_ENGINE_METADATA_INODES,
+    ADJUSTMENT_RELEASE_CONTROL_GROWTH_INODES,
+    ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_INODES);
+  const reasons = [];
+
+  // retain both byte and inode floors after the next complete capture
+  if (available < requiredFreeBytes) reasons.push("protected_floor_or_transaction_peak");
+  if (input.freeInodes < requiredFreeInodes) reasons.push("inode_floor");
+  if (persistentOwnedBytes > input.maximumOwnedBytes) reasons.push("persistent_image_ownership");
+  if (input.runtimePackageBytes > ADJUSTMENT_RUNTIME_PACKAGE_MAX_BYTES) {
+    reasons.push("runtime_package_ceiling");
+  }
+  return Object.freeze({
+    availableFreeBytes: available,
+    captureReservedBytes: BLUEBERRY_NEXT_CAPTURE_BYTES,
+    compatibilityFixtureBytes: ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES,
+    compatibilityFixtureInodes: ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_INODES,
+    compensationScope: ADJUSTMENT_RELEASE_COMPENSATION_SCOPE,
+    compressedPeakBytes,
+    contractVersion: ADJUSTMENT_RELEASE_CAPACITY_VERSION,
+    futureStateBytes,
+    imageDigests: input.images.map(({ role, runtime, digest }) => ({ digest, role, runtime })),
+    measuredAt: input.measuredAt,
+    newLayerInodes,
+    persistentGrowthBytes,
+    persistentOwnedBytes,
+    protectedFreeBytes: BLUEBERRY_PROTECTED_FREE_BYTES,
+    pullPeakGrowthBytes,
+    releaseTransactionPeakGrowthBytes,
+    reasons,
+    requiredFreeBytes,
+    requiredFreeInodes,
+    retainedControlBytes,
+    retirementCreditBytes: 0,
+    sourceRelease: ADJUSTMENT_RELEASE_SOURCE_RELEASE,
+    state: reasons.length === 0 ? "capacity_ready" : "capacity_blocked",
+  });
+}
 
 // normalize canonical JSON
 function canonicalize(value) {
@@ -519,8 +956,16 @@ function validateDatabaseManifest(value) {
     "site_key",
     "site_timezone",
   ], "database manifest");
+  const recognizedMigrationLedger = Array.isArray(manifest.migration_names) &&
+    Array.isArray(manifest.migration_checksums) &&
+    EXPECTED_MIGRATION_LEDGERS.some(
+      // match only the exact legacy or complete maintenance ledger
+      (ledger) => manifest.migration_history_sha256 === ledger.historySha256 &&
+        JSON.stringify(manifest.migration_names) === JSON.stringify(ledger.names) &&
+        JSON.stringify(manifest.migration_checksums) === JSON.stringify(ledger.checksums),
+    );
 
-  // bind this package to migration 0017 and Ballydidean
+  // bind both closed ledgers to the unchanged migration 0017 query
   if (manifest.contract_version !== DATABASE_MANIFEST_VERSION ||
     manifest.schema_migration !== "0017_adjustment_evaluation_export.sql" ||
     manifest.query_contract_version !== "adjustment-evaluation-export-query/v1" ||
@@ -529,12 +974,7 @@ function validateDatabaseManifest(value) {
     manifest.row_schema_sha256 !== EXPECTED_ROW_SCHEMA_SHA256 ||
     manifest.query_contract_sha256 !== EXPECTED_QUERY_CONTRACT_SHA256 ||
     !HASH_PATTERN.test(manifest.migration_history_sha256) ||
-    manifest.migration_history_sha256 !== EXPECTED_MIGRATION_HISTORY_SHA256 ||
-    !Array.isArray(manifest.migration_names) ||
-    !Array.isArray(manifest.migration_checksums) ||
-    JSON.stringify(manifest.migration_names) !== JSON.stringify(EXPECTED_MIGRATION_NAMES) ||
-    JSON.stringify(manifest.migration_checksums) !==
-      JSON.stringify(EXPECTED_MIGRATION_CHECKSUMS)) {
+    !recognizedMigrationLedger) {
     throw new Error("database manifest identity is invalid");
   }
 
@@ -1982,6 +2422,1425 @@ export async function loadVerifiedAdjustmentEvaluationPackage(packageRoot) {
   return { bodies, edgeEvidence, manifest, manifestSha256: manifestHash, rows };
 }
 
+const V2_STREAM_MAGIC = Buffer.from("weather-adjustment-evaluation-envelope/v2\n");
+const V2_ENVELOPE_VERSION = "adjustment-evaluation-export-envelope/v2";
+const V2_AVAILABILITY_ENVELOPE_VERSION =
+  "adjustment-confirmation-availability-envelope/v2";
+const V2_AUTHORIZATION_ENVELOPE_VERSION =
+  "adjustment-confirmation-export-authorization-envelope/v2";
+const V2_MAXIMUM_HEADER_BYTES = 64 * 1024;
+const V2_MAXIMUM_DATABASE_RESPONSE_BYTES = 768 * 1024;
+const V2_UTC_MILLISECOND_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
+const V2_DUE_KEY_PATTERN =
+  /^capture\/\d{4}-\d{2}-\d{2}T(?:00|06|12|18):35:00\.000Z$/u;
+const V2_FAMILIES = new Set(["rain", "temperature", "wind"]);
+
+// require the complete additive maintenance ledger
+function validateCompleteMaintenanceDatabaseManifest(value) {
+  const manifest = validateDatabaseManifest(value);
+
+  // reject legacy, partial, drifted, and future ledgers for v2
+  if (JSON.stringify(manifest.migration_names) !==
+      JSON.stringify(EXPECTED_COMPLETE_MIGRATION_NAMES) ||
+    JSON.stringify(manifest.migration_checksums) !==
+      JSON.stringify(EXPECTED_COMPLETE_MIGRATION_CHECKSUMS) ||
+    manifest.migration_history_sha256 !== EXPECTED_COMPLETE_MIGRATION_HISTORY_SHA256) {
+    throw new Error("maintenance database ledger is not exact");
+  }
+  return manifest;
+}
+
+// validate one read-only function transaction
+function validateV2ReadOnlyTransaction(value) {
+  const transaction = requireObject(value, "maintenance export transaction");
+  requireExactKeys(transaction, [
+    "created_at_utc",
+    "idle_in_transaction_session_timeout",
+    "isolation_level",
+    "lock_timeout",
+    "read_only",
+    "statement_timeout",
+  ], "maintenance export transaction");
+
+  // require the fixed repeatable-read function boundary
+  if (!Number.isFinite(Date.parse(transaction.created_at_utc)) ||
+    transaction.idle_in_transaction_session_timeout !== "30s" ||
+    transaction.isolation_level !== "repeatable read" ||
+    transaction.lock_timeout !== "5s" ||
+    transaction.read_only !== "on" ||
+    transaction.statement_timeout !== "5min") {
+    throw new Error("maintenance export transaction is invalid");
+  }
+  return transaction;
+}
+
+// require one canonical utc millisecond instant
+function validateV2Instant(value, description) {
+  // reject normalized aliases and invalid instants
+  if (typeof value !== "string" || !V2_UTC_MILLISECOND_PATTERN.test(value) ||
+    !Number.isFinite(Date.parse(value))) {
+    throw new Error(`${description} is invalid`);
+  }
+}
+
+// require one safe integer inside a closed range
+function validateV2Integer(value, minimum, maximum, description) {
+  // reject fractional and out-of-range counts
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${description} is invalid`);
+  }
+}
+
+// require one lowercase content identity
+function validateV2Hash(value, description) {
+  // reject aliases and malformed identities
+  if (typeof value !== "string" || !HASH_PATTERN.test(value)) {
+    throw new Error(`${description} is invalid`);
+  }
+}
+
+// validate one function-only value-free availability payload
+function validateV2AvailabilityPayload(value, registrationSha256) {
+  const payload = requireObject(value, "maintenance availability payload");
+  requireExactKeys(payload, [
+    "contractVersion",
+    "expectedKeySetSha256",
+    "family",
+    "finalizedMetadataRootSha256",
+    "finalizedPredictionCount",
+    "finalizedThroughAt",
+    "hotPredictionCount",
+    "hotPredictions",
+    "hotSetRootSha256",
+    "intervalEndAt",
+    "intervalStartAt",
+    "metadataGeneration",
+    "missingExpectedDueKeys",
+    "missingExpectedDueKeysStatus",
+    "registrationSha256",
+    "targetCutoffAt",
+  ], "maintenance availability payload");
+
+  // require the exact requested value-free contract
+  if (payload.contractVersion !== "adjustment-confirmation-availability/v2" ||
+    payload.registrationSha256 !== registrationSha256 ||
+    !V2_FAMILIES.has(payload.family) ||
+    payload.missingExpectedDueKeys !== null ||
+    payload.missingExpectedDueKeysStatus !==
+      "requires_anchored_cold_reconstruction") {
+    throw new Error("maintenance availability contract differs");
+  }
+  for (const [candidate, description] of [
+    [payload.expectedKeySetSha256, "expected key set identity"],
+    [payload.finalizedMetadataRootSha256, "finalized metadata root"],
+    [payload.hotSetRootSha256, "hot set root"],
+  ]) {
+    validateV2Hash(candidate, description);
+  }
+  validateV2Integer(
+    payload.finalizedPredictionCount,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    "finalized prediction count",
+  );
+  validateV2Integer(
+    payload.metadataGeneration,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    "metadata generation",
+  );
+  validateV2Instant(payload.intervalStartAt, "interval start");
+  validateV2Instant(payload.intervalEndAt, "interval end");
+  validateV2Instant(payload.targetCutoffAt, "target cutoff");
+
+  // validate the nullable finalized clock
+  if (payload.finalizedThroughAt !== null) {
+    validateV2Instant(payload.finalizedThroughAt, "finalized through time");
+  }
+  if (!Array.isArray(payload.hotPredictions)) {
+    throw new Error("maintenance hot predictions are invalid");
+  }
+  validateV2Integer(payload.hotPredictionCount, 0, 8_192, "hot prediction count");
+
+  // bind the declared projection count
+  if (payload.hotPredictionCount !== payload.hotPredictions.length) {
+    throw new Error("maintenance hot prediction count differs");
+  }
+  let previousIdentity = "";
+  for (const predictionValue of payload.hotPredictions) {
+    const prediction = requireObject(predictionValue, "maintenance hot prediction");
+    requireExactKeys(prediction, [
+      "dueKey",
+      "maxValidAt",
+      "minValidAt",
+      "predictionSha256",
+      "rowCount",
+    ], "maintenance hot prediction");
+    validateV2Hash(prediction.predictionSha256, "hot prediction identity");
+    validateV2Instant(prediction.minValidAt, "hot minimum valid time");
+    validateV2Instant(prediction.maxValidAt, "hot maximum valid time");
+
+    // require scheduler due keys and family row bounds
+    const maximumRows = payload.family === "wind" ? 168 :
+      payload.family === "rain" ? 23 : 12;
+    if (typeof prediction.dueKey !== "string" ||
+      !V2_DUE_KEY_PATTERN.test(prediction.dueKey)) {
+      throw new Error("maintenance hot prediction due key is invalid");
+    }
+    validateV2Integer(prediction.rowCount, 1, maximumRows, "hot prediction row count");
+
+    // require the database's canonical order
+    if (prediction.predictionSha256 <= previousIdentity) {
+      throw new Error("maintenance hot predictions are unordered");
+    }
+    previousIdentity = prediction.predictionSha256;
+  }
+
+  // enforce the function's reviewed response cap
+  if (Buffer.byteLength(canonicalJsonValue(payload)) > 512 * 1024) {
+    throw new Error("maintenance availability exceeds its limit");
+  }
+  return payload;
+}
+
+// validate one persisted-burn chunk authorization
+function validateV2AuthorizationPayload(
+  value,
+  registrationSha256,
+  accessSha256,
+  chunkIndex,
+) {
+  const payload = requireObject(value, "maintenance authorization payload");
+  requireExactKeys(payload, [
+    "accessSha256",
+    "chunkCount",
+    "chunkIndex",
+    "contractVersion",
+    "eligiblePredictionSetSha256",
+    "expectedKeySetSha256",
+    "family",
+    "fromLocalDate",
+    "metadataRootSha256",
+    "registrationSha256",
+    "revisionCatalogWatermarkSha256",
+    "targetComparatorSnapshotRootSha256",
+    "targetCutoffAt",
+    "toLocalDateExclusive",
+  ], "maintenance authorization payload");
+
+  // bind the function result to the exact forced operands
+  if (payload.contractVersion !==
+      "adjustment-confirmation-export-authorization/v2" ||
+    payload.registrationSha256 !== registrationSha256 ||
+    payload.accessSha256 !== accessSha256 || payload.chunkIndex !== chunkIndex ||
+    !V2_FAMILIES.has(payload.family)) {
+    throw new Error("maintenance authorization contract differs");
+  }
+  const expectedChunkCount = payload.family === "rain" ? 24 : 27;
+  if (payload.chunkCount !== expectedChunkCount || chunkIndex < 0 ||
+    chunkIndex >= expectedChunkCount) {
+    throw new Error("maintenance authorization partition differs");
+  }
+  for (const [candidate, description] of [
+    [payload.eligiblePredictionSetSha256, "eligible prediction set identity"],
+    [payload.expectedKeySetSha256, "expected key set identity"],
+    [payload.metadataRootSha256, "metadata root identity"],
+    [payload.revisionCatalogWatermarkSha256, "revision catalog watermark"],
+    [payload.targetComparatorSnapshotRootSha256, "target snapshot root"],
+  ]) {
+    validateV2Hash(candidate, description);
+  }
+  validateV2Instant(payload.targetCutoffAt, "target cutoff");
+  const fromDate = parseCalendarDate(payload.fromLocalDate, "authorization start date");
+  const toDateExclusive = parseCalendarDate(
+    payload.toLocalDateExclusive,
+    "authorization exclusive end date",
+  );
+
+  // require one to fourteen america/los_angeles local dates
+  const spanDays = Math.round((toDateExclusive - fromDate) / 86_400_000);
+  if (spanDays < 1 || spanDays > 14) {
+    throw new Error("maintenance authorization dates differ");
+  }
+  if (Buffer.byteLength(canonicalJsonValue(payload)) > 8 * 1024) {
+    throw new Error("maintenance authorization exceeds its limit");
+  }
+  return payload;
+}
+
+// read one bounded database function response
+async function readV2DatabaseResponse(input = process.stdin) {
+  const chunks = [];
+  let bytes = 0;
+
+  // retain only the bounded json response
+  for await (const inputChunk of input) {
+    const chunk = Buffer.isBuffer(inputChunk) ? inputChunk : Buffer.from(inputChunk);
+    bytes += chunk.length;
+    if (bytes > V2_MAXIMUM_DATABASE_RESPONSE_BYTES) {
+      throw new Error("maintenance database response exceeds its limit");
+    }
+    chunks.push(chunk);
+  }
+  const encoded = Buffer.concat(chunks).toString("utf8").trim();
+  const response = requireObject(JSON.parse(encoded), "maintenance database response");
+  requireExactKeys(response, [
+    "databaseManifest",
+    "payload",
+    "transaction",
+  ], "maintenance database response");
+  return {
+    databaseManifest: validateCompleteMaintenanceDatabaseManifest(response.databaseManifest),
+    payload: response.payload,
+    transaction: validateV2ReadOnlyTransaction(response.transaction),
+  };
+}
+
+// frame one value-free availability response
+export async function frameAdjustmentConfirmationAvailabilityV2({
+  input = process.stdin,
+  registrationSha256,
+}) {
+  validateV2Hash(registrationSha256, "registration identity");
+  const response = await readV2DatabaseResponse(input);
+  const payload = validateV2AvailabilityPayload(response.payload, registrationSha256);
+  const envelope = {
+    contractVersion: V2_AVAILABILITY_ENVELOPE_VERSION,
+    databaseManifest: response.databaseManifest,
+    payload,
+    payloadSha256: sha256(canonicalJson(payload)),
+    transaction: response.transaction,
+  };
+  return Buffer.from(canonicalJson(envelope));
+}
+
+// frame one post-burn authorization response
+export async function frameAdjustmentConfirmationAuthorizationV2({
+  accessSha256,
+  chunkIndex,
+  input = process.stdin,
+  registrationSha256,
+}) {
+  validateV2Hash(registrationSha256, "registration identity");
+  validateV2Hash(accessSha256, "access identity");
+  validateV2Integer(chunkIndex, 0, 26, "chunk index");
+  const response = await readV2DatabaseResponse(input);
+  const payload = validateV2AuthorizationPayload(
+    response.payload,
+    registrationSha256,
+    accessSha256,
+    chunkIndex,
+  );
+  const envelope = {
+    contractVersion: V2_AUTHORIZATION_ENVELOPE_VERSION,
+    databaseManifest: response.databaseManifest,
+    payload,
+    payloadSha256: sha256(canonicalJson(payload)),
+    transaction: response.transaction,
+  };
+  return Buffer.from(canonicalJson(envelope));
+}
+
+// validate one framed function response
+function validateV2FunctionEnvelope(value, expectedContractVersion) {
+  const envelope = requireObject(value, "maintenance function envelope");
+  requireExactKeys(envelope, [
+    "contractVersion",
+    "databaseManifest",
+    "payload",
+    "payloadSha256",
+    "transaction",
+  ], "maintenance function envelope");
+  if (envelope.contractVersion !== expectedContractVersion) {
+    throw new Error("maintenance function envelope contract differs");
+  }
+  validateCompleteMaintenanceDatabaseManifest(envelope.databaseManifest);
+  validateV2ReadOnlyTransaction(envelope.transaction);
+  validateV2Hash(envelope.payloadSha256, "maintenance payload identity");
+
+  // bind the function payload to its canonical bytes
+  if (sha256(canonicalJson(envelope.payload)) !== envelope.payloadSha256) {
+    throw new Error("maintenance function payload hash differs");
+  }
+  return envelope;
+}
+
+// load one canonical authorization envelope
+async function readV2AuthorizationEnvelope(path) {
+  const bytes = await readNoFollowBoundedFile(
+    path,
+    V2_MAXIMUM_DATABASE_RESPONSE_BYTES,
+    "maintenance authorization envelope",
+  );
+  const envelope = validateV2FunctionEnvelope(
+    JSON.parse(bytes),
+    V2_AUTHORIZATION_ENVELOPE_VERSION,
+  );
+  const payload = validateV2AuthorizationPayload(
+    envelope.payload,
+    envelope.payload.registrationSha256,
+    envelope.payload.accessSha256,
+    envelope.payload.chunkIndex,
+  );
+
+  // require canonical stored bytes
+  if (!bytes.equals(Buffer.from(canonicalJson(envelope)))) {
+    throw new Error("maintenance authorization envelope is not canonical");
+  }
+  return { bytes, envelope, payload };
+}
+
+// read one edge watermark without exporting host paths
+async function readV2EdgeWatermark(snapshotPath) {
+  const bytes = await readNoFollowBoundedFile(
+    snapshotPath,
+    4 * 1024 * 1024,
+    "maintenance edge snapshot",
+  );
+  const snapshot = requireObject(JSON.parse(bytes), "maintenance edge snapshot");
+  requireExactKeys(snapshot, [
+    "contractVersion",
+    "entries",
+    "frozenAt",
+    "watermarkSha256",
+  ], "maintenance edge snapshot");
+  validateV2Hash(snapshot.watermarkSha256, "edge snapshot watermark");
+  if (snapshot.contractVersion !== EDGE_SNAPSHOT_VERSION ||
+    !Array.isArray(snapshot.entries) || !Number.isFinite(Date.parse(snapshot.frozenAt))) {
+    throw new Error("maintenance edge snapshot contract differs");
+  }
+  return snapshot.watermarkSha256;
+}
+
+// add calendar days without timezone conversion
+function addV2CalendarDays(value, days) {
+  const parsed = new Date(parseCalendarDate(value, "maintenance local date"));
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+// validate one immutable v2 stream header
+function validateV2StreamHeader(value) {
+  const header = requireObject(value, "maintenance stream header");
+  requireExactKeys(header, [
+    "authorization",
+    "authorizationSha256",
+    "contractVersion",
+    "dateSemantics",
+    "exportKind",
+    "fromLocalDate",
+    "payloadBytes",
+    "payloadSha256",
+    "snapshotLineage",
+    "sourcePackageContractVersion",
+    "toLocalDate",
+    "valueAuthority",
+  ], "maintenance stream header");
+  if (header.contractVersion !== V2_ENVELOPE_VERSION ||
+    header.dateSemantics !== "america_los_angeles_inclusive_local_dates" ||
+    header.sourcePackageContractVersion !== PACKAGE_VERSION) {
+    throw new Error("maintenance stream contract differs");
+  }
+  validateDateRange(header.fromLocalDate, header.toLocalDate);
+  validateV2Hash(header.payloadSha256, "maintenance stream payload identity");
+  validateV2Integer(header.payloadBytes, 1, MAX_ARCHIVE_BYTES, "stream payload bytes");
+  const lineage = requireObject(header.snapshotLineage, "maintenance snapshot lineage");
+  requireExactKeys(lineage, [
+    "edgeEvidenceWatermarkSha256",
+    "revisionCatalogWatermarkSha256",
+    "targetComparatorSnapshotRootSha256",
+  ], "maintenance snapshot lineage");
+  validateV2Hash(lineage.edgeEvidenceWatermarkSha256, "edge evidence watermark");
+
+  // separate descriptive daily transport from post-burn authority
+  if (header.exportKind === "daily_monitoring") {
+    if (header.authorization !== null || header.authorizationSha256 !== null ||
+      header.valueAuthority !== "none" ||
+      lineage.revisionCatalogWatermarkSha256 !== null ||
+      lineage.targetComparatorSnapshotRootSha256 !== null) {
+      throw new Error("daily maintenance stream has action authority");
+    }
+  } else if (header.exportKind === "post_burn_confirmation") {
+    validateV2Hash(header.authorizationSha256, "authorization envelope identity");
+    const authorization = validateV2FunctionEnvelope(
+      header.authorization,
+      V2_AUTHORIZATION_ENVELOPE_VERSION,
+    );
+    const payload = validateV2AuthorizationPayload(
+      authorization.payload,
+      authorization.payload.registrationSha256,
+      authorization.payload.accessSha256,
+      authorization.payload.chunkIndex,
+    );
+    if (sha256(canonicalJson(header.authorization)) !== header.authorizationSha256 ||
+      header.valueAuthority !== "persisted_burn_authorization" ||
+      payload.fromLocalDate !== header.fromLocalDate ||
+      addV2CalendarDays(payload.toLocalDateExclusive, -1) !== header.toLocalDate ||
+      lineage.revisionCatalogWatermarkSha256 !==
+        payload.revisionCatalogWatermarkSha256 ||
+      lineage.targetComparatorSnapshotRootSha256 !==
+        payload.targetComparatorSnapshotRootSha256) {
+      throw new Error("confirmation maintenance stream lineage differs");
+    }
+  } else {
+    throw new Error("maintenance stream kind is invalid");
+  }
+  return header;
+}
+
+// hash one stable no-follow archive descriptor
+async function hashV2Archive(path) {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(MAX_ARCHIVE_BYTES)) {
+      throw new Error("maintenance source archive is invalid");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(256 * 1024);
+    let offset = 0;
+
+    // stream the bounded source archive
+    while (offset < Number(before.size)) {
+      const read = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, Number(before.size) - offset),
+        offset,
+      );
+      if (read.bytesRead === 0) {
+        throw new Error("maintenance source archive ended early");
+      }
+      hash.update(buffer.subarray(0, read.bytesRead));
+      offset += read.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino ||
+      before.size !== after.size || before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs) {
+      throw new Error("maintenance source archive changed while hashing");
+    }
+    return {
+      metadata: before,
+      sha256: hash.digest("hex"),
+      sizeBytes: Number(before.size),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+// stream one v2 header followed by one immutable v1 archive
+export async function streamAdjustmentEvaluationV2EnvelopeArchive({
+  authorizationPath = null,
+  edgeSnapshotPath,
+  exportKind,
+  fromLocalDate,
+  output = process.stdout,
+  sourceArchivePath,
+  toLocalDate,
+}) {
+  validateDateRange(fromLocalDate, toLocalDate);
+  const source = await hashV2Archive(sourceArchivePath);
+  const edgeEvidenceWatermarkSha256 = await readV2EdgeWatermark(edgeSnapshotPath);
+  let authorization = null;
+  let authorizationSha256 = null;
+  let valueAuthority = "none";
+  let revisionCatalogWatermarkSha256 = null;
+  let targetComparatorSnapshotRootSha256 = null;
+
+  // require a persisted burn for confirmation transport
+  if (exportKind === "post_burn_confirmation") {
+    if (authorizationPath === null) {
+      throw new Error("confirmation authorization is missing");
+    }
+    const authorized = await readV2AuthorizationEnvelope(authorizationPath);
+    authorization = authorized.envelope;
+    authorizationSha256 = sha256(authorized.bytes);
+    valueAuthority = "persisted_burn_authorization";
+    revisionCatalogWatermarkSha256 =
+      authorized.payload.revisionCatalogWatermarkSha256;
+    targetComparatorSnapshotRootSha256 =
+      authorized.payload.targetComparatorSnapshotRootSha256;
+    if (authorized.payload.fromLocalDate !== fromLocalDate ||
+      addV2CalendarDays(authorized.payload.toLocalDateExclusive, -1) !== toLocalDate) {
+      throw new Error("confirmation archive dates differ from authorization");
+    }
+  } else if (exportKind !== "daily_monitoring" || authorizationPath !== null) {
+    throw new Error("maintenance export kind is invalid");
+  }
+  const header = validateV2StreamHeader({
+    authorization,
+    authorizationSha256,
+    contractVersion: V2_ENVELOPE_VERSION,
+    dateSemantics: "america_los_angeles_inclusive_local_dates",
+    exportKind,
+    fromLocalDate,
+    payloadBytes: source.sizeBytes,
+    payloadSha256: source.sha256,
+    snapshotLineage: {
+      edgeEvidenceWatermarkSha256,
+      revisionCatalogWatermarkSha256,
+      targetComparatorSnapshotRootSha256,
+    },
+    sourcePackageContractVersion: PACKAGE_VERSION,
+    toLocalDate,
+    valueAuthority,
+  });
+  const headerBytes = Buffer.from(canonicalJson(header));
+  if (headerBytes.length > V2_MAXIMUM_HEADER_BYTES) {
+    throw new Error("maintenance stream header exceeds its limit");
+  }
+  await writeChunk(output, V2_STREAM_MAGIC);
+  await writeChunk(output, Buffer.from(`${headerBytes.length.toString(16).padStart(8, "0")}\n`));
+  await writeChunk(output, headerBytes);
+  const handle = await open(sourceArchivePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (before.dev !== source.metadata.dev || before.ino !== source.metadata.ino ||
+      before.size !== source.metadata.size || before.mtimeNs !== source.metadata.mtimeNs ||
+      before.ctimeNs !== source.metadata.ctimeNs) {
+      throw new Error("maintenance source archive changed before streaming");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(256 * 1024);
+    let offset = 0;
+
+    // stream only the prehashed source bytes
+    while (offset < source.sizeBytes) {
+      const read = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, source.sizeBytes - offset),
+        offset,
+      );
+      if (read.bytesRead === 0) {
+        throw new Error("maintenance source archive ended early");
+      }
+      const chunk = buffer.subarray(0, read.bytesRead);
+      hash.update(chunk);
+      await writeChunk(output, chunk);
+      offset += read.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (hash.digest("hex") !== source.sha256 || before.dev !== after.dev ||
+      before.ino !== after.ino || before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      throw new Error("maintenance source archive changed while streaming");
+    }
+  } finally {
+    await handle.close();
+  }
+  return header;
+}
+
+// read one exact descriptor range
+async function readV2DescriptorRange(handle, length, position, description) {
+  const bytes = Buffer.alloc(length);
+  let offset = 0;
+
+  // fill the proven descriptor range
+  while (offset < bytes.length) {
+    const read = await handle.read(bytes, offset, bytes.length - offset, position + offset);
+    if (read.bytesRead === 0) {
+      throw new Error(`${description} ended early`);
+    }
+    offset += read.bytesRead;
+  }
+  return bytes;
+}
+
+// verify one downloaded v2 stream without extracting its payload
+export async function verifyAdjustmentEvaluationV2Stream(framePath) {
+  const handle = await open(framePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < BigInt(V2_STREAM_MAGIC.length + 10) ||
+      before.size > BigInt(MAX_ARCHIVE_BYTES + V2_MAXIMUM_HEADER_BYTES + 64)) {
+      throw new Error("maintenance stream is not a bounded regular file");
+    }
+    const magic = await readV2DescriptorRange(
+      handle,
+      V2_STREAM_MAGIC.length,
+      0,
+      "maintenance stream magic",
+    );
+    if (!magic.equals(V2_STREAM_MAGIC)) {
+      throw new Error("maintenance stream magic differs");
+    }
+    const lengthOffset = V2_STREAM_MAGIC.length;
+    const encodedLength = await readV2DescriptorRange(
+      handle,
+      9,
+      lengthOffset,
+      "maintenance stream header length",
+    );
+    if (!/^[a-f0-9]{8}\n$/u.test(encodedLength.toString("ascii"))) {
+      throw new Error("maintenance stream header length is invalid");
+    }
+    const headerLength = Number.parseInt(encodedLength.toString("ascii").trim(), 16);
+    if (headerLength < 2 || headerLength > V2_MAXIMUM_HEADER_BYTES) {
+      throw new Error("maintenance stream header exceeds its limit");
+    }
+    const headerOffset = lengthOffset + encodedLength.length;
+    const headerBytes = await readV2DescriptorRange(
+      handle,
+      headerLength,
+      headerOffset,
+      "maintenance stream header",
+    );
+    const header = validateV2StreamHeader(JSON.parse(headerBytes));
+    if (!headerBytes.equals(Buffer.from(canonicalJson(header)))) {
+      throw new Error("maintenance stream header is not canonical");
+    }
+    const payloadOffset = headerOffset + headerLength;
+    if (BigInt(payloadOffset + header.payloadBytes) !== before.size) {
+      throw new Error("maintenance stream framing differs");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(256 * 1024);
+    let offset = 0;
+
+    // verify the framed v1 archive without buffering it
+    while (offset < header.payloadBytes) {
+      const read = await handle.read(
+        buffer,
+        0,
+        Math.min(buffer.length, header.payloadBytes - offset),
+        payloadOffset + offset,
+      );
+      if (read.bytesRead === 0) {
+        throw new Error("maintenance stream payload ended early");
+      }
+      hash.update(buffer.subarray(0, read.bytesRead));
+      offset += read.bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (hash.digest("hex") !== header.payloadSha256 || before.dev !== after.dev ||
+      before.ino !== after.ino || before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+      throw new Error("maintenance stream changed or has an invalid payload");
+    }
+    return { header, headerBytes, payloadBytes: header.payloadBytes, payloadOffset };
+  } finally {
+    await handle.close();
+  }
+}
+
+// verify one normalized v2 package against its v1 payload
+export async function verifyAdjustmentEvaluationV2EnvelopePackage({
+  envelopePath,
+  packageRoot,
+}) {
+  const envelopeBytes = await readNoFollowBoundedFile(
+    envelopePath,
+    V2_MAXIMUM_HEADER_BYTES,
+    "maintenance stream envelope",
+  );
+  const header = validateV2StreamHeader(JSON.parse(envelopeBytes));
+  if (!envelopeBytes.equals(Buffer.from(canonicalJson(header)))) {
+    throw new Error("maintenance stream envelope is not canonical");
+  }
+  const verified = await verifyAdjustmentEvaluationPackage(packageRoot);
+  validateCompleteMaintenanceDatabaseManifest(verified.manifest.databaseManifest);
+  if (verified.manifest.fromLocalDate !== header.fromLocalDate ||
+    verified.manifest.toLocalDate !== header.toLocalDate ||
+    verified.manifest.edgeEvidence.watermarkSha256 !==
+      header.snapshotLineage.edgeEvidenceWatermarkSha256) {
+    throw new Error("maintenance package lineage differs");
+  }
+  return {
+    envelopeSha256: sha256(envelopeBytes),
+    manifestSha256: verified.manifestSha256,
+    snapshotLineage: header.snapshotLineage,
+  };
+}
+
+// verify one downloaded value-free availability envelope
+export async function verifyAdjustmentConfirmationAvailabilityV2(path) {
+  const bytes = await readNoFollowBoundedFile(
+    path,
+    V2_MAXIMUM_DATABASE_RESPONSE_BYTES,
+    "maintenance availability envelope",
+  );
+  const envelope = validateV2FunctionEnvelope(
+    JSON.parse(bytes),
+    V2_AVAILABILITY_ENVELOPE_VERSION,
+  );
+  validateV2AvailabilityPayload(
+    envelope.payload,
+    envelope.payload.registrationSha256,
+  );
+  if (!bytes.equals(Buffer.from(canonicalJson(envelope)))) {
+    throw new Error("maintenance availability envelope is not canonical");
+  }
+  return sha256(bytes);
+}
+
+// read one bounded registry response
+async function readBoundedRegistryResponse(response, maximumBytes, description) {
+  if (response.body === null) {
+    throw new Error(`${description} response is empty`);
+  }
+  const chunks = [];
+  let bytes = 0;
+
+  // retain only small manifest, config and token responses
+  for await (const chunk of Readable.fromWeb(response.body)) {
+    bytes += chunk.length;
+    if (bytes > maximumBytes) {
+      throw new Error(`${description} response exceeds its bound`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, bytes);
+}
+
+// validate one closed GHCR signed-blob redirect without forwarding credentials
+export function weatherRegistryBlobRedirectUrl(location, repository, digest) {
+  if (!/^weather-(server|web)$/u.test(repository) ||
+    !ADJUSTMENT_RELEASE_DIGEST.test(digest) || typeof location !== "string" ||
+    location.length > 4_096) {
+    throw new Error("registry blob redirect identity is invalid");
+  }
+  const redirected = new URL(location);
+  const expectedKeys = [
+    "hmac", "se", "sig", "ske", "skoid", "sks", "skt", "sktid",
+    "skv", "sp", "spr", "sr", "sv",
+  ];
+  const actualKeys = [...redirected.searchParams.keys()].sort();
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u;
+
+  // accept one exact HTTPS content host, path, and read-only signed query shape
+  if (redirected.protocol !== "https:" || redirected.port !== "" ||
+    redirected.username !== "" || redirected.password !== "" ||
+    redirected.hostname !== "pkg-containers.githubusercontent.com" ||
+    !new RegExp(`^/ghcr(?:[0-9]{1,3}|blobs[0-9]{2})/blobs/${digest}$`, "u")
+      .test(redirected.pathname) ||
+    redirected.hash !== "" ||
+    JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys) ||
+    redirected.searchParams.get("sp") !== "r" ||
+    redirected.searchParams.get("spr") !== "https" ||
+    redirected.searchParams.get("sr") !== "b" ||
+    redirected.searchParams.get("sks") !== "b" ||
+    !/^\d{4}-\d{2}-\d{2}$/u.test(redirected.searchParams.get("skv") ?? "") ||
+    !/^\d{4}-\d{2}-\d{2}$/u.test(redirected.searchParams.get("sv") ?? "") ||
+    !uuid.test(redirected.searchParams.get("skoid") ?? "") ||
+    !uuid.test(redirected.searchParams.get("sktid") ?? "") ||
+    !/^[a-f0-9]{64}$/u.test(redirected.searchParams.get("hmac") ?? "") ||
+    !/^[A-Za-z0-9+/=]{16,512}$/u.test(redirected.searchParams.get("sig") ?? "") ||
+    !Number.isFinite(Date.parse(redirected.searchParams.get("se") ?? "")) ||
+    !Number.isFinite(Date.parse(redirected.searchParams.get("ske") ?? "")) ||
+    !Number.isFinite(Date.parse(redirected.searchParams.get("skt") ?? ""))) {
+    throw new Error("registry blob redirect is outside the closed policy");
+  }
+  return redirected.href;
+}
+
+// fetch one public GHCR object with a bounded anonymous pull token
+async function fetchWeatherRegistryObject(repository, kind, digest, accept) {
+  if (!/^weather-(server|web)$/u.test(repository) ||
+    !ADJUSTMENT_RELEASE_DIGEST.test(digest) || !["blobs", "manifests"].includes(kind)) {
+    throw new Error("registry object identity is invalid");
+  }
+  const url = `https://ghcr.io/v2/anstosa/${repository}/${kind}/${digest}`;
+  const headers = { Accept: accept };
+  let response = await fetch(url, {
+    headers,
+    redirect: "manual",
+    signal: AbortSignal.timeout(300_000),
+  });
+
+  // obtain only an anonymous token for the fixed public repository
+  if (response.status === 401) {
+    const challenge = response.headers.get("www-authenticate") ?? "";
+    const match = /^Bearer realm="(https:\/\/ghcr\.io\/token)",service="ghcr\.io",scope="(repository:anstosa\/weather-(?:server|web):pull)"$/u.exec(challenge);
+    if (match === null || match[2] !== `repository:anstosa/${repository}:pull`) {
+      throw new Error("registry authentication challenge is invalid");
+    }
+    await response.body?.cancel();
+    const tokenResponse = await fetch(
+      `${match[1]}?service=ghcr.io&scope=${encodeURIComponent(match[2])}`,
+      { redirect: "error", signal: AbortSignal.timeout(30_000) },
+    );
+    if (!tokenResponse.ok) {
+      throw new Error("registry token request failed");
+    }
+    const tokenBytes = await readBoundedRegistryResponse(tokenResponse, 16_384, "registry token");
+    const token = JSON.parse(tokenBytes.toString("utf8")).token;
+    if (typeof token !== "string" || token.length < 1 || token.length > 8_192) {
+      throw new Error("registry token is invalid");
+    }
+    response = await fetch(url, {
+      headers: { ...headers, Authorization: `Bearer ${token}` },
+      redirect: "manual",
+      signal: AbortSignal.timeout(300_000),
+    });
+  }
+
+  // follow only the fixed signed GHCR blob handoff without its bearer token
+  if (response.status === 307) {
+    const redirectUrl = weatherRegistryBlobRedirectUrl(
+      response.headers.get("location"),
+      repository,
+      digest,
+    );
+    if (kind !== "blobs") {
+      throw new Error("registry manifest redirect is unsupported");
+    }
+    await response.body?.cancel();
+    response = await fetch(redirectUrl, {
+      headers: { Accept: accept },
+      redirect: "error",
+      signal: AbortSignal.timeout(300_000),
+    });
+  }
+  if (!response.ok) {
+    throw new Error(`registry ${kind} request failed`);
+  }
+  return response;
+}
+
+// parse one portable tar size field
+function parseReleaseTarSize(header) {
+  const bytes = header.subarray(124, 136);
+  const text = bytes.toString("ascii").replace(/\0.*$/u, "").trim();
+
+  // reject base-256 and noncanonical archive sizes
+  if (!/^[0-7]{1,11}$/u.test(text)) {
+    throw new Error("release layer tar size is invalid");
+  }
+  const size = Number.parseInt(text, 8);
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error("release layer tar size is invalid");
+  }
+  return size;
+}
+
+// decode one bounded canonical tar path
+function parseReleaseTarPath(bytes, description) {
+  const nul = bytes.indexOf(0);
+  const end = nul === -1 ? bytes.length : nul;
+
+  // require zero padding and one exact UTF-8 representation
+  if (nul !== -1 && bytes.subarray(nul).some((byte) => byte !== 0)) {
+    throw new Error(`${description} padding is invalid`);
+  }
+  const path = bytes.subarray(0, end).toString("utf8");
+  if (!Buffer.from(path, "utf8").equals(bytes.subarray(0, end)) ||
+    Buffer.byteLength(path) < 1 || Buffer.byteLength(path) > 4_095 ||
+    /[\u0000-\u001f\u007f\\]/u.test(path)) {
+    throw new Error(`${description} is invalid`);
+  }
+  return path;
+}
+
+// normalize one extraction path without widening archive semantics
+function releaseTarPathParts(path) {
+  let normalized = path;
+
+  // discard only explicit current-directory prefixes
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  if (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  if (normalized.length === 0 || normalized === ".") return [];
+  const parts = normalized.split("/");
+  if (normalized.startsWith("/") ||
+    parts.some((part) => part.length === 0 || part === "." || part === "..")) {
+    throw new Error("release layer tar path is unsafe");
+  }
+  return parts;
+}
+
+// parse one bounded local PAX header and return its path override
+function parseReleasePaxPath(bytes) {
+  let offset = 0;
+  let path = null;
+  const allowed = new Set([
+    "atime", "ctime", "gid", "gname", "linkpath", "mtime", "path", "uid", "uname",
+  ]);
+
+  // validate every length-framed PAX record
+  while (offset < bytes.length) {
+    const space = bytes.indexOf(0x20, offset);
+    if (space < offset + 2 || space > offset + 8) {
+      throw new Error("release layer PAX framing is invalid");
+    }
+    const lengthText = bytes.subarray(offset, space).toString("ascii");
+    if (!/^[1-9][0-9]{1,6}$/u.test(lengthText)) {
+      throw new Error("release layer PAX length is invalid");
+    }
+    const length = Number.parseInt(lengthText, 10);
+    const end = offset + length;
+    if (!Number.isSafeInteger(length) || end > bytes.length ||
+      bytes[end - 1] !== 0x0a) {
+      throw new Error("release layer PAX record is incomplete");
+    }
+    const record = bytes.subarray(space + 1, end - 1);
+    const equals = record.indexOf(0x3d);
+    if (equals < 1) throw new Error("release layer PAX record is invalid");
+    const key = record.subarray(0, equals).toString("ascii");
+    if (!allowed.has(key) || key === "path" && path !== null) {
+      throw new Error("release layer PAX keyword is unsupported");
+    }
+
+    // retain only the extraction path override
+    if (key === "path") {
+      path = parseReleaseTarPath(record.subarray(equals + 1), "release layer PAX path");
+    }
+    offset = end;
+  }
+  return path;
+}
+
+// verify one POSIX/GNU tar header checksum
+function requireReleaseTarChecksum(header) {
+  const checksumText = header.subarray(148, 156).toString("ascii")
+    .replace(/\0.*$/u, "").trim();
+  if (!/^[0-7]{1,7}$/u.test(checksumText)) {
+    throw new Error("release layer tar checksum is invalid");
+  }
+  let checksum = 0;
+
+  // treat the checksum field as spaces per the tar contract
+  for (let index = 0; index < header.length; index += 1) {
+    checksum += index >= 148 && index < 156 ? 0x20 : header[index];
+  }
+  if (checksum !== Number.parseInt(checksumText, 8)) {
+    throw new Error("release layer tar checksum differs");
+  }
+}
+
+// stream one gzip layer into a conservative filesystem allocation bound
+export async function measureReleaseLayer(response, descriptor, expectedDiffId) {
+  if (response.body === null || !Number.isSafeInteger(descriptor.size) || descriptor.size < 1 ||
+    !ADJUSTMENT_RELEASE_DIGEST.test(descriptor.digest) ||
+    !ADJUSTMENT_RELEASE_DIGEST.test(expectedDiffId)) {
+    throw new Error("release layer descriptor is invalid");
+  }
+  const compressedHash = createHash("sha256");
+  const uncompressedHash = createHash("sha256");
+  let compressedBytes = 0;
+  let uncompressedBytes = 0;
+  let entryInodes = 0;
+  let allocatedBytes = 0;
+  let bodyBytes = 0;
+  let bodyContentBytes = 0;
+  let bodyKind = null;
+  let bodyChunks = [];
+  let pendingPath = null;
+  let pendingLongLink = false;
+  let terminatorBlocks = 0;
+  let header = Buffer.alloc(0);
+
+  // charge one materialized entry and every possibly implicit parent directory
+  const accountPath = (path, size) => {
+    const parts = releaseTarPathParts(path);
+    const parentCount = Math.max(0, parts.length - 1);
+    const addedInodes = 1 + parentCount;
+    entryInodes = adjustmentReleaseSum(entryInodes, addedInodes);
+    if (entryInodes > ADJUSTMENT_RELEASE_MAXIMUM_LAYER_INODES) {
+      throw new Error("release layer inode count exceeds its bound");
+    }
+    allocatedBytes = adjustmentReleaseSum(
+      allocatedBytes,
+      adjustmentReleaseAllocated(size),
+      adjustmentReleaseAllocated(Buffer.byteLength(path) + 1),
+      parentCount * ADJUSTMENT_RELEASE_BLOCK_BYTES,
+    );
+    if (allocatedBytes > ADJUSTMENT_RELEASE_MAXIMUM_UNPACKED_LAYER_BYTES) {
+      throw new Error("release layer allocation exceeds its bound");
+    }
+  };
+
+  // apply one captured PAX or GNU long-name body to the following header
+  const finishExtensionBody = () => {
+    if (bodyKind === null) return;
+    const bytes = Buffer.concat(bodyChunks);
+    if (bodyKind === "x") {
+      pendingPath = parseReleasePaxPath(bytes);
+    } else {
+      if (bytes.length < 2 || bytes.at(-1) !== 0 ||
+        bytes.subarray(0, -1).includes(0)) {
+        throw new Error("release layer GNU long value is invalid");
+      }
+      const value = parseReleaseTarPath(bytes.subarray(0, -1),
+        `release layer GNU long ${bodyKind === "L" ? "path" : "link"}`);
+      if (bodyKind === "L") pendingPath = value;
+      else pendingLongLink = true;
+    }
+    bodyKind = null;
+    bodyChunks = [];
+    bodyContentBytes = 0;
+  };
+  const compressedCounter = new Transform({
+    // verify exact compressed descriptor bytes while streaming
+    transform(chunk, _encoding, callback) {
+      compressedBytes += chunk.length;
+      if (compressedBytes > descriptor.size) {
+        callback(new Error("release layer compressed size differs"));
+        return;
+      }
+      compressedHash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  const tarCounter = new Transform({
+    // retain at most one 512-byte tar header
+    transform(chunk, _encoding, callback) {
+      uncompressedBytes += chunk.length;
+      if (uncompressedBytes > ADJUSTMENT_RELEASE_MAXIMUM_UNPACKED_LAYER_BYTES) {
+        callback(new Error("release layer unpacked stream exceeds its bound"));
+        return;
+      }
+      uncompressedHash.update(chunk);
+      let offset = 0;
+      try {
+        while (offset < chunk.length) {
+          if (bodyBytes > 0) {
+            const consumed = Math.min(bodyBytes, chunk.length - offset);
+            const content = Math.min(bodyContentBytes, consumed);
+            if (bodyKind !== null && content > 0) {
+              bodyChunks.push(chunk.subarray(offset, offset + content));
+            }
+            bodyContentBytes -= content;
+            bodyBytes -= consumed;
+            offset += consumed;
+            if (bodyBytes === 0) finishExtensionBody();
+            continue;
+          }
+          const needed = 512 - header.length;
+          const consumed = Math.min(needed, chunk.length - offset);
+          header = Buffer.concat([header, chunk.subarray(offset, offset + consumed)]);
+          offset += consumed;
+          if (header.length < 512) continue;
+          const zero = header.every((byte) => byte === 0);
+          if (zero) {
+            terminatorBlocks += 1;
+            header = Buffer.alloc(0);
+            continue;
+          }
+          if (terminatorBlocks > 0) {
+            throw new Error("release layer tar contains data after its terminator");
+          }
+          requireReleaseTarChecksum(header);
+          const size = parseReleaseTarSize(header);
+          const storedBytes = Math.ceil(size / 512) * 512;
+          const type = header[156] === 0 ? "0" : String.fromCharCode(header[156]);
+          const magic = header.subarray(257, 263).toString("binary");
+          const version = header.subarray(263, 265).toString("binary");
+          if (!((magic === "ustar\0" && version === "00") ||
+            (magic === "ustar " && version === " \0"))) {
+            throw new Error("release layer tar format is unsupported");
+          }
+          const name = parseReleaseTarPath(header.subarray(0, 100), "release layer tar name");
+          const prefixBytes = header.subarray(345, 500);
+          const prefix = prefixBytes.every((byte) => byte === 0) ? null :
+            parseReleaseTarPath(prefixBytes, "release layer tar prefix");
+          const headerPath = prefix === null ? name : `${prefix}/${name}`;
+
+          // capture only bounded local PAX and GNU long-name extensions
+          if (["x", "L", "K"].includes(type)) {
+            if (pendingPath !== null || pendingLongLink || size < 1 || size > 16_384) {
+              throw new Error("release layer tar extension sequence is unsupported");
+            }
+            accountPath(headerPath, size);
+            bodyKind = type;
+            bodyContentBytes = size;
+            bodyChunks = [];
+          } else {
+            if (!["0", "1", "2", "3", "4", "5", "6"].includes(type)) {
+              throw new Error("release layer tar entry type is unsupported");
+            }
+            if (pendingLongLink && !["1", "2"].includes(type)) {
+              throw new Error("release layer GNU long link is misplaced");
+            }
+            accountPath(pendingPath ?? headerPath, size);
+            pendingPath = null;
+            pendingLongLink = false;
+          }
+          bodyBytes = storedBytes;
+          header = Buffer.alloc(0);
+        }
+        callback();
+      } catch (error) {
+        callback(error);
+      }
+    },
+    // require a complete terminated tar stream
+    flush(callback) {
+      if (terminatorBlocks < 2 || header.length !== 0 || bodyBytes !== 0 ||
+        bodyKind !== null || pendingPath !== null || pendingLongLink || entryInodes < 1) {
+        callback(new Error("release layer tar framing is incomplete"));
+        return;
+      }
+      callback();
+    },
+  });
+  await pipeline(Readable.fromWeb(response.body), compressedCounter, createGunzip(), tarCounter);
+
+  // verify descriptor and diff-id identities after complete consumption
+  if (compressedBytes !== descriptor.size ||
+    `sha256:${compressedHash.digest("hex")}` !== descriptor.digest ||
+    `sha256:${uncompressedHash.digest("hex")}` !== expectedDiffId ||
+    uncompressedBytes < 1) {
+    throw new Error("release layer digest or size differs");
+  }
+  return {
+    allocatedBytes: adjustmentReleaseAllocated(allocatedBytes),
+    blobDigest: descriptor.digest,
+    entryInodes,
+  };
+}
+
+// inspect one pinned image and measure every literal layer without storing it
+async function inspectRemoteReleaseImage(reference, layerMeasurements) {
+  const match = ADJUSTMENT_RELEASE_REFERENCE.exec(reference);
+  if (match === null) {
+    throw new Error("release image reference is not pinned to the fixed repository");
+  }
+  const repository = `weather-${match[1]}`;
+  const manifestDigest = `sha256:${match[2]}`;
+  const manifestResponse = await fetchWeatherRegistryObject(
+    repository,
+    "manifests",
+    manifestDigest,
+    "application/vnd.oci.image.manifest.v1+json",
+  );
+  const manifestBytes = await readBoundedRegistryResponse(
+    manifestResponse,
+    1_048_576,
+    "release image manifest",
+  );
+  if (`sha256:${createHash("sha256").update(manifestBytes).digest("hex")}` !== manifestDigest) {
+    throw new Error("release image manifest digest differs");
+  }
+  const manifest = JSON.parse(manifestBytes.toString("utf8"));
+  if (!ADJUSTMENT_RELEASE_DIGEST.test(manifest.config?.digest)) {
+    throw new Error("release image config descriptor is invalid");
+  }
+  const configResponse = await fetchWeatherRegistryObject(
+    repository,
+    "blobs",
+    manifest.config.digest,
+    "application/vnd.oci.image.config.v1+json",
+  );
+  const configBytes = await readBoundedRegistryResponse(
+    configResponse,
+    4_194_304,
+    "release image config",
+  );
+  if (`sha256:${createHash("sha256").update(configBytes).digest("hex")}` !==
+    manifest.config.digest) {
+    throw new Error("release image config digest differs");
+  }
+  const config = JSON.parse(configBytes.toString("utf8"));
+  if (!Array.isArray(manifest.layers) || !Array.isArray(config.rootfs?.diff_ids) ||
+    manifest.layers.length !== config.rootfs.diff_ids.length) {
+    throw new Error("release image layers and config differ");
+  }
+  const compressedImageBytes = manifest.layers.reduce(
+    // reject descriptor overflow and unbounded registry reads
+    (total, layer) => adjustmentReleaseSum(total, layer.size),
+    0,
+  );
+  if (compressedImageBytes > ADJUSTMENT_RELEASE_MAXIMUM_COMPRESSED_IMAGE_BYTES) {
+    throw new Error("release image compressed layers exceed their bound");
+  }
+  const unpackedLayers = [];
+
+  // fetch one copy of each content-addressed blob measurement
+  for (const [index, descriptor] of manifest.layers.entries()) {
+    const measurementKey = `${descriptor.digest}/${config.rootfs.diff_ids[index]}`;
+    let measurement = layerMeasurements.get(measurementKey);
+    if (measurement === undefined) {
+      const layerResponse = await fetchWeatherRegistryObject(
+        repository,
+        "blobs",
+        descriptor.digest,
+        "application/vnd.oci.image.layer.v1.tar+gzip",
+      );
+      measurement = await measureReleaseLayer(
+        layerResponse,
+        descriptor,
+        config.rootfs.diff_ids[index],
+      );
+      layerMeasurements.set(measurementKey, measurement);
+    }
+    unpackedLayers.push(measurement);
+  }
+  return {
+    configBytes: configBytes.toString("utf8"),
+    manifestBytes: manifestBytes.toString("utf8"),
+    reference,
+    unpackedLayers,
+  };
+}
+
+// classify one no-follow Docker layer entry and its actual allocation
+export function measureReleasePathEntry(details) {
+  const overlayWhiteout = details.isCharacterDevice() && details.rdev === 0n;
+
+  // accept only ordinary entries or the exact overlay2 whiteout representation
+  if (!details.isDirectory() && !details.isFile() && !details.isSymbolicLink() &&
+    !overlayWhiteout) {
+    throw new Error("Docker layer contains an unsupported filesystem entry");
+  }
+  return {
+    bytes: adjustmentReleaseAllocated(Number(details.blocks * 512n)),
+    descend: details.isDirectory(),
+    inodes: 1,
+  };
+}
+
+// count actual blocks below one Docker layer without following links
+function measureReleasePath(path) {
+  const details = lstatSync(path, { bigint: true });
+  const entry = measureReleasePathEntry(details);
+  let bytes = entry.bytes;
+  let inodes = entry.inodes;
+
+  // descend through real directories only
+  if (entry.descend) {
+    for (const name of readdirSync(path)) {
+      const child = measureReleasePath(join(path, name));
+      bytes = adjustmentReleaseSum(bytes, child.bytes);
+      inodes = adjustmentReleaseSum(inodes, child.inodes);
+    }
+  }
+  return { bytes: adjustmentReleaseAllocated(bytes), inodes };
+}
+
+// collect actual local Docker parent-chain allocation for one retained image
+function inspectLocalReleaseImage(reference, remoteImage) {
+  let output;
+  try {
+    output = execFileSync("docker", ["image", "inspect", "--format", "{{json .}}", reference], {
+      encoding: "utf8",
+      maxBuffer: 8 * 1_024 * 1_024,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return [];
+  }
+  if (Buffer.byteLength(output) > 8 * 1_024 * 1_024) {
+    throw new Error("local Docker image inspection exceeds its bound");
+  }
+  const inspected = JSON.parse(output);
+  const config = JSON.parse(remoteImage.configBytes);
+  const paths = [];
+  const lower = inspected.GraphDriver?.Data?.LowerDir;
+  const upper = inspected.GraphDriver?.Data?.UpperDir;
+
+  // bind local identity, platform and diff-id sequence to registry config
+  if (inspected.Id !== JSON.parse(remoteImage.manifestBytes).config.digest ||
+    inspected.Architecture !== "arm64" || inspected.Os !== "linux" ||
+    inspected.GraphDriver?.Name !== "overlay2" ||
+    JSON.stringify(inspected.RootFS?.Layers) !== JSON.stringify(config.rootfs.diff_ids)) {
+    throw new Error("local Docker image identity differs from registry config");
+  }
+  if (typeof lower === "string" && lower.length > 0) {
+    paths.push(...lower.split(":").reverse());
+  }
+  if (typeof upper === "string" && upper.length > 0) {
+    paths.push(upper);
+  }
+  if (paths.length !== config.rootfs.diff_ids.length ||
+    paths.some((path) => !path.startsWith("/var/lib/docker/overlay2/") || !path.endsWith("/diff"))) {
+    throw new Error("local Docker layer paths are unavailable or unsupported");
+  }
+  const inventory = [];
+  const diffIds = [];
+
+  // measure each literal parent chain once
+  for (const [index, diffId] of config.rootfs.diff_ids.entries()) {
+    diffIds.push(diffId);
+    const measured = measureReleasePath(paths[index]);
+    inventory.push({
+      allocatedBytes: measured.bytes,
+      chainId: dockerChainIdentity(diffIds),
+    });
+  }
+  return inventory;
+}
+
+// measure fixed release/control state without following symlinks
+function measureReleaseControlRoot() {
+  const root = resolve(dirname(import.meta.filename), "../..");
+  return measureReleasePath(root).bytes;
+}
+
+// collect the literal fixed-scope release inventory
+async function collectFixedInertV13ReleaseCapacity(sourceServer, sourceWeb, targetServer, targetWeb) {
+  const references = [sourceServer, sourceWeb, targetServer, targetWeb];
+  const layerMeasurements = new Map();
+  const remote = new Map();
+
+  // bind all unique source and target image bytes from GHCR
+  for (const reference of references) {
+    if (!remote.has(reference)) {
+      remote.set(reference, await inspectRemoteReleaseImage(reference, layerMeasurements));
+    }
+  }
+  const sourceImages = [remote.get(sourceServer), remote.get(sourceWeb)];
+  const targetImages = [remote.get(targetServer), remote.get(targetWeb)];
+  const inventoryByChain = new Map();
+
+  // merge one exact locally allocated image into the physical inventory
+  const mergeLocalImage = (image, required) => {
+    const local = inspectLocalReleaseImage(image.reference, image);
+    if (required && local.length === 0) {
+      throw new Error("fixed v13 source image is not locally measurable");
+    }
+    for (const layer of local) {
+      const old = inventoryByChain.get(layer.chainId);
+      if (old !== undefined && old !== layer.allocatedBytes) {
+        throw new Error("local Docker layer allocation differs across release images");
+      }
+      inventoryByChain.set(layer.chainId, layer.allocatedBytes);
+    }
+  };
+
+  // source must exist; an already-pulled target is measured without baseline reset
+  for (const image of sourceImages) mergeLocalImage(image, true);
+  for (const image of targetImages) mergeLocalImage(image, false);
+  const filesystem = statfsSync("/var/lib/weather", { bigint: true });
+  const freeBytesBig = filesystem.bavail * filesystem.bsize;
+  if (freeBytesBig > BigInt(Number.MAX_SAFE_INTEGER) || filesystem.ffree > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("release filesystem capacity exceeds exact integer precision");
+  }
+  const roleImage = (role, runtime, reference) => ({
+    ...structuredClone(remote.get(reference)),
+    role,
+    runtime,
+  });
+  const record = {
+    compensationScope: ADJUSTMENT_RELEASE_COMPENSATION_SCOPE,
+    freeBytes: Number(freeBytesBig),
+    freeInodes: Number(filesystem.ffree),
+    images: [
+      roleImage("source", "server", sourceServer),
+      roleImage("source", "web", sourceWeb),
+      roleImage("target", "server", targetServer),
+      roleImage("target", "web", targetWeb),
+      roleImage("compensating", "server", sourceServer),
+      roleImage("compensating", "web", sourceWeb),
+    ],
+    inventory: [...inventoryByChain.entries()].map(([chainId, allocatedBytes]) => ({
+      allocatedBytes,
+      chainId,
+    })).sort((left, right) => left.chainId.localeCompare(right.chainId)),
+    measuredAt: new Date().toISOString(),
+    retainedControlBytes: measureReleaseControlRoot(),
+    runtimePackageBytes: 0,
+    sourceRelease: ADJUSTMENT_RELEASE_SOURCE_RELEASE,
+    version: ADJUSTMENT_RELEASE_INVENTORY_VERSION,
+  };
+  return evaluateAdjustmentReleaseCapacity(
+    collectAdjustmentReleaseCapacityInventory(record),
+  );
+}
+
 // cap an archive stream without host-side publication
 async function capArchive(input = process.stdin, output = process.stdout) {
   let bytes = 0;
@@ -2032,6 +3891,112 @@ async function main() {
     return;
   }
 
+  // frame one function-only availability response
+  if (command === "frame-v2-availability") {
+    if (argumentsList.length !== 1) {
+      throw new Error("usage: adjustment-evaluation-package.mjs frame-v2-availability REGISTRATION_SHA256");
+    }
+    const bytes = await frameAdjustmentConfirmationAvailabilityV2({
+      registrationSha256: argumentsList[0],
+    });
+    await writeChunk(process.stdout, bytes);
+    return;
+  }
+
+  // require exact v2 ledger readiness without adding data authority
+  if (command === "verify-v2-readiness") {
+    if (argumentsList.length !== 0) {
+      throw new Error("usage: adjustment-evaluation-package.mjs verify-v2-readiness");
+    }
+    const response = await readV2DatabaseResponse();
+    if (response.payload !== null) {
+      throw new Error("maintenance readiness payload must be null");
+    }
+    return;
+  }
+
+  // frame one persisted-burn authorization response
+  if (command === "frame-v2-authorization") {
+    if (argumentsList.length !== 3 || !/^(?:0|[1-9][0-9]?)$/u.test(argumentsList[2])) {
+      throw new Error("usage: adjustment-evaluation-package.mjs frame-v2-authorization REGISTRATION_SHA256 ACCESS_SHA256 CHUNK_INDEX");
+    }
+    const bytes = await frameAdjustmentConfirmationAuthorizationV2({
+      accessSha256: argumentsList[1],
+      chunkIndex: Number(argumentsList[2]),
+      registrationSha256: argumentsList[0],
+    });
+    await writeChunk(process.stdout, bytes);
+    return;
+  }
+
+  // print the authorized inclusive legacy observation interval
+  if (command === "v2-authorization-dates") {
+    if (argumentsList.length !== 1) {
+      throw new Error("usage: adjustment-evaluation-package.mjs v2-authorization-dates AUTHORIZATION_ENVELOPE");
+    }
+    const authorization = await readV2AuthorizationEnvelope(argumentsList[0]);
+    process.stdout.write(
+      `${authorization.payload.fromLocalDate} ${addV2CalendarDays(
+        authorization.payload.toLocalDateExclusive,
+        -1,
+      )}\n`,
+    );
+    return;
+  }
+
+  // stream one prehashed v2 envelope around the unchanged v1 package
+  if (command === "stream-v2-envelope") {
+    if (argumentsList.length !== 5 && argumentsList.length !== 6) {
+      throw new Error("usage: adjustment-evaluation-package.mjs stream-v2-envelope KIND SOURCE_ARCHIVE FROM TO EDGE_SNAPSHOT [AUTHORIZATION_ENVELOPE]");
+    }
+    const [exportKind, sourceArchivePath, fromLocalDate, toLocalDate,
+      edgeSnapshotPath, authorizationPath] = argumentsList;
+    await streamAdjustmentEvaluationV2EnvelopeArchive({
+      authorizationPath: authorizationPath ?? null,
+      edgeSnapshotPath,
+      exportKind,
+      fromLocalDate,
+      sourceArchivePath,
+      toLocalDate,
+    });
+    return;
+  }
+
+  // verify one bounded framed stream and publish its canonical header
+  if (command === "verify-v2-stream") {
+    if (argumentsList.length !== 2) {
+      throw new Error("usage: adjustment-evaluation-package.mjs verify-v2-stream FRAME ENVELOPE_OUTPUT");
+    }
+    const verified = await verifyAdjustmentEvaluationV2Stream(argumentsList[0]);
+    await writeFile(argumentsList[1], verified.headerBytes, { flag: "wx", mode: 0o600 });
+    process.stdout.write(`${verified.payloadOffset} ${verified.payloadBytes}\n`);
+    return;
+  }
+
+  // verify one normalized local v2 package
+  if (command === "verify-v2-envelope") {
+    if (argumentsList.length !== 2) {
+      throw new Error("usage: adjustment-evaluation-package.mjs verify-v2-envelope ENVELOPE PACKAGE_ROOT");
+    }
+    const verified = await verifyAdjustmentEvaluationV2EnvelopePackage({
+      envelopePath: argumentsList[0],
+      packageRoot: argumentsList[1],
+    });
+    process.stdout.write(`${verified.envelopeSha256}\n`);
+    return;
+  }
+
+  // verify one normalized value-free availability envelope
+  if (command === "verify-v2-availability") {
+    if (argumentsList.length !== 1) {
+      throw new Error("usage: adjustment-evaluation-package.mjs verify-v2-availability ENVELOPE");
+    }
+    process.stdout.write(
+      `${await verifyAdjustmentConfirmationAvailabilityV2(argumentsList[0])}\n`,
+    );
+    return;
+  }
+
   // verify one extracted package
   if (command === "verify") {
     if (argumentsList.length !== 1) {
@@ -2039,6 +4004,21 @@ async function main() {
     }
     const verified = await verifyAdjustmentEvaluationPackage(argumentsList[0]);
     process.stdout.write(`${verified.manifestSha256}\n`);
+    return;
+  }
+
+  // collect and enforce the fixed inert v13 literal image capacity
+  if (command === "release-capacity") {
+    if (argumentsList.length !== 4) {
+      throw new Error("usage: adjustment-evaluation-package.mjs release-capacity SOURCE_SERVER SOURCE_WEB TARGET_SERVER TARGET_WEB");
+    }
+    const receipt = await collectFixedInertV13ReleaseCapacity(...argumentsList);
+    process.stdout.write(`${canonicalJsonValue(receipt)}\n`);
+
+    // preserve the complete refusal receipt while returning a failing gate
+    if (receipt.state !== "capacity_ready") {
+      process.exitCode = 3;
+    }
     return;
   }
 

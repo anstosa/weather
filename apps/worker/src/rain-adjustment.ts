@@ -11,6 +11,7 @@ import { normalizeTempestObservationPayload } from "@weather/providers";
 import {
   predictRainHurdleWind,
   RAIN_HURDLE_WIND_MODEL_SHA256,
+  type LoadedForecastAdjustmentRainRuntimeRegistryV1,
   type RainWindRunProfile,
   type RainWindStationHour,
 } from "@weather/forecast-adjustment";
@@ -205,7 +206,15 @@ export function createRainAdjustmentRun(
 }
 
 // isolate inference storage from the append-only provider collection loop
-export async function publishRainAdjustment(pool: Pool, now: Date = new Date()): Promise<boolean> {
+export async function publishRainAdjustment(
+  pool: Pool,
+  now: Date = new Date(),
+  runtime?: LoadedForecastAdjustmentRainRuntimeRegistryV1,
+): Promise<boolean> {
+  // explicit startup policy stops before capture storage or model inference
+  if (runtime?.state === "disabled") {
+    return false;
+  }
   const captures = await readPendingRainAdjustmentCaptures(pool, RAIN_HURDLE_WIND_MODEL_SHA256);
   const run = createRainAdjustmentRun(captures, now.toISOString());
   return run === null ? false : await appendRainAdjustmentRun(pool, run);

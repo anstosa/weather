@@ -1,0 +1,22 @@
+[Unit]
+Description=Weather adjustment evidence archive consumer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+UMask=0077
+WorkingDirectory=%h/.local/lib/weather-adjustment-maintenance/current
+ExecStart=%h/n/bin/node %h/.local/lib/weather-adjustment-maintenance/current/scripts/research/adjustment_archive_job.mjs
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=30s
+KillMode=control-group
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

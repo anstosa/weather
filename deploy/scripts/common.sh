@@ -188,7 +188,7 @@ apply_runtime_database_acl() {
 verify_runtime_database_acl() {
   local env_file=$1
   local database_name=$2
-  local verified
+  local verified maintenance_verified
   validate_database_name "$database_name"
   verified=$(WEATHER_ENV_FILE=$env_file compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$database_name" \
@@ -376,6 +376,14 @@ verify_runtime_database_acl() {
           WHERE namespace.nspname <> 'information_schema'
             AND namespace.nspname NOT LIKE 'pg_%'
             AND procedure.prosecdef
+            AND procedure.oid NOT IN (
+              SELECT allowed.identity
+              FROM (VALUES
+                (to_regprocedure('public.adjustment_confirmation_availability_v2(text)')::oid),
+                (to_regprocedure('public.adjustment_confirmation_export_v2(text,text,smallint)')::oid)
+              ) allowed(identity)
+              WHERE allowed.identity IS NOT NULL
+            )
             AND has_function_privilege(
               'weather_training_export', procedure.oid, 'EXECUTE'
             )
@@ -404,7 +412,218 @@ verify_runtime_database_acl() {
           WHERE setrole = 'weather_training_export'::regrole
             AND setdatabase <> 0
         )")
-  [[ "$verified" == t ]] || die "runtime database ACL verification failed"
+  maintenance_verified=$(WEATHER_ENV_FILE=$env_file compose exec -T postgres \
+    psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$database_name" \
+      --tuples-only --no-align --command "WITH
+        expected_tables(name) AS (VALUES
+          ('adjustment_shadow_registrations_v2'),
+          ('adjustment_shadow_predictions_v2'),
+          ('adjustment_confirmation_accesses_v2')
+        ),
+        expected_functions(name, identity, return_type, volatility, security_definer) AS (VALUES
+          ('weather_guard_adjustment_shadow_registration_v2',
+            'public.weather_guard_adjustment_shadow_registration_v2()', 'trigger', 'v', false),
+          ('weather_guard_adjustment_shadow_prediction_v2',
+            'public.weather_guard_adjustment_shadow_prediction_v2()', 'trigger', 'v', false),
+          ('weather_guard_adjustment_confirmation_access_v2',
+            'public.weather_guard_adjustment_confirmation_access_v2()', 'trigger', 'v', false),
+          ('weather_reject_adjustment_maintenance_mutation',
+            'public.weather_reject_adjustment_maintenance_mutation()', 'trigger', 'v', false),
+          ('weather_register_adjustment_shadow_v2',
+            'public.weather_register_adjustment_shadow_v2(jsonb)', 'jsonb', 'v', true),
+          ('weather_append_adjustment_temperature_shadow_v2',
+            'public.weather_append_adjustment_temperature_shadow_v2(jsonb)', 'jsonb', 'v', true),
+          ('weather_append_adjustment_wind_shadow_v2',
+            'public.weather_append_adjustment_wind_shadow_v2(jsonb)', 'jsonb', 'v', true),
+          ('weather_append_adjustment_rain_shadow_v2',
+            'public.weather_append_adjustment_rain_shadow_v2(jsonb)', 'jsonb', 'v', true),
+          ('adjustment_shadow_body_admission_v2',
+            'public.adjustment_shadow_body_admission_v2(text,text,text,integer)', 'boolean', 's', true),
+          ('weather_finalize_adjustment_shadow_metadata_v2',
+            'public.weather_finalize_adjustment_shadow_metadata_v2(jsonb)', 'jsonb', 'v', true),
+          ('weather_record_adjustment_confirmation_access_v2',
+            'public.weather_record_adjustment_confirmation_access_v2(jsonb)', 'jsonb', 'v', true),
+          ('adjustment_confirmation_availability_v2',
+            'public.adjustment_confirmation_availability_v2(text)', 'jsonb', 's', true),
+          ('adjustment_confirmation_export_v2',
+            'public.adjustment_confirmation_export_v2(text,text,smallint)', 'jsonb', 's', true)
+        ),
+        resolved_functions AS (
+          SELECT expected.*,
+            to_regprocedure(expected.identity)::oid AS oid
+          FROM expected_functions expected
+        ),
+        expected_triggers(name, table_name, function_identity, trigger_type) AS (VALUES
+          ('adjustment_shadow_registrations_v2_guard_insert',
+            'adjustment_shadow_registrations_v2',
+            'public.weather_guard_adjustment_shadow_registration_v2()', 7::smallint),
+          ('adjustment_shadow_predictions_v2_guard_insert',
+            'adjustment_shadow_predictions_v2',
+            'public.weather_guard_adjustment_shadow_prediction_v2()', 7::smallint),
+          ('adjustment_confirmation_accesses_v2_guard_insert',
+            'adjustment_confirmation_accesses_v2',
+            'public.weather_guard_adjustment_confirmation_access_v2()', 7::smallint),
+          ('adjustment_shadow_registrations_v2_guard_mutation',
+            'adjustment_shadow_registrations_v2',
+            'public.weather_reject_adjustment_maintenance_mutation()', 27::smallint),
+          ('adjustment_shadow_predictions_v2_guard_mutation',
+            'adjustment_shadow_predictions_v2',
+            'public.weather_reject_adjustment_maintenance_mutation()', 27::smallint),
+          ('adjustment_confirmation_accesses_v2_guard_mutation',
+            'adjustment_confirmation_accesses_v2',
+            'public.weather_reject_adjustment_maintenance_mutation()', 27::smallint),
+          ('adjustment_shadow_registrations_v2_guard_truncate',
+            'adjustment_shadow_registrations_v2',
+            'public.weather_reject_adjustment_maintenance_mutation()', 34::smallint),
+          ('adjustment_shadow_predictions_v2_guard_truncate',
+            'adjustment_shadow_predictions_v2',
+            'public.weather_reject_adjustment_maintenance_mutation()', 34::smallint),
+          ('adjustment_confirmation_accesses_v2_guard_truncate',
+            'adjustment_confirmation_accesses_v2',
+            'public.weather_reject_adjustment_maintenance_mutation()', 34::smallint)
+        ),
+        present AS (
+          SELECT count(*)::integer AS object_count
+          FROM (
+            SELECT relation.oid
+            FROM pg_class relation
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND relation.relname IN (SELECT name FROM expected_tables)
+            UNION ALL
+            SELECT procedure.oid
+            FROM pg_proc procedure
+            JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = 'public'
+              AND procedure.proname IN (SELECT name FROM expected_functions)
+          ) object
+        ),
+        runtime_roles(name) AS (VALUES
+          ('weather_api'), ('weather_ingest'), ('weather_training_export')
+        )
+      SELECT CASE
+        WHEN present.object_count = 0 THEN true
+        ELSE
+          present.object_count = 16
+          AND (SELECT count(*) FROM expected_tables table_expected
+            JOIN pg_class relation ON relation.oid = to_regclass(
+              'public.' || table_expected.name
+            )
+            WHERE relation.relkind = 'r'
+              AND relation.relowner = 'weather_owner'::regrole) = 3
+          AND (SELECT count(*) FROM resolved_functions WHERE oid IS NOT NULL) = 13
+          AND (SELECT count(*)
+            FROM pg_proc procedure
+            JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+            WHERE namespace.nspname = 'public'
+              AND procedure.proname IN (SELECT name FROM expected_functions)) = 13
+          AND NOT EXISTS (
+            SELECT 1
+            FROM resolved_functions expected
+            JOIN pg_proc procedure ON procedure.oid = expected.oid
+            WHERE procedure.proowner <> 'weather_owner'::regrole
+              OR procedure.prorettype::regtype::text <> expected.return_type
+              OR procedure.provolatile <> expected.volatility
+              OR procedure.prosecdef <> expected.security_definer
+              OR procedure.proconfig IS DISTINCT FROM
+                ARRAY['search_path=pg_catalog, public']::text[]
+          )
+          AND (SELECT count(*)
+            FROM expected_triggers expected
+            JOIN pg_class relation ON relation.relname = expected.table_name
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+              AND namespace.nspname = 'public'
+            JOIN pg_trigger trigger ON trigger.tgrelid = relation.oid
+              AND trigger.tgname = expected.name
+              AND NOT trigger.tgisinternal
+              AND trigger.tgfoid = to_regprocedure(expected.function_identity)::oid
+              AND trigger.tgtype = expected.trigger_type) = 9
+          AND (SELECT count(*)
+            FROM pg_trigger trigger
+            JOIN pg_class relation ON relation.oid = trigger.tgrelid
+            JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND relation.relname IN (SELECT name FROM expected_tables)
+              AND NOT trigger.tgisinternal) = 9
+          AND NOT EXISTS (
+            SELECT 1
+            FROM expected_tables expected
+            JOIN pg_class relation ON relation.oid = to_regclass(
+              'public.' || expected.name
+            )
+            CROSS JOIN runtime_roles role
+            CROSS JOIN LATERAL unnest(ARRAY[
+              'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'
+            ]) privilege(name)
+            WHERE has_table_privilege(role.name, relation.oid, privilege.name)
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM expected_tables expected
+            JOIN pg_class relation ON relation.oid = to_regclass(
+              'public.' || expected.name
+            )
+            JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+              AND attribute.attnum > 0 AND NOT attribute.attisdropped
+            CROSS JOIN runtime_roles role
+            CROSS JOIN LATERAL unnest(ARRAY[
+              'SELECT', 'INSERT', 'UPDATE', 'REFERENCES'
+            ]) privilege(name)
+            WHERE has_column_privilege(
+              role.name, relation.oid, attribute.attnum, privilege.name
+            )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM resolved_functions expected
+            JOIN pg_proc procedure ON procedure.oid = expected.oid
+            CROSS JOIN LATERAL aclexplode(coalesce(
+              procedure.proacl,
+              acldefault('f', procedure.proowner)
+            )) function_acl
+            WHERE function_acl.grantee = 0
+              AND function_acl.privilege_type = 'EXECUTE'
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM resolved_functions expected
+            CROSS JOIN runtime_roles role
+            WHERE has_function_privilege(role.name, expected.oid, 'EXECUTE')
+              IS DISTINCT FROM CASE
+                WHEN role.name = 'weather_api' THEN expected.name IN (
+                  'weather_register_adjustment_shadow_v2',
+                  'weather_append_adjustment_temperature_shadow_v2',
+                  'weather_append_adjustment_wind_shadow_v2',
+                  'adjustment_shadow_body_admission_v2'
+                )
+                WHEN role.name = 'weather_ingest' THEN expected.name IN (
+                  'weather_register_adjustment_shadow_v2',
+                  'weather_append_adjustment_rain_shadow_v2'
+                )
+                WHEN role.name = 'weather_training_export' THEN expected.name IN (
+                  'adjustment_confirmation_availability_v2',
+                  'adjustment_confirmation_export_v2'
+                )
+                ELSE false
+              END
+          )
+          AND NOT EXISTS (
+            SELECT 1
+            FROM pg_db_role_setting setting
+            CROSS JOIN LATERAL unnest(setting.setconfig) configuration(value)
+            WHERE setting.setrole IN (
+              'weather_owner'::regrole,
+              'weather_api'::regrole,
+              'weather_ingest'::regrole,
+              'weather_training_export'::regrole
+            )
+              AND configuration.value =
+                'weather.adjustment_maintenance_v2_enabled=on'
+          )
+      END
+      FROM present")
+  [[ "$verified" == t && "$maintenance_verified" == t ]] \
+    || die "runtime database ACL verification failed"
 }
 
 # publish private state atomically

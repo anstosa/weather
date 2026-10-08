@@ -236,6 +236,7 @@ export interface TemperatureCanarySourceForecast {
 
 export type TemperatureCanaryDecisionReason =
   | LoadedForecastAdjustmentTemperatureCanaryRuntimeV1["reasonCode"]
+  | "policy_raw"
   | TemperatureMosRuntimeRawReason
   | "canary_expired"
   | "missing_source_forecast"
@@ -574,7 +575,11 @@ export function forecastAdjustmentTemperatureCanaryIsKilled(
 
 // apply one independent live-source temperature decision
 export function applyForecastAdjustmentTemperatureCanary(
-  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 | {
+    readonly bundle: null;
+    readonly reasonCode: "policy_raw";
+    readonly state: "disabled";
+  },
   input: ApplyTemperatureCanaryInputV1,
 ): ForecastTemperatureCanaryDecisionV1 {
   // keep loader failures separate from forecast availability

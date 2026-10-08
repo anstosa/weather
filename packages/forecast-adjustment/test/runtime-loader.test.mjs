@@ -18,8 +18,17 @@ import {
   createForecastAdjustmentRuntimeBundle,
   createForecastAdjustmentRuntimeLoader,
   createForecastAdjustmentRuntimeLoaderForRoot,
+  createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot,
+  createForecastAdjustmentWindCanaryRuntimeLoaderForRoot,
   FORECAST_ADJUSTMENT_REGISTRY_FILENAME,
   FORECAST_ADJUSTMENT_RUNTIME_ROOT,
+  FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_BYTES,
+  FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_SHA256,
+  FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME,
+  FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_BYTES,
+  FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_SHA256,
+  FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME,
+  FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS,
 } from "../dist/index.js";
 
 import { createQualifiedFixture } from "./evidence-fixtures.mjs";
@@ -400,4 +409,86 @@ test("two-bundle and null rollback require a fresh loader restart", async () => 
       .bundleSha256,
     firstBundle.bundleSha256,
   );
+});
+
+test("nullable v2 temperature and wind registries preserve exact raw provenance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-runtime-v2-raw-"));
+  const temperature = {
+    activeBundle: null,
+    contractVersion: "forecast-adjustment-temperature-canary-registry/v2",
+    rawReason: "policy_raw",
+    siteKey: "ballydidean",
+  };
+  const wind = {
+    activeBundle: null,
+    contractVersion: "forecast-adjustment-wind-canary-registry/v2",
+    enabledMetricBands: FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS,
+    rawReason: "policy_raw",
+    siteKey: "ballydidean",
+  };
+  const temperatureBytes = canonicalJsonBytes(temperature);
+  const windBytes = canonicalJsonBytes(wind);
+  assert.equal(Buffer.byteLength(temperatureBytes), FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_BYTES);
+  assert.equal(canonicalSha256(temperature), FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_SHA256);
+  assert.equal(Buffer.byteLength(windBytes), FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_BYTES);
+  assert.equal(canonicalSha256(wind), FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_SHA256);
+  await writeFile(
+    join(root, FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME),
+    temperatureBytes,
+  );
+  await writeFile(
+    join(root, FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME),
+    windBytes,
+  );
+
+  const temperatureLoader = createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot(
+    root,
+    { environmentKillSwitch: "0" },
+  );
+  const windLoader = createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(root);
+  assert.equal((await temperatureLoader.load()).reasonCode, "policy_raw");
+  assert.equal((await windLoader.load()).reasonCode, "policy_raw");
+
+  await writeFile(
+    join(root, FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME),
+    canonicalJsonBytes({ ...temperature, rawReason: "unknown" }),
+  );
+  assert.equal((await temperatureLoader.load()).reasonCode, "policy_raw");
+  assert.equal(
+    (await createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot(
+      root,
+      { environmentKillSwitch: "0" },
+    ).load()).reasonCode,
+    "registry_invalid",
+  );
+});
+
+test("nullable v2 wind registry rejects mask expansion and missing bands", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-runtime-v2-mask-"));
+
+  // write one mutated mask and inspect it through a fresh startup loader
+  async function loadMask(enabledMetricBands) {
+    await writeFile(
+      join(root, FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME),
+      canonicalJsonBytes({
+        activeBundle: null,
+        contractVersion: "forecast-adjustment-wind-canary-registry/v2",
+        enabledMetricBands,
+        rawReason: "policy_raw",
+        siteKey: "ballydidean",
+      }),
+    );
+    return createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(root).load();
+  }
+
+  assert.equal((await loadMask([
+    ...FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS,
+    { leadBand: "049-072", metric: "windGustMps" },
+  ])).reasonCode, "registry_invalid");
+  assert.equal((await loadMask(
+    FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS.slice(0, -1),
+  )).reasonCode, "registry_invalid");
+  assert.equal((await loadMask(
+    FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS,
+  )).reasonCode, "policy_raw");
 });

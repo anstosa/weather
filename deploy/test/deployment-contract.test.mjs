@@ -1595,20 +1595,385 @@ test("backup is encrypted and restore is disposable verification only", () => {
   assert.doesNotMatch(restore, /ALTER DATABASE[\s\S]*(?:RENAME|OWNER)|mv[\s\S]*postgres/u);
 });
 
+// verify the closed obsolete Weather image selector
+test("image cleanup selects only unprotected Weather-owned identities", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-image-selector-"));
+  const update = join(repoRoot, "deploy/scripts/update.sh");
+  const id =
+    // create one full local image identity
+    (character) => `sha256:${character.repeat(64)}`;
+  const inventory = join(directory, "images.tsv");
+  const repositories = join(directory, "repositories");
+  const references = join(directory, "references");
+  const protectedIds = join(directory, "protected-ids");
+
+  try {
+    await writeFile(repositories, [
+      "ghcr.io/anstosa/weather-server",
+      "ghcr.io/anstosa/weather-web",
+      "",
+    ].join("\n"));
+    await writeFile(references, [
+      `ghcr.io/anstosa/weather-server@${id("c")}`,
+      `ghcr.io/anstosa/weather-web@${id("d")}`,
+      "",
+    ].join("\n"));
+    await writeFile(protectedIds, `${id("e")}\n${id("f")}\n`);
+    await writeFile(inventory, [
+      `${id("a")}\tghcr.io/anstosa/weather-server\told\t${id("1")}`,
+      `${id("b")}\tghcr.io/anstosa/weather-web\told\t${id("2")}`,
+      `${id("c")}\tghcr.io/anstosa/weather-server\tcurrent\t${id("c")}`,
+      `${id("d")}\tghcr.io/anstosa/weather-web\tcandidate\t${id("d")}`,
+      `${id("e")}\tghcr.io/anstosa/weather-server\tprevious\t${id("e")}`,
+      `${id("f")}\tghcr.io/anstosa/weather-web\tcontainer\t${id("f")}`,
+      `${id("7")}\texample.invalid/other\tlatest\t${id("7")}`,
+      `${id("8")}\t<none>\t<none>\t<none>`,
+      `${id("9")}\tghcr.io/anstosa/weather-server\tmixed\t${id("9")}`,
+      `${id("9")}\texample.invalid/shared\tmixed\t${id("9")}`,
+      "",
+    ].join("\n"));
+    const result = spawnSync("bash", [
+      "-c",
+      'source "$1"; select_obsolete_weather_image_ids "$2" "$3" "$4" "$5"',
+      "weather-image-selector",
+      update,
+      inventory,
+      repositories,
+      references,
+      protectedIds,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    assert.deepEqual(result.stdout.trim().split("\n"), [id("a"), id("b")]);
+
+    // reject caller-supplied repositories outside the fixed Weather pair
+    await writeFile(repositories, [
+      "example.invalid/foreign-server",
+      "ghcr.io/anstosa/weather-web",
+      "",
+    ].join("\n"));
+    const foreignAuthority = spawnSync("bash", [
+      "-c",
+      'source "$1"; select_obsolete_weather_image_ids "$2" "$3" "$4" "$5"',
+      "weather-image-selector",
+      update,
+      inventory,
+      repositories,
+      references,
+      protectedIds,
+    ], { encoding: "utf8" });
+    assert.notEqual(foreignAuthority.status, 0);
+    assert.match(foreignAuthority.stderr, /repository contract is invalid/u);
+
+    const foreignEnvironment = join(directory, "foreign.env");
+    await writeFile(foreignEnvironment, [
+      `WEATHER_SERVER_IMAGE=example.invalid/foreign-server@${id("1")}`,
+      `WEATHER_WEB_IMAGE=ghcr.io/anstosa/weather-web@${id("2")}`,
+      `POSTGRES_IMAGE=postgres@${id("3")}`,
+      `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${id("4")}`,
+      "",
+    ].join("\n"));
+    const foreignEnvironmentResult = spawnSync("bash", [
+      "-c",
+      'source "$1"; append_image_cleanup_environment "$2" false "$3" "$4" "$5"',
+      "weather-image-environment",
+      update,
+      foreignEnvironment,
+      join(directory, "environment-repositories"),
+      join(directory, "environment-references"),
+      join(directory, "environment-identities"),
+    ], { encoding: "utf8" });
+    assert.notEqual(foreignEnvironmentResult.status, 0);
+    assert.match(foreignEnvironmentResult.stderr, /outside cleanup authority/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify race refusal, idempotence and no-force failure behavior
+test("image cleanup rechecks frozen state and never forces removal", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-image-cleanup-"));
+  const update = join(repoRoot, "deploy/scripts/update.sh");
+  const firstImageId = `sha256:${"a".repeat(64)}`;
+  const secondImageId = `sha256:${"c".repeat(64)}`;
+  const firstDigest = `sha256:${"b".repeat(64)}`;
+  const secondDigest = `sha256:${"d".repeat(64)}`;
+  const inventory = join(directory, "images.tsv");
+  const repositories = join(directory, "repositories");
+  const references = join(directory, "references");
+  const log = join(directory, "docker.log");
+  const raced = join(directory, "raced");
+  const harness = `
+source "$1"
+# replay one frozen fake image inventory
+snapshot_docker_image_inventory() { cp "$INVENTORY" "$1"; }
+# expose no fake container references
+snapshot_docker_container_image_ids() { : >"$1"; }
+# change only the second state freeze in race mode
+write_weather_image_cleanup_contract() {
+  if [[ "$MODE" == race && -e "$RACED" ]]; then
+    printf 'current=changed\\nprevious=\\n' >"$3"
+    printf '%s\\n' "ghcr.io/anstosa/weather-server@$SECOND_DIGEST" >"$5"
+  else
+    printf 'current=stable\\nprevious=\\n' >"$3"
+    : >"$5"
+  fi
+  cp "$REPOSITORIES" "$4"
+  : >"$6"
+}
+# emulate only the closed no-force image removal call
+docker() {
+  printf '%s\\n' "$*" >>"$DOCKER_LOG"
+  if [[ "$1 $2" != 'image rm' ]]; then
+    return 64
+  fi
+  if [[ "$MODE" == failure ]]; then
+    return 1
+  fi
+  awk -F '\\t' -v removed="$3" '$1 != removed' "$INVENTORY" >"$INVENTORY.next"
+  mv "$INVENTORY.next" "$INVENTORY"
+  if [[ "$MODE" == race && "$3" == "$FIRST_IMAGE_ID" ]]; then
+    : >"$RACED"
+  fi
+}
+cleanup_obsolete_weather_images unused-source unused-target
+if [[ "$MODE" == idempotent ]]; then
+  cleanup_obsolete_weather_images unused-source unused-target
+fi
+`;
+
+  try {
+    await writeFile(repositories, [
+      "ghcr.io/anstosa/weather-server",
+      "ghcr.io/anstosa/weather-web",
+      "",
+    ].join("\n"));
+    await writeFile(references, "");
+
+    // exercise successful cleanup twice against one mutable fake cache
+    await writeFile(
+      inventory,
+      [
+        `${firstImageId}\tghcr.io/anstosa/weather-server\told-a\t${firstDigest}`,
+        `${secondImageId}\tghcr.io/anstosa/weather-server\told-c\t${secondDigest}`,
+        "",
+      ].join("\n"),
+    );
+    await writeFile(log, "");
+    await rm(raced, { force: true });
+    const idempotent = spawnSync("bash", [
+      "-c", harness, "weather-image-cleanup", update,
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOCKER_LOG: log,
+        FIRST_IMAGE_ID: firstImageId,
+        INVENTORY: inventory,
+        MODE: "idempotent",
+        RACED: raced,
+        REFERENCES: references,
+        REPOSITORIES: repositories,
+        SECOND_DIGEST: secondDigest,
+      },
+    });
+    assert.equal(idempotent.status, 0, idempotent.stderr);
+    assert.equal(
+      await readFile(log, "utf8"),
+      `image rm ${firstImageId}\nimage rm ${secondImageId}\n`,
+    );
+
+    // protect the second candidate when release state races after the first deletion
+    await writeFile(
+      inventory,
+      [
+        `${firstImageId}\tghcr.io/anstosa/weather-server\told-a\t${firstDigest}`,
+        `${secondImageId}\tghcr.io/anstosa/weather-server\told-c\t${secondDigest}`,
+        "",
+      ].join("\n"),
+    );
+    await writeFile(log, "");
+    await rm(raced, { force: true });
+    const racedResult = spawnSync("bash", [
+      "-c", harness, "weather-image-cleanup", update,
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOCKER_LOG: log,
+        FIRST_IMAGE_ID: firstImageId,
+        INVENTORY: inventory,
+        MODE: "race",
+        RACED: raced,
+        REFERENCES: references,
+        REPOSITORIES: repositories,
+        SECOND_DIGEST: secondDigest,
+      },
+    });
+    assert.notEqual(racedResult.status, 0);
+    assert.match(racedResult.stderr, /candidate changed during per-image selection/u);
+    assert.equal(await readFile(log, "utf8"), `image rm ${firstImageId}\n`);
+
+    // surface Docker refusal without adding force or prune authority
+    await writeFile(
+      inventory,
+      `${firstImageId}\tghcr.io/anstosa/weather-server\told-a\t${firstDigest}\n`,
+    );
+    await writeFile(log, "");
+    await rm(raced, { force: true });
+    const failed = spawnSync("bash", [
+      "-c", harness, "weather-image-cleanup", update,
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DOCKER_LOG: log,
+        FIRST_IMAGE_ID: firstImageId,
+        INVENTORY: inventory,
+        MODE: "failure",
+        RACED: raced,
+        REFERENCES: references,
+        REPOSITORIES: repositories,
+        SECOND_DIGEST: secondDigest,
+      },
+    });
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /obsolete Weather image removal failed/u);
+    assert.equal(await readFile(log, "utf8"), `image rm ${firstImageId}\n`);
+    assert.doesNotMatch(await readFile(log, "utf8"), /force|prune/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify v13 retains every non-storage resource gate while replacing obsolete storage math
+test("v13 resource gate accepts only the exact reviewed legacy storage failures", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-v13-resource-"));
+  const evidencePath = join(directory, "preflight-v13-resource.json");
+  const update = join(repoRoot, "deploy/scripts/update.sh");
+  const fixture = () => ({
+    architecture: { docker: "aarch64", expected: "aarch64", host: "aarch64" },
+    capturedAt: new Date().toISOString(),
+    cpu: { actual: 4, minimum: 4 },
+    docker: {
+      freeBytes: 2_486_505_472,
+      inodeFreePercent: 95,
+      minimumFreeBytes: 4 * 1_024 * 1_024 * 1_024,
+      root: "/var/lib/docker",
+    },
+    load15: { actual: 0.5, maximum: 2 },
+    memoryAvailableBytes: {
+      minimumObserved: 3 * 1_024 * 1_024 * 1_024,
+      minimumRequired: 1_792 * 1_024 * 1_024,
+    },
+    pass: false,
+    sampleSeconds: 900,
+    swapBytesPerMinute: { actual: 0, maximum: 1_024 * 1_024 },
+    varLib: {
+      databaseBytes: 1_000_000_000,
+      freeBytes: 2_486_505_472,
+      inodeFreePercent: 95,
+      minimumFreeBytes: 10 * 1_024 * 1_024 * 1_024,
+    },
+  });
+  const runGate = () => spawnSync("bash", [
+    "-c",
+    'source "$1"; v13_resource_evidence=$2; require_v13_resource_gate',
+    "weather-v13-resource",
+    update,
+    evidencePath,
+  ], { encoding: "utf8" });
+  const writeEvidence = async (evidence) => {
+    await writeFile(evidencePath, `${JSON.stringify(evidence)}\n`, { mode: 0o600 });
+    await chmod(evidencePath, 0o600);
+  };
+
+  try {
+    await writeEvidence(fixture());
+    assert.equal(runGate().status, 0);
+
+    const fullPass = fixture();
+    fullPass.pass = true;
+    fullPass.varLib.freeBytes = fullPass.varLib.minimumFreeBytes;
+    fullPass.docker.freeBytes = fullPass.docker.minimumFreeBytes;
+    await writeEvidence(fullPass);
+    assert.equal(runGate().status, 0);
+
+    const loadFailure = fixture();
+    loadFailure.load15.actual = 3;
+    await writeEvidence(loadFailure);
+    assert.notEqual(runGate().status, 0);
+
+    const unaccountedPass = fixture();
+    unaccountedPass.pass = true;
+    await writeEvidence(unaccountedPass);
+    assert.notEqual(runGate().status, 0);
+
+    const missingFailure = fixture();
+    missingFailure.docker.freeBytes = missingFailure.docker.minimumFreeBytes;
+    await writeEvidence(missingFailure);
+    assert.notEqual(runGate().status, 0);
+
+    const stale = fixture();
+    stale.capturedAt = "2026-10-08T00:00:00.000Z";
+    await writeEvidence(stale);
+    assert.notEqual(runGate().status, 0);
+
+    const drift = fixture();
+    drift.unreviewed = true;
+    await writeEvidence(drift);
+    assert.notEqual(runGate().status, 0);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify the fresh local minimum without substituting for the full oracle
+test("image pulls require the protected floor plus next-capture bytes and inodes", () => {
+  const update = join(repoRoot, "deploy/scripts/update.sh");
+  const runGate =
+    // execute one injected filesystem sample through the sourced gate
+    (sample) => spawnSync("bash", [
+      "-c",
+      'source "$1"; require_command() { :; }; stat() { printf "%s\\n" "$SAMPLE"; }; require_image_pull_capacity_floor',
+      "weather-image-pull-capacity",
+      update,
+    ], { encoding: "utf8", env: { ...process.env, SAMPLE: sample } });
+  const exact = runGate("496620 4096 32768");
+  assert.equal(exact.status, 0, exact.stderr);
+  const oneBlockUnder = runGate("496619 4096 32768");
+  assert.notEqual(oneBlockUnder.status, 0);
+  assert.match(oneBlockUnder.stderr, /protected capture floor/u);
+  const oneInodeUnder = runGate("496620 4096 32767");
+  assert.notEqual(oneInodeUnder.status, 0);
+  assert.match(oneInodeUnder.stderr, /protected capture floor/u);
+});
+
 // verify the explicit direct-deploy path
-test("yolo deployment skips clone, capacity, and deployment-time backup gates", () => {
+test("yolo deployment skips clone, full coexistence, and deployment-time backup gates", () => {
   const packageJson = JSON.parse(read("package.json"));
   const update = read("deploy/scripts/update.sh");
   const yoloFunction = update
-    .split("\nyolo_release() {")[1]
-    .split("\n}\n\n# activate one forward release")[0];
+    .split("\nyolo_release() (")[1]
+    .split("\n)\n\n# activate one forward release")[0];
   const prepareFunction = update
     .split("prepare_yolo_release() {")[1]
-    .split("\n}\n\n# apply one direct release")[0];
+    .split("\n}\n\n# apply one source-preserving direct release")[0];
   assert.equal(packageJson.scripts["remote:deploy"], "deploy/scripts/ssh-run.sh yolo");
   assert.match(prepareFunction, /resolve_arm64_image/u);
   assert.match(prepareFunction, /compose config --quiet/u);
+  assert.match(prepareFunction, /cleanup_obsolete_weather_images/u);
+  assert.match(prepareFunction, /require_image_pull_capacity_floor/u);
+  assert.match(prepareFunction, /require_v13_resource_gate/u);
+  assert.match(prepareFunction, /require_literal_adjustment_release_capacity/u);
   assert.match(prepareFunction, /compose pull/u);
+  assert.equal((prepareFunction.match(/compose pull/gu) ?? []).length, 2);
+  assert.equal(
+    prepareFunction.indexOf("cleanup_obsolete_weather_images") <
+      prepareFunction.indexOf("require_image_pull_capacity_floor") &&
+      prepareFunction.indexOf("require_image_pull_capacity_floor") <
+      prepareFunction.indexOf("compose pull"),
+    true,
+  );
   assert.match(yoloFunction, /start_postgres "\$target"/u);
   assert.match(yoloFunction, /compose run --rm migration/u);
   assert.equal(
@@ -1618,10 +1983,225 @@ test("yolo deployment skips clone, capacity, and deployment-time backup gates", 
   );
   assert.match(yoloFunction, /start_exact_release/u);
   assert.match(yoloFunction, /record_release_success/u);
+  assert.match(yoloFunction, /verify_fixed_v13_source_compatibility/u);
+  assert.match(yoloFunction, /restore_failed_yolo/u);
   assert.doesNotMatch(
     `${prepareFunction}\n${yoloFunction}`,
     /require_capacity_gate|verify_previous_image_compatibility|backup\.sh|pg_dump|weather_compat_/u,
   );
+});
+
+// verify the fixed v13 bridge cannot bypass literal capacity or exact source restoration
+test("v13 yolo uses literal capacity at every release transaction boundary", () => {
+  const update = read("deploy/scripts/update.sh");
+  const capacityFunction = update
+    .split("require_literal_adjustment_release_capacity() (")[1]
+    .split("\n)\n\n# cap one frozen Docker inventory")[0];
+  const prepareYolo = update
+    .split("prepare_yolo_release() {")[1]
+    .split("\n}\n\n# apply one source-preserving direct release")[0];
+  const yoloRelease = update
+    .split("yolo_release() (")[1]
+    .split("\n)\n\n# activate one forward release")[0];
+  const startRelease = update
+    .split("start_release() (")[1]
+    .split("\n)\n\n# roll back images")[0];
+  const stageCase = update.split("  stage)\n")[1].split("  activate)\n")[0];
+  assert.match(capacityFunction, /release-capacity/u);
+  assert.match(capacityFunction, /SOURCE_SERVER|source_server/u);
+  assert.match(capacityFunction, /source_web/u);
+  assert.match(capacityFunction, /target_server/u);
+  assert.match(capacityFunction, /target_web/u);
+  assert.match(capacityFunction, /retirementCreditBytes !== 0/u);
+  assert.doesNotMatch(capacityFunction, /image rm|prune|--force/u);
+  assert.match(capacityFunction, /POSTGRES_IMAGE CLOUDFLARED_IMAGE/u);
+  assert.equal((prepareYolo.match(/require_literal_adjustment_release_capacity/gu) ?? []).length, 4);
+  assert.equal(
+    yoloRelease.indexOf("verify_fixed_v13_source_compatibility") <
+      yoloRelease.indexOf("publish_migration_authorization"),
+    true,
+  );
+  assert.equal(
+    yoloRelease.lastIndexOf("require_literal_adjustment_release_capacity") <
+      yoloRelease.indexOf('record_release_success "$release" "$current"'),
+    true,
+  );
+  assert.match(yoloRelease, /restore_images "\$current_env" "\$current" "\$release"/u);
+  assert.match(yoloRelease, /capacity diagnostic/u);
+  assert.doesNotMatch(stageCase, /require_v13_resource_gate|require_literal_adjustment_release_capacity/u);
+  assert.match(stageCase, /require_capacity_gate/u);
+  assert.doesNotMatch(startRelease, /require_v13_resource_gate|require_literal_adjustment_release_capacity/u);
+  assert.equal(
+    startRelease.indexOf("require_capacity_gate") <
+      startRelease.indexOf('start_postgres "$backup_env"'),
+    true,
+  );
+});
+
+// verify a post-health capacity failure restores exact source images before returning
+test("v13 yolo compensates post-health oracle failure before preserving old markers", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-v13-yolo-compensation-"));
+  const releases = join(directory, "releases");
+  const source = join(releases, "2026.10.07-3.env");
+  const target = join(releases, "2026.10.08-1.env");
+  const transcript = join(directory, "transcript");
+  const sourceServer =
+    "ghcr.io/anstosa/weather-server@sha256:d0688756c33875940f67fbb782d9e67a2405a811d2aca40bd155f6ceffa71a74";
+  const sourceWeb =
+    "ghcr.io/anstosa/weather-web@sha256:739d063cd911bcd7c6637082e356889ef60ac7a76caabc737070703fdf83746f";
+  const infrastructure = [
+    `POSTGRES_IMAGE=postgres@sha256:${"c".repeat(64)}`,
+    `CLOUDFLARED_IMAGE=cloudflare/cloudflared@sha256:${"d".repeat(64)}`,
+    "WEATHER_DATABASE_NAME=weather",
+    "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
+    "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
+    "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
+  ];
+
+  try {
+    await mkdir(releases);
+    await writeFile(source, [
+      "WEATHER_RELEASE=2026.10.07-3",
+      `WEATHER_SERVER_IMAGE=${sourceServer}`,
+      `WEATHER_WEB_IMAGE=${sourceWeb}`,
+      ...infrastructure,
+      `WEATHER_CONTROL_PLANE_SHA256=${"e".repeat(64)}`,
+      "WEATHER_CONTROL_PLANE_VERSION=12",
+      "",
+    ].join("\n"), { mode: 0o600 });
+    await writeFile(target, [
+      "WEATHER_RELEASE=2026.10.08-1",
+      `WEATHER_SERVER_IMAGE=ghcr.io/anstosa/weather-server@sha256:${"a".repeat(64)}`,
+      `WEATHER_WEB_IMAGE=ghcr.io/anstosa/weather-web@sha256:${"b".repeat(64)}`,
+      ...infrastructure,
+      `WEATHER_CONTROL_PLANE_SHA256=${"f".repeat(64)}`,
+      "WEATHER_CONTROL_PLANE_VERSION=13",
+      "",
+    ].join("\n"), { mode: 0o600 });
+    const harness = `
+source "$1"
+releases_dir=$2
+state_dir=$3
+source_env=$4
+target_env=$5
+transcript=$6
+history=${"9".repeat(64)}
+literal_calls=0
+read_optional_release_state() { printf '%s\\n' 2026.10.07-3; }
+release_env() { printf '%s/%s.env\\n' "$releases_dir" "$1"; }
+validate_release_env() { :; }
+require_control_plane_compatibility() { :; }
+prepare_yolo_release() { printf '%s\\n' "$target_env"; }
+require_deployment_secrets() { :; }
+verify_fixed_v13_source_compatibility() {
+  write_migration_authorization "$3" 2026.10.07-3 2026.10.08-1 "$history"
+}
+require_v13_resource_gate() { :; }
+require_literal_adjustment_release_capacity() {
+  literal_calls=$((literal_calls + 1))
+  printf 'literal:%s\\n' "$literal_calls" >>"$transcript"
+  [[ "$literal_calls" != 2 ]]
+}
+start_postgres() { printf 'postgres\\n' >>"$transcript"; }
+compose() { printf 'compose:%s\\n' "$*" >>"$transcript"; }
+migration_history_sha256() { printf '%s\\n' "$history"; }
+apply_runtime_database_acl() { printf 'acl:apply\\n' >>"$transcript"; }
+verify_runtime_database_acl() { printf 'acl:verify\\n' >>"$transcript"; }
+start_exact_release() { printf 'target:start\\n' >>"$transcript"; }
+restore_images() { printf 'source:restore:%s:%s\\n' "$2" "$3" >>"$transcript"; }
+write_private_state() { printf 'state:%s:%s\\n' "$(basename "$1")" "$2" >>"$transcript"; }
+write_active_symlink() { printf 'active:%s\\n' "$1" >>"$transcript"; }
+record_release_success() { printf 'record\\n' >>"$transcript"; }
+set +e
+yolo_release 2026.10.08-1 "$source_env"
+status=$?
+set -e
+printf 'status:%s\\n' "$status" >>"$transcript"
+[[ "$status" == 1 ]]
+`;
+    const result = spawnSync("bash", [
+      "-c",
+      harness,
+      "weather-v13-yolo-compensation",
+      join(repoRoot, "deploy/scripts/update.sh"),
+      releases,
+      join(directory, "state"),
+      source,
+      target,
+      transcript,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
+    const operations = await readFile(transcript, "utf8");
+    assert.match(operations, /target:start\nliteral:2\nsource:restore:2026\.10\.07-3:2026\.10\.08-1/u);
+    assert.match(operations, /source:restore[^]*active:2026\.10\.07-3[^]*literal:3/u);
+    assert.match(operations, /state:current-release:2026\.10\.07-3/u);
+    assert.doesNotMatch(operations, /record/u);
+    assert.match(operations, /status:1/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify conditional compensation calls cannot mask an early required-step failure
+test("source restoration returns immediately when PostgreSQL restart fails", async () => {
+  const update = join(repoRoot, "deploy/scripts/update.sh");
+  const harness = `
+source "$1"
+transcript=$2
+prepare_xweather_usage_directory() { printf 'prepare\\n' >>"$transcript"; }
+start_postgres() { printf 'postgres-failed\\n' >>"$transcript"; return 1; }
+apply_runtime_database_acl() { printf 'unexpected-acl\\n' >>"$transcript"; }
+verify_runtime_database_acl() { printf 'unexpected-verify\\n' >>"$transcript"; }
+compose() { printf 'unexpected-compose\\n' >>"$transcript"; }
+status=0
+restore_images source.env || status=$?
+printf 'status:%s\\n' "$status" >>"$transcript"
+[[ "$status" == 1 ]]
+`;
+  const directory = await mkdtemp(join(tmpdir(), "weather-restore-failure-"));
+  const transcript = join(directory, "transcript");
+
+  try {
+    const result = spawnSync("bash", [
+      "-c", harness, "weather-restore-failure", update, transcript,
+    ], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      await readFile(transcript, "utf8"),
+      "prepare\npostgres-failed\nstatus:1\n",
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// verify a blocked literal receipt stops before any pull authority
+test("literal release capacity refusal is a hard shell gate", () => {
+  const update = join(repoRoot, "deploy/scripts/update.sh");
+  const harness = `
+source "$1"
+require_file() { :; }
+env_value() {
+  case "$2" in
+    WEATHER_RELEASE) printf '%s\n' '2026.10.07-3' ;;
+    WEATHER_CONTROL_PLANE_VERSION) printf '%s\n' '13' ;;
+    WEATHER_SERVER_IMAGE) printf '%s\n' 'ghcr.io/anstosa/weather-server@sha256:${"a".repeat(64)}' ;;
+    WEATHER_WEB_IMAGE) printf '%s\n' 'ghcr.io/anstosa/weather-web@sha256:${"b".repeat(64)}' ;;
+  esac
+}
+node() {
+  printf '%s\n' '{"contractVersion":"adjustment-release-capacity/v3","state":"capacity_blocked","retirementCreditBytes":0}'
+  return 3
+}
+require_literal_adjustment_release_capacity source.env target.env
+printf '%s\n' reached-pull
+`;
+  const result = spawnSync("bash", ["-c", harness, "weather-literal-capacity", update], {
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /literal adjustment release image capacity is blocked/u);
+  assert.doesNotMatch(result.stdout, /reached-pull/u);
 });
 
 // verify trap-only cleanup portability
@@ -1634,6 +2214,10 @@ test("trap-only cleanup functions suppress supported ShellCheck diagnostics", ()
   assert.match(
     update,
     /  # shellcheck disable=SC2317,SC2329\n  cleanup_initial_activation\(\) \{/u,
+  );
+  assert.match(
+    update,
+    /  # shellcheck disable=SC2317,SC2329\n  restore_failed_yolo\(\) \{/u,
   );
 });
 
@@ -1651,6 +2235,8 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(stageCase, /compose config --quiet/u);
   assert.match(stageCase, /resolve_arm64_image/u);
   assert.match(stageCase, /compose pull/u);
+  assert.match(stageCase, /cleanup_obsolete_weather_images/u);
+  assert.match(stageCase, /require_image_pull_capacity_floor/u);
   assert.match(stageCase, /mktemp/u);
   assert.match(stageCase, /trap[\s\S]*EXIT/u);
   assert.match(stageCase, /mv[\s\S]*\$target/u);
@@ -1669,6 +2255,13 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   ]) {
     assert.equal(stageControlGate < stageCase.indexOf(mutation), true, mutation);
   }
+  const cleanupIndex = stageCase.indexOf("cleanup_obsolete_weather_images");
+  const basicCapacityIndex = stageCase.indexOf("require_image_pull_capacity_floor");
+  const fullCapacityIndex = stageCase.indexOf("require_capacity_gate");
+  const pullIndex = stageCase.indexOf("compose pull");
+  assert.equal(fullCapacityIndex < cleanupIndex, true);
+  assert.equal(cleanupIndex < basicCapacityIndex, true);
+  assert.equal(basicCapacityIndex < pullIndex, true);
   assert.doesNotMatch(
     update.split("# locate one validated release environment")[0],
     /mkdir -p/u,
@@ -1741,12 +2334,13 @@ test("release operations stage, compatibility-check, activate, rollback, and rec
   assert.match(rollbackCase, /rollback_release/u);
   assert.match(rollbackFunction, /restore_images/u);
   assert.match(update, /--no-deps --force-recreate --wait postgres/u);
-  assert.match(update, /--no-deps --wait api worker web cloudflared/u);
+  assert.match(update, /--no-deps --wait[\s\\]+api worker web cloudflared/u);
   assert.doesNotMatch(rollbackFunction, /backup\.sh|compose run[^\n]*migration|start_release/u);
   assert.doesNotMatch(
     update,
     /docker (?:system|volume|network) prune|compose down[^\n]*(?:--volumes|\s-v(?:\s|$))/u,
   );
+  assert.doesNotMatch(update, /docker image prune|docker image rm[^\n]*--force/u);
   assert.match(read("deploy/compose.local.yaml"), /WEATHER_LOCAL_CLOUDFLARED_IMAGE/u);
   const composeIntegration = read("deploy/test/compose.integration.test.mjs");
   // preserve prior image file modes under a restrictive umask

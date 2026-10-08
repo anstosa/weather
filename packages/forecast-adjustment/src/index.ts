@@ -15,3 +15,6 @@ export * from "./temperature-weather-research.js";
 export * from "./wind-canary.js";
 export * from "./rain-hurdle-wind.js";
 export * from "./performance-scorecard.js";
+export * from "./maintenance-policy.js";
+export * from "./rain-runtime-registry.js";
+export * from "./maintenance-shadow-values.js";

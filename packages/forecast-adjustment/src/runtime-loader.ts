@@ -12,7 +12,7 @@ import {
   type JsonValue,
 } from "@weather/domain";
 
-import { canonicalJsonBytes, deepFreeze } from "./candidate.js";
+import { canonicalJsonBytes, canonicalSha256, deepFreeze } from "./candidate.js";
 import { runtimeCalendarFingerprintMatches } from "./calendar.js";
 import { verifyForecastAdjustmentRuntimeBundle } from "./runtime-bundle.js";
 import {
@@ -42,6 +42,45 @@ export const FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME =
   "ballydidean-wind-canary.json";
 export const FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME =
   "ballydidean-temperature-canary.json";
+export const FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_SHA256 =
+  "cee570ec382a99b25427523438bde556b6daed780e49ad14d1399d182ac14165" as const;
+export const FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_SHA256 =
+  "fa9856f136b731427ddedf2be40410142912198b8eabc3222735a0563c6964b9" as const;
+export const FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_BYTES = 142 as const;
+export const FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_BYTES = 763 as const;
+
+export const FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS = deepFreeze([
+  { leadBand: "001-024", metric: "windGustMps" },
+  { leadBand: "025-048", metric: "windGustMps" },
+  { leadBand: "073-096", metric: "windGustMps" },
+  { leadBand: "097-120", metric: "windGustMps" },
+  { leadBand: "121-144", metric: "windGustMps" },
+  { leadBand: "145-168", metric: "windGustMps" },
+  { leadBand: "001-024", metric: "windSpeedMps" },
+  { leadBand: "025-048", metric: "windSpeedMps" },
+  { leadBand: "049-072", metric: "windSpeedMps" },
+  { leadBand: "073-096", metric: "windSpeedMps" },
+  { leadBand: "097-120", metric: "windSpeedMps" },
+  { leadBand: "121-144", metric: "windSpeedMps" },
+  { leadBand: "145-168", metric: "windSpeedMps" },
+] as const);
+
+// describe the exact nullable temperature maintenance registry
+export interface ForecastAdjustmentTemperatureCanaryRegistryV2 {
+  readonly activeBundle: null;
+  readonly contractVersion: "forecast-adjustment-temperature-canary-registry/v2";
+  readonly rawReason: "policy_raw";
+  readonly siteKey: "ballydidean";
+}
+
+// describe the exact nullable wind maintenance registry
+export interface ForecastAdjustmentWindCanaryRegistryV2 {
+  readonly activeBundle: null;
+  readonly contractVersion: "forecast-adjustment-wind-canary-registry/v2";
+  readonly enabledMetricBands: typeof FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS;
+  readonly rawReason: "policy_raw";
+  readonly siteKey: "ballydidean";
+}
 
 // cache one startup adjustment provider state
 export type LoadedForecastAdjustmentRuntimeV1 =
@@ -85,9 +124,18 @@ export type LoadedForecastAdjustmentWindCanaryRuntimeV1 =
       readonly state: "disabled";
     };
 
+// extend the old startup result without reinterpreting v1 registries
+export type LoadedForecastAdjustmentWindCanaryRuntime =
+  | LoadedForecastAdjustmentWindCanaryRuntimeV1
+  | {
+      readonly bundle: null;
+      readonly reasonCode: "policy_raw";
+      readonly state: "disabled";
+    };
+
 // define one startup-only canary loader
 export interface ForecastAdjustmentWindCanaryRuntimeLoaderV1 {
-  readonly load: () => Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1>;
+  readonly load: () => Promise<LoadedForecastAdjustmentWindCanaryRuntime>;
 }
 
 // inject the one-way environment control and clock
@@ -98,8 +146,17 @@ export interface ForecastAdjustmentWindCanaryRuntimeOptionsV1 {
 
 // define one startup-only temperature canary loader
 export interface ForecastAdjustmentTemperatureCanaryRuntimeLoaderV1 {
-  readonly load: () => Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1>;
+  readonly load: () => Promise<LoadedForecastAdjustmentTemperatureCanaryRuntime>;
 }
+
+// extend the old startup result without reinterpreting v1 registries
+export type LoadedForecastAdjustmentTemperatureCanaryRuntime =
+  | LoadedForecastAdjustmentTemperatureCanaryRuntimeV1
+  | {
+      readonly bundle: null;
+      readonly reasonCode: "policy_raw";
+      readonly state: "disabled";
+    };
 
 // inject the independent fail-closed control and clock
 export interface ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1 {
@@ -144,11 +201,11 @@ export function createForecastAdjustmentWindCanaryRuntimeLoaderForRoot(
   root: string,
   options: ForecastAdjustmentWindCanaryRuntimeOptionsV1 = {},
 ): ForecastAdjustmentWindCanaryRuntimeLoaderV1 {
-  let cached: Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> | null = null;
+  let cached: Promise<LoadedForecastAdjustmentWindCanaryRuntime> | null = null;
 
   return deepFreeze({
     // cache both success and fail-raw results for process lifetime
-    load(): Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> {
+    load(): Promise<LoadedForecastAdjustmentWindCanaryRuntime> {
       cached ??= loadWindCanaryRuntimeFromRoot(root, options);
       return cached;
     },
@@ -170,11 +227,11 @@ export function createForecastAdjustmentTemperatureCanaryRuntimeLoaderForRoot(
   root: string,
   options: ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1 = {},
 ): ForecastAdjustmentTemperatureCanaryRuntimeLoaderV1 {
-  let cached: Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> | null = null;
+  let cached: Promise<LoadedForecastAdjustmentTemperatureCanaryRuntime> | null = null;
 
   return deepFreeze({
     // cache both success and fail-raw results for process lifetime
-    load(): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> {
+    load(): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntime> {
       cached ??= loadTemperatureCanaryRuntimeFromRoot(root, options);
       return cached;
     },
@@ -270,7 +327,7 @@ async function loadRuntimeFromRoot(
 async function loadWindCanaryRuntimeFromRoot(
   root: string,
   options: ForecastAdjustmentWindCanaryRuntimeOptionsV1,
-): Promise<LoadedForecastAdjustmentWindCanaryRuntimeV1> {
+): Promise<LoadedForecastAdjustmentWindCanaryRuntime> {
   // let the one-way switch fail raw before filesystem access
   if (forecastAdjustmentWindCanaryIsKilled(options.environmentKillSwitch)) {
     return disabledWindCanary("canary_killed");
@@ -297,12 +354,21 @@ async function loadWindCanaryRuntimeFromRoot(
       throw new RangeError("wind canary runtime root is not canonical");
     }
 
-    registry = await readRegularJson<ForecastAdjustmentWindCanaryRegistryV1>(
+    const parsed = await readRegularJson<
+      ForecastAdjustmentWindCanaryRegistryV1 | ForecastAdjustmentWindCanaryRegistryV2
+    >(
       join(absoluteRoot, FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME),
       absoluteRoot,
     );
 
-    validateForecastAdjustmentWindCanaryRegistry(registry);
+    // accept only the exact nullable v2 bytes and fixed thirteen-pair mask
+    if (parsed.contractVersion === "forecast-adjustment-wind-canary-registry/v2") {
+      validateForecastAdjustmentWindCanaryRegistryV2(parsed);
+      return disabledWindCanary("policy_raw");
+    }
+
+    validateForecastAdjustmentWindCanaryRegistry(parsed);
+    registry = parsed;
   } catch {
     return disabledWindCanary("registry_invalid");
   }
@@ -369,7 +435,7 @@ async function loadWindCanaryRuntimeFromRoot(
 async function loadTemperatureCanaryRuntimeFromRoot(
   root: string,
   options: ForecastAdjustmentTemperatureCanaryRuntimeOptionsV1,
-): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntimeV1> {
+): Promise<LoadedForecastAdjustmentTemperatureCanaryRuntime> {
   // default closed until the operator explicitly enables serving
   if (forecastAdjustmentTemperatureCanaryIsKilled(options.environmentKillSwitch)) {
     return disabledTemperatureCanary("canary_killed");
@@ -396,11 +462,25 @@ async function loadTemperatureCanaryRuntimeFromRoot(
       throw new RangeError("temperature canary runtime root is not canonical");
     }
 
-    registry = await readRegularJson<ForecastAdjustmentTemperatureCanaryRegistryV1>(
+    const parsed = await readRegularJson<
+      ForecastAdjustmentTemperatureCanaryRegistryV1 |
+      ForecastAdjustmentTemperatureCanaryRegistryV2
+    >(
       join(absoluteRoot, FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME),
       absoluteRoot,
     );
-    validateForecastAdjustmentTemperatureCanaryRegistry(registry);
+
+    // accept only the exact nullable v2 bytes
+    if (
+      parsed.contractVersion ===
+      "forecast-adjustment-temperature-canary-registry/v2"
+    ) {
+      validateForecastAdjustmentTemperatureCanaryRegistryV2(parsed);
+      return disabledTemperatureCanary("policy_raw");
+    }
+
+    validateForecastAdjustmentTemperatureCanaryRegistry(parsed);
+    registry = parsed;
   } catch {
     return disabledTemperatureCanary("registry_invalid");
   }
@@ -584,6 +664,51 @@ function sameFileMetadata(
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size;
 }
 
+// validate the closed nullable temperature registry
+function validateForecastAdjustmentTemperatureCanaryRegistryV2(
+  registry: ForecastAdjustmentTemperatureCanaryRegistryV2,
+): void {
+  const keys = Object.keys(registry);
+
+  // reject unknown, missing, or reordered raw fields
+  if (
+    keys.join(",") !== "activeBundle,contractVersion,rawReason,siteKey" ||
+    registry.activeBundle !== null ||
+    registry.rawReason !== "policy_raw" ||
+    registry.siteKey !== "ballydidean" ||
+    canonicalJsonBytes(registry as unknown as JsonValue).length !==
+      FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_BYTES ||
+    canonicalSha256(registry as unknown as JsonValue) !==
+      FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_RAW_REGISTRY_SHA256
+  ) {
+    throw new RangeError("temperature maintenance raw registry is invalid");
+  }
+}
+
+// validate the closed nullable wind registry and exact mask
+function validateForecastAdjustmentWindCanaryRegistryV2(
+  registry: ForecastAdjustmentWindCanaryRegistryV2,
+): void {
+  const keys = Object.keys(registry);
+
+  // reject unknown, missing, reordered, or expanded raw fields
+  if (
+    keys.join(",") !==
+      "activeBundle,contractVersion,enabledMetricBands,rawReason,siteKey" ||
+    registry.activeBundle !== null ||
+    registry.rawReason !== "policy_raw" ||
+    registry.siteKey !== "ballydidean" ||
+    JSON.stringify(registry.enabledMetricBands) !==
+      JSON.stringify(FORECAST_ADJUSTMENT_WIND_MAINTENANCE_METRIC_BANDS) ||
+    canonicalJsonBytes(registry as unknown as JsonValue).length !==
+      FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_BYTES ||
+    canonicalSha256(registry as unknown as JsonValue) !==
+      FORECAST_ADJUSTMENT_WIND_CANARY_RAW_REGISTRY_SHA256
+  ) {
+    throw new RangeError("wind maintenance raw registry is invalid");
+  }
+}
+
 // create one deeply frozen disabled provider
 function disabled(
   reasonCode: Extract<
@@ -596,25 +721,20 @@ function disabled(
 
 // create one deeply frozen disabled canary provider
 function disabledWindCanary(
-  reasonCode: Extract<
-    ForecastAdjustmentReasonCode,
-    | "bundle_invalid"
-    | "bundle_missing"
-    | "canary_expired"
-    | "canary_killed"
-    | "registry_inactive"
-    | "registry_invalid"
+  reasonCode: Exclude<
+    LoadedForecastAdjustmentWindCanaryRuntime["reasonCode"],
+    null
   >,
-): LoadedForecastAdjustmentWindCanaryRuntimeV1 {
+): LoadedForecastAdjustmentWindCanaryRuntime {
   return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
 }
 
 // create one deeply frozen disabled temperature canary
 function disabledTemperatureCanary(
   reasonCode: Exclude<
-    LoadedForecastAdjustmentTemperatureCanaryRuntimeV1["reasonCode"],
+    LoadedForecastAdjustmentTemperatureCanaryRuntime["reasonCode"],
     null
   >,
-): LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 {
+): LoadedForecastAdjustmentTemperatureCanaryRuntime {
   return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
 }

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -535,6 +536,107 @@ def infer_rows(rows, models):
     return results
 
 
+# fit both fixed arms and select only on causal already-opened development
+def fit_monthly_temperature(payload):
+    required = {"contractVersion", "month", "trainingRows", "developmentRows", "incumbentModel"}
+    # reject a confirmation package or caller-defined search policy
+    if set(payload) != required or payload["contractVersion"] != "temperature-maintenance-fit-input/v2":
+        raise ValueError("invalid temperature fit-only input")
+    month = payload["month"]
+    start = dt.datetime.strptime(month, "%Y-%m").replace(tzinfo=ZONE)
+    # reject normalized month spellings
+    if start.strftime("%Y-%m") != month:
+        raise ValueError("invalid original due month")
+    cutoff = start - dt.timedelta(hours=168)
+    training, development = payload["trainingRows"], payload["developmentRows"]
+    # bound input populations independently of native allocations
+    if not isinstance(training, list) or not isinstance(development, list) or len(training) + len(development) > MAX_ROWS:
+        raise ValueError("temperature fit row ceiling exceeded")
+    seen = set()
+    # distinguish repeated score keys from duplicated events within either population
+    for phase, rows in (("training", training), ("development", development)):
+        # require actual immutable availability rather than claimed hindsight
+        for row in rows:
+            identity = (row["key"], phase)
+            # duplicates and missing source or target receipts remain invalid
+            if identity in seen or row.get("sourceReceiptAt") is None or row.get("targetMaxReceiptAt") is None:
+                raise ValueError("temperature fit input has missing or duplicate provenance")
+            seen.add(identity)
+            # keep the original due cutoff even during catch-up
+            if instant(row["sourceReceiptAt"]) >= cutoff or instant(row["targetMaxReceiptAt"]) >= cutoff or instant(row["validAt"]) >= cutoff:
+                raise ValueError("temperature fit input is not earlier than the original cutoff")
+            # a reserved member cannot become development through a fitter
+            if row.get("evidenceClass") != "development" or row.get("actualTemperatureC") is None:
+                raise ValueError("temperature fit-only input must be opened development")
+    incumbent = payload["incumbentModel"]
+    arms = {}
+    final_models = {}
+    short = importlib.import_module("temperature_shortlead_models")
+    incumbent_results = infer_rows(development, {"frozen": incumbent})
+    dates = {instant(row["validAt"]).astimezone(ZONE).date().isoformat() for row in development}
+    supported = len(development) >= 1000 and len(dates) >= 60
+    weight = short.event_weights(development)
+    # normalize the retained equal-date mass before comparing losses
+    if len(development):
+        weight = weight / weight.sum()
+    raw_mae = sum(float(w) * abs(row["rawTemperatureC"] - row["actualTemperatureC"]) for w, row in zip(weight, development, strict=True))
+    incumbent_mae = sum(float(w) * abs(result["predictionTemperatureC"] - row["actualTemperatureC"]) for w, row, result in zip(weight, development, incumbent_results, strict=True))
+    # perform both real final fits even when development has no selectable winner
+    for arm in ARMS[1:]:
+        model, receipt = fit_candidate(training, month, arm, incumbent)
+        final_models[arm] = model
+        score_models = {}
+        # historical score months retain their own earlier-only embargo
+        for score_month in sorted({instant(row["validAt"]).astimezone(ZONE).strftime("%Y-%m") for row in development}):
+            score_models[score_month], _ = fit_candidate(training, score_month, arm, incumbent)
+        results = infer_rows(development, score_models)
+        mae = sum(float(w) * abs(result["predictionTemperatureC"] - row["actualTemperatureC"]) for w, row, result in zip(weight, development, results, strict=True))
+        applied_count = sum(result["applied"] for result in results)
+        eligible = supported and model["supported"] and applied_count > 0 and mae <= raw_mae and mae <= incumbent_mae
+        arms[arm] = {"fitReceipt": receipt, "developmentMae": mae if supported else None,
+                     "developmentDates": len(dates), "developmentRows": len(development),
+                     "fallbackCount": sum(not result["applied"] for result in results),
+                     "eligible": eligible}
+    eligible = [arm for arm in ARMS[1:] if arms[arm]["eligible"]]
+    selected = min(eligible, key=lambda arm: (arms[arm]["developmentMae"], ARMS.index(arm))) if eligible else None
+    model = None
+    # freeze only the selected causal fit for a future one-shot confirmation
+    if selected is not None:
+        fitted = final_models[selected]
+        model = {key: value for key, value in fitted.items() if key not in ("month", "contractVersion")}
+        model.update({"contractVersion": "temperature-permanent-model/v1",
+                      "effectiveFrom": format_instant(start),
+                      "latestTrainingValidAt": arms[selected]["fitReceipt"]["latestTrainingValidAt"]})
+    return {"contractVersion": "temperature-maintenance-fit/v2", "dueMonth": month,
+            "state": "development_candidate" if selected is not None else "no_candidate",
+            "selectedArm": selected, "model": model, "arms": arms,
+            "confirmationOpened": False, "servingChanged": False,
+            "developmentRawMae": raw_mae if supported else None,
+            "developmentIncumbentMae": incumbent_mae if supported else None}
+
+
+# read the sandbox's fixed input and return only bounded candidate material
+def fit_only_main():
+    path = Path("/input/data/temperature.json")
+    # reject links and overflow before decoding any rows
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_INPUT_BYTES:
+        raise ValueError("invalid temperature sandbox input")
+    value = fit_monthly_temperature(json.loads(path.read_bytes()))
+    data = canonical(value) + b"\n"
+    # sanitized family output remains within the eight-mib monthly ceiling
+    if len(data) > 8 * 1024 * 1024:
+        raise ValueError("temperature candidate ceiling exceeded")
+    destination = Path("/output/temperature.json")
+    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # flush the isolated result before the controller reads it
+    with os.fdopen(fd, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+
+
 # run every preregistered arm and retain rejected or unsupported proposals
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -672,4 +774,8 @@ def main():
 
 # keep all execution behind the explicit offline command
 if __name__ == "__main__":
-    main()
+    # keep the old v1 command separate from maintenance fitting
+    if sys.argv[1:] == ["--fit-only"]:
+        fit_only_main()
+    else:
+        main()

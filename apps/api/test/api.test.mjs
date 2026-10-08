@@ -876,6 +876,52 @@ test("I-API-01 forecast preserves raw metrics with inactive adjustment metadata"
   });
 });
 
+// explicit rain policy must suppress retained sidecars before repository access
+test("rain policy-raw response preserves Best Match and frozen startup status", async () => {
+  let rainReads = 0;
+  const { handler } = createFixture({
+    // fail if disabled policy reaches retained adjusted output
+    async getRainAdjustmentRun() {
+      rainReads += 1;
+      assert.fail("policy-raw forecast read a retained rain run");
+    },
+  }, {
+    rainAdjustment: {
+      loadedAt: "2026-08-22T04:58:00.000Z",
+      runtime: {
+        artifactSha256: null,
+        reasonCode: "policy_raw",
+        state: "disabled",
+      },
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(rainReads, 0);
+  assert.equal(body.data[0].metrics.precipitationMm, 0.1);
+  assert.deepEqual(body.data[0].rainAdjustment, {
+    bundleSha256: null,
+    contractVersion: "forecast-rain-adjustment-decision/v1",
+    correctedPrecipitationMm: null,
+    rawBestMatchPrecipitationMm: 0.1,
+    reasonCode: "policy_raw",
+    sourceForecast: null,
+    state: "disabled",
+  });
+  assert.deepEqual(body.rainAdjustmentRuntime, {
+    activeBundle: null,
+    loadedAt: "2026-08-22T04:58:00.000Z",
+    reasonCode: "policy_raw",
+    source: null,
+    state: "disabled",
+  });
+  assert.equal(body.data[0].adjustment.reasonCode, "registry_inactive");
+  assert.equal(body.data[0].temperatureAdjustment.reasonCode, "registry_inactive");
+});
+
 // expose an unadjusted complete retained pressure vintage separately
 test("forecast pressure context remains raw and isolated from forecast data", async () => {
   // build one complete prior-vintage pressure window

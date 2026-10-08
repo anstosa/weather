@@ -1,7 +1,16 @@
 import type { RainAdjustmentRun, RainAdjustmentHour } from "@weather/database";
-import { RAIN_HURDLE_WIND_MODEL_SHA256 } from "@weather/forecast-adjustment";
+import {
+  RAIN_HURDLE_WIND_MODEL_SHA256,
+  type LoadedForecastAdjustmentRainRuntimeRegistryV1,
+} from "@weather/forecast-adjustment";
 
 const HOUR_MS = 3_600_000;
+
+// freeze one startup rain policy for every request
+export interface ApiRainAdjustmentStartupSnapshot {
+  readonly loadedAt: string;
+  readonly runtime: LoadedForecastAdjustmentRainRuntimeRegistryV1;
+}
 
 export interface ApiRainAdjustmentDecision {
   readonly contractVersion: "forecast-rain-adjustment-decision/v1";
@@ -67,7 +76,20 @@ export function rainAdjustmentDecision(
   validAt: string,
   rawBestMatchPrecipitationMm: number | null,
   now: string,
+  selection?: ApiRainAdjustmentStartupSnapshot,
 ): ApiRainAdjustmentDecision {
+  // explicit registry policy overrides retained adjusted runs
+  if (selection?.runtime.state === "disabled") {
+    return {
+      contractVersion: "forecast-rain-adjustment-decision/v1",
+      state: "disabled",
+      reasonCode: selection.runtime.reasonCode,
+      bundleSha256: null,
+      correctedPrecipitationMm: null,
+      rawBestMatchPrecipitationMm,
+      sourceForecast: null,
+    };
+  }
   const valid = validRainAdjustmentRun(run, now);
   const hour: RainAdjustmentHour | undefined = valid ? run.hours.find((item) => item.validAt === validAt) : undefined;
   const active = hour?.applied === true && rawBestMatchPrecipitationMm !== null &&
@@ -88,13 +110,27 @@ export function rainAdjustmentDecision(
 }
 
 // expose bounded availability while keeping station observations and inputs private
-export function rainAdjustmentRuntime(run: RainAdjustmentRun | null, now: string) {
+export function rainAdjustmentRuntime(
+  run: RainAdjustmentRun | null,
+  now: string,
+  selection?: ApiRainAdjustmentStartupSnapshot,
+) {
+  // expose the exact startup refusal without consulting retained output
+  if (selection?.runtime.state === "disabled") {
+    return {
+      state: "disabled" as const,
+      activeBundle: null,
+      reasonCode: selection.runtime.reasonCode,
+      loadedAt: selection.loadedAt,
+      source: null,
+    };
+  }
   const active = validRainAdjustmentRun(run, now) && run.hours.some((hour) => hour.applied);
   return {
     state: active ? "active" : "disabled",
     activeBundle: active ? run!.modelSha256 : null,
     reasonCode: active ? null : "model_unavailable",
-    loadedAt: now,
+    loadedAt: selection?.loadedAt ?? now,
     source: active ? {
       runInitializedAt: run!.runInitializedAt, firstReceivedAt: run!.firstReceivedAt,
       decisionAt: run!.decisionAt, hourCount: run!.hours.filter((hour) => hour.applied).length,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
   chmod,
   cp,
@@ -20,6 +21,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+  FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES,
 } from "../scripts/forecast-adjustment-scorecard-contract.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -165,6 +167,65 @@ function scorecard() {
   };
 }
 
+// build one valid automatic-policy scorecard projection
+function scorecardV2(overrides = {}) {
+  const sameIdentity = (value) => ({ rain: value, temperature: value, wind: value });
+  return {
+    actionLineage: {
+      actionSha256: "1".repeat(64),
+      attemptSha256: "2".repeat(64),
+      predecessorActionSha256: null,
+      releaseManifestSha256: "3".repeat(64),
+      sourceRevision: "4".repeat(40),
+    },
+    actionProjectionSha256: "5".repeat(64),
+    actionState: "active",
+    contractVersion: "forecast-adjustment-scorecard/v2",
+    families: scorecard().families,
+    generatedAt: "2099-10-01T01:00:00.000Z",
+    history: [{
+      actionLineageSha256: "6".repeat(64),
+      actionProjectionSha256: "5".repeat(64),
+      actionState: "active",
+      attemptSha256: "2".repeat(64),
+      occurredAt: "2099-10-01T00:59:00.000Z",
+      policyDecision: "qualified",
+      releaseManifestSha256: "3".repeat(64),
+    }],
+    identities: {
+      active: sameIdentity("7".repeat(64)),
+      prior: sameIdentity(null),
+      raw: sameIdentity("8".repeat(64)),
+      shadow: sameIdentity(null),
+    },
+    inputs: {
+      ...scorecard().inputs,
+      frontierSha256: "9".repeat(64),
+      inputManifestSha256: "a".repeat(64),
+      reportSha256: "b".repeat(64),
+    },
+    job: {
+      attemptState: "completed",
+      backlogState: "clear",
+      dueState: "not_due",
+      operatorState: "enabled",
+      successState: "succeeded",
+    },
+    policyDecision: "qualified",
+    progress: {
+      confirmationCompletedEpochs: 4,
+      confirmationRequiredEpochs: 4,
+      rainCaptureExpiresAt: "2099-10-08T00:00:00.000Z",
+      rollbackCompletedEpochs: 0,
+      rollbackRequiredEpochs: 2,
+    },
+    siteKey: "ballydidean",
+    validThrough: "2099-10-08T01:00:00.000Z",
+    warnings: { capacity: [], capture: [], fallback: [], gauge: [], source: [] },
+    ...overrides,
+  };
+}
+
 // create one isolated publisher with a recording SSH boundary
 async function publisherHarness(root) {
   const scripts = join(root, "deploy/scripts");
@@ -200,6 +261,15 @@ async function installerHarness(root) {
   const scripts = join(root, "deploy/scripts");
   const commands = join(root, "commands");
   const scorecardRoot = join(root, "adjustment-evidence");
+  const installerSource = await readFile(
+    join(repoRoot, "deploy/scripts/install-adjustment-scorecard.sh"),
+    "utf8",
+  );
+  const isolatedInstallerSource = installerSource.replace(
+    "v2_scorecard_root=/var/lib/weather/xweather/adjustment-evidence",
+    `v2_scorecard_root=${JSON.stringify(scorecardRoot)}`,
+  );
+  assert.notEqual(isolatedInstallerSource, installerSource);
   await Promise.all([
     mkdir(scripts, { recursive: true }),
     mkdir(commands, { recursive: true }),
@@ -210,10 +280,7 @@ async function installerHarness(root) {
       join(repoRoot, "deploy/scripts/forecast-adjustment-scorecard-contract.mjs"),
       join(scripts, "forecast-adjustment-scorecard-contract.mjs"),
     ),
-    cp(
-      join(repoRoot, "deploy/scripts/install-adjustment-scorecard.sh"),
-      join(scripts, "install-adjustment-scorecard.sh"),
-    ),
+    writeFile(join(scripts, "install-adjustment-scorecard.sh"), isolatedInstallerSource),
     writeFile(join(commands, "chown"), `#!/usr/bin/env bash
 set -euo pipefail
 exit 0
@@ -245,11 +312,23 @@ while (($#)) && [[ "$1" == --* ]]; do
 done
 exec "$@"
 `),
+    writeFile(join(commands, "mv"), `#!/usr/bin/env bash
+set -euo pipefail
+destination=\${!#}
+# inject one failure only at the final v2 selection rename
+if [[ \${FAIL_V2_CURRENT_MOVE:-0} == 1 && "$destination" == */v2-current.json &&
+  ! -e "$MV_FAILURE_MARKER" ]]; then
+  : >"$MV_FAILURE_MARKER"
+  exit 23
+fi
+exec /usr/bin/mv "$@"
+`),
   ]);
   await Promise.all([
     chmod(join(scripts, "install-adjustment-scorecard.sh"), 0o700),
     chmod(join(commands, "chown"), 0o700),
     chmod(join(commands, "install"), 0o700),
+    chmod(join(commands, "mv"), 0o700),
     chmod(join(commands, "setpriv"), 0o700),
   ]);
   return {
@@ -271,11 +350,29 @@ function runInstallerDirectly(harness, sha256, input) {
   });
 }
 
+// invoke the copied v2 installer directly inside an already-root process
+function runInstallerV2Directly(harness, sha256, input, extraEnvironment = {}) {
+  return spawnSync(harness.installer, ["--v2", sha256], {
+    encoding: "utf8",
+    env: { ...harness.environment, ...extraEnvironment },
+    input,
+  });
+}
+
 // invoke the copied installer inside a disposable user namespace
 function runInstallerInNamespace(harness, sha256, input) {
   return spawnSync("unshare", ["-Ur", harness.installer, sha256], {
     encoding: "utf8",
     env: harness.environment,
+    input,
+  });
+}
+
+// invoke the copied v2 installer inside a disposable user namespace
+function runInstallerV2InNamespace(harness, sha256, input, extraEnvironment = {}) {
+  return spawnSync("unshare", ["-Ur", harness.installer, "--v2", sha256], {
+    encoding: "utf8",
+    env: { ...harness.environment, ...extraEnvironment },
     input,
   });
 }
@@ -337,6 +434,181 @@ async function verifyInstallerPublication(runInstaller) {
   }
 }
 
+// exercise bounded v2 rotation, idempotence and version/hash refusal
+async function verifyInstallerV2Publication(runInstaller, runLegacyInstaller) {
+  const root = await mkdtemp(join(tmpdir(), "weather-scorecard-v2-installer-"));
+
+  try {
+    const harness = await installerHarness(root);
+    const firstBytes = Buffer.from(`${JSON.stringify(scorecardV2())}\n`);
+    const firstDigest = createHash("sha256").update(firstBytes).digest("hex");
+    const oversizedHarness = await installerHarness(join(root, "oversized"));
+    const oversizedBytes = Buffer.concat([
+      Buffer.from(JSON.stringify(scorecardV2())),
+      Buffer.alloc(FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES, 0x20),
+    ]);
+    const oversizedDigest = createHash("sha256").update(oversizedBytes).digest("hex");
+    const oversizedResult = runInstaller(
+      oversizedHarness,
+      oversizedDigest,
+      oversizedBytes,
+    );
+    assert.notEqual(oversizedResult.status, 0);
+    assert.match(oversizedResult.stderr, /v2 is too large/u);
+    assert.deepEqual(
+      await readdir(join(oversizedHarness.scorecardRoot, "scorecards-v2")),
+      [],
+    );
+    const secondBytes = Buffer.from(`${JSON.stringify(scorecardV2({
+      actionProjectionSha256: "c".repeat(64),
+      generatedAt: "2099-10-02T01:00:00.000Z",
+      history: [{
+        ...scorecardV2().history[0],
+        actionProjectionSha256: "c".repeat(64),
+        occurredAt: "2099-10-02T00:59:00.000Z",
+      }],
+      validThrough: "2099-10-09T01:00:00.000Z",
+    }))}\n`);
+    const secondDigest = createHash("sha256").update(secondBytes).digest("hex");
+    const locked = await installerHarness(join(root, "locked"));
+    await mkdir(locked.scorecardRoot, { recursive: true, mode: 0o700 });
+    const holder = spawn("bash", [
+      "-c",
+      'exec 9<"$1"; flock --exclusive 9; printf ready; read -r ignored || :',
+      "scorecard-lock-holder",
+      locked.scorecardRoot,
+    ], { stdio: ["pipe", "pipe", "pipe"] });
+    try {
+      await once(holder.stdout, "data");
+      const concurrent = runInstaller(locked, firstDigest, firstBytes);
+      assert.notEqual(concurrent.status, 0);
+      assert.match(concurrent.stderr, /another scorecard installation is in flight/u);
+      await assert.rejects(readFile(join(locked.scorecardRoot, "v2-current.json")), { code: "ENOENT" });
+    } finally {
+      const exited = once(holder, "exit");
+      holder.stdin.end();
+      await exited;
+    }
+
+    const hidden = await installerHarness(join(root, "hidden"));
+    await mkdir(join(hidden.scorecardRoot, "scorecards-v2"), { recursive: true, mode: 0o700 });
+    await writeFile(join(hidden.scorecardRoot, "scorecards-v2/.unanchored"), "unanchored", { mode: 0o600 });
+    const hiddenResult = runInstaller(hidden, firstDigest, firstBytes);
+    assert.notEqual(hiddenResult.status, 0);
+    assert.match(hiddenResult.stderr, /invalid entry/u);
+
+    const failureMarker = join(root, "mv-failure-marker");
+    const first = runInstaller(harness, firstDigest, firstBytes, {
+        FAIL_V2_CURRENT_MOVE: "1",
+        MV_FAILURE_MARKER: failureMarker,
+    });
+    assert.equal(first.status, 23, first.stderr);
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-pending.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    await assert.rejects(
+      readFile(join(harness.scorecardRoot, "v2-current.json")),
+      (error) => error.code === "ENOENT",
+    );
+    const resumed = runInstaller(harness, firstDigest, firstBytes);
+    assert.equal(resumed.status, 0, resumed.stderr);
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-current.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    const secondFailureMarker = join(root, "second-mv-failure-marker");
+    const interruptedSecond = runInstaller(harness, secondDigest, secondBytes, {
+      FAIL_V2_CURRENT_MOVE: "1",
+      MV_FAILURE_MARKER: secondFailureMarker,
+    });
+    assert.equal(interruptedSecond.status, 23, interruptedSecond.stderr);
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-current.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-previous.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-pending.json"), "utf8"),
+      `{"sha256":"${secondDigest}"}\n`,
+    );
+    const second = runInstaller(harness, secondDigest, secondBytes);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-current.json"), "utf8"),
+      `{"sha256":"${secondDigest}"}\n`,
+    );
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-previous.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    const thirdBytes = Buffer.from(`${JSON.stringify(scorecardV2({
+      actionProjectionSha256: "d".repeat(64),
+      generatedAt: "2099-10-03T01:00:00.000Z",
+      history: [{
+        ...scorecardV2().history[0],
+        actionProjectionSha256: "d".repeat(64),
+        occurredAt: "2099-10-03T00:59:00.000Z",
+      }],
+      validThrough: "2099-10-10T01:00:00.000Z",
+    }))}\n`);
+    const thirdDigest = createHash("sha256").update(thirdBytes).digest("hex");
+    const third = runInstaller(harness, thirdDigest, thirdBytes);
+    assert.notEqual(third.status, 0);
+    assert.match(third.stderr, /retirement authority is required/u);
+    await assert.rejects(
+      readFile(join(harness.scorecardRoot, "scorecards-v2", `sha256-${thirdDigest}.json`)),
+      (error) => error.code === "ENOENT",
+    );
+    await assert.rejects(
+      readFile(join(harness.scorecardRoot, "v2-pending.json")),
+      (error) => error.code === "ENOENT",
+    );
+    const repeated = runInstaller(harness, secondDigest, secondBytes);
+    assert.equal(repeated.status, 0, repeated.stderr);
+    assert.equal(
+      await readFile(join(harness.scorecardRoot, "v2-previous.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    const legacyBytes = Buffer.from(`${JSON.stringify(scorecard())}\n`);
+    const legacyDigest = createHash("sha256").update(legacyBytes).digest("hex");
+    const wrongVersion = runInstaller(harness, legacyDigest, legacyBytes);
+    assert.notEqual(wrongVersion.status, 0);
+    assert.match(wrongVersion.stderr, /requires a v2 document/u);
+    const wrongHash = runInstaller(harness, "0".repeat(64), secondBytes);
+    assert.notEqual(wrongHash.status, 0);
+    assert.match(wrongHash.stderr, /requested SHA-256/u);
+
+    const migration = await installerHarness(join(root, "migration"));
+    assert.equal(runLegacyInstaller(migration, legacyDigest, legacyBytes).status, 0);
+    assert.equal(runInstaller(migration, firstDigest, firstBytes).status, 0);
+    assert.equal(
+      await readFile(join(migration.scorecardRoot, "v2-pending.json"), "utf8"),
+      `{"sha256":"${firstDigest}"}\n`,
+    );
+    await assert.rejects(
+      readFile(join(migration.scorecardRoot, "v2-current.json")),
+      (error) => error.code === "ENOENT",
+    );
+    assert.equal(
+      await readFile(join(migration.scorecardRoot, "current.json"), "utf8"),
+      `{"sha256":"${legacyDigest}"}\n`,
+    );
+    const migrationRefusal = runInstaller(migration, secondDigest, secondBytes);
+    assert.notEqual(migrationRefusal.status, 0);
+    assert.match(migrationRefusal.stderr, /another v2 scorecard installation is pending/u);
+    await assert.rejects(
+      readFile(join(migration.scorecardRoot, "scorecards-v2", `sha256-${secondDigest}.json`)),
+      (error) => error.code === "ENOENT",
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+}
+
 // format one bounded privilege-child failure without hiding its exit evidence
 function childFailure(result, operation) {
   return [
@@ -392,6 +664,32 @@ test(installerTestName, async () => {
   assert.equal(rootChild.status, 0, childFailure(rootChild, "scorecard installer root child"));
 });
 
+test("v2 installer rotates only fixed hash pointers and is idempotent", async () => {
+  const uid = process.getuid?.();
+  const isRoot = uid === 0;
+
+  // keep root-owned fixtures and cleanup wholly inside the root process
+  if (isRoot) {
+    await verifyInstallerV2Publication(runInstallerV2Directly, runInstallerDirectly);
+    return;
+  }
+
+  const namespaceProbe = spawnSync("unshare", ["-Ur", "true"], {
+    encoding: "utf8",
+    env: { PATH: fixedExecutablePath },
+    timeout: 5_000,
+  });
+
+  // use the isolated uid namespace when available
+  if (namespaceProbe.status === 0) {
+    await verifyInstallerV2Publication(runInstallerV2InNamespace, runInstallerInNamespace);
+    return;
+  }
+
+  // retain explicit coverage only on hosts that can provide root isolation
+  assert.match(namespaceProbe.stderr, /(?:Operation not permitted|unshare failed)/u);
+});
+
 test("publisher hashes and transports the exact bounded no-follow capture", async () => {
   const root = await mkdtemp(join(tmpdir(), "weather-scorecard-publisher-"));
 
@@ -418,6 +716,24 @@ test("publisher hashes and transports the exact bounded no-follow capture", asyn
     );
     assert.deepEqual(await readFile(stdinPath), bytes);
 
+    const v2Bytes = Buffer.from(`${JSON.stringify(scorecardV2())}\n`);
+    const v2Digest = createHash("sha256").update(v2Bytes).digest("hex");
+    await writeFile(input, v2Bytes, { mode: 0o600 });
+    const v2Result = spawnSync(publisher, [input], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PUBLISH_ARGUMENTS_PATH: argumentsPath,
+        PUBLISH_STDIN_PATH: stdinPath,
+      },
+    });
+    assert.equal(v2Result.status, 0, v2Result.stderr);
+    assert.equal(
+      await readFile(argumentsPath, "utf8"),
+      `install-adjustment-scorecard-v2 ${v2Digest}\n`,
+    );
+    assert.deepEqual(await readFile(stdinPath), v2Bytes);
+
     const source = await readFile(publisher, "utf8");
     assert.match(source, /O_NOFOLLOW/u);
     assert.equal(source.match(/await open\(/gu)?.length, 1);
@@ -437,12 +753,21 @@ test("publisher rejects linked, oversized, invalid, and failed transports", asyn
     const valid = join(root, "valid.json");
     const linked = join(root, "linked.json");
     const oversized = join(root, "oversized.json");
+    const oversizedV2 = join(root, "oversized-v2.json");
     const invalid = join(root, "invalid.json");
     await writeFile(valid, `${JSON.stringify(scorecard())}\n`, { mode: 0o600 });
     await symlink(valid, linked);
     await writeFile(
       oversized,
       Buffer.alloc(FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES + 1, 0x20),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      oversizedV2,
+      Buffer.concat([
+        Buffer.from(JSON.stringify(scorecardV2())),
+        Buffer.alloc(FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES, 0x20),
+      ]),
       { mode: 0o600 },
     );
     await writeFile(invalid, "{}\n", { mode: 0o600 });
@@ -452,7 +777,7 @@ test("publisher rejects linked, oversized, invalid, and failed transports", asyn
       PUBLISH_STDIN_PATH: stdinPath,
     };
 
-    for (const input of [linked, oversized, invalid]) {
+    for (const input of [linked, oversized, oversizedV2, invalid]) {
       const result = spawnSync(publisher, [input], { encoding: "utf8", env: environment });
       assert.notEqual(result.status, 0, input);
     }

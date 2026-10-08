@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { createRainAdjustmentRun, rainForecastProfile, rainStationHours } from "../dist/rain-adjustment.js";
+import {
+  createRainAdjustmentRun,
+  publishRainAdjustment,
+  rainForecastProfile,
+  rainStationHours,
+} from "../dist/rain-adjustment.js";
 
 const decisionAt = "2026-09-14T08:00:00.000Z";
 
@@ -80,4 +85,19 @@ test("rain profile and genuine model output preserve initialized hourly scope", 
   const bad = JSON.parse(capture.body);
   bad.hourly.time[9] = "2026-09-14T10:00";
   assert.throws(() => rainForecastProfile({ ...capture, body: Buffer.from(JSON.stringify(bad)) }), /hour mismatch/u);
+});
+
+// disabled runtime must stop before storage reads or model inference
+test("disabled rain runtime does not query pending captures", async () => {
+  const pool = {
+    // reject any accidental database access
+    async query() {
+      assert.fail("disabled rain runtime queried captures");
+    },
+  };
+  assert.equal(await publishRainAdjustment(
+    pool,
+    new Date(decisionAt),
+    { artifactSha256: null, reasonCode: "policy_raw", state: "disabled" },
+  ), false);
 });

@@ -218,3 +218,55 @@ test("capture storage failure leaves an unknown claim without killing the worker
   // inspect the existing redacted diagnostic field rather than its input alias
   assert.ok(diagnostics.some((value) => value.error_code === "rain_collection_failed"));
 });
+
+// collection remains independent while registry policy suppresses inference
+test("disabled rain runtime keeps collection active without querying model inputs", async () => {
+  let collected = 0;
+  let heartbeats = 0;
+  const result = await runWorkerIteration({
+    // reject model input reads through the shared database pool
+    async query() {
+      assert.fail("disabled rain runtime queried model inputs");
+    },
+  }, {
+    diagnosticWriter: () => {},
+    instance: "fixture",
+    lastSuccessAt: null,
+    now: () => new Date(instant),
+    rainAdjustmentEnabled: true,
+    rainAdjustmentRuntime: {
+      artifactSha256: null,
+      reasonCode: "registry_invalid",
+      state: "disabled",
+    },
+    rainCollection: {
+      stationsAuthorized: false,
+      repository: {
+        async appendRainCaptureReceipt() {
+          collected += 1;
+        },
+        async claimRainCaptureSlot() {
+          return collected === 0 ? "1" : null;
+        },
+      },
+      async fetchCapture() {
+        return receipt();
+      },
+      // avoid wall-clock delay in the isolated collector test
+      async sleep() {},
+    },
+    repository: {
+      async discoverDueSources() {
+        return [];
+      },
+      async updateWorkerHeartbeat() {
+        heartbeats += 1;
+      },
+    },
+    site: { site: { key: "ballydidean" } },
+    version: "2026.09.14-1",
+  });
+  assert.equal(collected, 1);
+  assert.equal(heartbeats, 1);
+  assert.deepEqual(result.sources, []);
+});

@@ -898,6 +898,72 @@ function adjustmentScorecard() {
   };
 }
 
+// create one sanitized automatic-policy scorecard
+function adjustmentScorecardV2(overrides = {}) {
+  const legacy = adjustmentScorecard();
+  const identities = (value) => ({ rain: value, temperature: value, wind: value });
+  return {
+    actionLineage: {
+      actionSha256: "1".repeat(64),
+      attemptSha256: "2".repeat(64),
+      predecessorActionSha256: null,
+      releaseManifestSha256: "3".repeat(64),
+      sourceRevision: "4".repeat(40),
+    },
+    actionProjectionSha256: "5".repeat(64),
+    actionState: "active",
+    contractVersion: "forecast-adjustment-scorecard/v2",
+    families: legacy.families,
+    generatedAt: "2099-10-01T00:00:00.000Z",
+    history: [{
+      actionLineageSha256: "6".repeat(64),
+      actionProjectionSha256: "5".repeat(64),
+      actionState: "active",
+      attemptSha256: "2".repeat(64),
+      occurredAt: "2099-10-01T00:00:00.000Z",
+      policyDecision: "qualified",
+      releaseManifestSha256: "3".repeat(64),
+    }],
+    identities: {
+      active: identities("7".repeat(64)),
+      prior: identities(null),
+      raw: identities("8".repeat(64)),
+      shadow: identities(null),
+    },
+    inputs: {
+      ...legacy.inputs,
+      frontierSha256: "9".repeat(64),
+      inputManifestSha256: "a".repeat(64),
+      reportSha256: "b".repeat(64),
+    },
+    job: {
+      attemptState: "completed",
+      backlogState: "clear",
+      dueState: "not_due",
+      operatorState: "enabled",
+      successState: "succeeded",
+    },
+    policyDecision: "qualified",
+    progress: {
+      confirmationCompletedEpochs: 4,
+      confirmationRequiredEpochs: 4,
+      rainCaptureExpiresAt: "2099-10-07T00:00:00.000Z",
+      rollbackCompletedEpochs: 0,
+      rollbackRequiredEpochs: 2,
+    },
+    siteKey: "ballydidean",
+    validThrough: "2099-10-08T00:00:00.000Z",
+    warnings: {
+      capacity: ["next_capture_reserved"],
+      capture: [],
+      fallback: [],
+      gauge: [],
+      source: [],
+    },
+    ...overrides,
+  };
+}
+
 // preserve adjustment behavior without the removed infobox
 test("forecast adjustment boundary preserves raw and validates active metadata", () => {
   const raw = {
@@ -4262,7 +4328,7 @@ test("admin saves independent adjustment switches and verifies readback", async 
   assert.match(controller.state.adminAdjustmentSettingsMessage, /status 403/u);
 });
 
-test("admin scorecard parses and renders three review-only model families", () => {
+test("admin scorecard preserves readable display-only v1 model families", () => {
   const scorecard = adjustmentScorecard();
   assert.equal(parseForecastAdjustmentScorecard(scorecard), scorecard);
   assert.equal(
@@ -4292,8 +4358,52 @@ test("admin scorecard parses and renders three review-only model families", () =
   assert.match(scorecardHtml, /Best Match diagnostic/u);
   assert.match(scorecardHtml, /Rain diagnostics/u);
   assert.match(scorecardHtml, /data-status="worse">Worse/u);
-  assert.match(scorecardHtml, /Serving unchanged\./u);
-  assert.match(scorecardHtml, /Ansel approval is required/u);
+  assert.match(scorecardHtml, /Legacy report/u);
+  assert.match(scorecardHtml, /Historical display only/u);
+  assert.match(scorecardHtml, /cannot authorize actions/u);
+  assert.doesNotMatch(scorecardHtml, /Ansel approval is required/u);
+  assert.doesNotMatch(scorecardHtml, /<button|<form|<input/u);
+});
+
+test("admin scorecard parses and renders sanitized v2 policy lineage and history", () => {
+  const scorecard = adjustmentScorecardV2();
+  assert.equal(parseForecastAdjustmentScorecard(scorecard), scorecard);
+  assert.equal(
+    parseForecastAdjustmentScorecard({ ...scorecard, operatorApprovalRequired: true }),
+    null,
+  );
+  assert.equal(
+    parseForecastAdjustmentScorecard({
+      ...scorecard,
+      history: [{ ...scorecard.history[0], privateMemberResult: { loss: 1 } }],
+    }),
+    null,
+  );
+  assert.equal(
+    parseForecastAdjustmentScorecard({
+      ...scorecard,
+      validThrough: "2099-10-08T00:00:00.001Z",
+    }),
+    null,
+  );
+
+  const html = renderWeatherDashboard({
+    ...forecastState([], null),
+    adminAdjustmentScorecard: scorecard,
+    adminAdjustmentScorecardPublicationState: "pending_unapplied",
+    adminAdjustmentScorecardState: "ready",
+  }, "admin", true);
+  const scorecardHtml = html.match(/<section class="panel adjustment-scorecard"[\s\S]*?<\/section>/u)?.[0] ?? "";
+  assert.match(scorecardHtml, /Automatic policy/u);
+  assert.match(scorecardHtml, /Pending and unapplied/u);
+  assert.match(scorecardHtml, /data-scorecard-publication-state="pending_unapplied"/u);
+  assert.match(scorecardHtml, /Action lineage/u);
+  assert.match(scorecardHtml, /Confirmation epochs/u);
+  assert.match(scorecardHtml, /Model identities/u);
+  assert.match(scorecardHtml, /next capture reserved/u);
+  assert.match(scorecardHtml, /Automatic action history \(1\)/u);
+  assert.match(scorecardHtml, /cannot itself authorize or execute changes/u);
+  assert.doesNotMatch(scorecardHtml, /operatorApprovalRequired|Ansel approval/u);
   assert.doesNotMatch(scorecardHtml, /<button|<form|<input/u);
 });
 
@@ -4308,7 +4418,7 @@ test("admin scorecard read is isolated and fails closed by response state", asyn
     // record the dedicated queryless scorecard request
     if (url.endsWith("/admin/sites/ballydidean/forecast-adjustment-scorecard")) {
       scorecardRequests.push({ url, init });
-      return Response.json({ data: scorecard });
+      return Response.json({ data: scorecard, publicationState: "legacy_display" });
     }
 
     // serve adjustment settings independently
@@ -4332,6 +4442,7 @@ test("admin scorecard read is isolated and fails closed by response state", asyn
   const controller = new WeatherDashboardController({ fetcher, isAdmin: true, view: "admin" });
   await controller.initialize();
   assert.equal(controller.state.adminAdjustmentScorecardState, "ready");
+  assert.equal(controller.state.adminAdjustmentScorecardPublicationState, "legacy_display");
   assert.deepEqual(controller.state.adminAdjustmentScorecard, scorecard);
   assert.equal(scorecardRequests.length, 1);
   assert.equal(scorecardRequests[0].url.includes("?"), false);
@@ -4344,7 +4455,7 @@ test("admin scorecard read is isolated and fails closed by response state", asyn
     adminAdjustmentScorecardState: "unavailable",
   }, "admin", true);
   assert.match(unavailable, /No validated scorecard is available/u);
-  assert.match(unavailable, /Forecast serving and settings are unchanged/u);
+  assert.match(unavailable, /cannot support an action/u);
   const unauthorized = renderWeatherDashboard({
     ...controller.state,
     adminAdjustmentScorecard: null,

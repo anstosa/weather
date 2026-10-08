@@ -1,0 +1,20 @@
+// keep the production release-capacity contract in the deployed helper
+export {
+  ADJUSTMENT_RELEASE_CAPACITY_VERSION,
+  ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES,
+  ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_INODES,
+  ADJUSTMENT_RELEASE_CONTROL_MAX_BYTES,
+  ADJUSTMENT_RELEASE_ENGINE_METADATA_BYTES,
+  ADJUSTMENT_RELEASE_FUTURE_STATE_BYTES,
+  ADJUSTMENT_RELEASE_INVENTORY_VERSION,
+  ADJUSTMENT_RELEASE_PULL_SCRATCH_BYTES,
+  ADJUSTMENT_RUNTIME_PACKAGE_MAX_BYTES,
+  BLUEBERRY_NEXT_CAPTURE_BYTES,
+  BLUEBERRY_PROTECTED_FREE_BYTES,
+  collectAdjustmentReleaseCapacityInventory,
+  dockerChainIdentity,
+  evaluateAdjustmentReleaseCapacity,
+  measureReleaseLayer,
+  measureReleasePathEntry,
+  weatherRegistryBlobRedirectUrl,
+} from "../../deploy/scripts/adjustment-evaluation-package.mjs";

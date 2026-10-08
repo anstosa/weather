@@ -1,4 +1,5 @@
 export * from "./config.js";
+export * from "./adjustment-maintenance.js";
 export * from "./ecowitt-config.js";
 export * from "./migrate.js";
 export * from "./pool.js";

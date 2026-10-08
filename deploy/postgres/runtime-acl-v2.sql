@@ -328,6 +328,248 @@ TO weather_api, weather_ingest;
 GRANT EXECUTE ON FUNCTION weather_json_object_keys_allowed(jsonb, text[])
 TO weather_ingest;
 
+-- reconcile the optional all-or-nothing adjustment maintenance v2 graph
+DO $adjustment_maintenance_v2_acl$
+DECLARE
+  present_object_count integer;
+  exact_object_count integer;
+  maintenance_column record;
+BEGIN
+  SELECT count(*) INTO present_object_count
+  FROM (
+    SELECT relation.oid
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname IN (
+        'adjustment_shadow_registrations_v2',
+        'adjustment_shadow_predictions_v2',
+        'adjustment_confirmation_accesses_v2'
+      )
+    UNION ALL
+    SELECT procedure.oid
+    FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND procedure.proname IN (
+        'weather_guard_adjustment_shadow_registration_v2',
+        'weather_guard_adjustment_shadow_prediction_v2',
+        'weather_guard_adjustment_confirmation_access_v2',
+        'weather_reject_adjustment_maintenance_mutation',
+        'weather_register_adjustment_shadow_v2',
+        'weather_append_adjustment_temperature_shadow_v2',
+        'weather_append_adjustment_wind_shadow_v2',
+        'weather_append_adjustment_rain_shadow_v2',
+        'adjustment_shadow_body_admission_v2',
+        'weather_finalize_adjustment_shadow_metadata_v2',
+        'weather_record_adjustment_confirmation_access_v2',
+        'adjustment_confirmation_availability_v2',
+        'adjustment_confirmation_export_v2'
+      )
+  ) present;
+
+  -- preserve previous images only when every v2 object is absent
+  IF present_object_count = 0 THEN
+    RETURN;
+  END IF;
+
+  SELECT count(*) INTO exact_object_count
+  FROM (VALUES
+    (to_regclass('public.adjustment_shadow_registrations_v2')::oid),
+    (to_regclass('public.adjustment_shadow_predictions_v2')::oid),
+    (to_regclass('public.adjustment_confirmation_accesses_v2')::oid),
+    (to_regprocedure('public.weather_guard_adjustment_shadow_registration_v2()')::oid),
+    (to_regprocedure('public.weather_guard_adjustment_shadow_prediction_v2()')::oid),
+    (to_regprocedure('public.weather_guard_adjustment_confirmation_access_v2()')::oid),
+    (to_regprocedure('public.weather_reject_adjustment_maintenance_mutation()')::oid),
+    (to_regprocedure('public.weather_register_adjustment_shadow_v2(jsonb)')::oid),
+    (to_regprocedure('public.weather_append_adjustment_temperature_shadow_v2(jsonb)')::oid),
+    (to_regprocedure('public.weather_append_adjustment_wind_shadow_v2(jsonb)')::oid),
+    (to_regprocedure('public.weather_append_adjustment_rain_shadow_v2(jsonb)')::oid),
+    (to_regprocedure('public.adjustment_shadow_body_admission_v2(text,text,text,integer)')::oid),
+    (to_regprocedure('public.weather_finalize_adjustment_shadow_metadata_v2(jsonb)')::oid),
+    (to_regprocedure('public.weather_record_adjustment_confirmation_access_v2(jsonb)')::oid),
+    (to_regprocedure('public.adjustment_confirmation_availability_v2(text)')::oid),
+    (to_regprocedure('public.adjustment_confirmation_export_v2(text,text,smallint)')::oid)
+  ) expected(oid)
+  WHERE oid IS NOT NULL;
+  -- reject every partial or wrong-signature graph
+  IF present_object_count <> 16 OR exact_object_count <> 16 THEN
+    RAISE EXCEPTION 'adjustment maintenance v2 schema is incomplete';
+  END IF;
+  -- require exactly four trigger functions and nine closed APIs
+  IF (SELECT count(*)
+      FROM pg_proc procedure
+      JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname = 'public'
+        AND procedure.proname IN (
+          'weather_guard_adjustment_shadow_registration_v2',
+          'weather_guard_adjustment_shadow_prediction_v2',
+          'weather_guard_adjustment_confirmation_access_v2',
+          'weather_reject_adjustment_maintenance_mutation',
+          'weather_register_adjustment_shadow_v2',
+          'weather_append_adjustment_temperature_shadow_v2',
+          'weather_append_adjustment_wind_shadow_v2',
+          'weather_append_adjustment_rain_shadow_v2',
+          'adjustment_shadow_body_admission_v2',
+          'weather_finalize_adjustment_shadow_metadata_v2',
+          'weather_record_adjustment_confirmation_access_v2',
+          'adjustment_confirmation_availability_v2',
+          'adjustment_confirmation_export_v2'
+        )) <> 13 THEN
+    RAISE EXCEPTION 'adjustment maintenance v2 function graph is not exact';
+  END IF;
+  -- require owner-controlled tables and functions
+  IF EXISTS (
+    SELECT 1
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname IN (
+        'adjustment_shadow_registrations_v2',
+        'adjustment_shadow_predictions_v2',
+        'adjustment_confirmation_accesses_v2'
+      )
+      AND relation.relowner <> 'weather_owner'::regrole
+  ) OR EXISTS (
+    SELECT 1
+    FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND procedure.proname IN (
+        'weather_guard_adjustment_shadow_registration_v2',
+        'weather_guard_adjustment_shadow_prediction_v2',
+        'weather_guard_adjustment_confirmation_access_v2',
+        'weather_reject_adjustment_maintenance_mutation',
+        'weather_register_adjustment_shadow_v2',
+        'weather_append_adjustment_temperature_shadow_v2',
+        'weather_append_adjustment_wind_shadow_v2',
+        'weather_append_adjustment_rain_shadow_v2',
+        'adjustment_shadow_body_admission_v2',
+        'weather_finalize_adjustment_shadow_metadata_v2',
+        'weather_record_adjustment_confirmation_access_v2',
+        'adjustment_confirmation_availability_v2',
+        'adjustment_confirmation_export_v2'
+      )
+      AND procedure.proowner <> 'weather_owner'::regrole
+  ) THEN
+    RAISE EXCEPTION 'adjustment maintenance v2 ownership is invalid';
+  END IF;
+  -- require the nine closed APIs to remain hardened definers
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND procedure.proname IN (
+        'weather_register_adjustment_shadow_v2',
+        'weather_append_adjustment_temperature_shadow_v2',
+        'weather_append_adjustment_wind_shadow_v2',
+        'weather_append_adjustment_rain_shadow_v2',
+        'adjustment_shadow_body_admission_v2',
+        'weather_finalize_adjustment_shadow_metadata_v2',
+        'weather_record_adjustment_confirmation_access_v2',
+        'adjustment_confirmation_availability_v2',
+        'adjustment_confirmation_export_v2'
+      )
+      AND (NOT procedure.prosecdef
+        OR procedure.proconfig IS NULL
+        OR NOT (procedure.proconfig @> ARRAY['search_path=pg_catalog, public']))
+  ) THEN
+    RAISE EXCEPTION 'adjustment maintenance v2 function hardening is invalid';
+  END IF;
+  -- require exact stable and volatile classifications
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public'
+      AND (
+        (procedure.proname IN (
+          'adjustment_shadow_body_admission_v2',
+          'adjustment_confirmation_availability_v2',
+          'adjustment_confirmation_export_v2'
+        ) AND procedure.provolatile <> 's')
+        OR
+        (procedure.proname IN (
+          'weather_register_adjustment_shadow_v2',
+          'weather_append_adjustment_temperature_shadow_v2',
+          'weather_append_adjustment_wind_shadow_v2',
+          'weather_append_adjustment_rain_shadow_v2',
+          'weather_finalize_adjustment_shadow_metadata_v2',
+          'weather_record_adjustment_confirmation_access_v2'
+        ) AND procedure.provolatile <> 'v')
+      )
+  ) THEN
+    RAISE EXCEPTION 'adjustment maintenance v2 volatility is invalid';
+  END IF;
+  -- require every expected mutation trigger binding
+  IF (SELECT count(*)
+      FROM pg_trigger trigger
+      JOIN pg_class relation ON relation.oid = trigger.tgrelid
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'public'
+        AND relation.relname IN (
+          'adjustment_shadow_registrations_v2',
+          'adjustment_shadow_predictions_v2',
+          'adjustment_confirmation_accesses_v2'
+        )
+        AND NOT trigger.tgisinternal
+        AND trigger.tgname IN (
+          'adjustment_shadow_registrations_v2_guard_insert',
+          'adjustment_shadow_predictions_v2_guard_insert',
+          'adjustment_confirmation_accesses_v2_guard_insert',
+          'adjustment_shadow_registrations_v2_guard_mutation',
+          'adjustment_shadow_predictions_v2_guard_mutation',
+          'adjustment_confirmation_accesses_v2_guard_mutation',
+          'adjustment_shadow_registrations_v2_guard_truncate',
+          'adjustment_shadow_predictions_v2_guard_truncate',
+          'adjustment_confirmation_accesses_v2_guard_truncate'
+        )) <> 9 THEN
+    RAISE EXCEPTION 'adjustment maintenance v2 trigger graph is incomplete';
+  END IF;
+
+  REVOKE ALL ON adjustment_shadow_registrations_v2,
+    adjustment_shadow_predictions_v2,
+    adjustment_confirmation_accesses_v2
+  FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  -- erase historical column grants before function-only grants
+  FOR maintenance_column IN
+    SELECT relation.relname AS table_name, attribute.attname AS column_name
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+    WHERE namespace.nspname = 'public'
+      AND relation.relname IN (
+        'adjustment_shadow_registrations_v2',
+        'adjustment_shadow_predictions_v2',
+        'adjustment_confirmation_accesses_v2'
+      )
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL (%I) ON %I FROM weather_api, weather_ingest, weather_training_export',
+      maintenance_column.column_name,
+      maintenance_column.table_name
+    );
+  END LOOP;
+
+  GRANT EXECUTE ON FUNCTION weather_register_adjustment_shadow_v2(jsonb)
+  TO weather_api, weather_ingest;
+  GRANT EXECUTE ON FUNCTION weather_append_adjustment_temperature_shadow_v2(jsonb),
+    weather_append_adjustment_wind_shadow_v2(jsonb)
+  TO weather_api;
+  GRANT EXECUTE ON FUNCTION weather_append_adjustment_rain_shadow_v2(jsonb)
+  TO weather_ingest;
+  GRANT EXECUTE ON FUNCTION adjustment_shadow_body_admission_v2(text,text,text,integer)
+  TO weather_api;
+  GRANT EXECUTE ON FUNCTION adjustment_confirmation_availability_v2(text),
+    adjustment_confirmation_export_v2(text,text,smallint)
+  TO weather_training_export;
+END;
+$adjustment_maintenance_v2_acl$;
+
 ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;

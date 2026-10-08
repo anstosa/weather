@@ -325,6 +325,71 @@ function adjustmentScorecardFixture() {
     },
   };
 }
+
+// create one sanitized pending automatic-policy projection
+function adjustmentScorecardV2Fixture() {
+  const legacy = adjustmentScorecardFixture();
+  const identities = (value) => ({ rain: value, temperature: value, wind: value });
+  return {
+    actionLineage: {
+      actionSha256: "1".repeat(64),
+      attemptSha256: "2".repeat(64),
+      predecessorActionSha256: null,
+      releaseManifestSha256: "3".repeat(64),
+      sourceRevision: "4".repeat(40),
+    },
+    actionProjectionSha256: "5".repeat(64),
+    actionState: "release_pending",
+    contractVersion: "forecast-adjustment-scorecard/v2",
+    families: legacy.families,
+    generatedAt: "2099-10-01T00:00:00.000Z",
+    history: [{
+      actionLineageSha256: "6".repeat(64),
+      actionProjectionSha256: "5".repeat(64),
+      actionState: "release_pending",
+      attemptSha256: "2".repeat(64),
+      occurredAt: "2099-10-01T00:00:00.000Z",
+      policyDecision: "qualified",
+      releaseManifestSha256: "3".repeat(64),
+    }],
+    identities: {
+      active: identities("7".repeat(64)),
+      prior: identities(null),
+      raw: identities("8".repeat(64)),
+      shadow: identities("9".repeat(64)),
+    },
+    inputs: {
+      ...legacy.inputs,
+      frontierSha256: "a".repeat(64),
+      inputManifestSha256: "b".repeat(64),
+      reportSha256: "c".repeat(64),
+    },
+    job: {
+      attemptState: "completed",
+      backlogState: "clear",
+      dueState: "not_due",
+      operatorState: "enabled",
+      successState: "succeeded",
+    },
+    policyDecision: "qualified",
+    progress: {
+      confirmationCompletedEpochs: 4,
+      confirmationRequiredEpochs: 4,
+      rainCaptureExpiresAt: "2099-10-07T00:00:00.000Z",
+      rollbackCompletedEpochs: 0,
+      rollbackRequiredEpochs: 2,
+    },
+    siteKey: "ballydidean",
+    validThrough: "2099-10-08T00:00:00.000Z",
+    warnings: {
+      capacity: ["next_capture_reserved"],
+      capture: [],
+      fallback: [],
+      gauge: [],
+      source: [],
+    },
+  };
+}
 const dailyPrecipitation = {
   accumulationMm: 2.54,
   source: {
@@ -826,6 +891,7 @@ async function startFixtureServer() {
   const state = {
     adjustmentMode: "inactive",
     adjustmentScorecard: adjustmentScorecardFixture(),
+    adjustmentScorecardPublicationState: "legacy_display",
     adjustmentScorecardStatus: 200,
     adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
     adjustmentSettingsUpdates: 0,
@@ -918,7 +984,10 @@ async function startFixtureServer() {
       sendJson(
         response,
         state.adjustmentScorecardStatus === 200
-          ? { data: state.adjustmentScorecard }
+          ? {
+            data: state.adjustmentScorecard,
+            publicationState: state.adjustmentScorecardPublicationState,
+          }
           : { error: { code: "unavailable" } },
         state.adjustmentScorecardStatus,
       );
@@ -4699,7 +4768,7 @@ test("admin forecast switches persist independently and hide the public toggle w
   }
 });
 
-test("admin adjustment scorecard stays review-only and fails closed", { timeout: 60_000 }, async () => {
+test("admin adjustment scorecard renders legacy and pending v2 reports fail-closed", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -4722,7 +4791,7 @@ test("admin adjustment scorecard stays review-only and fails closed", { timeout:
     assert.equal(await scorecard.getByText("Worse", { exact: true }).count(), 1);
     assert.equal(await scorecard.getByText("95% interval 4.2% to 19.1%", { exact: false }).count(), 3);
     assert.equal(await scorecard.locator("button, form, input, select, textarea").count(), 0);
-    assert.equal(await scorecard.getByText("Serving unchanged.", { exact: false }).count(), 1);
+    assert.equal(await scorecard.getByText("Historical display only.", { exact: false }).count(), 1);
     assert.equal(await page.evaluate(
       // reject scorecard-induced horizontal viewport overflow
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -4733,6 +4802,24 @@ test("admin adjustment scorecard stays review-only and fails closed", { timeout:
       // count only the dedicated queryless protected read
       (entry) => entry === "GET /api/v1/admin/sites/ballydidean/forecast-adjustment-scorecard",
     ).length, 1);
+
+    fixture.state.adjustmentScorecard = adjustmentScorecardV2Fixture();
+    fixture.state.adjustmentScorecardPublicationState = "pending_unapplied";
+    await page.reload({ waitUntil: "networkidle" });
+    const pendingScorecard = page.locator(
+      ".adjustment-scorecard[data-scorecard-publication-state='pending_unapplied']",
+    );
+    await pendingScorecard.waitFor();
+    assert.equal(
+      await pendingScorecard.getByText("Pending and unapplied.", { exact: false }).count(),
+      1,
+    );
+    assert.equal(await pendingScorecard.getByText("Automatic action history (1)").count(), 1);
+    assert.equal(await pendingScorecard.locator("button, form, input, select, textarea").count(), 0);
+    assert.equal(await page.evaluate(
+      // reject v2 scorecard-induced horizontal viewport overflow
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ), true);
 
     fixture.state.adjustmentScorecardStatus = 503;
     await page.reload({ waitUntil: "domcontentloaded" });

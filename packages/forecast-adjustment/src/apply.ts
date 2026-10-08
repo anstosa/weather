@@ -28,7 +28,7 @@ import {
 import { deepFreeze, metricBandKey } from "./candidate.js";
 import type {
   LoadedForecastAdjustmentRuntimeV1,
-  LoadedForecastAdjustmentWindCanaryRuntimeV1,
+  LoadedForecastAdjustmentWindCanaryRuntime,
 } from "./runtime-loader.js";
 import { FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2 } from "./wind-canary.js";
 
@@ -44,7 +44,7 @@ export interface ApplyForecastAdjustmentInputV1 {
 export function applyForecastAdjustment(
   runtime:
     | LoadedForecastAdjustmentRuntimeV1
-    | LoadedForecastAdjustmentWindCanaryRuntimeV1,
+    | LoadedForecastAdjustmentWindCanaryRuntime,
   input: ApplyForecastAdjustmentInputV1,
 ): ForecastAdjustmentDecision {
   // preserve raw service when startup loading was disabled

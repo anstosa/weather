@@ -47,6 +47,16 @@ function provenance() {
   };
 }
 
+// expose a deliberate raw policy without applying or inspecting any artifact
+test("application preserves the exact maintenance policy raw reason", () => {
+  const result = applyForecastAdjustment({ bundle: null, reasonCode: "policy_raw", state: "disabled" }, {
+    metrics: metrics(20), rawForecastProvenance: provenance(),
+  });
+  assert.equal(result.reasonCode, "policy_raw");
+  assert.equal(result.state, "disabled");
+  assert.deepEqual(result.adjustedMetrics, {});
+});
+
 test("application adjusts only enabled in-envelope metrics", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-apply-"));
   const triple = await createQualifiedFixture(directory);

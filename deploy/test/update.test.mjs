@@ -271,6 +271,7 @@ test("recovery restores the active runtime against retained schema state", async
   const transcript = join(directory, "transcript");
 
   try {
+    await mkdir(join(directory, "state"));
     const result = runBash(
       `source "$1"
 state_dir=$2/state
@@ -424,11 +425,13 @@ test("persistent authorization is written only after API and worker compatibilit
 });
 
 // pin the backward-compatible migration boundary
-test("compatibility clone removes private evidence before replaying migrations through 0017", async () => {
+test("compatibility clone removes private evidence before replaying migrations through 0018", async () => {
   const update = await readFile(updateScript, "utf8");
   const compatibility = update
     .split("verify_previous_image_compatibility() (")[1]
     .split("\n)\n\n# reconcile retained PostgreSQL administrator authority")[0];
+  const maintenanceTablesDrop = compatibility.indexOf("DROP TABLE IF EXISTS adjustment_shadow_predictions_v2");
+  const maintenanceFunctionDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_registration_v2()");
   const exportManifestDrop = compatibility.indexOf("DROP VIEW IF EXISTS adjustment_evaluation_export_manifest_v1");
   const exportRowsDrop = compatibility.indexOf("DROP VIEW IF EXISTS adjustment_evaluation_export_rows_v1");
   const viewDrop = compatibility.indexOf("DROP VIEW IF EXISTS rain_collection_status_v1");
@@ -439,13 +442,16 @@ test("compatibility clone removes private evidence before replaying migrations t
   const claimGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_capture_claim()");
   const receiptGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_capture_receipt()");
   const mutationGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_reject_rain_capture_mutation()");
-  const ledgerReset = compatibility.indexOf("'0014_rain_collection.sql', '0015_rain_station_access.sql', '0016_rain_adjustment.sql', '0017_adjustment_evaluation_export.sql')");
+  const ledgerReset = compatibility.indexOf("'0017_adjustment_evaluation_export.sql', '0018_adjustment_maintenance_v2.sql')");
   const replay = compatibility.indexOf("compose run --rm --no-deps");
   const replayProof = compatibility.indexOf("rain_collection_migration_count=$(WEATHER_ENV_FILE=");
   const stationReplayProof = compatibility.indexOf("station_access_migration_count=$(WEATHER_ENV_FILE=");
   const modelReplayProof = compatibility.indexOf("rain_adjustment_migration_count=$(WEATHER_ENV_FILE=");
   const exportReplayProof = compatibility.indexOf("adjustment_export_migration_count=$(WEATHER_ENV_FILE=");
+  const maintenanceReplayProof = compatibility.indexOf("adjustment_maintenance_migration_count=$(WEATHER_ENV_FILE=");
 
+  assert.equal(maintenanceTablesDrop >= 0 && maintenanceTablesDrop < maintenanceFunctionDrop, true);
+  assert.equal(maintenanceFunctionDrop < exportManifestDrop, true);
   assert.equal(exportManifestDrop >= 0 && exportManifestDrop < exportRowsDrop, true);
   assert.equal(exportRowsDrop < viewDrop, true);
   assert.equal(viewDrop >= 0 && viewDrop < modelDrop, true);
@@ -458,11 +464,13 @@ test("compatibility clone removes private evidence before replaying migrations t
   assert.equal(replayProof < stationReplayProof, true);
   assert.equal(stationReplayProof < modelReplayProof, true);
   assert.equal(modelReplayProof < exportReplayProof, true);
+  assert.equal(exportReplayProof < maintenanceReplayProof, true);
   assert.match(compatibility, /baseline_schema_state" == "8:::::::"/u);
   assert.match(compatibility, /rain collection migration is missing from the compatibility database/u);
   assert.match(compatibility, /rain station access migration is missing from the compatibility database/u);
   assert.match(compatibility, /rain adjustment migration is missing from the compatibility database/u);
   assert.match(compatibility, /adjustment evaluation export migration is missing from the compatibility database/u);
+  assert.match(compatibility, /adjustment maintenance migration is missing from the compatibility database/u);
 });
 
 // verify current strictness and the exact retained legacy format
@@ -810,7 +818,7 @@ start_release 2026.08.22-1`,
   }
 });
 
-test("release operations accept only current and exact reviewed predecessor control planes", async () => {
+test("release operations accept only current v13 and the exact reviewed predecessor", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
   const release = join(directory, "release.env");
 
@@ -818,79 +826,25 @@ test("release operations accept only current and exact reviewed predecessor cont
     const digest = runBash('source "$1"; control_plane_digest').stdout.trim();
     await writeFile(
       release,
-      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=12\n`,
-    );
-    const accepted = runBash('source "$1"; require_control_plane_compatibility "$2"', [release]);
-    assert.equal(accepted.status, 0, accepted.stderr);
-    await writeFile(
-      release,
       [
-        "WEATHER_RELEASE=2026.10.07-1",
-        "WEATHER_CONTROL_PLANE_SHA256=9a48c7e5c7450dfeee12c0813bf343f24f6c0f68e6472338bf33dde5c6fea2c0",
-        "WEATHER_CONTROL_PLANE_VERSION=12",
+        "WEATHER_RELEASE=2026.10.08-1",
+        `WEATHER_CONTROL_PLANE_SHA256=${digest}`,
+        "WEATHER_CONTROL_PLANE_VERSION=13",
         "",
       ].join("\n"),
     );
-    const firstV12Accepted = runBash(
+    const currentAccepted = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
       [release],
     );
-    assert.equal(firstV12Accepted.status, 0, firstV12Accepted.stderr);
-    await writeFile(
-      release,
-      [
-        "WEATHER_RELEASE=2026.10.07-2",
-        "WEATHER_CONTROL_PLANE_SHA256=9a48c7e5c7450dfeee12c0813bf343f24f6c0f68e6472338bf33dde5c6fea2c0",
-        "WEATHER_CONTROL_PLANE_VERSION=12",
-        "",
-      ].join("\n"),
-    );
-    const firstV12ReleaseRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(firstV12ReleaseRejected.status, 0);
-    assert.match(
-      firstV12ReleaseRejected.stderr,
-      /unsupported without an exact versioned allowlisted handoff/u,
-    );
-    await writeFile(
-      release,
-      [
-        "WEATHER_RELEASE=2026.10.07-2",
-        "WEATHER_CONTROL_PLANE_SHA256=5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8",
-        "WEATHER_CONTROL_PLANE_VERSION=12",
-        "",
-      ].join("\n"),
-    );
-    const passwordPredecessorAccepted = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.equal(passwordPredecessorAccepted.status, 0, passwordPredecessorAccepted.stderr);
+    assert.equal(currentAccepted.status, 0, currentAccepted.stderr);
+
     await writeFile(
       release,
       [
         "WEATHER_RELEASE=2026.10.07-3",
-        "WEATHER_CONTROL_PLANE_SHA256=5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8",
+        "WEATHER_CONTROL_PLANE_SHA256=16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d",
         "WEATHER_CONTROL_PLANE_VERSION=12",
-        "",
-      ].join("\n"),
-    );
-    const passwordPredecessorReleaseRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(passwordPredecessorReleaseRejected.status, 0);
-    assert.match(
-      passwordPredecessorReleaseRejected.stderr,
-      /unsupported without an exact versioned allowlisted handoff/u,
-    );
-    await writeFile(
-      release,
-      [
-        "WEATHER_CONTROL_PLANE_SHA256=ae098ea591868b9f0d093815fa94d05082af96ece7e9f6fd62e1d903bb8179eb",
-        "WEATHER_CONTROL_PLANE_VERSION=11",
         "",
       ].join("\n"),
     );
@@ -899,63 +853,55 @@ test("release operations accept only current and exact reviewed predecessor cont
       [release],
     );
     assert.equal(predecessorAccepted.status, 0, predecessorAccepted.stderr);
-    await writeFile(
-      release,
-      "WEATHER_CONTROL_PLANE_SHA256=b9a5cd866f7ec62b0ee32339340186d28041d32c9d65df5719c0f064b27ca722\nWEATHER_CONTROL_PLANE_VERSION=10\n",
-    );
-    const olderHandoffRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(olderHandoffRejected.status, 0);
-    await writeFile(
-      release,
-      "WEATHER_CONTROL_PLANE_SHA256=c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5\nWEATHER_CONTROL_PLANE_VERSION=6\n",
-    );
-    const olderPredecessorRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(olderPredecessorRejected.status, 0);
-    await writeFile(
-      release,
+
+    const rejectedIdentities = [
       [
-        "WEATHER_CONTROL_PLANE_SHA256=4fb0af02b5a03e782cd08e7c643cafce79b2c1fa1becf87dcef447274f54fb57",
-        "WEATHER_CONTROL_PLANE_VERSION=5",
-        "",
-      ].join("\n"),
-    );
-    const obsoleteLegacyRejected = runBash(
+        "2026.10.07-2",
+        "16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d",
+        "12",
+      ],
+      [
+        "2026.10.07-3",
+        "5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8",
+        "12",
+      ],
+      [
+        "2026.10.07-3",
+        "ae098ea591868b9f0d093815fa94d05082af96ece7e9f6fd62e1d903bb8179eb",
+        "11",
+      ],
+      ["2026.10.08-1", digest, "12"],
+      ["2026.10.08-1", "a".repeat(64), "13"],
+    ];
+
+    // reject every relabelled or obsolete identity
+    for (const [candidateRelease, candidateDigest, candidateVersion] of rejectedIdentities) {
+      await writeFile(
+        release,
+        [
+          `WEATHER_RELEASE=${candidateRelease}`,
+          `WEATHER_CONTROL_PLANE_SHA256=${candidateDigest}`,
+          `WEATHER_CONTROL_PLANE_VERSION=${candidateVersion}`,
+          "",
+        ].join("\n"),
+      );
+      const rejected = runBash(
+        'source "$1"; require_control_plane_compatibility "$2"',
+        [release],
+      );
+      assert.notEqual(rejected.status, 0);
+      assert.match(
+        rejected.stderr,
+        /unsupported without an exact versioned allowlisted handoff/u,
+      );
+    }
+
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=13\n");
+    const incomplete = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
       [release],
     );
-    assert.notEqual(obsoleteLegacyRejected.status, 0);
-    await writeFile(
-      release,
-      `WEATHER_CONTROL_PLANE_SHA256=${digest}\nWEATHER_CONTROL_PLANE_VERSION=11\n`,
-    );
-    const versionRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(versionRejected.status, 0);
-    assert.match(versionRejected.stderr, /unsupported without an exact versioned allowlisted handoff/u);
-    await writeFile(
-      release,
-      `WEATHER_CONTROL_PLANE_SHA256=${"a".repeat(64)}\nWEATHER_CONTROL_PLANE_VERSION=11\n`,
-    );
-    const digestRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(digestRejected.status, 0);
-    assert.match(digestRejected.stderr, /unsupported without an exact versioned allowlisted handoff/u);
-    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=12\n");
-    const metadataRejected = runBash(
-      'source "$1"; require_control_plane_compatibility "$2"',
-      [release],
-    );
-    assert.notEqual(metadataRejected.status, 0);
+    assert.notEqual(incomplete.status, 0);
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
@@ -979,8 +925,11 @@ deploy_dir=$2
 releases_dir=$3
 state_dir=$4
 transcript=$5
+test_source_env=$6
 require_file() { :; }
 require_command() { :; }
+retained_maintenance_source_env() { printf '%s\n' "$test_source_env"; }
+require_retained_maintenance_source() { :; }
 require_capacity_gate() { printf 'capacity\n' >>"$transcript"; }
 env_value() {
   case "$2" in
@@ -1073,6 +1022,7 @@ test("rollback and recovery reject unsupported control planes before mutation", 
   const directory = await mkdtemp(join(tmpdir(), "weather-rollback-control-gate-"));
 
   try {
+    await mkdir(join(directory, "state"));
     // reject either rollback boundary
     for (const rejectedRelease of ["2026.08.22-2", "2026.08.22-1"]) {
       const transcript = join(directory, `${rejectedRelease}.transcript`);
@@ -1158,49 +1108,78 @@ test("direct deployment gates both retained target and active control identities
   const releases = join(directory, "releases");
   const state = join(directory, "state");
   const transcript = join(directory, "transcript");
-  const digest = `sha256:${"a".repeat(64)}`;
-  // construct only structurally valid but incompatible release metadata
-  function releaseContent(release) {
+  const source = join(directory, "source.env");
+  const currentRelease = "2026.10.07-3";
+  const targetRelease = "2026.10.08-1";
+  const current = join(releases, `${currentRelease}.env`);
+  const target = join(releases, `${targetRelease}.env`);
+  const imageDigest = `sha256:${"a".repeat(64)}`;
+
+  // build one structurally complete release identity
+  function releaseContent(release, controlVersion, controlDigest) {
     return [
       `WEATHER_RELEASE=${release}`,
-      `WEATHER_SERVER_IMAGE=registry.example/weather-server@${digest}`,
-      `WEATHER_WEB_IMAGE=registry.example/weather-web@${digest}`,
-      `POSTGRES_IMAGE=postgres@${digest}`,
-      `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${digest}`,
+      `WEATHER_SERVER_IMAGE=ghcr.io/anstosa/weather-server@${imageDigest}`,
+      `WEATHER_WEB_IMAGE=ghcr.io/anstosa/weather-web@${imageDigest}`,
+      `POSTGRES_IMAGE=postgres@${imageDigest}`,
+      `CLOUDFLARED_IMAGE=cloudflare/cloudflared@${imageDigest}`,
       "WEATHER_DATABASE_NAME=weather",
       "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
       "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
-      "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=0",
-      `WEATHER_CONTROL_PLANE_SHA256=${"b".repeat(64)}`,
-      "WEATHER_CONTROL_PLANE_VERSION=7",
+      "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
+      `WEATHER_CONTROL_PLANE_SHA256=${controlDigest}`,
+      `WEATHER_CONTROL_PLANE_VERSION=${controlVersion}`,
       "",
     ].join("\n");
   }
+
   try {
     await mkdir(releases);
     await mkdir(state);
-    await writeFile(join(releases, "2026.09.08-1.env"), releaseContent("2026.09.08-1"));
-    // exercise both an incompatible reused target and an incompatible current release
-    for (const active of [false, true]) {
-      await writeFile(transcript, "");
-      // bind the current state to its own incompatible environment
-      if (active) {
-        await writeFile(join(state, "current-release"), "2026.09.07-1\n", { mode: 0o600 });
-        await writeFile(join(releases, "2026.09.07-1.env"), releaseContent("2026.09.07-1"));
-      }
-      const result = runBash(`source "$1"
+    await writeFile(join(state, "current-release"), `${currentRelease}\n`, { mode: 0o600 });
+    const predecessor = releaseContent(
+      currentRelease,
+      12,
+      "16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d",
+    );
+    await writeFile(current, predecessor);
+    await writeFile(source, predecessor);
+    await writeFile(target, releaseContent(targetRelease, 13, "b".repeat(64)));
+    await writeFile(transcript, "");
+
+    const targetRejected = runBash(
+      `source "$1"
 releases_dir=$2
 state_dir=$3
 transcript=$4
-# mark any attempted side effect instead of touching infrastructure
-require_deployment_secrets() { printf 'secrets\\n' >>"$transcript"; }
-# reject any accidental service startup
-start_postgres() { printf 'postgres\\n' >>"$transcript"; return 97; }
-yolo_release 2026.09.08-1 /unused-source.env`, [releases, state, transcript]);
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /control-plane identity is unsupported/u);
-      assert.equal(await readFile(transcript, "utf8"), "");
-    }
+require_deployment_secrets() { printf 'secrets\n' >>"$transcript"; }
+cleanup_obsolete_weather_images() { printf 'cleanup\n' >>"$transcript"; }
+compose() { printf 'compose:%s\n' "$*" >>"$transcript"; }
+yolo_release "$5" "$6"`,
+      [releases, state, transcript, targetRelease, source],
+    );
+    assert.notEqual(targetRejected.status, 0);
+    assert.match(targetRejected.stderr, /control-plane identity is unsupported/u);
+    assert.equal(await readFile(transcript, "utf8"), "");
+
+    await writeFile(transcript, "");
+    const invalidPredecessor = releaseContent(currentRelease, 12, "c".repeat(64));
+    await writeFile(current, invalidPredecessor);
+    await writeFile(source, invalidPredecessor);
+    const activeRejected = runBash(
+      `source "$1"
+releases_dir=$2
+state_dir=$3
+transcript=$4
+require_deployment_secrets() { printf 'secrets\n' >>"$transcript"; }
+cleanup_obsolete_weather_images() { printf 'cleanup\n' >>"$transcript"; }
+compose() { printf 'compose:%s\n' "$*" >>"$transcript"; }
+yolo_release "$5" "$6"`,
+      [releases, state, transcript, targetRelease, source],
+    );
+    assert.notEqual(activeRejected.status, 0);
+    assert.match(activeRejected.stderr, /control-plane identity is unsupported/u);
+    assert.equal(await readFile(transcript, "utf8"), "");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

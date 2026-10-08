@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -16,11 +16,15 @@ import { WeatherAdminStore } from "./weather-admin-store.mjs";
 import { HomeNetworkMatcher } from "./home-network.mjs";
 import {
   ADJUSTMENT_EVIDENCE_DEFAULT_ROOT,
+  AdjustmentEvidenceArchiveTransport,
+  AdjustmentEvidenceScheduler,
   AdjustmentEvidenceStore,
   normalizeAdjustmentEvidenceWindow,
 } from "./adjustment-evidence-store.mjs";
 import {
   FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+  FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION,
+  FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES,
   parseForecastAdjustmentScorecard,
 } from "./forecast-adjustment-scorecard-contract.mjs";
 
@@ -39,6 +43,14 @@ const maximumMapBytes = 4 * 1024 * 1024;
 const adjustmentEvidenceRoot = resolve(
   process.env.WEATHER_ADJUSTMENT_EVIDENCE_ROOT ?? ADJUSTMENT_EVIDENCE_DEFAULT_ROOT,
 );
+const scheduledCaptureEnabled =
+  process.env.WEATHER_ADJUSTMENT_SCHEDULED_CAPTURE_ENABLED === "true";
+const scheduledCaptureMigrationReady =
+  process.env.WEATHER_ADJUSTMENT_MAINTENANCE_MIGRATION_READY === "true";
+const scheduledArchiveTransferEnabled =
+  process.env.WEATHER_ADJUSTMENT_ARCHIVE_TRANSFER_ENABLED === "true";
+const scheduledCaptureParameter = "__weather_scheduler_nonce";
+const scheduledCaptureRequests = new Map();
 const apiOrigin = parseApiOrigin(process.env.WEATHER_API_ORIGIN);
 const xweatherOrigin = parseXweatherOrigin(
   process.env.WEATHER_XWEATHER_MAP_ORIGIN ?? "https://maps.api.xweather.com",
@@ -61,6 +73,21 @@ const adminStore = new WeatherAdminStore({
 });
 const adjustmentEvidenceStore = await new AdjustmentEvidenceStore({
   root: adjustmentEvidenceRoot,
+}).initialize();
+// keep archive transfer inert until the controller explicitly enables it
+const adjustmentEvidenceArchiveTransport = scheduledArchiveTransferEnabled
+  ? await new AdjustmentEvidenceArchiveTransport({
+      root: adjustmentEvidenceRoot,
+    }).initialize().catch(
+      // preserve ordinary serving when archive initialization refuses
+      () => null,
+    )
+  : null;
+const adjustmentEvidenceScheduler = await new AdjustmentEvidenceScheduler({
+  enabled: scheduledCaptureEnabled,
+  migrationReady: scheduledCaptureMigrationReady,
+  root: adjustmentEvidenceRoot,
+  trigger: triggerScheduledAdjustmentCapture,
 }).initialize();
 const assetPrefix = `/assets/${release}/`;
 const assets = new Map([
@@ -274,7 +301,9 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "0.0.0.0");
+server.listen(port, "0.0.0.0",
+  // start only the admitted clock after the listener is reachable
+  () => adjustmentEvidenceScheduler.start());
 
 // identify the exact widget route and its rejected near-matches
 function isWidgetForecastPath(pathname) {
@@ -586,11 +615,14 @@ async function serveForecastAdjustmentScorecard(request, response, requestUrl) {
   }
 
   try {
-    const scorecard = await readInstalledForecastAdjustmentScorecard(
+    const publication = await readInstalledForecastAdjustmentScorecard(
       adjustmentEvidenceRoot,
       new Date().toISOString(),
     );
-    sendJson(response, 200, { data: scorecard }, request.method === "HEAD", {
+    sendJson(response, 200, {
+      data: publication.scorecard,
+      publicationState: publication.publicationState,
+    }, request.method === "HEAD", {
       "Cache-Control": "private, no-store",
     });
   } catch {
@@ -601,7 +633,31 @@ async function serveForecastAdjustmentScorecard(request, response, requestUrl) {
   }
 }
 
-// read one hash-addressed scorecard through the fixed pointer
+// read one optional fixed private hash pointer without following links
+async function readForecastAdjustmentScorecardPointer(path) {
+  let pointerBytes;
+
+  try {
+    pointerBytes = await readPrivateRegularFile(path, 128);
+  } catch (error) {
+    // treat only a missing fixed pointer as absent
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+  const pointer = JSON.parse(pointerBytes.toString("utf8"));
+
+  // require the exact hash-only pointer contract
+  if (pointer === null || Array.isArray(pointer) || typeof pointer !== "object" ||
+    Object.keys(pointer).length !== 1 ||
+    typeof pointer.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(pointer.sha256)) {
+    throw new Error("scorecard pointer is invalid");
+  }
+  return pointer.sha256;
+}
+
+// read one hash-addressed scorecard through the fixed v1/v2 slots
 async function readInstalledForecastAdjustmentScorecard(root, now) {
   const scorecardDirectory = join(root, "scorecards");
   const [rootDetails, directoryDetails, canonicalRoot, canonicalDirectory] = await Promise.all([
@@ -620,31 +676,70 @@ async function readInstalledForecastAdjustmentScorecard(root, now) {
     throw new Error("scorecard directory is invalid");
   }
 
-  const pointerBytes = await readPrivateRegularFile(
-    join(root, "current.json"),
-    128,
-  );
-  const pointer = JSON.parse(pointerBytes.toString("utf8"));
+  const [legacySha256, currentV2Sha256, previousV2Sha256, pendingV2Sha256] =
+    await Promise.all([
+      readForecastAdjustmentScorecardPointer(join(root, "current.json")),
+      readForecastAdjustmentScorecardPointer(join(root, "v2-current.json")),
+      readForecastAdjustmentScorecardPointer(join(root, "v2-previous.json")),
+      readForecastAdjustmentScorecardPointer(join(root, "v2-pending.json")),
+    ]);
 
-  // require the exact hash-only pointer contract
-  if (pointer === null || Array.isArray(pointer) || typeof pointer !== "object" ||
-    Object.keys(pointer).length !== 1 ||
-    typeof pointer.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(pointer.sha256)) {
-    throw new Error("scorecard pointer is invalid");
+  // fail closed on forbidden legacy and selected-v2 coexistence
+  if (legacySha256 !== null &&
+    (currentV2Sha256 !== null || previousV2Sha256 !== null)) {
+    throw new Error("scorecard publication slots are invalid");
+  }
+
+  // require one readable current or pending publication
+  const selection = pendingV2Sha256 !== null
+    ? { maximumBytes: FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES, publicationState: "pending_unapplied", sha256: pendingV2Sha256 }
+    : currentV2Sha256 !== null
+      ? { maximumBytes: FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES, publicationState: "current", sha256: currentV2Sha256 }
+      : legacySha256 !== null
+        ? { maximumBytes: FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES, publicationState: "legacy_display", sha256: legacySha256 }
+        : null;
+
+  if (selection === null) {
+    throw new Error("scorecard publication is absent");
+  }
+  const selectedDirectory = selection.publicationState === "legacy_display"
+    ? scorecardDirectory
+    : join(root, "scorecards-v2");
+
+  // prove the selected generation's fixed object directory remains private and beneath root
+  if (selection.publicationState !== "legacy_display") {
+    const [selectedDetails, canonicalSelectedDirectory] = await Promise.all([
+      lstat(selectedDirectory),
+      realpath(selectedDirectory),
+    ]);
+
+    if (!selectedDetails.isDirectory() || selectedDetails.isSymbolicLink() ||
+      (selectedDetails.mode & 0o777) !== 0o700 ||
+      dirname(canonicalSelectedDirectory) !== canonicalRoot) {
+      throw new Error("v2 scorecard directory is invalid");
+    }
   }
 
   const scorecardBytes = await readPrivateRegularFile(
-    join(scorecardDirectory, `sha256-${pointer.sha256}.json`),
-    FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+    join(selectedDirectory, `sha256-${selection.sha256}.json`),
+    selection.maximumBytes,
   );
   const actualSha256 = createHash("sha256").update(scorecardBytes).digest("hex");
 
   // bind the pointer to the exact validated publication bytes
-  if (actualSha256 !== pointer.sha256) {
+  if (actualSha256 !== selection.sha256) {
     throw new Error("scorecard content hash is invalid");
   }
+  const scorecard = parseForecastAdjustmentScorecard(scorecardBytes, { now });
 
-  return parseForecastAdjustmentScorecard(scorecardBytes, { now });
+  // bind each slot generation to its intended display state
+  if ((selection.publicationState === "legacy_display" &&
+    scorecard.contractVersion !== "forecast-adjustment-scorecard/v1") ||
+    (selection.publicationState !== "legacy_display" &&
+      scorecard.contractVersion !== FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION)) {
+    throw new Error("scorecard generation does not match its publication slot");
+  }
+  return { publicationState: selection.publicationState, scorecard };
 }
 
 // read one bounded regular file without following links
@@ -983,6 +1078,109 @@ function parsePort(value) {
   return parsed;
 }
 
+// issue one process-tracked loopback request through the public forecast handler
+async function triggerScheduledAdjustmentCapture(input) {
+  const nonce = randomBytes(32).toString("hex");
+  let settled = false;
+  let settleCapture;
+  const capture = new Promise(
+    // retain one resolver unavailable to request headers
+    (resolveCapture) => { settleCapture = resolveCapture; },
+  );
+  const timeout = setTimeout(
+    // bound a missing finish or aborted-response result
+    () => settle({ status: "capture_timeout" }),
+    30_000,
+  );
+
+  // settle one scheduler request exactly once
+  function settle(result) {
+    // ignore duplicate close or timeout notifications
+    if (settled) {
+      return;
+    }
+    settled = true;
+    settleCapture(result);
+  }
+
+  scheduledCaptureRequests.set(nonce, { dueKey: input.dueKey, settle });
+
+  try {
+    const target = new URL(input.path, `http://127.0.0.1:${String(port)}`);
+    target.searchParams.set(scheduledCaptureParameter, nonce);
+    const response = await fetch(target, {
+      headers: { Accept: "application/json" },
+      method: "GET",
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    await response.arrayBuffer();
+
+    // require the normal public route to complete successfully
+    if (!response.ok) {
+      const error = new Error("scheduled forecast response failed");
+      error.code = "forecast_response_failed";
+      throw error;
+    }
+    return await capture;
+  } catch (error) {
+    settle({ status: "request_failed" });
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    scheduledCaptureRequests.delete(nonce);
+  }
+}
+
+// recognize only one in-flight loopback nonce owned by this process
+function takeScheduledCaptureRequest(request, requestUrl) {
+  const nonces = requestUrl.searchParams.getAll(scheduledCaptureParameter);
+  const remoteAddress = request.socket.remoteAddress;
+  const loopback = remoteAddress === "127.0.0.1" || remoteAddress === "::1" ||
+    remoteAddress === "::ffff:127.0.0.1";
+
+  // reject caller headers and every untracked or non-loopback nonce
+  if (nonces.length !== 1 || !loopback || !scheduledCaptureRequests.has(nonces[0])) {
+    return null;
+  }
+
+  const tracked = scheduledCaptureRequests.get(nonces[0]);
+  scheduledCaptureRequests.delete(nonces[0]);
+  requestUrl.searchParams.delete(scheduledCaptureParameter);
+  return tracked;
+}
+
+// append only a genuinely committed trusted scheduler response to the online page
+async function settleScheduledArchiveCapture(scheduledCapture, preparedEvidence, result) {
+  // skip every public response and every deliberately inactive archive controller state
+  if (scheduledCapture === null || !scheduledArchiveTransferEnabled) {
+    scheduledCapture?.settle(result);
+    return;
+  }
+
+  // retain a durable scheduler gap when requested archive initialization failed
+  if (adjustmentEvidenceArchiveTransport === null) {
+    scheduledCapture.settle({ status: "archive_unavailable" });
+    return;
+  }
+
+  // archive only successful immutable evidence commits after response finish
+  if (preparedEvidence !== null &&
+    (result?.status === "created" || result?.status === "duplicate")) {
+    const archiveResult = await adjustmentEvidenceArchiveTransport.captureCommittedSchedulerEvidence({
+      dueKey: scheduledCapture.dueKey,
+      prepared: preparedEvidence,
+    });
+
+    // retain a scheduler-side gap if even categorical page-gap persistence refused
+    if (archiveResult.status === "evidence_gap_persistence_refused") {
+      scheduledCapture.settle({ status: "archive_gap_unrecorded" });
+      return;
+    }
+  }
+  scheduledCapture.settle(result);
+}
+
 // proxy one bounded API request
 async function proxyApi(request, response, requestUrl) {
   // keep the edge read-only
@@ -991,8 +1189,11 @@ async function proxyApi(request, response, requestUrl) {
     return;
   }
 
-  const target = new URL(`${requestUrl.pathname}${requestUrl.search}`, apiOrigin);
   const isForecast = requestUrl.pathname === "/api/v1/sites/ballydidean/forecast";
+  const scheduledCapture = isForecast
+    ? takeScheduledCaptureRequest(request, requestUrl)
+    : null;
+  const target = new URL(`${requestUrl.pathname}${requestUrl.search}`, apiOrigin);
   const isRainStatus = requestUrl.pathname === "/api/v1/sites/ballydidean/rain-collection";
   const projectsAdjustmentSettings = isForecast || isRainStatus;
   // relax only the exact site trends route
@@ -1023,11 +1224,18 @@ async function proxyApi(request, response, requestUrl) {
       request.method === "HEAD" && !projectsAdjustmentSettings
         ? boundedContentLength(upstream.headers.get("content-length"), maximumResponseBytes)
         : body.byteLength;
+    const v2CaptureActive = adjustmentEvidenceScheduler.status().activation === "active";
     const preparedEvidence = upstream.ok && isForecast && request.method === "GET"
-      ? adjustmentEvidenceStore.prepare(
-          body,
-          normalizeAdjustmentEvidenceWindow(requestUrl),
-        )
+      ? v2CaptureActive
+        ? adjustmentEvidenceStore.prepareV2(
+            body,
+            normalizeAdjustmentEvidenceWindow(requestUrl),
+            scheduledCapture === null ? "public_get" : "scheduler_request",
+          )
+        : adjustmentEvidenceStore.prepare(
+            body,
+            normalizeAdjustmentEvidenceWindow(requestUrl),
+          )
       : null;
     setSecurityHeaders(response);
     response.writeHead(upstream.status, {
@@ -1041,11 +1249,24 @@ async function proxyApi(request, response, requestUrl) {
 
     // register the finish handler before sending response bytes
     if (upstream.ok && isForecast && request.method === "GET") {
-      adjustmentEvidenceStore.trackResponse(response, preparedEvidence);
+      adjustmentEvidenceStore.trackResponse(
+        response,
+        preparedEvidence,
+        // keep archive failures out of the successful forecast and scheduler result
+        (result) => void settleScheduledArchiveCapture(
+          scheduledCapture,
+          preparedEvidence,
+          result,
+        ).catch(
+          // settle the genuine evidence result even when archive persistence refuses
+          () => scheduledCapture?.settle(result),
+        ),
+      );
     }
 
     response.end(request.method === "HEAD" ? undefined : body);
   } catch {
+    scheduledCapture?.settle({ status: "request_failed" });
     sendText(response, 502, "upstream unavailable\n");
   }
 }

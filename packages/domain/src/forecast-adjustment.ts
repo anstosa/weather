@@ -1198,6 +1198,7 @@ export const FORECAST_ADJUSTMENT_REASON_CODES = [
   "insufficient_data",
   "metric_not_enabled",
   "metric_out_of_bounds",
+  "policy_raw",
   "qualification_failed",
   "registry_inactive",
   "registry_invalid",

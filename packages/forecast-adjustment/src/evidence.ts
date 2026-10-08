@@ -3820,17 +3820,22 @@ function inferManifestInsufficiency(manifest: SnapshotManifestV1): readonly stri
   return failed.sort(compareText);
 }
 
-// fit development LOSO and one final candidate from verified pre-holdout rows
-async function fitRetainedDevelopment(input: {
+// fit the shared robust hierarchy without accessing confirmation targets
+async function fitRetainedDevelopmentCore(input: {
   readonly manifest: Readonly<SnapshotManifestV1>;
   readonly preHoldoutRows: readonly SanitizedTrainingExportRow[];
   readonly snapshotManifestSha256: string;
+  readonly maintenanceWindOnly?: boolean;
 }): Promise<
   | ForecastAdjustmentInsufficientDataReportV1
-  | RetainedForecastAdjustmentPreHoldoutV1
+  | Pick<RetainedForecastAdjustmentPreHoldoutV1, "candidate" | "developmentReport" | "state">
 > {
   const epoch = createQualificationCalendarEpoch(input.manifest.toLocalDate);
-  const events = buildRetainedTrainingEvents(input.preHoldoutRows);
+  const events = input.maintenanceWindOnly
+    ? buildRetainedTrainingEvents(input.preHoldoutRows, "legacy_v4_retrieval_snapshot",
+      ["windSpeedMps", "windGustMps"])
+      .filter((event) => event.metric !== "windGustMps" || event.leadBand !== "049-072")
+    : buildRetainedTrainingEvents(input.preHoldoutRows);
   const failedGates = retainedSufficiencyFailures(events, epoch.finalTraining.localDates);
 
   // stop before fitting when literal event support is absent
@@ -3959,6 +3964,22 @@ async function fitRetainedDevelopment(input: {
       spatialWeightSha256: input.manifest.spatialWeightsSha256,
     },
   });
+  return deepFreeze({ candidate, developmentReport, state: "sufficient" as const });
+}
+
+// preserve the legacy thirty-date preregistration and result bytes
+async function fitRetainedDevelopment(input: {
+  readonly manifest: Readonly<SnapshotManifestV1>;
+  readonly preHoldoutRows: readonly SanitizedTrainingExportRow[];
+  readonly snapshotManifestSha256: string;
+}): Promise<ForecastAdjustmentInsufficientDataReportV1 | RetainedForecastAdjustmentPreHoldoutV1> {
+  const result = await fitRetainedDevelopmentCore(input);
+  // propagate literal insufficiency without constructing a holdout
+  if (result.state === "insufficient_data") {
+    return result;
+  }
+  const { candidate, developmentReport } = result;
+  const epoch = createQualificationCalendarEpoch(input.manifest.toLocalDate);
   const holdoutMembers = input.manifest.members.filter(
     (member) => epoch.holdout.localDates.includes(member.localDate),
   );
@@ -3986,6 +4007,97 @@ async function fitRetainedDevelopment(input: {
     preregistration,
     state: "sufficient" as const,
   });
+}
+
+// describe immutable opened-member receipts supplied by the maintenance journal
+export interface WindMaintenanceOpenedMember {
+  readonly memberSha256: string;
+  readonly maximumSourceReceiptAt: string;
+  readonly maximumTargetReceiptAt: string;
+}
+
+// reject normalized or offset receipt clocks before comparing a due cutoff
+function windMaintenanceInstant(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) &&
+    Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+// fit all thirteen existing wind pairs on the original monthly cutoff
+export async function fitWindMaintenanceDevelopment(input: {
+  readonly manifest: Readonly<SnapshotManifestV1>;
+  readonly rows: readonly SanitizedTrainingExportRow[];
+  readonly snapshotManifestSha256: string;
+  readonly dueMonth: string;
+  readonly openedMembers: readonly WindMaintenanceOpenedMember[];
+}): Promise<ForecastAdjustmentInsufficientDataReportV1 | {
+  readonly contractVersion: "wind-maintenance-fit/v2";
+  readonly state: "development_candidate";
+  readonly candidate: ForecastAdjustmentCandidateV2;
+  readonly developmentReport: ForecastAdjustmentDevelopmentReportV1;
+  readonly dueMonth: string;
+  readonly confirmationOpened: false;
+}> {
+  // reject a caller-shaped epoch before any numerical fitting
+  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(input.dueMonth) ||
+      !/^[a-f0-9]{64}$/u.test(input.snapshotManifestSha256)) {
+    throw new RangeError("invalid wind maintenance identity");
+  }
+  validateSnapshotManifestBoundary(input.manifest);
+  // bind the exact manifest instead of accepting a claimed content address
+  if (canonicalSha256(input.manifest as unknown as JsonValue) !== input.snapshotManifestSha256) {
+    throw new RangeError("wind maintenance manifest identity differs");
+  }
+  const epoch = createQualificationCalendarEpoch(input.manifest.toLocalDate);
+  const cutoff = nextLocalMidnightUtc(addLocalCalendarDays(`${input.dueMonth}-01`, -1));
+  const opened = new Map(input.openedMembers.map((member) => [member.memberSha256, member]));
+  // reject duplicate receipts and incomplete calendar coverage
+  if (opened.size !== input.openedMembers.length || input.manifest.fromLocalDate !== epoch.d0 ||
+      input.manifest.toLocalDate !== epoch.d401 || nextLocalMidnightUtc(epoch.d401) > cutoff) {
+    throw new RangeError("wind maintenance requires an earlier complete 402-date epoch");
+  }
+  // require actual source and target availability for every immutable member
+  for (const member of input.manifest.members) {
+    const receipt = opened.get(member.sha256);
+    // reserved or unknown members cannot be opened by a fitter
+    if (receipt === undefined || !windMaintenanceInstant(receipt.maximumSourceReceiptAt) ||
+        !windMaintenanceInstant(receipt.maximumTargetReceiptAt) ||
+        receipt.maximumSourceReceiptAt >= cutoff || receipt.maximumTargetReceiptAt >= cutoff) {
+      throw new RangeError("wind maintenance member is not opened before the original cutoff");
+    }
+  }
+  const covered = new Set(input.manifest.members.map((member) => member.localDate));
+  // do not slide missed-month support to a later export
+  if (epoch.localDates.some((date) => !covered.has(date))) {
+    throw new RangeError("wind maintenance epoch has missing dates");
+  }
+  const trainingRows = input.rows.filter((row) => {
+    const localDate = localCalendarFeaturesFor(row.validAt).localDate;
+    return localDate >= epoch.finalTraining.startLocalDate && localDate <= epoch.finalTraining.endLocalDate;
+  });
+  // reject unknown and post-cutoff receipts rather than inventing training availability
+  if (input.rows.some((row) => row.receivedAt === null ||
+      !windMaintenanceInstant(row.receivedAt) || row.receivedAt >= cutoff ||
+      !covered.has(localCalendarFeaturesFor(row.validAt).localDate))) {
+    return createInsufficientDataReport({ failedGates: ["maintenance_earlier_receipt_provenance"],
+      snapshotManifestSha256: input.snapshotManifestSha256 });
+  }
+  const result = await fitRetainedDevelopmentCore({ manifest: input.manifest,
+    preHoldoutRows: trainingRows, snapshotManifestSha256: input.snapshotManifestSha256,
+    maintenanceWindOnly: true });
+  // preserve honest support refusal after a real numerical attempt
+  if (result.state === "insufficient_data") {
+    return result;
+  }
+  const pairs = result.candidate.enabledMetricBands;
+  // an incomplete mask cannot become a recurring candidate
+  if (pairs.length !== 13 || pairs.some((pair) => pair.metric === "windDirectionDegrees" ||
+      (pair.metric === "windGustMps" && pair.leadBand === "049-072"))) {
+    return createInsufficientDataReport({ failedGates: ["maintenance_exact_thirteen_pairs"],
+      snapshotManifestSha256: input.snapshotManifestSha256 });
+  }
+  return deepFreeze({ contractVersion: "wind-maintenance-fit/v2" as const,
+    state: "development_candidate" as const, candidate: result.candidate,
+    developmentReport: result.developmentReport, dueMonth: input.dueMonth, confirmationOpened: false as const });
 }
 
 // construct metric-correct network events from one verified row phase

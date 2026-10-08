@@ -28,6 +28,7 @@ import { pathToFileURL } from "node:url";
 const [, , contractPath, sshRunPath, scorecardPath] = process.argv;
 const {
   FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+  FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION,
   parseForecastAdjustmentScorecard,
 } = await import(pathToFileURL(contractPath));
 const handle = await open(scorecardPath, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -74,11 +75,14 @@ try {
   await handle.close();
 }
 
-parseForecastAdjustmentScorecard(content, { now: new Date().toISOString() });
+const scorecard = parseForecastAdjustmentScorecard(content, { now: new Date().toISOString() });
 const scorecardSha256 = createHash("sha256").update(content).digest("hex");
+const installOperation = scorecard.contractVersion === FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION
+  ? "install-adjustment-scorecard-v2"
+  : "install-adjustment-scorecard";
 const publisher = spawn(
   sshRunPath,
-  ["install-adjustment-scorecard", scorecardSha256],
+  [installOperation, scorecardSha256],
   { stdio: ["pipe", "inherit", "inherit"] },
 );
 

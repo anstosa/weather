@@ -6,12 +6,14 @@ import {
   bootstrapBalancedForecastAdjustmentPairs,
   coalesceForecastAdjustmentPerformancePairs,
   createEcowittTargetDiagnostic,
+  createEligibleFixedRainGaugeHourlyTarget,
   createFixedRainGaugeTarget,
   createRegionalPhysicalStationTarget,
   evaluateForecastAdjustmentPerformance,
   evaluateForecastAdjustmentRainDiagnostics,
   prepareForecastAdjustmentPerformancePairs,
   scoreBalancedForecastAdjustmentPairs,
+  tileBackwardRainGaugeHour,
 } from "../dist/performance-scorecard.js";
 
 // create one causal paired forecast event
@@ -47,6 +49,18 @@ function sevenDatePairs(overrides = {}) {
     const localDate = `2026-10-${String(index + 1).padStart(2, "0")}`;
     return pair({ localDate, suffix: localDate, ...overrides });
   });
+}
+
+// create one exactly tiled backward gauge hour
+function gaugeHour(stationId, amount, endpointLagMinutes = 0) {
+  const validAt = Date.parse("2026-10-01T20:00:00.000Z");
+  const end = validAt - endpointLagMinutes * 60_000;
+  return Array.from({ length: 12 }, (_unused, index) => ({
+    precipitationMm: amount / 12,
+    reportIntervalMinutes: 5,
+    reportedAt: new Date(end - index * 5 * 60_000).toISOString(),
+    stationId,
+  }));
 }
 
 test("overlap coalescing keeps earliest commit and guards row chronology", () => {
@@ -176,7 +190,70 @@ test("fixed rain gauges report incomplete coverage without imputation", () => {
     { stationId: 38270, precipitationMm: 3 },
   ]);
   assert.equal(complete.complete, true);
-  assert.ok(complete.precipitationMm > 1 && complete.precipitationMm < 3);
+  assert.equal(complete.precipitationMm, 2);
+});
+
+test("fixed rain gauges use the served weighted median instead of the mean", () => {
+  const outlier = createFixedRainGaugeTarget([
+    { stationId: 64255, precipitationMm: 0 },
+    { stationId: 225947, precipitationMm: 1 },
+    { stationId: 38270, precipitationMm: 100 },
+  ]);
+  assert.equal(outlier.precipitationMm, 1);
+
+  const tied = createFixedRainGaugeTarget([
+    { stationId: 64255, precipitationMm: 1 },
+    { stationId: 225947, precipitationMm: 1 },
+    { stationId: 38270, precipitationMm: 100 },
+  ]);
+  assert.equal(tied.precipitationMm, 1);
+
+  const asymmetric = createFixedRainGaugeTarget([
+    { stationId: 64255, precipitationMm: 0 },
+    { stationId: 225947, precipitationMm: 2 },
+    { stationId: 38270, precipitationMm: 9 },
+    { stationId: 168853, precipitationMm: 10 },
+  ]);
+  assert.equal(asymmetric.precipitationMm, 2);
+});
+
+test("rain target retains backward tiling, endpoint tolerance and raw phase", () => {
+  const intervals = [
+    ...gaugeHour(64255, 1, 5),
+    ...gaugeHour(225947, 2),
+    ...gaugeHour(38270, 3),
+  ];
+  assert.deepEqual(tileBackwardRainGaugeHour(
+    intervals,
+    "2026-10-01T20:00:00.000Z",
+  ).map((row) => [row.stationId, Math.round(row.precipitationMm * 10) / 10]), [
+    [38270, 3],
+    [64255, 1],
+    [225947, 2],
+  ]);
+
+  const cold = createEligibleFixedRainGaugeHourlyTarget({
+    intervals,
+    rawTargetHourTemperatureC: 2,
+    validAt: "2026-10-01T20:00:00.000Z",
+  });
+  assert.equal(cold.eligible, false);
+  assert.equal(cold.reason, "cold_or_unknown_forecast_phase");
+
+  const warm = createEligibleFixedRainGaugeHourlyTarget({
+    intervals,
+    rawTargetHourTemperatureC: 2 + Number.EPSILON * 2,
+    validAt: "2026-10-01T20:00:00.000Z",
+  });
+  assert.equal(warm.eligible, true);
+  assert.equal(warm.precipitationMm, 2);
+
+  const unsupported = createEligibleFixedRainGaugeHourlyTarget({
+    intervals: intervals.filter((row) => row.stationId !== 225947),
+    rawTargetHourTemperatureC: 10,
+    validAt: "2026-10-01T20:00:00.000Z",
+  });
+  assert.equal(unsupported.reason, "unsupported_target");
 });
 
 test("rain diagnostics use named probabilities and complete same-run windows", () => {

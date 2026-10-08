@@ -28,6 +28,8 @@ const repairPreviousRelease = "2026.10.07-1";
 const passwordPreviousCommit = "cddaa7e971cb9c7b58173244c770fa94a41451dd";
 const passwordPreviousDigest = "5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8";
 const passwordPreviousRelease = "2026.10.07-2";
+// retain the immutable historical password repair candidate
+const passwordCandidateCommit = "072af3f880431ff9020a2ec2ada222210e45f00b";
 const passwordCandidateDigest = "16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d";
 const archivePaths = [
   "deploy/scripts",
@@ -134,12 +136,15 @@ async function createRepairFixture() {
   await cp(join(baseline, "deploy"), join(installed, "deploy"), { recursive: true });
   await cp(join(baseline, "deploy"), join(candidate, "deploy"), { recursive: true });
 
-  // overlay exactly the reviewed repair paths from this candidate
+  // overlay the frozen repair rather than a later checkout
   for (const file of ["adjustment-evidence-store.mjs", "update.sh"]) {
-    await cp(
-      join(repoRoot, `deploy/scripts/${file}`),
-      join(candidate, `deploy/scripts/${file}`),
-    );
+    const bytes = execFileSync("git", [
+      "show",
+      `${passwordPreviousCommit}:deploy/scripts/${file}`,
+    ], { cwd: repoRoot });
+    await writeFile(join(candidate, `deploy/scripts/${file}`), bytes, { mode: 0o644 });
+    // restore the reviewed executable bits as well as content
+    await chmod(join(candidate, `deploy/scripts/${file}`), file.endsWith(".sh") ? 0o755 : 0o644);
   }
 
   await Promise.all([
@@ -185,6 +190,7 @@ async function createRepairFixture() {
   ], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(baselineDigest.status, 0, baselineDigest.stderr);
   assert.equal(baselineDigest.stdout.trim(), repairPreviousDigest);
+  assert.equal(fixture.candidateDigest, passwordPreviousDigest);
   return fixture;
 }
 
@@ -211,17 +217,18 @@ async function createPasswordRepairFixture() {
   await cp(join(baseline, "deploy"), join(installed, "deploy"), { recursive: true });
   await cp(join(baseline, "deploy"), join(candidate, "deploy"), { recursive: true });
 
-  // overlay exactly the reviewed password repair paths
+  // overlay the frozen repair rather than a later checkout
   for (const file of [
     "install-adjustment-scorecard.sh",
     "weather-admin-store.mjs",
     "web-server.mjs",
     "update.sh",
   ]) {
-    await cp(
-      join(repoRoot, `deploy/scripts/${file}`),
-      join(candidate, `deploy/scripts/${file}`),
-    );
+    const bytes = execFileSync("git", ["show", `${passwordCandidateCommit}:deploy/scripts/${file}`],
+      { cwd: repoRoot });
+    await writeFile(join(candidate, `deploy/scripts/${file}`), bytes, { mode: 0o644 });
+    // restore the reviewed executable bits as well as content
+    await chmod(join(candidate, `deploy/scripts/${file}`), file.endsWith(".sh") ? 0o755 : 0o644);
   }
 
   await Promise.all([
@@ -283,7 +290,7 @@ function assertPasswordPredecessor(fixture) {
   assert.equal(verified.status, 0, verified.stderr);
 }
 
-// construct the exact reviewed live v11 tree and current v12 candidate
+// construct the exact reviewed live v11 tree and frozen initial v12 candidate
 async function createFixture() {
   const root = await mkdtemp(join(tmpdir(), "weather-adjustment-control-"));
   const old = join(root, "old");
@@ -291,6 +298,7 @@ async function createFixture() {
   const candidate = join(root, "candidate");
   const backups = join(root, "backups");
   const archive = join(root, "candidate.tar");
+  const candidateArchive = join(root, "candidate-source.tar");
   const oldArchive = join(root, "old.tar");
   await Promise.all([mkdir(old), mkdir(installed), mkdir(candidate)]);
   execFileSync("git", [
@@ -330,13 +338,17 @@ async function createFixture() {
     "",
   ].join("\n"), { mode: 0o600 });
 
-  // copy only the public candidate deployment surface
-  for (const path of archivePaths) {
-    const source = join(repoRoot, path);
-    const target = join(candidate, path);
-    await mkdir(resolve(target, ".."), { recursive: true });
-    await cp(source, target, { recursive: true });
-  }
+  // materialize the frozen initial v12 candidate
+  execFileSync("git", [
+    "-c",
+    "tar.umask=0022",
+    "archive",
+    "--format=tar",
+    `--output=${candidateArchive}`,
+    repairPreviousCommit,
+    ...archivePaths,
+  ], { cwd: repoRoot });
+  execFileSync("tar", ["--same-permissions", "-xf", candidateArchive, "-C", candidate]);
   execFileSync("tar", ["-cf", archive, "-C", candidate, ...archivePaths]);
   const digest = spawnSync("bash", [
     "-c",
@@ -355,6 +367,7 @@ async function createFixture() {
   ], { cwd: repoRoot, encoding: "utf8" });
   assert.equal(oldDigest.status, 0, oldDigest.stderr);
   assert.equal(oldDigest.stdout.trim(), previousDigest);
+  assert.equal(digest.stdout.trim(), repairPreviousDigest);
   return {
     archive,
     archiveSha256: await fileHash(archive),

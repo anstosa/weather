@@ -199,8 +199,9 @@ def validate_freeze(root):
 
 
 # fit the original monthly learner with only six additional issued predictors
-def fit_month(root, data, x, month, controls):
-    fit, calibration, evaluation, bounds = search.month_masks(data, month)
+def fit_month(root, data, x, month, controls, *, masks=None):
+    # preserve legacy ninety-day masks unless maintenance supplies its explicit policy
+    fit, calibration, evaluation, bounds = search.month_masks(data, month) if masks is None else masks
     actual, hours = data['actual'][calibration], data['hour'][calibration]
     counts = {'training': residual.support(data['actual'][fit], data['hour'][fit]), 'calibration': residual.support(actual, hours)}
     mass = recent.recent_weights(hours, bounds['calibrationMaximumValidHourExclusive'])

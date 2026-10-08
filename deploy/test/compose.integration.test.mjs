@@ -13,9 +13,10 @@ const repoRoot = resolve(import.meta.dirname, "../..");
 const deployRoot = join(repoRoot, "deploy");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 const baselineServerRelease = "2026.09.01-9";
-// retain the exact four-view export authority after current migrations
-const expectedTrainingExportAuthority = {
-  databasePrivileges: ["CONNECT"],
+const fixedV13SourceRevision = "072af3f880431ff9020a2ec2ada222210e45f00b";
+// retain the exact migration-only 0017 prefix authority
+const expectedTrainingExportAuthorityV1 = {
+  databasePrivileges: ["CONNECT", "TEMP"],
   executableFunctions: [],
   relationPrivileges: [
     "public.adjustment_evaluation_export_manifest_v1:SELECT",
@@ -37,6 +38,14 @@ const expectedTrainingExportAuthority = {
   },
   schemaPrivileges: ["public:USAGE"],
   sequencePrivileges: [],
+};
+const expectedTrainingExportAuthority = {
+  ...expectedTrainingExportAuthorityV1,
+  databasePrivileges: ["CONNECT"],
+  executableFunctions: [
+    "adjustment_confirmation_availability_v2(text)",
+    "adjustment_confirmation_export_v2(text,text,smallint)",
+  ],
 };
 
 // enumerate exact export authority
@@ -178,12 +187,12 @@ async function buildReleaseImage(directory, baseImage, targetImage, release, mig
   );
 }
 
-// build the exact pre-adjustment production server image
-async function buildBaselineServerImage(directory, targetImage) {
-  const buildRoot = join(directory, "baseline-server");
-  const archivePath = join(directory, "baseline-server.tar");
+// build one exact committed server image
+async function buildCommittedServerImage(directory, targetImage, revisionish, label) {
+  const buildRoot = join(directory, `${label}-server`);
+  const archivePath = join(directory, `${label}-server.tar`);
   const revision = (
-    await executeFile("git", ["rev-parse", `${baselineServerRelease}^{commit}`], {
+    await executeFile("git", ["rev-parse", `${revisionish}^{commit}`], {
       cwd: repoRoot,
       timeout: 30_000,
     })
@@ -209,7 +218,7 @@ async function buildBaselineServerImage(directory, targetImage) {
       "--target",
       "server",
       "--label",
-      `weather.test.baseline=${revision}`,
+      `weather.test.${label}=${revision}`,
       "--tag",
       targetImage,
       buildRoot,
@@ -217,6 +226,16 @@ async function buildBaselineServerImage(directory, targetImage) {
     { cwd: repoRoot, timeout: 300_000 },
   );
   return revision;
+}
+
+// build the pre-adjustment integration baseline
+async function buildBaselineServerImage(directory, targetImage) {
+  return await buildCommittedServerImage(
+    directory,
+    targetImage,
+    baselineServerRelease,
+    "baseline",
+  );
 }
 
 // read one local image identity
@@ -456,6 +475,7 @@ test(
       WEATHER_LOCAL_WEB_PORT: String(webPort),
       WEATHER_LOCAL_WEB_IMAGE: `${projectName}-web:local`,
     };
+    const fixedV13SourceServerImage = `${projectName}-server:2026.10.07-3`;
     const previousServerImage = `${projectName}-server:2026.08.22-1`;
     const targetServerImage = `${projectName}-server:2026.08.22-3`;
     const previousWebImage = `${projectName}-web:2026.08.22-1`;
@@ -467,6 +487,7 @@ test(
     const disposableImages = [
       environment.WEATHER_LOCAL_SERVER_IMAGE,
       environment.WEATHER_LOCAL_WEB_IMAGE,
+      fixedV13SourceServerImage,
       previousServerImage,
       targetServerImage,
       previousWebImage,
@@ -491,6 +512,12 @@ test(
       await writeOverride(override, secretsRoot);
       await compose(environment, override, "up", "--detach", "--build", "--wait");
       const baselineRevision = await buildBaselineServerImage(directory, previousServerImage);
+      const fixedV13Revision = await buildCommittedServerImage(
+        directory,
+        fixedV13SourceServerImage,
+        fixedV13SourceRevision,
+        "fixed-v13-source",
+      );
       await buildReleaseImage(
         directory,
         environment.WEATHER_LOCAL_SERVER_IMAGE,
@@ -538,6 +565,10 @@ test(
       assert.equal(
         await imageLabel(previousServerImage, "weather.test.baseline"),
         baselineRevision,
+      );
+      assert.equal(
+        await imageLabel(fixedV13SourceServerImage, "weather.test.fixed-v13-source"),
+        fixedV13Revision,
       );
       // prove every current migration is absent from the predecessor
       await executeFile("docker", [
@@ -951,7 +982,13 @@ test(
       const compatibilityEnv = join(directory, "compatibility.env");
       const codeOnlyCompatibilityEnv = join(directory, "code-only-compatibility.env");
       const previousCompatibilityEnv = join(directory, "previous-compatibility.env");
+      const fixedV13SourceEnv = join(directory, "fixed-v13-source.env");
+      const fixedV13TargetEnv = join(directory, "fixed-v13-target.env");
       const compatibilityReleases = join(directory, "compatibility-releases");
+      const fixedV13Authorization = join(
+        compatibilityReleases,
+        ".2026.10.08-1.fixed-v13-authorization.partial",
+      );
       const compatibilityAuthorization = join(
         compatibilityReleases,
         "2026.08.22-3.migration-authorization",
@@ -980,6 +1017,207 @@ test(
           `WEATHER_SERVER_IMAGE=${previousServerImage}`,
         ),
       );
+      // render one exact fixed-bridge environment
+      const fixedEnvironment = (release, server, web, controlVersion, controlDigest) =>
+        [
+          `WEATHER_RELEASE=${release}`,
+          `WEATHER_SERVER_IMAGE=${server}`,
+          `WEATHER_WEB_IMAGE=${web}`,
+          `POSTGRES_IMAGE=postgres@sha256:${"3".repeat(64)}`,
+          `CLOUDFLARED_IMAGE=cloudflare/cloudflared@sha256:${"4".repeat(64)}`,
+          "WEATHER_DATABASE_NAME=weather_deploy_test",
+          "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
+          "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
+          "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
+          `WEATHER_CONTROL_PLANE_SHA256=${controlDigest}`,
+          `WEATHER_CONTROL_PLANE_VERSION=${controlVersion}`,
+          "",
+        ].join("\n");
+      await writeFile(
+        fixedV13SourceEnv,
+        fixedEnvironment(
+          "2026.10.07-3",
+          "ghcr.io/anstosa/weather-server@sha256:d0688756c33875940f67fbb782d9e67a2405a811d2aca40bd155f6ceffa71a74",
+          "ghcr.io/anstosa/weather-web@sha256:739d063cd911bcd7c6637082e356889ef60ac7a76caabc737070703fdf83746f",
+          12,
+          "16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d",
+        ),
+        { mode: 0o600 },
+      );
+      await writeFile(
+        fixedV13TargetEnv,
+        fixedEnvironment(
+          "2026.10.08-1",
+          `ghcr.io/anstosa/weather-server@sha256:${"c".repeat(64)}`,
+          `ghcr.io/anstosa/weather-web@sha256:${"d".repeat(64)}`,
+          13,
+          "e".repeat(64),
+        ),
+        { mode: 0o600 },
+      );
+      await writeFile(fixedV13Authorization, "", { mode: 0o600 });
+
+      // prove the exact source prefix grants no v2 function authority
+      const fixedPrefixDatabase = `weather_v13_prefix_${process.pid}`;
+      await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "createdb",
+        "--username",
+        "postgres",
+        "--owner",
+        "weather_owner",
+        "--template",
+        "template0",
+        fixedPrefixDatabase,
+      );
+      try {
+        await compose(
+          {
+            ...environment,
+            WEATHER_ENV_FILE: fixedV13SourceEnv,
+            WEATHER_LOCAL_SERVER_IMAGE: fixedV13SourceServerImage,
+          },
+          override,
+          "run",
+          "--rm",
+          "--no-deps",
+          "--env",
+          `WEATHER_DATABASE_NAME=${fixedPrefixDatabase}`,
+          "migration",
+        );
+        assert.deepEqual(
+          await trainingExportAuthority(
+            {
+              ...environment,
+              WEATHER_ENV_FILE: fixedV13SourceEnv,
+              WEATHER_LOCAL_SERVER_IMAGE: fixedV13SourceServerImage,
+            },
+            override,
+            fixedPrefixDatabase,
+          ),
+          expectedTrainingExportAuthorityV1,
+        );
+      } finally {
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "dropdb",
+          "--username",
+          "postgres",
+          "--if-exists",
+          fixedPrefixDatabase,
+        );
+      }
+
+      // exercise the production fixed-source helper on real containers
+      await executeFile(
+        "bash",
+        [
+          "-c",
+          `source "$1"
+override=$2
+source_env=$3
+target_env=$4
+compose_file=$5
+local_compose_file=$6
+releases_dir=$7
+authorization=$8
+source_image=$9
+target_image=\${10}
+capacity_path=\${11}
+target_provider_reference=$(env_value "$target_env" WEATHER_SERVER_IMAGE)
+compose() {
+  local selected_env=\${WEATHER_ENV_FILE:-$target_env}
+  local selected_image=$target_image
+
+  # map only the exact source environment to its committed image
+  if [[ "$selected_env" == "$source_env" ]]; then
+    selected_image=$source_image
+  fi
+  WEATHER_LOCAL_SERVER_IMAGE="$selected_image" command docker compose \\
+    --project-name "$WEATHER_COMPOSE_PROJECT_NAME" --env-file "$selected_env" \\
+    --file "$compose_file" --file "$local_compose_file" --file "$override" "$@"
+}
+docker() {
+  local -a arguments=("$@")
+  local index
+
+  # replace only the target provider's synthetic digest
+  if [[ "\${arguments[0]}" == run ]]; then
+    for ((index = 0; index < \${#arguments[@]}; index += 1)); do
+      # keep every other Docker argument byte-for-byte
+      if [[ "\${arguments[index]}" == "$target_provider_reference" ]]; then
+        arguments[index]=$target_image
+      fi
+    done
+  fi
+  command docker "\${arguments[@]}"
+}
+stat() {
+  local -a arguments=("$@")
+  local index
+
+  # sample the disposable host filesystem in place of production storage
+  for ((index = 0; index < \${#arguments[@]}; index += 1)); do
+    if [[ "\${arguments[index]}" == /var/lib/weather ]]; then
+      arguments[index]=$capacity_path
+    fi
+  done
+  command stat "\${arguments[@]}"
+}
+verify_fixed_v13_source_compatibility "$target_env" "$source_env" "$authorization"`,
+          "weather-fixed-v13-compatibility-test",
+          join(deployRoot, "scripts/update.sh"),
+          override,
+          fixedV13SourceEnv,
+          fixedV13TargetEnv,
+          join(deployRoot, "compose.yaml"),
+          join(deployRoot, "compose.local.yaml"),
+          compatibilityReleases,
+          fixedV13Authorization,
+          fixedV13SourceServerImage,
+          environment.WEATHER_LOCAL_SERVER_IMAGE,
+          directory,
+        ],
+        { cwd: repoRoot, env: environment, timeout: 600_000 },
+      );
+      const fixedAuthorizationText = await readFile(fixedV13Authorization, "utf8");
+      assert.match(
+        fixedAuthorizationText,
+        /^WEATHER_MIGRATION_AUTHORIZATION_RELEASE=2026\.10\.07-3$/mu,
+      );
+      assert.match(
+        fixedAuthorizationText,
+        /^WEATHER_MIGRATION_AUTHORIZATION_SCHEMA_RELEASE=2026\.10\.08-1$/mu,
+      );
+      assert.match(
+        fixedAuthorizationText,
+        /^WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=[a-f0-9]{64}$/mu,
+      );
+      const leakedFixedFixture = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        "SELECT count(*) FROM pg_database WHERE datname LIKE 'weather_v13_compat_%'",
+      );
+      assert.equal(leakedFixedFixture.stdout.trim(), "0");
 
       // run one release compatibility gate
       const verifyCompatibility = async (candidateEnv, candidateAuthorization) =>
@@ -1179,7 +1417,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
             "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
             "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
             `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
-            "WEATHER_CONTROL_PLANE_VERSION=12",
+            "WEATHER_CONTROL_PLANE_VERSION=13",
             "",
           ].join("\n"),
           { mode: 0o600 },

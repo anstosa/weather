@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createServer as createHttpServer } from "node:http";
-import { lstat, mkdtemp, open, readFile, readdir, rm } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,11 +22,25 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 import {
+  ADJUSTMENT_EVIDENCE_SCHEDULER_REQUIRED_FREE_BYTES,
+  ADJUSTMENT_ARCHIVE_TRANSFER_CONTRACT_VERSION,
+  AdjustmentCyclePageDiskPorts,
+  AdjustmentEvidenceArchiveTransport,
+  AdjustmentEvidenceScheduler,
   AdjustmentEvidenceStore,
+  createAdjustmentEvidenceCaptureV2,
+  currentAdjustmentEvidenceDue,
+  evaluateAdjustmentEvidenceSchedulerAdmission,
   createAdjustmentEvidenceCapture,
   freezeAdjustmentEvidenceSnapshot,
   normalizeAdjustmentEvidenceWindow,
+  runAdjustmentArchiveCommand,
 } from "../scripts/adjustment-evidence-store.mjs";
+import {
+  ackCyclePage,
+  appendCyclePageFailOpen,
+  createCyclePageState,
+} from "../../scripts/research/adjustment_cycle_pages.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -439,6 +464,68 @@ test("capacity refusal leaves immutable directories empty", async () => {
   }
 });
 
+// keep immediate writes from borrowing the reserved next-capture allocation
+test("evidence and page writes preserve the next-capture reservation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-reservation-"));
+  const statfs =
+    // expose exactly the readiness boundary before any allocation
+    async () => ({
+      bavail: BigInt(ADJUSTMENT_EVIDENCE_SCHEDULER_REQUIRED_FREE_BYTES),
+      bsize: 1n,
+      ffree: 100_000n,
+    });
+  const store = await new AdjustmentEvidenceStore({ root, statfs }).initialize();
+  const ports = await new AdjustmentCyclePageDiskPorts({ root, statfs }).initialize();
+
+  try {
+    const capture = createAdjustmentEvidenceCapture(forecastBody(), "days=1");
+    assert.deepEqual(
+      await store.commit(capture, "2026-10-07T01:00:00.000Z"),
+      { status: "capacity_exhausted" },
+    );
+    const state = createCyclePageState({
+      dailyPageCount: 0,
+      dueKey: "capture/2026-10-08T00:35:00.000Z",
+      generation: "1",
+      localDate: "2026-10-08",
+    });
+    const page = await appendCyclePageFailOpen(state, {
+      payload: Buffer.from("reserved-page"),
+      projections: [{ channel: "scheduler_request", identitySha256: "8".repeat(64) }],
+    }, ports);
+    assert.equal(page.status, "evidence_gap_persistence_refused");
+    assert.deepEqual(await readdir(join(root, "objects")), []);
+    assert.deepEqual(await readdir(join(root, "receipts")), []);
+    assert.deepEqual(await readdir(join(root, "online-pages", "slots")), []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// reject a linked root before creating or changing any target child
+test("store and scheduler do not mutate through a configured root symlink", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "weather-adjustment-linked-"));
+  const target = join(parent, "target");
+  const linkedRoot = join(parent, "linked-root");
+  await mkdir(target, { mode: 0o700 });
+  await symlink(target, linkedRoot);
+
+  try {
+    const store = await new AdjustmentEvidenceStore({ root: linkedRoot }).initialize();
+    assert.equal(store.prepare(forecastBody(), "days=1"), null);
+    const scheduler = await new AdjustmentEvidenceScheduler({
+      enabled: true,
+      migrationReady: true,
+      root: linkedRoot,
+      statfs: async () => healthyStatfs(),
+    }).initialize();
+    assert.equal(scheduler.status().activation, "state_unavailable");
+    assert.deepEqual(await readdir(target), []);
+  } finally {
+    await rm(parent, { force: true, recursive: true });
+  }
+});
+
 // retain the representative maximum row count under both object limits
 test("deterministic gzip accepts 240 forecast rows", () => {
   const rows = Array.from({ length: 240 },
@@ -466,9 +553,16 @@ test("response tracking never writes on close without finish", async () => {
 
   try {
     const aborted = new EventEmitter();
-    store.trackResponse(aborted, createAdjustmentEvidenceCapture(forecastBody(), "days=1"));
+    let abortedStatus;
+    store.trackResponse(
+      aborted,
+      createAdjustmentEvidenceCapture(forecastBody(), "days=1"),
+      // retain the genuine close-without-finish outcome
+      (result) => { abortedStatus = result.status; },
+    );
     aborted.emit("close");
     assert.equal(store.status().closeWithoutFinish, 1);
+    assert.equal(abortedStatus, "response_aborted");
     assert.equal((await freezeAdjustmentEvidenceSnapshot({ root })).entries.length, 0);
 
     const finished = new EventEmitter();
@@ -492,6 +586,612 @@ test("window normalization rejects duplicate and caller-controlled shapes", () =
   assert.equal(normalizeAdjustmentEvidenceWindow(new URL("https://weather.test/forecast?window=overnight")), "overnight");
   assert.equal(normalizeAdjustmentEvidenceWindow(new URL("https://weather.test/forecast?days=1&days=1")), null);
   assert.equal(normalizeAdjustmentEvidenceWindow(new URL("https://weather.test/forecast?surface=widget")), null);
+});
+
+// retain one in-memory scheduler state port across restart tests
+function memorySchedulerStateStore(initial = null) {
+  let state = initial;
+  return {
+    // keep the injected port initialization side-effect free
+    async initialize() {
+      return this;
+    },
+    // return one detached durable state image
+    async read() {
+      return state === null ? {
+        activation: "not_initialized",
+        attempts: [],
+        contractVersion: "adjustment-evidence-scheduler-state/v1",
+        errors: [],
+        gaps: [],
+        lastCheckedAt: null,
+        updatedAt: null,
+      } : structuredClone(state);
+    },
+    // retain only one detached current state image
+    async write(value) {
+      state = structuredClone(value);
+    },
+    // expose test-only durable state
+    value() {
+      return structuredClone(state);
+    },
+  };
+}
+
+// admit the fall-back DST row only through the v2 object reader
+test("v2 capture accepts exactly 241 days=10 rows while v1 stays byte-compatible", async () => {
+  const rows = Array.from({ length: 241 },
+    // build one maximum fall-back forecast result
+    (_value, index) => forecastRow(index, {
+      receivedAt: new Date(Date.parse("2026-10-07T00:06:00.000Z") + index * 60_000).toISOString(),
+    }));
+  assert.throws(
+    () => createAdjustmentEvidenceCapture(forecastBody(rows, { days: 10 }), "days=10"),
+    /forecast evidence body is invalid/u,
+  );
+  const capture = createAdjustmentEvidenceCaptureV2(
+    forecastBody(rows, { days: 10 }),
+    "days=10",
+  );
+  assert.equal(capture.object.rows.length, 241);
+  assert.equal(capture.object.contractVersion, "forecast-adjustment-evidence-object/v2");
+  assert.ok(capture.compressedObject.byteLength <= 16 * 1_024);
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-v2-"));
+  const store = await new AdjustmentEvidenceStore({
+    root,
+    statfs: async () => healthyStatfs(),
+  }).initialize();
+
+  try {
+    const prepared = store.prepareV2(forecastBody(rows, { days: 10 }), "days=10", "scheduler_request");
+    assert.deepEqual(
+      await store.commit(prepared, "2026-10-08T06:40:00.000Z"),
+      { status: "created" },
+    );
+    const receipt = await readFile(
+      join(root, "receipts", `sha256-${prepared.edgeReceiptIdentitySha256}.json`),
+    );
+    assert.ok(receipt.byteLength <= 2_048);
+    assert.equal((await freezeAdjustmentEvidenceSnapshot({ root })).entries.length, 1);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// bind the first trusted channel without relabelling an existing receipt
+test("v2 channel assertion keeps separate identity and legacy first receipt", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-channel-"));
+  const store = await new AdjustmentEvidenceStore({
+    root,
+    statfs: async () => healthyStatfs(),
+  }).initialize();
+
+  try {
+    const prepared = store.prepareV2(forecastBody(), "days=1", "public_get");
+    assert.deepEqual(
+      await store.commit(prepared, "2026-10-08T00:40:00.000Z"),
+      { status: "created" },
+    );
+    const retry = store.prepareV2(forecastBody(), "days=1", "scheduler_request");
+    assert.deepEqual(
+      await store.commit(retry, "2026-10-08T06:40:00.000Z"),
+      { status: "duplicate" },
+    );
+    const bindingName = `sha256-${prepared.edgeReceiptIdentitySha256}.json`;
+    const binding = JSON.parse(await readFile(join(root, "channel-bindings", bindingName), "utf8"));
+    const assertion = JSON.parse(await readFile(
+      join(root, "channels", `sha256-${binding.assertionSha256}.json`),
+      "utf8",
+    ));
+    assert.equal(assertion.channel, "public_get");
+    assert.notEqual(binding.assertionSha256, prepared.edgeReceiptIdentitySha256);
+
+    const legacyBody = forecastBody([forecastRow(1)]);
+    const legacy = createAdjustmentEvidenceCapture(legacyBody, "days=1");
+    assert.deepEqual(
+      await store.commit(legacy, "2026-10-08T00:41:00.000Z"),
+      { status: "created" },
+    );
+    const migrated = store.prepareV2(legacyBody, "days=1", "scheduler_request");
+    assert.deepEqual(
+      await store.commit(migrated, "2026-10-08T06:41:00.000Z"),
+      { status: "duplicate" },
+    );
+    const legacyBinding = JSON.parse(await readFile(
+      join(root, "channel-bindings", `sha256-${legacy.edgeReceiptIdentitySha256}.json`),
+      "utf8",
+    ));
+    const legacyAssertion = JSON.parse(await readFile(
+      join(root, "channels", `sha256-${legacyBinding.assertionSha256}.json`),
+      "utf8",
+    ));
+    assert.equal(legacyAssertion.channel, "legacy_unattributed");
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// calculate fixed UTC cycles with deterministic bounded jitter
+test("scheduler selects one jittered current due and never crosses the finite end", () => {
+  const due = currentAdjustmentEvidenceDue("2026-10-08T06:40:00.000Z");
+  assert.equal(due.dueKey, "capture/2026-10-08T06:35:00.000Z");
+  assert.ok(due.jitterSeconds >= 0 && due.jitterSeconds <= 299);
+  assert.equal(due.scheduledAt, "2026-10-08T06:38:22.000Z");
+  const beforeJitter = currentAdjustmentEvidenceDue("2026-10-08T06:36:00.000Z");
+  assert.equal(beforeJitter.dueKey, "capture/2026-10-08T00:35:00.000Z");
+  assert.equal(currentAdjustmentEvidenceDue("2027-10-08T00:00:00.000Z"), null);
+});
+
+// block activation at the measured Blueberry free-space value
+test("scheduler capacity gate rejects the measured host headroom", async () => {
+  const admission = await evaluateAdjustmentEvidenceSchedulerAdmission({
+    enabled: true,
+    migrationReady: true,
+    now: new Date("2026-10-08T06:40:00.000Z"),
+    root: "/unused",
+    statfs: async () => ({
+      bavail: 1_950_453_760n / 4_096n,
+      bsize: 4_096n,
+      ffree: 100_000n,
+    }),
+  });
+  assert.equal(admission.active, false);
+  assert.equal(admission.reason, "capacity_blocked");
+  assert.equal(ADJUSTMENT_EVIDENCE_SCHEDULER_REQUIRED_FREE_BYTES, 2_034_155_520);
+
+  const exact = await evaluateAdjustmentEvidenceSchedulerAdmission({
+    enabled: true,
+    migrationReady: true,
+    now: new Date("2026-10-08T06:40:00.000Z"),
+    root: "/unused",
+    // expose the exact protected-floor plus reservation boundary
+    statfs: async () => ({
+      bavail: BigInt(ADJUSTMENT_EVIDENCE_SCHEDULER_REQUIRED_FREE_BYTES),
+      bsize: 1n,
+      ffree: 32_768n,
+    }),
+  });
+  assert.equal(exact.active, true);
+  const oneByteUnder = await evaluateAdjustmentEvidenceSchedulerAdmission({
+    enabled: true,
+    migrationReady: true,
+    now: new Date("2026-10-08T06:40:00.000Z"),
+    root: "/unused",
+    // expose one byte less than the complete readiness boundary
+    statfs: async () => ({
+      bavail: BigInt(ADJUSTMENT_EVIDENCE_SCHEDULER_REQUIRED_FREE_BYTES - 1),
+      bsize: 1n,
+      ffree: 32_768n,
+    }),
+  });
+  assert.equal(oneByteUnder.reason, "capacity_blocked");
+  const oneBlockUnder = await evaluateAdjustmentEvidenceSchedulerAdmission({
+    enabled: true,
+    migrationReady: true,
+    now: new Date("2026-10-08T06:40:00.000Z"),
+    root: "/unused",
+    // expose one filesystem block less than the readiness boundary
+    statfs: async () => ({
+      bavail: BigInt(ADJUSTMENT_EVIDENCE_SCHEDULER_REQUIRED_FREE_BYTES / 4_096 - 1),
+      bsize: 4_096n,
+      ffree: 32_768n,
+    }),
+  });
+  assert.equal(oneBlockUnder.reason, "capacity_blocked");
+  const protectedFloorOnly = await evaluateAdjustmentEvidenceSchedulerAdmission({
+    enabled: true,
+    migrationReady: true,
+    now: new Date("2026-10-08T06:40:00.000Z"),
+    root: "/unused",
+    // expose the protected floor without the mandatory reservation
+    statfs: async () => ({
+      bavail: 2_030_043_136n,
+      bsize: 1n,
+      ffree: 32_768n,
+    }),
+  });
+  assert.equal(protectedFloorOnly.reason, "capacity_blocked");
+});
+
+// run only the current catch-up and record older cycles as permanent gaps
+test("scheduler catch-up runs once at current time without backdating", async () => {
+  let now = new Date("2026-10-08T18:40:00.000Z");
+  const stateStore = memorySchedulerStateStore({
+    activation: "active",
+    attempts: [],
+    contractVersion: "adjustment-evidence-scheduler-state/v1",
+    errors: [],
+    gaps: [],
+    lastCheckedAt: "2026-10-08T00:40:00.000Z",
+    updatedAt: "2026-10-08T00:40:00.000Z",
+  });
+  const triggers = [];
+  const scheduler = await new AdjustmentEvidenceScheduler({
+    enabled: true,
+    migrationReady: true,
+    now: () => now,
+    root: "/unused",
+    stateStore,
+    statfs: async () => healthyStatfs(),
+    trigger: async (input) => {
+      triggers.push(input);
+      return { status: "created" };
+    },
+  }).initialize();
+  const result = await scheduler.runDue();
+  assert.equal(result.dueKey, "capture/2026-10-08T18:35:00.000Z");
+  assert.equal(triggers[0].commitAt, now.toISOString());
+  assert.equal(triggers[0].path, "/api/v1/sites/ballydidean/forecast?days=10");
+  assert.deepEqual(
+    stateStore.value().gaps.map((gap) => gap.dueKey),
+    [
+      "capture/2026-10-08T06:35:00.000Z",
+      "capture/2026-10-08T12:35:00.000Z",
+    ],
+  );
+  const restarted = await new AdjustmentEvidenceScheduler({
+    enabled: true,
+    migrationReady: true,
+    now: () => now,
+    root: "/unused",
+    stateStore,
+    statfs: async () => healthyStatfs(),
+    trigger: async (input) => {
+      triggers.push(input);
+      return { status: "created" };
+    },
+  }).initialize();
+  assert.equal((await restarted.runDue()).status, "current_already_processed");
+  assert.equal(triggers.length, 1);
+  now = new Date("2026-10-08T12:40:00.000Z");
+  assert.equal((await restarted.runDue()).status, "clock_rollback");
+  assert.equal(triggers.length, 1);
+  now = new Date("2026-10-08T18:41:00.000Z");
+});
+
+// trigger the first clock tick without any incoming public request
+test("scheduler start is traffic-independent and keeps bounded restart history", async () => {
+  let now = new Date("2026-10-08T00:40:00.000Z");
+  const stateStore = memorySchedulerStateStore();
+  const triggers = [];
+  let intervalCallback;
+  let intervalCleared = false;
+  const timer = { unref() {} };
+  const scheduler = await new AdjustmentEvidenceScheduler({
+    clearInterval: () => { intervalCleared = true; },
+    enabled: true,
+    migrationReady: true,
+    now: () => now,
+    root: "/unused",
+    setInterval: (callback) => {
+      intervalCallback = callback;
+      return timer;
+    },
+    stateStore,
+    statfs: async () => healthyStatfs(),
+    trigger: async (input) => {
+      triggers.push(input);
+      const error = new Error("injected capture failure");
+      error.code = "injected_failure";
+      throw error;
+    },
+  }).initialize();
+  assert.equal(scheduler.start(), true);
+  await new Promise(
+    // wait for the immediate asynchronous startup tick
+    (resolveWait) => setTimeout(resolveWait, 10),
+  );
+  assert.equal(triggers.length, 1);
+  assert.equal(typeof intervalCallback, "function");
+
+  // exercise enough later cycles to prove bounded retention
+  for (let index = 1; index < 40; index += 1) {
+    now = new Date(Date.parse("2026-10-08T00:40:00.000Z") + index * 6 * 60 * 60 * 1_000);
+    await scheduler.runDue();
+  }
+  assert.equal(scheduler.status().attempts.length, 40);
+  assert.equal(scheduler.status().errors.length, 40);
+  assert.equal(scheduler.status().gaps.length, 40);
+  scheduler.stop();
+  assert.equal(intervalCleared, true);
+});
+
+// keep only current and next payload slots and fsync a gap on refusal
+test("online page disk ports rotate two slots and fail open on a third", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-pages-"));
+  const ports = await new AdjustmentCyclePageDiskPorts({
+    now: () => new Date("2026-10-08T00:40:00.000Z"),
+    root,
+  }).initialize();
+  let state = createCyclePageState({
+    dailyPageCount: 0,
+    dueKey: "capture/2026-10-08T00:35:00.000Z",
+    generation: "1",
+    localDate: "2026-10-08",
+  });
+
+  try {
+    const identities = ["1".repeat(64), "2".repeat(64), "3".repeat(64)];
+
+    // fill the exact current and next slots
+    for (let index = 0; index < 2; index += 1) {
+      const result = await appendCyclePageFailOpen(state, {
+        payload: Buffer.from(`page-${String(index)}`),
+        projections: [{ channel: "scheduler_request", identitySha256: identities[index] }],
+      }, ports);
+      assert.equal(result.servingBlocked, false);
+      assert.equal(result.status, "page_pending_acknowledgement");
+      state = result.state;
+    }
+
+    const refused = await appendCyclePageFailOpen(state, {
+      payload: Buffer.from("page-2"),
+      projections: [{ channel: "scheduler_request", identitySha256: identities[2] }],
+    }, ports);
+    assert.equal(refused.servingBlocked, false);
+    assert.equal(refused.status, "evidence_gap");
+    state = refused.state;
+    assert.deepEqual((await readdir(join(root, "online-pages", "slots"))).sort(), [
+      "current.page",
+      "next.page",
+    ]);
+    state = await ackCyclePage(state, {
+      acknowledgedAt: "2026-10-08T00:41:00.000Z",
+      pageSha256: state.pages[0].pageSha256,
+    }, ports);
+    assert.deepEqual(await readdir(join(root, "online-pages", "slots")), ["current.page"]);
+    assert.equal(state.slots.length, 1);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// preserve serving when page and gap persistence both refuse capacity
+test("online page capacity refusal stays fail open and honest", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-page-capacity-"));
+  const ports = await new AdjustmentCyclePageDiskPorts({
+    now: () => new Date("2026-10-08T00:40:00.000Z"),
+    root,
+    statfs: async () => ({
+      bavail: 1_950_453_760n,
+      bsize: 1n,
+      ffree: 100_000n,
+    }),
+  }).initialize();
+  const state = createCyclePageState({
+    dailyPageCount: 0,
+    dueKey: "capture/2026-10-08T00:35:00.000Z",
+    generation: "1",
+    localDate: "2026-10-08",
+  });
+
+  try {
+    const result = await appendCyclePageFailOpen(state, {
+      payload: Buffer.from("refused-page"),
+      projections: [{ channel: "scheduler_request", identitySha256: "4".repeat(64) }],
+    }, ports);
+    assert.equal(result.servingBlocked, false);
+    assert.equal(result.status, "evidence_gap_persistence_refused");
+    assert.equal(result.reason, "capacity_refused");
+    assert.deepEqual(await readdir(join(root, "online-pages", "slots")), []);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// transfer one committed scheduler capture through page checkpoint and genuine final graph
+test("archive transport exports canonical page and final envelopes with idempotent acknowledgements", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-archive-transfer-"));
+  const now = new Date("2026-10-08T00:40:00.123Z");
+  const store = await new AdjustmentEvidenceStore({
+    now: () => now,
+    root,
+    statfs: async () => healthyStatfs(),
+  }).initialize();
+  const prepared = store.prepareV2(forecastBody(), "days=10", "scheduler_request");
+
+  try {
+    assert.notEqual(prepared, null);
+    assert.deepEqual(await store.commit(prepared, now.toISOString()), { status: "created" });
+    const transport = await new AdjustmentEvidenceArchiveTransport({
+      now: () => now,
+      root,
+      statfs: async () => healthyStatfs(),
+    }).initialize();
+    const captured = await transport.captureCommittedSchedulerEvidence({
+      dueKey: "capture/2026-10-08T00:35:00.000Z",
+      prepared,
+    });
+    assert.equal(captured.status, "page_pending_acknowledgement");
+    const firstEnvelope = await transport.next();
+    assert.equal(firstEnvelope.contractVersion, ADJUSTMENT_ARCHIVE_TRANSFER_CONTRACT_VERSION);
+    assert.equal(firstEnvelope.kind, "page");
+    assert.equal(firstEnvelope.header.dueKey, "capture/2026-10-08T00:35:00.000Z");
+    assert.deepEqual(firstEnvelope.projections, [{
+      channel: "scheduler_request",
+      identitySha256: prepared.edgeReceiptIdentitySha256,
+    }]);
+    const payload = JSON.parse(Buffer.from(firstEnvelope.payloadBase64, "base64").toString("utf8"));
+    assert.equal(payload.contractVersion, "adjustment-evidence-page-payload/v1");
+    assert.equal(payload.edgeReceiptIdentitySha256, prepared.edgeReceiptIdentitySha256);
+
+    const restarted = await new AdjustmentEvidenceArchiveTransport({
+      now: () => new Date("2026-10-08T00:41:00.456Z"),
+      root,
+      statfs: async () => healthyStatfs(),
+    }).initialize();
+    assert.deepEqual(await restarted.next(), firstEnvelope);
+    const checkpointSha256 = "9".repeat(64);
+    const nextOutput = [];
+    await runAdjustmentArchiveCommand(["archive-next"], {
+      now: () => new Date("2026-10-08T00:41:00.456Z"),
+      root,
+      statfs: async () => healthyStatfs(),
+      stdout: { write: (bytes) => nextOutput.push(Buffer.from(bytes)) },
+    });
+    assert.deepEqual(JSON.parse(Buffer.concat(nextOutput).toString("utf8")), firstEnvelope);
+    const ackOutput = [];
+    // simulate a crash after durable checkpoint binding but before slot release
+    const crashPorts = await new AdjustmentCyclePageDiskPorts({
+      now: () => new Date("2026-10-08T00:41:00.456Z"),
+      root,
+      statfs: async () => healthyStatfs(),
+    }).initialize();
+    await crashPorts.persistTransferAcknowledgement({
+      acknowledgedAt: "2026-10-08T00:41:00.456Z",
+      checkpointSha256,
+      contractVersion: "adjustment-archive-transfer-ack/v1",
+      header: firstEnvelope.header,
+      pageSha256: firstEnvelope.pageSha256,
+      payloadLength: Buffer.from(firstEnvelope.payloadBase64, "base64").length,
+      projections: firstEnvelope.projections,
+    });
+    await runAdjustmentArchiveCommand([
+      "archive-ack",
+      firstEnvelope.pageSha256,
+      checkpointSha256,
+    ], {
+      now: () => new Date("2026-10-08T00:41:00.456Z"),
+      root,
+      statfs: async () => healthyStatfs(),
+      stdout: { write: (bytes) => ackOutput.push(Buffer.from(bytes)) },
+    });
+    assert.deepEqual(ackOutput, []);
+    const finalEnvelope = await restarted.next();
+    assert.equal(finalEnvelope.contractVersion, ADJUSTMENT_ARCHIVE_TRANSFER_CONTRACT_VERSION);
+    assert.equal(finalEnvelope.kind, "final");
+    assert.equal(finalEnvelope.manifest.dueKey, firstEnvelope.header.dueKey);
+    assert.equal(finalEnvelope.manifest.pageCount, 1);
+    assert.equal(finalEnvelope.manifest.pages[0].pageSha256, firstEnvelope.pageSha256);
+    const finalGraphSha256 = "7".repeat(64);
+    const finalAckOutput = [];
+    await runAdjustmentArchiveCommand([
+      "archive-ack-final",
+      finalEnvelope.manifestSha256,
+      finalGraphSha256,
+    ], {
+      now: () => new Date("2026-10-08T00:42:00.789Z"),
+      root,
+      statfs: async () => healthyStatfs(),
+      stdout: { write: (bytes) => finalAckOutput.push(Buffer.from(bytes)) },
+    });
+    assert.deepEqual(finalAckOutput, []);
+    assert.deepEqual(await restarted.next(), {
+      contractVersion: ADJUSTMENT_ARCHIVE_TRANSFER_CONTRACT_VERSION,
+      kind: "idle",
+    });
+    await restarted.acknowledge(firstEnvelope.pageSha256, checkpointSha256);
+    await assert.rejects(
+      restarted.acknowledge(firstEnvelope.pageSha256, "8".repeat(64)),
+      /acknowledgement collision/u,
+    );
+    await restarted.acknowledgeFinal(finalEnvelope.manifestSha256, finalGraphSha256);
+    await assert.rejects(
+      restarted.acknowledgeFinal(finalEnvelope.manifestSha256, "6".repeat(64)),
+      /final acknowledgement collision/u,
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// preserve the first pending page and record a permanent gap for a later due cycle
+test("archive transport fails open without a third spool or after-valid backfill", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-archive-gap-"));
+  const store = await new AdjustmentEvidenceStore({
+    root,
+    statfs: async () => healthyStatfs(),
+  }).initialize();
+  const first = store.prepareV2(forecastBody(), "days=10", "scheduler_request");
+  const secondBody = forecastBody([forecastRow(0), forecastRow(1)]);
+  const second = store.prepareV2(secondBody, "days=10", "scheduler_request");
+
+  try {
+    assert.notEqual(first, null);
+    assert.notEqual(second, null);
+    await store.commit(first, "2026-10-08T00:40:00.123Z");
+    await store.commit(second, "2026-10-08T06:40:00.123Z");
+    const transport = await new AdjustmentEvidenceArchiveTransport({
+      now: () => new Date("2026-10-08T06:40:00.123Z"),
+      root,
+      statfs: async () => healthyStatfs(),
+    }).initialize();
+    assert.equal((await transport.captureCommittedSchedulerEvidence({
+      dueKey: "capture/2026-10-08T00:35:00.000Z",
+      prepared: first,
+    })).status, "page_pending_acknowledgement");
+    const refused = await transport.captureCommittedSchedulerEvidence({
+      dueKey: "capture/2026-10-08T06:35:00.000Z",
+      prepared: second,
+    });
+    assert.equal(refused.status, "evidence_gap");
+    assert.equal((await transport.next()).projections[0].identitySha256, first.edgeReceiptIdentitySha256);
+    assert.equal((await readdir(join(root, "online-pages", "gaps"))).length, 1);
+    const retried = await transport.captureCommittedSchedulerEvidence({
+      dueKey: "capture/2026-10-08T06:35:00.000Z",
+      prepared: second,
+    });
+    assert.equal(retried.status, "evidence_gap");
+    assert.equal((await readdir(join(root, "online-pages", "gaps"))).length, 1);
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
+// keep both archive forced commands closed against argument and shell expansion
+test("archive SSH dispatch accepts only the exact next and acknowledgement grammars", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-adjustment-archive-dispatch-"));
+  const sudo = join(directory, "sudo");
+  const dispatch = join(repoRoot, "deploy/scripts/ssh-dispatch.sh");
+
+  try {
+    await writeFile(sudo, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\"\n");
+    await chmod(sudo, 0o700);
+
+    // accept only the two complete fixed grammars
+    for (const [command, expected] of [
+      ["adjustment-archive-next", "-n /usr/local/sbin/weather-remote-ops adjustment-archive-next\n"],
+      [
+        `adjustment-archive-ack ${"a".repeat(64)} ${"b".repeat(64)}`,
+        `-n /usr/local/sbin/weather-remote-ops adjustment-archive-ack ${"a".repeat(64)} ${"b".repeat(64)}\n`,
+      ],
+      [
+        `adjustment-archive-ack-final ${"c".repeat(64)} ${"d".repeat(64)}`,
+        `-n /usr/local/sbin/weather-remote-ops adjustment-archive-ack-final ${"c".repeat(64)} ${"d".repeat(64)}\n`,
+      ],
+    ]) {
+      const result = spawnSync(dispatch, [], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, SSH_ORIGINAL_COMMAND: command },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout, expected);
+    }
+
+    // reject every extra, malformed or shell-expanded argument
+    for (const command of [
+      "adjustment-archive-next extra",
+      `adjustment-archive-ack ${"A".repeat(64)} ${"b".repeat(64)}`,
+      `adjustment-archive-ack ${"a".repeat(64)} ${"b".repeat(63)}`,
+      `adjustment-archive-ack ${"a".repeat(64)} ${"b".repeat(64)} extra`,
+      `adjustment-archive-ack ${"a".repeat(64)};id ${"b".repeat(64)}`,
+      `adjustment-archive-ack-final ${"a".repeat(64)} ${"B".repeat(64)}`,
+      `adjustment-archive-ack-final ${"a".repeat(64)} ${"b".repeat(64)} extra`,
+    ]) {
+      const result = spawnSync(dispatch, [], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, SSH_ORIGINAL_COMMAND: command },
+      });
+      assert.equal(result.status, 126, command);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr, "operation denied\n");
+    }
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
 });
 
 // reserve one disposable listener port
@@ -645,6 +1345,12 @@ test("web edge captures only a finished normal forecast GET without changing byt
     assert.equal(head.status, 200);
     assert.equal(await head.text(), "");
     assert.equal((await freezeAdjustmentEvidenceSnapshot({ root: evidenceRoot })).entries.length, 1);
+    const spoofed = await fetch(`${origin}/api/v1/sites/ballydidean/forecast?days=1`, {
+      headers: { "X-Weather-Issuance-Channel": "scheduler_request" },
+    });
+    assert.equal(spoofed.status, 200);
+    await spoofed.arrayBuffer();
+    assert.deepEqual(await readdir(join(evidenceRoot, "channels")), []);
     const widget = await fetch(`${origin}/api/v1/sites/ballydidean/widget-forecast`);
     assert.equal(widget.status, 502);
     assert.equal((await freezeAdjustmentEvidenceSnapshot({ root: evidenceRoot })).entries.length, 1);

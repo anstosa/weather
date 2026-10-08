@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { RAIN_HURDLE_WIND_MODEL_SHA256 } from "@weather/forecast-adjustment";
+import { RAIN_HURDLE_WIND_ARTIFACT_SHA256 } from "../../../packages/forecast-adjustment/dist/rain-hurdle-wind-artifact.js";
 import { rainAdjustmentDecision, rainAdjustmentRuntime, validRainAdjustmentRun } from "../dist/rain-adjustment.js";
 
 const now = "2026-09-14T08:05:00.000Z";
@@ -47,4 +48,68 @@ test("rain validation fails raw for stale, unbound, future and malformed outputs
   }
   assert.equal(validRainAdjustmentRun(source, "2026-09-14T20:00:00.000Z"), false);
   assert.equal(rainAdjustmentDecision(source, source.hours[0].validAt, null, now).state, "raw_fallback");
+});
+
+// policy selection must override every retained adjusted sidecar
+test("rain registry raw and invalid states retain Best Match without sidecar use", () => {
+  const source = run();
+  // prove both explicit disabled causes independently
+  for (const reasonCode of ["policy_raw", "registry_invalid"]) {
+    const selection = {
+      loadedAt: "2026-09-14T07:59:00.000Z",
+      runtime: { artifactSha256: null, reasonCode, state: "disabled" },
+    };
+    assert.deepEqual(
+      rainAdjustmentDecision(
+        source,
+        source.hours[0].validAt,
+        0.6,
+        now,
+        selection,
+      ),
+      {
+        bundleSha256: null,
+        contractVersion: "forecast-rain-adjustment-decision/v1",
+        correctedPrecipitationMm: null,
+        rawBestMatchPrecipitationMm: 0.6,
+        reasonCode,
+        sourceForecast: null,
+        state: "disabled",
+      },
+    );
+    assert.deepEqual(rainAdjustmentRuntime(source, now, selection), {
+      activeBundle: null,
+      loadedAt: selection.loadedAt,
+      reasonCode,
+      source: null,
+      state: "disabled",
+    });
+  }
+});
+
+// active selection must preserve the legacy adjusted decision
+test("active rain registry is behaviorally equivalent to legacy selection", () => {
+  const source = run();
+  const selection = {
+    loadedAt: "2026-09-14T07:59:00.000Z",
+    runtime: {
+      artifactSha256: RAIN_HURDLE_WIND_ARTIFACT_SHA256,
+      reasonCode: null,
+      state: "active",
+    },
+  };
+  assert.deepEqual(
+    rainAdjustmentDecision(
+      source,
+      source.hours[0].validAt,
+      0.6,
+      now,
+      selection,
+    ),
+    rainAdjustmentDecision(source, source.hours[0].validAt, 0.6, now),
+  );
+  assert.deepEqual(rainAdjustmentRuntime(source, now, selection), {
+    ...rainAdjustmentRuntime(source, now),
+    loadedAt: selection.loadedAt,
+  });
 });

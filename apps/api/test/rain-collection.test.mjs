@@ -97,3 +97,29 @@ test("rain read failures stay public-safe and emit an explicit degradation event
   assert.equal(diagnostics[0].status, 200);
   assert.equal(JSON.stringify({ body, diagnostics }).includes("private-gauge"), false);
 });
+
+// disabled startup policy must stop before retained sidecar storage
+test("disabled rain startup policy serves collection status without reading a retained run", async () => {
+  const retained = store();
+  let reads = 0;
+  retained.getRainAdjustmentRun = async () => {
+    reads += 1;
+    assert.fail("disabled rain runtime read a retained run");
+  };
+  const handler = createWeatherApi(retained, {
+    now: () => new Date("2026-09-14T12:01:00.000Z"),
+    rainAdjustment: {
+      loadedAt: "2026-09-14T12:00:00.000Z",
+      runtime: {
+        artifactSha256: null,
+        reasonCode: "policy_raw",
+        state: "disabled",
+      },
+    },
+  });
+  const response = await handler(new Request(endpoint));
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.data.modelEnabled, false);
+  assert.equal(reads, 0);
+});

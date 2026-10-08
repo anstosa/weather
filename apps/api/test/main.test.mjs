@@ -14,10 +14,34 @@ function recordingServer(events) {
   };
 }
 
+// a policy raw selection must never fall through to another wind model
+test("maintenance raw registries preserve family-scoped startup raw policy", async () => {
+  const events = [];
+  const raw = { bundle: null, reasonCode: "policy_raw", state: "disabled" };
+  const rainRaw = { artifactSha256: null, reasonCode: "policy_raw", state: "disabled" };
+  const started = await startWeatherApi({
+    // retain the exact wind policy instead of enabling a generic fallback
+    async loadForecastAdjustmentWindCanaryRuntime() { return raw; },
+    // generic loading would violate the explicit family raw selection
+    async loadForecastAdjustmentRuntime() { throw new Error("unexpected generic runtime load"); },
+    // temperature retains its independently selected raw identity
+    async loadForecastAdjustmentTemperatureCanaryRuntime() { return raw; },
+    // rain retains its independently selected raw identity
+    async loadForecastAdjustmentRainRuntime() { return rainRaw; },
+    // keep this startup test free of database and sockets
+    async prepareServer() { return { port: 8080, server: recordingServer(events) }; },
+  });
+  assert.equal(started.adjustment.runtime, raw);
+  assert.equal(started.temperatureAdjustment.runtime, raw);
+  assert.equal(started.rainAdjustment.runtime, rainRaw);
+  assert.deepEqual(events, ["listen:0.0.0.0:8080"]);
+});
+
 test("I-BND-03 startup loads each eligible runtime once before preparation and listen", async () => {
   const events = [];
   let canaryLoads = 0;
   let loads = 0;
+  let rainLoads = 0;
   let temperatureLoads = 0;
   const runtime = {
     bundle: null,
@@ -25,6 +49,7 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
     state: "disabled",
   };
   let preparedAdjustment;
+  let preparedRainAdjustment;
   let preparedTemperatureAdjustment;
   const started = await startWeatherApi({
     // return an inactive canary selection
@@ -43,6 +68,16 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
       events.push("load");
       return runtime;
     },
+    // return one active compiled rain selection
+    async loadForecastAdjustmentRainRuntime() {
+      rainLoads += 1;
+      events.push("rain");
+      return {
+        artifactSha256: "dfba22520eb66944046f999e96ee51378913ef926a2da27f0562490d9fb7ef64",
+        reasonCode: null,
+        state: "active",
+      };
+    },
     // return one independently inactive temperature selection
     async loadForecastAdjustmentTemperatureCanaryRuntime() {
       temperatureLoads += 1;
@@ -59,9 +94,10 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
       return new Date("2026-09-02T01:02:03.000Z");
     },
     // prepare only after the runtime is loaded
-    async prepareServer(adjustment, temperatureAdjustment) {
+    async prepareServer(adjustment, temperatureAdjustment, rainAdjustment) {
       preparedAdjustment = adjustment;
       preparedTemperatureAdjustment = temperatureAdjustment;
+      preparedRainAdjustment = rainAdjustment;
       events.push("prepare");
       return { port: 8080, server: recordingServer(events) };
     },
@@ -69,11 +105,13 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
 
   assert.equal(canaryLoads, 1);
   assert.equal(loads, 1);
+  assert.equal(rainLoads, 1);
   assert.equal(temperatureLoads, 1);
   assert.deepEqual(events, [
     "canary",
     "load",
     "temperature",
+    "rain",
     "time",
     "prepare",
     "listen:0.0.0.0:8080",
@@ -81,11 +119,38 @@ test("I-BND-03 startup loads each eligible runtime once before preparation and l
   assert.equal(started.adjustment, preparedAdjustment);
   assert.equal(started.adjustment.runtime, runtime);
   assert.equal(started.adjustment.loadedAt, "2026-09-02T01:02:03.000Z");
+  assert.equal(started.rainAdjustment, preparedRainAdjustment);
+  assert.equal(started.rainAdjustment.loadedAt, "2026-09-02T01:02:03.000Z");
   assert.equal(started.temperatureAdjustment, preparedTemperatureAdjustment);
   assert.equal(
     started.temperatureAdjustment.loadedAt,
     "2026-09-02T01:02:03.000Z",
   );
+});
+
+// contain rain loader failure without changing other family startup
+test("rain loader failure becomes registry-invalid before server preparation", async () => {
+  let preparedRainAdjustment;
+  const started = await startWeatherApi({
+    // fail only the rain loader
+    async loadForecastAdjustmentRainRuntime() {
+      throw new Error("private rain registry path");
+    },
+    // retain the startup snapshot without external resources
+    async prepareServer(_adjustment, _temperatureAdjustment, rainAdjustment) {
+      preparedRainAdjustment = rainAdjustment;
+      return { port: 8080, server: recordingServer([]) };
+    },
+  });
+  assert.deepEqual(started.rainAdjustment, {
+    loadedAt: started.rainAdjustment.loadedAt,
+    runtime: {
+      artifactSha256: null,
+      reasonCode: "registry_invalid",
+      state: "disabled",
+    },
+  });
+  assert.equal(started.rainAdjustment, preparedRainAdjustment);
 });
 
 test("temperature loader failures stay isolated from an active wind canary", async () => {

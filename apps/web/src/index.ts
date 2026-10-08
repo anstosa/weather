@@ -148,6 +148,7 @@ export type ForecastAdjustmentReasonCode =
   | "insufficient_data"
   | "metric_not_enabled"
   | "metric_out_of_bounds"
+  | "policy_raw"
   | "qualification_failed"
   | "registry_inactive"
   | "registry_invalid"
@@ -266,6 +267,7 @@ type ForecastTemperatureCanaryReasonCode =
   | "outside_assumed_delay6_next12"
   | "outside_initialization_first12"
   | "outside_operational_window"
+  | "policy_raw"
   | "recent_error_state_as_of_mismatch"
   | "recent_error_state_contains_future_data"
   | "recent_error_state_outside_window"
@@ -492,8 +494,20 @@ export interface ForecastAdjustmentScorecardFamily {
   readonly bestMatchDiagnostic: ForecastAdjustmentBestMatchDiagnostic | null;
 }
 
-// describe the authenticated aggregate-only scorecard
-export interface ForecastAdjustmentScorecard {
+// describe the shared immutable scorecard inputs
+interface ForecastAdjustmentScorecardInputs {
+  readonly adjustmentEvidenceManifestSha256: string;
+  readonly adjustmentEvidenceWatermarkSha256: string;
+  readonly forecastTrainingManifestSha256: string;
+  readonly localDateFrom: string;
+  readonly localDateTo: string;
+  readonly reportSha256s: Readonly<Record<ForecastAdjustmentScorecardFamilyName, string>>;
+  readonly sourceRevision: string;
+  readonly targetCutoffAt: string;
+}
+
+// describe the historical display-only scorecard
+export interface ForecastAdjustmentScorecardV1 {
   readonly contractVersion: "forecast-adjustment-scorecard/v1";
   readonly siteKey: "ballydidean";
   readonly generatedAt: string;
@@ -501,21 +515,75 @@ export interface ForecastAdjustmentScorecard {
   readonly servingChanged: false;
   readonly automaticActivationEligible: false;
   readonly operatorApprovalRequired: true;
-  readonly inputs: {
-    readonly adjustmentEvidenceManifestSha256: string;
-    readonly adjustmentEvidenceWatermarkSha256: string;
-    readonly forecastTrainingManifestSha256: string;
-    readonly localDateFrom: string;
-    readonly localDateTo: string;
-    readonly reportSha256s: Readonly<Record<ForecastAdjustmentScorecardFamilyName, string>>;
-    readonly sourceRevision: string;
-    readonly targetCutoffAt: string;
-  };
+  readonly inputs: ForecastAdjustmentScorecardInputs;
   readonly families: Readonly<Record<ForecastAdjustmentScorecardFamilyName, ForecastAdjustmentScorecardFamily>>;
 }
 
+// describe one sanitized automatic-policy history entry
+export interface ForecastAdjustmentScorecardHistoryEntry {
+  readonly actionLineageSha256: string;
+  readonly actionProjectionSha256: string;
+  readonly actionState: ForecastAdjustmentScorecardV2["actionState"];
+  readonly attemptSha256: string;
+  readonly occurredAt: string;
+  readonly policyDecision: ForecastAdjustmentScorecardV2["policyDecision"];
+  readonly releaseManifestSha256: string | null;
+}
+
+// describe the authenticated automatic-policy scorecard
+export interface ForecastAdjustmentScorecardV2 {
+  readonly contractVersion: "forecast-adjustment-scorecard/v2";
+  readonly siteKey: "ballydidean";
+  readonly generatedAt: string;
+  readonly validThrough: string;
+  readonly policyDecision: "pending" | "qualified" | "failed" | "regressed";
+  readonly actionState: "none" | "shadow_pending" | "confirmation_registered" |
+    "pending_support" | "release_pending" | "deploying" | "active" | "failed" |
+    "expired_unapplied" | "deployed_operator_off" | "rolled_back_prior" | "raw";
+  readonly actionProjectionSha256: string;
+  readonly actionLineage: {
+    readonly actionSha256: string;
+    readonly attemptSha256: string;
+    readonly predecessorActionSha256: string | null;
+    readonly releaseManifestSha256: string | null;
+    readonly sourceRevision: string;
+  };
+  readonly inputs: ForecastAdjustmentScorecardInputs & {
+    readonly frontierSha256: string;
+    readonly inputManifestSha256: string;
+    readonly reportSha256: string;
+  };
+  readonly job: {
+    readonly attemptState: "not_due" | "due" | "running" | "completed" | "failed" | "blocked";
+    readonly backlogState: "clear" | "present" | "blocked";
+    readonly dueState: "not_due" | "due" | "overdue" | "expired";
+    readonly operatorState: "enabled" | "disabled";
+    readonly successState: "none" | "succeeded" | "failed";
+  };
+  readonly warnings: Readonly<Record<"source" | "fallback" | "gauge" | "capture" | "capacity", readonly string[]>>;
+  readonly identities: Readonly<Record<
+    "active" | "prior" | "shadow",
+    Readonly<Record<ForecastAdjustmentScorecardFamilyName, string | null>>
+  >> & Readonly<{ raw: Readonly<Record<ForecastAdjustmentScorecardFamilyName, string>> }>;
+  readonly progress: {
+    readonly confirmationCompletedEpochs: number;
+    readonly confirmationRequiredEpochs: number;
+    readonly rollbackCompletedEpochs: number;
+    readonly rollbackRequiredEpochs: number;
+    readonly rainCaptureExpiresAt: string;
+  };
+  readonly history: readonly ForecastAdjustmentScorecardHistoryEntry[];
+  readonly families: Readonly<Record<ForecastAdjustmentScorecardFamilyName, ForecastAdjustmentScorecardFamily>>;
+}
+
+// accept v1 only for display and v2 as the current policy projection
+export type ForecastAdjustmentScorecard =
+  ForecastAdjustmentScorecardV1 | ForecastAdjustmentScorecardV2;
+
 // name safe protected scorecard outcomes
 export type ForecastAdjustmentScorecardLoadState = "loading" | "ready" | "unavailable" | "unauthorized";
+export type ForecastAdjustmentScorecardPublicationState =
+  "current" | "pending_unapplied" | "legacy_display";
 
 export interface PropertySensorSnapshot {
   readonly channel: number | null;
@@ -582,6 +650,7 @@ export interface DashboardState {
   readonly adminAdjustmentSettingsSaving: boolean;
   readonly adminAdjustmentSettingsMessage: string | null;
   readonly adminAdjustmentScorecard: ForecastAdjustmentScorecard | null;
+  readonly adminAdjustmentScorecardPublicationState: ForecastAdjustmentScorecardPublicationState | null;
   readonly adminAdjustmentScorecardState: ForecastAdjustmentScorecardLoadState;
   readonly forecast: readonly WeatherRecord[];
   readonly forecastPressureContext: readonly WeatherRecord[];
@@ -740,6 +809,7 @@ const EMPTY_STATE: DashboardState = {
   adminAdjustmentSettingsSaving: false,
   adminAdjustmentSettingsMessage: null,
   adminAdjustmentScorecard: null,
+  adminAdjustmentScorecardPublicationState: null,
   adminAdjustmentScorecardState: "loading",
   forecast: [],
   forecastPressureContext: [],
@@ -896,6 +966,7 @@ const FORECAST_ADJUSTMENT_REASON_CODE_KEYS = new Set<ForecastAdjustmentReasonCod
   "insufficient_data",
   "metric_not_enabled",
   "metric_out_of_bounds",
+  "policy_raw",
   "qualification_failed",
   "registry_inactive",
   "registry_invalid",
@@ -996,6 +1067,7 @@ const FORECAST_TEMPERATURE_REASON_CODE_KEYS =
     "outside_assumed_delay6_next12",
     "outside_initialization_first12",
     "outside_operational_window",
+    "policy_raw",
     "recent_error_state_as_of_mismatch",
     "recent_error_state_contains_future_data",
     "recent_error_state_outside_window",
@@ -1065,7 +1137,7 @@ const FORECAST_ADJUSTMENT_SCORECARD_FAMILIES: readonly ForecastAdjustmentScoreca
   "wind",
   "rain",
 ];
-const FORECAST_ADJUSTMENT_SCORECARD_KEYS = new Set([
+const FORECAST_ADJUSTMENT_SCORECARD_V1_KEYS = new Set([
   "automaticActivationEligible",
   "contractVersion",
   "families",
@@ -1085,6 +1157,72 @@ const FORECAST_ADJUSTMENT_SCORECARD_INPUT_KEYS = new Set([
   "reportSha256s",
   "sourceRevision",
   "targetCutoffAt",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_KEYS = new Set([
+  "actionLineage",
+  "actionProjectionSha256",
+  "actionState",
+  "contractVersion",
+  "families",
+  "generatedAt",
+  "history",
+  "identities",
+  "inputs",
+  "job",
+  "policyDecision",
+  "progress",
+  "siteKey",
+  "validThrough",
+  "warnings",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_INPUT_KEYS = new Set([
+  ...FORECAST_ADJUSTMENT_SCORECARD_INPUT_KEYS,
+  "frontierSha256",
+  "inputManifestSha256",
+  "reportSha256",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_LINEAGE_KEYS = new Set([
+  "actionSha256",
+  "attemptSha256",
+  "predecessorActionSha256",
+  "releaseManifestSha256",
+  "sourceRevision",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_JOB_KEYS = new Set([
+  "attemptState",
+  "backlogState",
+  "dueState",
+  "operatorState",
+  "successState",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_WARNING_KEYS = new Set([
+  "capacity",
+  "capture",
+  "fallback",
+  "gauge",
+  "source",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_IDENTITY_KEYS = new Set([
+  "active",
+  "prior",
+  "raw",
+  "shadow",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_PROGRESS_KEYS = new Set([
+  "confirmationCompletedEpochs",
+  "confirmationRequiredEpochs",
+  "rainCaptureExpiresAt",
+  "rollbackCompletedEpochs",
+  "rollbackRequiredEpochs",
+]);
+const FORECAST_ADJUSTMENT_SCORECARD_V2_HISTORY_KEYS = new Set([
+  "actionLineageSha256",
+  "actionProjectionSha256",
+  "actionState",
+  "attemptSha256",
+  "occurredAt",
+  "policyDecision",
+  "releaseManifestSha256",
 ]);
 const FORECAST_ADJUSTMENT_SCORECARD_FAMILY_KEYS = new Set([
   "bestMatchDiagnostic",
@@ -2366,14 +2504,228 @@ function isForecastAdjustmentScorecardFamily(
     : card.rainDiagnostics === null;
 }
 
+// reject private confirmation member fields at every response depth
+function hasForecastAdjustmentPrivateMemberField(value: unknown): boolean {
+  // stop recursion at scalar leaves
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+
+  // inspect every bounded array member
+  if (Array.isArray(value)) {
+    return value.some(
+      // reject one nested private field
+      (entry) => hasForecastAdjustmentPrivateMemberField(entry),
+    );
+  }
+
+  return Object.entries(value).some(
+    // reject private and reserved-member result fields
+    ([key, entry]) => /(?:private|reserved.*member|member.*result)/iu.test(key) ||
+      hasForecastAdjustmentPrivateMemberField(entry),
+  );
+}
+
+// validate common immutable scorecard inputs
+function isForecastAdjustmentScorecardInputs(
+  value: unknown,
+  expectedKeys: ReadonlySet<string>,
+): value is ForecastAdjustmentScorecardInputs {
+  const inputs = forecastAdjustmentObject(value);
+  const reportSha256s = forecastAdjustmentObject(inputs?.reportSha256s);
+  return inputs !== null &&
+    hasExactForecastAdjustmentKeys(inputs, expectedKeys) &&
+    isForecastAdjustmentSha256(inputs.adjustmentEvidenceManifestSha256) &&
+    isForecastAdjustmentSha256(inputs.adjustmentEvidenceWatermarkSha256) &&
+    isForecastAdjustmentSha256(inputs.forecastTrainingManifestSha256) &&
+    typeof inputs.localDateFrom === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(inputs.localDateFrom) &&
+    typeof inputs.localDateTo === "string" && /^\d{4}-\d{2}-\d{2}$/u.test(inputs.localDateTo) &&
+    inputs.localDateFrom <= inputs.localDateTo &&
+    typeof inputs.sourceRevision === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(inputs.sourceRevision) &&
+    isForecastAdjustmentScorecardInstant(inputs.targetCutoffAt) &&
+    reportSha256s !== null &&
+    hasExactForecastAdjustmentKeys(reportSha256s, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES)) &&
+    FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.every(
+      // bind every family card to one immutable report
+      (family) => isForecastAdjustmentSha256(reportSha256s[family]),
+    );
+}
+
+// validate one complete family collection
+function isForecastAdjustmentScorecardFamilies(value: unknown): boolean {
+  const families = forecastAdjustmentObject(value);
+  return families !== null &&
+    hasExactForecastAdjustmentKeys(families, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES)) &&
+    FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.every(
+      // validate one closed aggregate card
+      (family) => isForecastAdjustmentScorecardFamily(families[family], family),
+    );
+}
+
+// validate one fixed family identity set
+function isForecastAdjustmentScorecardIdentitySet(value: unknown, nullable: boolean): boolean {
+  const identities = forecastAdjustmentObject(value);
+  return identities !== null &&
+    hasExactForecastAdjustmentKeys(identities, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES)) &&
+    FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.every(
+      // allow explicit absence only outside the raw fallback set
+      (family) => nullable && identities[family] === null ||
+        isForecastAdjustmentSha256(identities[family]),
+    );
+}
+
+// validate the closed v2 automatic-policy projection
+function isForecastAdjustmentScorecardV2(scorecard: Record<string, unknown>, now: number): boolean {
+  const generatedAt = scorecard.generatedAt;
+  const validThrough = scorecard.validThrough;
+  const inputs = forecastAdjustmentObject(scorecard.inputs);
+  const lineage = forecastAdjustmentObject(scorecard.actionLineage);
+  const job = forecastAdjustmentObject(scorecard.job);
+  const warnings = forecastAdjustmentObject(scorecard.warnings);
+  const identities = forecastAdjustmentObject(scorecard.identities);
+  const progress = forecastAdjustmentObject(scorecard.progress);
+  const history = scorecard.history;
+
+  // require a fresh seven-day maximum sanitized envelope
+  if (!hasExactForecastAdjustmentKeys(scorecard, FORECAST_ADJUSTMENT_SCORECARD_V2_KEYS) ||
+    scorecard.contractVersion !== "forecast-adjustment-scorecard/v2" ||
+    scorecard.siteKey !== "ballydidean" ||
+    !isForecastAdjustmentScorecardInstant(generatedAt) ||
+    !isForecastAdjustmentScorecardInstant(validThrough) ||
+    Date.parse(validThrough) <= Date.parse(generatedAt) ||
+    Date.parse(validThrough) - Date.parse(generatedAt) > 7 * 24 * 60 * 60 * 1_000 ||
+    Date.parse(validThrough) <= now ||
+    !["pending", "qualified", "failed", "regressed"].includes(scorecard.policyDecision as string) ||
+    !["none", "shadow_pending", "confirmation_registered", "pending_support", "release_pending", "deploying", "active", "failed", "expired_unapplied", "deployed_operator_off", "rolled_back_prior", "raw"].includes(scorecard.actionState as string) ||
+    !isForecastAdjustmentSha256(scorecard.actionProjectionSha256) ||
+    !isForecastAdjustmentScorecardInputs(inputs, FORECAST_ADJUSTMENT_SCORECARD_V2_INPUT_KEYS) ||
+    !isForecastAdjustmentSha256(inputs.frontierSha256) ||
+    !isForecastAdjustmentSha256(inputs.inputManifestSha256) ||
+    !isForecastAdjustmentSha256(inputs.reportSha256) ||
+    !isForecastAdjustmentScorecardFamilies(scorecard.families)) {
+    return false;
+  }
+
+  // require immutable action lineage with no approval or signature fields
+  if (lineage === null ||
+    !hasExactForecastAdjustmentKeys(lineage, FORECAST_ADJUSTMENT_SCORECARD_V2_LINEAGE_KEYS) ||
+    !isForecastAdjustmentSha256(lineage.actionSha256) ||
+    !isForecastAdjustmentSha256(lineage.attemptSha256) ||
+    !(lineage.predecessorActionSha256 === null || isForecastAdjustmentSha256(lineage.predecessorActionSha256)) ||
+    !(lineage.releaseManifestSha256 === null || isForecastAdjustmentSha256(lineage.releaseManifestSha256)) ||
+    typeof lineage.sourceRevision !== "string" ||
+    !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(lineage.sourceRevision)) {
+    return false;
+  }
+
+  // validate attempt, success, due, backlog and operator states
+  if (job === null ||
+    !hasExactForecastAdjustmentKeys(job, FORECAST_ADJUSTMENT_SCORECARD_V2_JOB_KEYS) ||
+    !["not_due", "due", "running", "completed", "failed", "blocked"].includes(job.attemptState as string) ||
+    !["clear", "present", "blocked"].includes(job.backlogState as string) ||
+    !["not_due", "due", "overdue", "expired"].includes(job.dueState as string) ||
+    !["enabled", "disabled"].includes(job.operatorState as string) ||
+    !["none", "succeeded", "failed"].includes(job.successState as string)) {
+    return false;
+  }
+
+  // accept only bounded warning codes in fixed categories
+  if (warnings === null ||
+    !hasExactForecastAdjustmentKeys(warnings, FORECAST_ADJUSTMENT_SCORECARD_V2_WARNING_KEYS) ||
+    !["source", "fallback", "gauge", "capture", "capacity"].every(
+      // validate one warning category
+      (key) => Array.isArray(warnings[key]) && (warnings[key] as unknown[]).length <= 16 &&
+        (warnings[key] as unknown[]).every(
+          // prohibit warning prose and paths
+          (warning) => typeof warning === "string" && /^[a-z0-9][a-z0-9_.:+-]{0,79}$/u.test(warning),
+        ),
+    )) {
+    return false;
+  }
+
+  // validate active, shadow, prior and raw identity projections
+  if (identities === null ||
+    !hasExactForecastAdjustmentKeys(identities, FORECAST_ADJUSTMENT_SCORECARD_V2_IDENTITY_KEYS) ||
+    !isForecastAdjustmentScorecardIdentitySet(identities.active, true) ||
+    !isForecastAdjustmentScorecardIdentitySet(identities.prior, true) ||
+    !isForecastAdjustmentScorecardIdentitySet(identities.shadow, true) ||
+    !isForecastAdjustmentScorecardIdentitySet(identities.raw, false)) {
+    return false;
+  }
+
+  // validate bounded confirmation and rollback progress
+  if (progress === null ||
+    !hasExactForecastAdjustmentKeys(progress, FORECAST_ADJUSTMENT_SCORECARD_V2_PROGRESS_KEYS) ||
+    !isForecastAdjustmentScorecardCount(progress.confirmationCompletedEpochs) ||
+    !isForecastAdjustmentScorecardCount(progress.confirmationRequiredEpochs) ||
+    !isForecastAdjustmentScorecardCount(progress.rollbackCompletedEpochs) ||
+    !isForecastAdjustmentScorecardCount(progress.rollbackRequiredEpochs) ||
+    (progress.confirmationCompletedEpochs as number) > (progress.confirmationRequiredEpochs as number) ||
+    (progress.rollbackCompletedEpochs as number) > (progress.rollbackRequiredEpochs as number) ||
+    !isForecastAdjustmentScorecardInstant(progress.rainCaptureExpiresAt)) {
+    return false;
+  }
+
+  // validate the newest 64 sanitized immutable action references
+  if (!Array.isArray(history) || history.length > 64) {
+    return false;
+  }
+  let previousTime = -Infinity;
+  const historyValid = history.every(
+    // validate one chronological action history projection
+    (entryValue) => {
+      const entry = forecastAdjustmentObject(entryValue);
+
+      // reject malformed or private history entries
+      if (entry === null ||
+        !hasExactForecastAdjustmentKeys(entry, FORECAST_ADJUSTMENT_SCORECARD_V2_HISTORY_KEYS) ||
+        !isForecastAdjustmentSha256(entry.actionLineageSha256) ||
+        !isForecastAdjustmentSha256(entry.actionProjectionSha256) ||
+        !["none", "shadow_pending", "confirmation_registered", "pending_support", "release_pending", "deploying", "active", "failed", "expired_unapplied", "deployed_operator_off", "rolled_back_prior", "raw"].includes(entry.actionState as string) ||
+        !isForecastAdjustmentSha256(entry.attemptSha256) ||
+        !isForecastAdjustmentScorecardInstant(entry.occurredAt) ||
+        !["pending", "qualified", "failed", "regressed"].includes(entry.policyDecision as string) ||
+        !(entry.releaseManifestSha256 === null || isForecastAdjustmentSha256(entry.releaseManifestSha256)) ||
+        Date.parse(entry.occurredAt as string) < previousTime) {
+        return false;
+      }
+      previousTime = Date.parse(entry.occurredAt as string);
+      return true;
+    },
+  );
+
+  // bind the latest history entry to the current projection when present
+  if (!historyValid) {
+    return false;
+  }
+  const latest = history.at(-1);
+  return latest === undefined || (
+    latest.actionProjectionSha256 === scorecard.actionProjectionSha256 &&
+    latest.actionState === scorecard.actionState &&
+    latest.policyDecision === scorecard.policyDecision &&
+    latest.attemptSha256 === lineage.attemptSha256 &&
+    latest.releaseManifestSha256 === lineage.releaseManifestSha256
+  );
+}
+
 // parse one authenticated closed scorecard response
 export function parseForecastAdjustmentScorecard(value: unknown, now = Date.now()): ForecastAdjustmentScorecard | null {
   const scorecard = forecastAdjustmentObject(value);
 
-  // require immutable top-level invariants and a fresh validity window
-  if (
-    scorecard === null ||
-    !hasExactForecastAdjustmentKeys(scorecard, FORECAST_ADJUSTMENT_SCORECARD_KEYS) ||
+  // reject nonobjects and any structurally private confirmation-member field
+  if (scorecard === null || hasForecastAdjustmentPrivateMemberField(scorecard)) {
+    return null;
+  }
+
+  // accept v2 only through the complete automatic-policy validator
+  if (scorecard.contractVersion === "forecast-adjustment-scorecard/v2") {
+    return isForecastAdjustmentScorecardV2(scorecard, now)
+      ? scorecard as unknown as ForecastAdjustmentScorecardV2
+      : null;
+  }
+
+  // preserve v1 as a fresh display-only historical report
+  if (!hasExactForecastAdjustmentKeys(scorecard, FORECAST_ADJUSTMENT_SCORECARD_V1_KEYS) ||
     scorecard.contractVersion !== "forecast-adjustment-scorecard/v1" ||
     scorecard.siteKey !== "ballydidean" ||
     !isForecastAdjustmentScorecardInstant(scorecard.generatedAt) ||
@@ -2382,41 +2734,12 @@ export function parseForecastAdjustmentScorecard(value: unknown, now = Date.now(
     Date.parse(scorecard.validThrough as string) <= now ||
     scorecard.servingChanged !== false ||
     scorecard.automaticActivationEligible !== false ||
-    scorecard.operatorApprovalRequired !== true
-  ) {
+    scorecard.operatorApprovalRequired !== true ||
+    !isForecastAdjustmentScorecardInputs(scorecard.inputs, FORECAST_ADJUSTMENT_SCORECARD_INPUT_KEYS) ||
+    !isForecastAdjustmentScorecardFamilies(scorecard.families)) {
     return null;
   }
-
-  const inputs = forecastAdjustmentObject(scorecard.inputs);
-  const reportSha256s = forecastAdjustmentObject(inputs?.reportSha256s);
-  const families = forecastAdjustmentObject(scorecard.families);
-
-  // require aggregate-only inputs and all three family reports
-  if (
-    inputs === null ||
-    !hasExactForecastAdjustmentKeys(inputs, FORECAST_ADJUSTMENT_SCORECARD_INPUT_KEYS) ||
-    !isForecastAdjustmentSha256(inputs.adjustmentEvidenceManifestSha256) ||
-    !isForecastAdjustmentSha256(inputs.adjustmentEvidenceWatermarkSha256) ||
-    !isForecastAdjustmentSha256(inputs.forecastTrainingManifestSha256) ||
-    typeof inputs.localDateFrom !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(inputs.localDateFrom) ||
-    typeof inputs.localDateTo !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(inputs.localDateTo) ||
-    inputs.localDateFrom > inputs.localDateTo ||
-    typeof inputs.sourceRevision !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(inputs.sourceRevision) ||
-    !isForecastAdjustmentScorecardInstant(inputs.targetCutoffAt) ||
-    reportSha256s === null ||
-    !hasExactForecastAdjustmentKeys(reportSha256s, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES)) ||
-    families === null ||
-    !hasExactForecastAdjustmentKeys(families, new Set(FORECAST_ADJUSTMENT_SCORECARD_FAMILIES))
-  ) {
-    return null;
-  }
-
-  const valid = FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.every(
-    // bind one immutable report to one closed family card
-    (family) => isForecastAdjustmentSha256(reportSha256s[family]) &&
-      isForecastAdjustmentScorecardFamily(families[family], family),
-  );
-  return valid ? scorecard as unknown as ForecastAdjustmentScorecard : null;
+  return scorecard as unknown as ForecastAdjustmentScorecardV1;
 }
 
 // map adjusted metrics onto their admin controls
@@ -3333,6 +3656,9 @@ export class WeatherDashboardController {
       adminAdjustmentScorecardState: this.#view === "admin"
         ? "loading"
         : this.#state.adminAdjustmentScorecardState,
+      adminAdjustmentScorecardPublicationState: this.#view === "admin"
+        ? null
+        : this.#state.adminAdjustmentScorecardPublicationState,
     });
 
     // start the private location check without delaying weather rendering
@@ -3455,6 +3781,9 @@ export class WeatherDashboardController {
         adminAdjustmentScorecard: adminScorecard === null
           ? this.#state.adminAdjustmentScorecard
           : adminScorecard.scorecard,
+        adminAdjustmentScorecardPublicationState: adminScorecard === null
+          ? this.#state.adminAdjustmentScorecardPublicationState
+          : adminScorecard.publicationState,
         adminAdjustmentScorecardState: adminScorecard?.state ?? this.#state.adminAdjustmentScorecardState,
         loading: false,
         propertySensorLayout: propertySensorLayout?.data ?? this.#state.propertySensorLayout,
@@ -8245,7 +8574,105 @@ function renderForecastAdjustmentScorecardFamily(
   `;
 }
 
-// render the review-only administrator scorecard
+// format one closed machine state for operator display
+function formatForecastAdjustmentScorecardState(value: string): string {
+  return value.replaceAll("_", " ").replace(/^./u,
+    // capitalize only the first display character
+    (first) => first.toUpperCase());
+}
+
+// render fixed v2 warning classes without accepting report prose
+function renderForecastAdjustmentScorecardWarnings(
+  warnings: ForecastAdjustmentScorecardV2["warnings"],
+): string {
+  const entries = (["source", "fallback", "gauge", "capture", "capacity"] as const).flatMap(
+    // pair each warning code with its fixed category
+    (warningClass) => warnings[warningClass].map(
+      // render one validated safe warning code
+      (warning) => `<li><strong>${formatForecastAdjustmentScorecardState(warningClass)}</strong> ${escapeHtml(warning.replaceAll("_", " "))}</li>`,
+    ),
+  );
+
+  // state the verified absence of projected warnings
+  if (entries.length === 0) {
+    return '<p class="adjustment-scorecard-note">No source, fallback, gauge, capture or capacity warnings are projected.</p>';
+  }
+  return `<ul class="adjustment-scorecard-reasons">${entries.join("")}</ul>`;
+}
+
+// render the bounded sanitized automatic action history
+function renderForecastAdjustmentScorecardHistory(
+  history: readonly ForecastAdjustmentScorecardHistoryEntry[],
+  timezone: string,
+): string {
+  // preserve honest history absence
+  if (history.length === 0) {
+    return '<p class="empty-panel">No automatic policy actions or attempts are available.</p>';
+  }
+  const rows = history.map(
+    // render one immutable action reference without private result data
+    (entry) => `<tr>
+      <td>${formatInstant(entry.occurredAt, timezone)}</td>
+      <td>${escapeHtml(formatForecastAdjustmentScorecardState(entry.policyDecision))}</td>
+      <td>${escapeHtml(formatForecastAdjustmentScorecardState(entry.actionState))}</td>
+      <td>${renderForecastAdjustmentScorecardHash(entry.actionProjectionSha256)}</td>
+      <td>${renderForecastAdjustmentScorecardHash(entry.releaseManifestSha256)}</td>
+    </tr>`,
+  ).join("");
+  return `<div class="adjustment-scorecard-table-scroll"><table class="adjustment-scorecard-metrics">
+    <thead><tr><th scope="col">Time</th><th scope="col">Decision</th><th scope="col">Action</th><th scope="col">Projection</th><th scope="col">Release</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+// render v2 automatic policy state and immutable lineage
+function renderForecastAdjustmentScorecardPolicy(
+  scorecard: ForecastAdjustmentScorecardV2,
+  timezone: string,
+): string {
+  const identityRows = FORECAST_ADJUSTMENT_SCORECARD_FAMILIES.map(
+    // render one family's current safe identity projection
+    (family) => `<tr>
+      <th scope="row">${escapeHtml(formatForecastAdjustmentScorecardState(family))}</th>
+      <td>${renderForecastAdjustmentScorecardHash(scorecard.identities.active[family])}</td>
+      <td>${renderForecastAdjustmentScorecardHash(scorecard.identities.shadow[family])}</td>
+      <td>${renderForecastAdjustmentScorecardHash(scorecard.identities.prior[family])}</td>
+      <td>${renderForecastAdjustmentScorecardHash(scorecard.identities.raw[family])}</td>
+    </tr>`,
+  ).join("");
+  return `
+    <dl class="adjustment-scorecard-publication">
+      <div><dt>Policy decision</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.policyDecision))}</dd></div>
+      <div><dt>Action state</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.actionState))}</dd></div>
+      <div><dt>Attempt</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.job.attemptState))}</dd></div>
+      <div><dt>Success</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.job.successState))}</dd></div>
+      <div><dt>Due</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.job.dueState))}</dd></div>
+      <div><dt>Backlog</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.job.backlogState))}</dd></div>
+      <div><dt>Operator state</dt><dd>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.job.operatorState))}</dd></div>
+      <div><dt>Confirmation epochs</dt><dd>${String(scorecard.progress.confirmationCompletedEpochs)} / ${String(scorecard.progress.confirmationRequiredEpochs)}</dd></div>
+      <div><dt>Rollback epochs</dt><dd>${String(scorecard.progress.rollbackCompletedEpochs)} / ${String(scorecard.progress.rollbackRequiredEpochs)}</dd></div>
+      <div><dt>Rain capture expiry</dt><dd>${formatInstant(scorecard.progress.rainCaptureExpiresAt, timezone)}</dd></div>
+      <div><dt>Action projection</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.actionProjectionSha256)}</dd></div>
+      <div><dt>Action lineage</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.actionLineage.actionSha256)}</dd></div>
+      <div><dt>Attempt identity</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.actionLineage.attemptSha256)}</dd></div>
+      <div><dt>Previous action</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.actionLineage.predecessorActionSha256)}</dd></div>
+      <div><dt>Release manifest</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.actionLineage.releaseManifestSha256)}</dd></div>
+      <div><dt>Input manifest</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.inputManifestSha256)}</dd></div>
+      <div><dt>Frontier</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.frontierSha256)}</dd></div>
+      <div><dt>Daily report</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.reportSha256)}</dd></div>
+    </dl>
+    <h3>Model identities</h3>
+    <div class="adjustment-scorecard-table-scroll"><table class="adjustment-scorecard-metrics">
+      <thead><tr><th scope="col">Family</th><th scope="col">Active</th><th scope="col">Shadow</th><th scope="col">Prior</th><th scope="col">Raw</th></tr></thead>
+      <tbody>${identityRows}</tbody>
+    </table></div>
+    <h3>Warnings</h3>
+    ${renderForecastAdjustmentScorecardWarnings(scorecard.warnings)}
+    <details class="adjustment-scorecard-details"><summary>Automatic action history (${String(scorecard.history.length)})</summary>${renderForecastAdjustmentScorecardHistory(scorecard.history, timezone)}</details>
+  `;
+}
+
+// render the authenticated administrator scorecard
 function renderForecastAdjustmentScorecard(state: DashboardState): string {
   const loadState = state.adminAdjustmentScorecardState ?? "unavailable";
   const timezone = state.selectedSite?.timezone ?? PRODUCT_SITE.timezone;
@@ -8254,8 +8681,8 @@ function renderForecastAdjustmentScorecard(state: DashboardState): string {
   if (loadState === "loading" && state.loading) {
     return `
       <section class="panel adjustment-scorecard skeleton-region" aria-labelledby="adjustment-scorecard-heading" aria-busy="true">
-        <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
-        <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Ansel approval is required before any activation or serving change.</p>
+        <div class="section-heading"><div><p class="eyebrow">Policy status</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+        <p class="adjustment-scorecard-guardrail"><strong>Loading protected policy evidence.</strong> Scorecards are reporting projections, not action authority.</p>
         <div class="adjustment-scorecard-grid">${Array.from({ length: 3 },
           // reserve one stable family card
           () => `<div class="adjustment-scorecard-card">${renderSkeletonFields()}</div>`,
@@ -8268,8 +8695,8 @@ function renderForecastAdjustmentScorecard(state: DashboardState): string {
   if (loadState === "unauthorized") {
     return `
       <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="unauthorized">
-        <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
-        <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Ansel approval is required before any activation or serving change.</p>
+        <div class="section-heading"><div><p class="eyebrow">Policy status</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+        <p class="adjustment-scorecard-guardrail"><strong>Protected report unavailable.</strong> Scorecards are reporting projections, not action authority.</p>
         <p class="empty-panel">Administrator session is unavailable. Sign in again to review performance.</p>
       </section>
     `;
@@ -8281,9 +8708,9 @@ function renderForecastAdjustmentScorecard(state: DashboardState): string {
   if (loadState !== "ready" || scorecard === null) {
     return `
       <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="unavailable">
-        <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
-        <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Ansel approval is required before any activation or serving change.</p>
-        <p class="empty-panel">No validated scorecard is available. Forecast serving and settings are unchanged.</p>
+        <div class="section-heading"><div><p class="eyebrow">Policy status</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+        <p class="adjustment-scorecard-guardrail"><strong>No validated policy report.</strong> A missing, stale or corrupt report cannot support an action.</p>
+        <p class="empty-panel">No validated scorecard is available.</p>
       </section>
     `;
   }
@@ -8296,10 +8723,19 @@ function renderForecastAdjustmentScorecard(state: DashboardState): string {
       timezone,
     ),
   ).join("");
+  const isV2 = scorecard.contractVersion === "forecast-adjustment-scorecard/v2";
+  const publicationState = state.adminAdjustmentScorecardPublicationState ??
+    (isV2 ? "current" : "legacy_display");
+  const eyebrow = isV2 ? "Automatic policy" : "Legacy report";
+  const guardrail = publicationState === "pending_unapplied" && isV2
+    ? "<strong>Pending and unapplied.</strong> This sanitized projection has not replaced the legacy current report and cannot itself authorize or execute changes."
+    : isV2
+      ? `<strong>${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.policyDecision))} · ${escapeHtml(formatForecastAdjustmentScorecardState(scorecard.actionState))}.</strong> This sanitized scorecard reports immutable policy lineage; it does not itself authorize or execute changes.`
+    : "<strong>Historical display only.</strong> Legacy v1 scorecards cannot authorize actions or serving changes.";
   return `
-    <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="ready">
-      <div class="section-heading"><div><p class="eyebrow">Review only</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
-      <p class="adjustment-scorecard-guardrail"><strong>Serving unchanged.</strong> Automatic activation is not eligible. Ansel approval is required before any activation or serving change.</p>
+    <section class="panel adjustment-scorecard" aria-labelledby="adjustment-scorecard-heading" data-scorecard-state="ready" data-scorecard-publication-state="${publicationState}">
+      <div class="section-heading"><div><p class="eyebrow">${eyebrow}</p><h2 id="adjustment-scorecard-heading">Adjustment performance</h2></div></div>
+      <p class="adjustment-scorecard-guardrail">${guardrail}</p>
       <dl class="adjustment-scorecard-publication">
         <div><dt>Evaluation dates</dt><dd>${escapeHtml(scorecard.inputs.localDateFrom)} through ${escapeHtml(scorecard.inputs.localDateTo)}</dd></div>
         <div><dt>Target cutoff</dt><dd>${formatInstant(scorecard.inputs.targetCutoffAt, timezone)}</dd></div>
@@ -8310,6 +8746,7 @@ function renderForecastAdjustmentScorecard(state: DashboardState): string {
         <div><dt>Evidence watermark</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.adjustmentEvidenceWatermarkSha256)}</dd></div>
         <div><dt>Training manifest</dt><dd>${renderForecastAdjustmentScorecardHash(scorecard.inputs.forecastTrainingManifestSha256)}</dd></div>
       </dl>
+      ${isV2 ? renderForecastAdjustmentScorecardPolicy(scorecard, timezone) : ""}
       <div class="adjustment-scorecard-grid">${cards}</div>
     </section>
   `;
@@ -12980,6 +13417,7 @@ async function getAdminForecastAdjustmentScorecard(
   fetcher: typeof fetch,
   url: string,
 ): Promise<Readonly<{
+  publicationState: ForecastAdjustmentScorecardPublicationState | null;
   scorecard: ForecastAdjustmentScorecard | null;
   state: Exclude<ForecastAdjustmentScorecardLoadState, "loading">;
 }>> {
@@ -12992,21 +13430,35 @@ async function getAdminForecastAdjustmentScorecard(
 
     // distinguish an expired administrator session without exposing server detail
     if (response.status === 401 || response.status === 403) {
-      return { scorecard: null, state: "unauthorized" };
+      return { publicationState: null, scorecard: null, state: "unauthorized" };
     }
 
     // collapse missing, stale and corrupt publications into one safe state
     if (!response.ok) {
-      return { scorecard: null, state: "unavailable" };
+      return { publicationState: null, scorecard: null, state: "unavailable" };
     }
 
     const body = forecastAdjustmentObject(await response.json());
-    const scorecard = parseForecastAdjustmentScorecard(body?.data);
-    return scorecard === null
-      ? { scorecard: null, state: "unavailable" }
-      : { scorecard, state: "ready" };
+
+    // reject response-envelope additions that could smuggle private fields
+    if (body === null ||
+      !hasExactForecastAdjustmentKeys(body, new Set(["data", "publicationState"]))) {
+      return { publicationState: null, scorecard: null, state: "unavailable" };
+    }
+    const publicationState = body.publicationState;
+    const scorecard = parseForecastAdjustmentScorecard(body.data);
+    const validPublicationState = publicationState === "current" ||
+      publicationState === "pending_unapplied" || publicationState === "legacy_display";
+    const generationMatches = scorecard !== null && (
+      scorecard.contractVersion === "forecast-adjustment-scorecard/v1"
+        ? publicationState === "legacy_display"
+        : publicationState === "current" || publicationState === "pending_unapplied"
+    );
+    return !validPublicationState || !generationMatches
+      ? { publicationState: null, scorecard: null, state: "unavailable" }
+      : { publicationState, scorecard, state: "ready" };
   } catch {
-    return { scorecard: null, state: "unavailable" };
+    return { publicationState: null, scorecard: null, state: "unavailable" };
   }
 }
 

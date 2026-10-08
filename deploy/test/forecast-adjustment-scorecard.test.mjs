@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
+  FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES,
   parseForecastAdjustmentScorecard,
   validateForecastAdjustmentScorecard,
 } from "../scripts/forecast-adjustment-scorecard-contract.mjs";
@@ -158,6 +159,75 @@ function scorecard(overrides = {}) {
   };
 }
 
+// build one valid automatic-policy scorecard projection
+function scorecardV2(overrides = {}) {
+  const identities = (value) => ({
+    rain: value,
+    temperature: value,
+    wind: value,
+  });
+  return {
+    actionLineage: {
+      actionSha256: "1".repeat(64),
+      attemptSha256: "2".repeat(64),
+      predecessorActionSha256: null,
+      releaseManifestSha256: "3".repeat(64),
+      sourceRevision: "4".repeat(40),
+    },
+    actionProjectionSha256: "5".repeat(64),
+    actionState: "active",
+    contractVersion: "forecast-adjustment-scorecard/v2",
+    families: scorecard().families,
+    generatedAt: "2099-10-01T01:00:00.000Z",
+    history: [{
+      actionLineageSha256: "6".repeat(64),
+      actionProjectionSha256: "5".repeat(64),
+      actionState: "active",
+      attemptSha256: "2".repeat(64),
+      occurredAt: "2099-10-01T00:59:00.000Z",
+      policyDecision: "qualified",
+      releaseManifestSha256: "3".repeat(64),
+    }],
+    identities: {
+      active: identities("7".repeat(64)),
+      prior: identities(null),
+      raw: identities("8".repeat(64)),
+      shadow: identities(null),
+    },
+    inputs: {
+      ...scorecard().inputs,
+      frontierSha256: "9".repeat(64),
+      inputManifestSha256: "a".repeat(64),
+      reportSha256: "b".repeat(64),
+    },
+    job: {
+      attemptState: "completed",
+      backlogState: "clear",
+      dueState: "not_due",
+      operatorState: "enabled",
+      successState: "succeeded",
+    },
+    policyDecision: "qualified",
+    progress: {
+      confirmationCompletedEpochs: 4,
+      confirmationRequiredEpochs: 4,
+      rainCaptureExpiresAt: "2099-10-08T00:00:00.000Z",
+      rollbackCompletedEpochs: 0,
+      rollbackRequiredEpochs: 2,
+    },
+    siteKey: "ballydidean",
+    validThrough: "2099-10-08T01:00:00.000Z",
+    warnings: {
+      capacity: [],
+      capture: [],
+      fallback: [],
+      gauge: [],
+      source: [],
+    },
+    ...overrides,
+  };
+}
+
 // lock the shared installer and edge validation behavior
 test("scorecard validator accepts aggregates and rejects open or activating documents", () => {
   const value = scorecard();
@@ -195,6 +265,54 @@ test("scorecard validator accepts aggregates and rejects open or activating docu
       0x20,
     )),
     /too large/u,
+  );
+});
+
+test("scorecard v2 is closed, seven-day bounded and excludes private member results", () => {
+  const value = scorecardV2();
+  assert.equal(validateForecastAdjustmentScorecard(value), value);
+  assert.deepEqual(parseForecastAdjustmentScorecard(Buffer.from(JSON.stringify(value))), value);
+  assert.equal(Object.hasOwn(value, "operatorApprovalRequired"), false);
+
+  assert.throws(
+    () => validateForecastAdjustmentScorecard({
+      ...value,
+      operatorApprovalRequired: true,
+    }),
+    /invalid keys/u,
+  );
+  assert.throws(
+    () => validateForecastAdjustmentScorecard({
+      ...value,
+      history: [{ ...value.history[0], reservedMemberResults: [1] }],
+    }),
+    /private/u,
+  );
+  assert.throws(
+    () => validateForecastAdjustmentScorecard({
+      ...value,
+      validThrough: "2099-10-08T01:00:00.001Z",
+    }),
+    /validity/u,
+  );
+  assert.throws(
+    () => validateForecastAdjustmentScorecard({
+      ...value,
+      history: Array.from({ length: 65 }, () => value.history[0]),
+    }),
+    /history/u,
+  );
+  const oversized = Buffer.concat([
+    Buffer.from(JSON.stringify(value)),
+    Buffer.alloc(FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES, 0x20),
+  ]);
+  assert.throws(
+    () => parseForecastAdjustmentScorecard(oversized),
+    /v2 is too large/u,
+  );
+  assert.throws(
+    () => validateForecastAdjustmentScorecard(value, { now: value.validThrough }),
+    /stale/u,
   );
 });
 
@@ -298,7 +416,45 @@ test("admin scorecard route is authenticated, queryless, read-only and fail-clos
     const response = await fetch(endpoint, { headers: { cookie } });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("cache-control"), "private, no-store");
-    assert.deepEqual(await response.json(), { data: value });
+    assert.deepEqual(await response.json(), {
+      data: value,
+      publicationState: "legacy_display",
+    });
+
+    const pendingValue = scorecardV2();
+    const pendingBytes = Buffer.from(`${JSON.stringify(pendingValue)}\n`);
+    const pendingHash = createHash("sha256").update(pendingBytes).digest("hex");
+    await mkdir(join(evidenceRoot, "scorecards-v2"), { mode: 0o700 });
+    await writeFile(
+      join(evidenceRoot, "scorecards-v2", `sha256-${pendingHash}.json`),
+      pendingBytes,
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(evidenceRoot, "v2-pending.json"),
+      `${JSON.stringify({ sha256: pendingHash })}\n`,
+      { mode: 0o600 },
+    );
+    const pending = await fetch(endpoint, { headers: { cookie } });
+    assert.equal(pending.status, 200);
+    assert.deepEqual(await pending.json(), {
+      data: pendingValue,
+      publicationState: "pending_unapplied",
+    });
+
+    await rm(join(evidenceRoot, "current.json"));
+    await rm(join(evidenceRoot, "v2-pending.json"));
+    await writeFile(
+      join(evidenceRoot, "v2-current.json"),
+      `${JSON.stringify({ sha256: pendingHash })}\n`,
+      { mode: 0o600 },
+    );
+    const selectedV2 = await fetch(endpoint, { headers: { cookie } });
+    assert.equal(selectedV2.status, 200);
+    assert.deepEqual(await selectedV2.json(), {
+      data: pendingValue,
+      publicationState: "current",
+    });
 
     // reject even an empty caller-controlled query delimiter
     assert.equal((await fetch(`${endpoint}?`, { headers: { cookie } })).status, 400);
@@ -308,7 +464,7 @@ test("admin scorecard route is authenticated, queryless, read-only and fail-clos
     assert.equal((await fetch(`${endpoint}?sha256=${hash}`, { headers: { cookie } })).status, 400);
     assert.equal((await fetch(endpoint, { headers: { cookie }, method: "POST" })).status, 405);
 
-    await writeFile(join(evidenceRoot, "current.json"), '{"sha256":"invalid"}\n');
+    await writeFile(join(evidenceRoot, "v2-current.json"), '{"sha256":"invalid"}\n');
     const corrupt = await fetch(endpoint, { headers: { cookie } });
     assert.equal(corrupt.status, 503);
     assert.equal(await corrupt.text(), "scorecard unavailable\n");

@@ -3,9 +3,16 @@ const REVISION_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const SAFE_LABEL_PATTERN = /^[a-z0-9][a-z0-9_.:+-]{0,79}$/u;
 
-export const FORECAST_ADJUSTMENT_SCORECARD_CONTRACT_VERSION =
+export const FORECAST_ADJUSTMENT_SCORECARD_V1_CONTRACT_VERSION =
   "forecast-adjustment-scorecard/v1";
-export const FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES = 512 * 1_024;
+export const FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION =
+  "forecast-adjustment-scorecard/v2";
+export const FORECAST_ADJUSTMENT_SCORECARD_CONTRACT_VERSION =
+  FORECAST_ADJUSTMENT_SCORECARD_V1_CONTRACT_VERSION;
+export const FORECAST_ADJUSTMENT_SCORECARD_V1_MAX_BYTES = 512 * 1_024;
+export const FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES = 128 * 1_024;
+export const FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES =
+  FORECAST_ADJUSTMENT_SCORECARD_V1_MAX_BYTES;
 export const FORECAST_ADJUSTMENT_SCORECARD_FAMILIES = [
   "temperature",
   "wind",
@@ -35,6 +42,28 @@ const SERVING_STATES = [
 ];
 const RECOMMENDATIONS = ["retain", "review_candidate", "review_disable", "none"];
 const SLICE_DIMENSIONS = ["horizon", "month", "season", "daypart"];
+const POLICY_DECISIONS = ["pending", "qualified", "failed", "regressed"];
+const ACTION_STATES = [
+  "none",
+  "shadow_pending",
+  "confirmation_registered",
+  "pending_support",
+  "release_pending",
+  "deploying",
+  "active",
+  "failed",
+  "expired_unapplied",
+  "deployed_operator_off",
+  "rolled_back_prior",
+  "raw",
+];
+const ATTEMPT_STATES = ["not_due", "due", "running", "completed", "failed", "blocked"];
+const SUCCESS_STATES = ["none", "succeeded", "failed"];
+const DUE_STATES = ["not_due", "due", "overdue", "expired"];
+const BACKLOG_STATES = ["clear", "present", "blocked"];
+const OPERATOR_STATES = ["enabled", "disabled"];
+const WARNING_CLASSES = ["source", "fallback", "gauge", "capture", "capacity"];
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000;
 
 // parse one bounded closed scorecard document
 export function parseForecastAdjustmentScorecard(input, options = {}) {
@@ -46,13 +75,33 @@ export function parseForecastAdjustmentScorecard(input, options = {}) {
   }
 
   const value = JSON.parse(bytes.toString("utf8"));
+
+  // apply the tighter v2 publication envelope before semantic validation
+  if (value?.contractVersion === FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION &&
+    bytes.byteLength > FORECAST_ADJUSTMENT_SCORECARD_V2_MAX_BYTES) {
+    throw new RangeError("forecast adjustment scorecard v2 is too large");
+  }
   validateForecastAdjustmentScorecard(value, options);
   return value;
 }
 
-// validate the shared aggregate-only scorecard contract
+// validate one supported aggregate-only scorecard contract
 export function validateForecastAdjustmentScorecard(value, options = {}) {
   requireObject(value, "scorecard");
+
+  // keep private confirmation member material structurally impossible
+  rejectPrivateMemberFields(value, "scorecard");
+
+  // preserve closed legacy display while routing v2 to automatic policy validation
+  if (value.contractVersion === FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION) {
+    return validateForecastAdjustmentScorecardV2(value, options);
+  }
+
+  return validateForecastAdjustmentScorecardV1(value, options);
+}
+
+// validate the historical review-only scorecard contract
+function validateForecastAdjustmentScorecardV1(value, options) {
   requireKeys(value, [
     "automaticActivationEligible",
     "contractVersion",
@@ -64,7 +113,7 @@ export function validateForecastAdjustmentScorecard(value, options = {}) {
     "siteKey",
     "validThrough",
   ], "scorecard");
-  requireEqual(value.contractVersion, FORECAST_ADJUSTMENT_SCORECARD_CONTRACT_VERSION, "contractVersion");
+  requireEqual(value.contractVersion, FORECAST_ADJUSTMENT_SCORECARD_V1_CONTRACT_VERSION, "contractVersion");
   requireEqual(value.siteKey, "ballydidean", "siteKey");
   requireInstant(value.generatedAt, "generatedAt");
   requireInstant(value.validThrough, "validThrough");
@@ -92,6 +141,242 @@ export function validateForecastAdjustmentScorecard(value, options = {}) {
   }
 
   return value;
+}
+
+// validate the sanitized automatic policy projection
+function validateForecastAdjustmentScorecardV2(value, options) {
+  requireKeys(value, [
+    "actionLineage",
+    "actionProjectionSha256",
+    "actionState",
+    "contractVersion",
+    "families",
+    "generatedAt",
+    "history",
+    "identities",
+    "inputs",
+    "job",
+    "policyDecision",
+    "progress",
+    "siteKey",
+    "validThrough",
+    "warnings",
+  ], "scorecard");
+  requireEqual(value.contractVersion, FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION, "contractVersion");
+  requireEqual(value.siteKey, "ballydidean", "siteKey");
+  validateValidity(value.generatedAt, value.validThrough, options, true);
+  requireEnum(value.policyDecision, POLICY_DECISIONS, "policyDecision");
+  requireEnum(value.actionState, ACTION_STATES, "actionState");
+  requireSha256(value.actionProjectionSha256, "actionProjectionSha256");
+  validateInputsV2(value.inputs);
+  validateActionLineage(value.actionLineage);
+  validateJob(value.job);
+  validateWarnings(value.warnings);
+  validateIdentities(value.identities);
+  validateProgress(value.progress);
+  const latestHistory = validateHistory(value.history);
+
+  // bind the newest history entry to the current immutable projection
+  if (latestHistory !== null && (
+    latestHistory.actionProjectionSha256 !== value.actionProjectionSha256 ||
+    latestHistory.actionState !== value.actionState ||
+    latestHistory.policyDecision !== value.policyDecision ||
+    latestHistory.attemptSha256 !== value.actionLineage.attemptSha256 ||
+    latestHistory.releaseManifestSha256 !== value.actionLineage.releaseManifestSha256
+  )) {
+    throw new TypeError("latest scorecard history does not match the current projection");
+  }
+  requireObject(value.families, "families");
+  requireKeys(value.families, FORECAST_ADJUSTMENT_SCORECARD_FAMILIES, "families");
+
+  // retain the same aggregate diagnostic cards across the migration
+  for (const family of FORECAST_ADJUSTMENT_SCORECARD_FAMILIES) {
+    validateFamily(value.families[family], family);
+  }
+
+  return value;
+}
+
+// validate a forward, fresh, optionally seven-day publication window
+function validateValidity(generatedAt, validThrough, options, requireSevenDayMaximum) {
+  requireInstant(generatedAt, "generatedAt");
+  requireInstant(validThrough, "validThrough");
+  const generatedTime = Date.parse(generatedAt);
+  const validThroughTime = Date.parse(validThrough);
+
+  // reject reversed and overlong report validity
+  if (validThroughTime <= generatedTime ||
+    (requireSevenDayMaximum && validThroughTime - generatedTime > SEVEN_DAYS_MS)) {
+    throw new RangeError("forecast adjustment scorecard validity is invalid");
+  }
+
+  // reject expired publications at read time only
+  if (options.now !== undefined && validThroughTime <= Date.parse(options.now)) {
+    throw new RangeError("forecast adjustment scorecard is stale");
+  }
+}
+
+// validate immutable v2 report and frontier inputs
+function validateInputsV2(value) {
+  requireObject(value, "inputs");
+  requireKeys(value, [
+    "adjustmentEvidenceManifestSha256",
+    "adjustmentEvidenceWatermarkSha256",
+    "forecastTrainingManifestSha256",
+    "frontierSha256",
+    "inputManifestSha256",
+    "localDateFrom",
+    "localDateTo",
+    "reportSha256",
+    "reportSha256s",
+    "sourceRevision",
+    "targetCutoffAt",
+  ], "inputs");
+  validateInputs({
+    adjustmentEvidenceManifestSha256: value.adjustmentEvidenceManifestSha256,
+    adjustmentEvidenceWatermarkSha256: value.adjustmentEvidenceWatermarkSha256,
+    forecastTrainingManifestSha256: value.forecastTrainingManifestSha256,
+    localDateFrom: value.localDateFrom,
+    localDateTo: value.localDateTo,
+    reportSha256s: value.reportSha256s,
+    sourceRevision: value.sourceRevision,
+    targetCutoffAt: value.targetCutoffAt,
+  });
+  requireSha256(value.frontierSha256, "inputs.frontierSha256");
+  requireSha256(value.inputManifestSha256, "inputs.inputManifestSha256");
+  requireSha256(value.reportSha256, "inputs.reportSha256");
+}
+
+// validate immutable action lineage without accepting signatures or approval fields
+function validateActionLineage(value) {
+  requireObject(value, "actionLineage");
+  requireKeys(value, [
+    "actionSha256",
+    "attemptSha256",
+    "predecessorActionSha256",
+    "releaseManifestSha256",
+    "sourceRevision",
+  ], "actionLineage");
+  requireSha256(value.actionSha256, "actionLineage.actionSha256");
+  requireSha256(value.attemptSha256, "actionLineage.attemptSha256");
+  requireNullableSha256(value.predecessorActionSha256, "actionLineage.predecessorActionSha256");
+  requireNullableSha256(value.releaseManifestSha256, "actionLineage.releaseManifestSha256");
+  requireMatch(value.sourceRevision, REVISION_PATTERN, "actionLineage.sourceRevision");
+}
+
+// validate one bounded daily attempt projection
+function validateJob(value) {
+  requireObject(value, "job");
+  requireKeys(value, [
+    "attemptState",
+    "backlogState",
+    "dueState",
+    "operatorState",
+    "successState",
+  ], "job");
+  requireEnum(value.attemptState, ATTEMPT_STATES, "job.attemptState");
+  requireEnum(value.backlogState, BACKLOG_STATES, "job.backlogState");
+  requireEnum(value.dueState, DUE_STATES, "job.dueState");
+  requireEnum(value.operatorState, OPERATOR_STATES, "job.operatorState");
+  requireEnum(value.successState, SUCCESS_STATES, "job.successState");
+}
+
+// validate fixed warning categories containing codes only
+function validateWarnings(value) {
+  requireObject(value, "warnings");
+  requireKeys(value, WARNING_CLASSES, "warnings");
+
+  // bound each warning class independently
+  for (const warningClass of WARNING_CLASSES) {
+    const warnings = value[warningClass];
+    requireArray(warnings, 16, `warnings.${warningClass}`);
+
+    // reject prose, paths and private values
+    for (const [index, warning] of warnings.entries()) {
+      requireMatch(warning, SAFE_LABEL_PATTERN, `warnings.${warningClass}[${String(index)}]`);
+    }
+  }
+}
+
+// validate active, shadow, prior and raw identities for every family
+function validateIdentities(value) {
+  requireObject(value, "identities");
+  requireKeys(value, ["active", "prior", "raw", "shadow"], "identities");
+
+  // bind all family identity sets to the closed family registry
+  for (const identityClass of ["active", "prior", "raw", "shadow"]) {
+    const identities = value[identityClass];
+    requireObject(identities, `identities.${identityClass}`);
+    requireKeys(identities, FORECAST_ADJUSTMENT_SCORECARD_FAMILIES, `identities.${identityClass}`);
+
+    // allow explicit absence except for the raw fallback identity
+    for (const family of FORECAST_ADJUSTMENT_SCORECARD_FAMILIES) {
+      if (identityClass === "raw") {
+        requireSha256(identities[family], `identities.${identityClass}.${family}`);
+      } else {
+        requireNullableSha256(identities[family], `identities.${identityClass}.${family}`);
+      }
+    }
+  }
+}
+
+// validate bounded confirmation and rollback epoch progress
+function validateProgress(value) {
+  requireObject(value, "progress");
+  requireKeys(value, [
+    "confirmationCompletedEpochs",
+    "confirmationRequiredEpochs",
+    "rainCaptureExpiresAt",
+    "rollbackCompletedEpochs",
+    "rollbackRequiredEpochs",
+  ], "progress");
+  requireCount(value.confirmationCompletedEpochs, "progress.confirmationCompletedEpochs");
+  requireCount(value.confirmationRequiredEpochs, "progress.confirmationRequiredEpochs");
+  requireCount(value.rollbackCompletedEpochs, "progress.rollbackCompletedEpochs");
+  requireCount(value.rollbackRequiredEpochs, "progress.rollbackRequiredEpochs");
+  requireInstant(value.rainCaptureExpiresAt, "progress.rainCaptureExpiresAt");
+
+  // reject impossible progress projections
+  if (value.confirmationCompletedEpochs > value.confirmationRequiredEpochs ||
+    value.rollbackCompletedEpochs > value.rollbackRequiredEpochs) {
+    throw new RangeError("scorecard epoch progress is invalid");
+  }
+}
+
+// validate the newest bounded sanitized immutable action history
+function validateHistory(value) {
+  requireArray(value, 64, "history");
+  let previousTime = -Infinity;
+
+  // validate each immutable history reference without accepting result bodies
+  for (const [index, entry] of value.entries()) {
+    const path = `history[${String(index)}]`;
+    requireObject(entry, path);
+    requireKeys(entry, [
+      "actionLineageSha256",
+      "actionProjectionSha256",
+      "actionState",
+      "attemptSha256",
+      "occurredAt",
+      "policyDecision",
+      "releaseManifestSha256",
+    ], path);
+    requireSha256(entry.actionLineageSha256, `${path}.actionLineageSha256`);
+    requireSha256(entry.actionProjectionSha256, `${path}.actionProjectionSha256`);
+    requireEnum(entry.actionState, ACTION_STATES, `${path}.actionState`);
+    requireSha256(entry.attemptSha256, `${path}.attemptSha256`);
+    requireInstant(entry.occurredAt, `${path}.occurredAt`);
+    requireEnum(entry.policyDecision, POLICY_DECISIONS, `${path}.policyDecision`);
+    requireNullableSha256(entry.releaseManifestSha256, `${path}.releaseManifestSha256`);
+    const occurredTime = Date.parse(entry.occurredAt);
+
+    // require stable chronological projection order
+    if (occurredTime < previousTime) {
+      throw new RangeError("scorecard history is not chronological");
+    }
+    previousTime = occurredTime;
+  }
+  return value.at(-1) ?? null;
 }
 
 // validate only hashes, cutoffs and aggregate package identity
@@ -457,6 +742,29 @@ function validateRainAccumulation(value, expectedHours, path) {
   if ((value.rawMae !== null && value.rawMae < 0) ||
     (value.adjustedMae !== null && value.adjustedMae < 0)) {
     throw new RangeError(`${path} MAE must be nonnegative`);
+  }
+}
+
+// reject private or reserved-member result field names at every depth
+function rejectPrivateMemberFields(value, path) {
+  if (value === null || typeof value !== "object") {
+    return;
+  }
+
+  // recurse through arrays without accepting hidden object members
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      rejectPrivateMemberFields(entry, `${path}[${String(index)}]`);
+    }
+    return;
+  }
+
+  // refuse fields that can carry designated confirmation-member material
+  for (const [key, entry] of Object.entries(value)) {
+    if (/(?:private|reserved.*member|member.*result)/iu.test(key)) {
+      throw new TypeError(`${path}.${key} is private`);
+    }
+    rejectPrivateMemberFields(entry, `${path}.${key}`);
   }
 }
 

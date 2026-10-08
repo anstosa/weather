@@ -60,11 +60,13 @@ import {
   type TempestObservationOperation,
 } from "@weather/providers";
 import {
+  createForecastAdjustmentRainRuntimeRegistryLoader,
   createForecastAdjustmentTemperatureCanaryRuntimeLoader,
   forecastAdjustmentTemperatureCanaryIsActiveAt,
   localCalendarFeaturesFor,
   scalarNetworkActual,
-  type LoadedForecastAdjustmentTemperatureCanaryRuntimeV1,
+  type LoadedForecastAdjustmentTemperatureCanaryRuntime,
+  type LoadedForecastAdjustmentRainRuntimeRegistryV1,
 } from "@weather/forecast-adjustment";
 
 import { loadWorkerConfiguration } from "./config.js";
@@ -135,8 +137,9 @@ export interface WorkerIterationOptions {
   readonly publicStations?: PublicStationConfiguration | null;
   readonly rainCollection?: RainCollectionOptions;
   readonly rainAdjustmentEnabled?: boolean;
+  readonly rainAdjustmentRuntime?: LoadedForecastAdjustmentRainRuntimeRegistryV1;
   readonly tempest?: TempestConfiguration | null;
-  readonly temperatureCanaryRuntime?: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1;
+  readonly temperatureCanaryRuntime?: LoadedForecastAdjustmentTemperatureCanaryRuntime;
   readonly tides?: TideConfiguration | null;
   readonly version: string;
 }
@@ -367,10 +370,17 @@ async function runWorkerIterationWithState(
   }
 
   // publish model output independently of collection and other adjustment failures
-  if (options.rainAdjustmentEnabled === true) {
+  if (rainAdjustmentInferenceIsActive(
+    options.rainAdjustmentRuntime,
+    options.rainAdjustmentEnabled,
+  )) {
     const startedAt = now().getTime();
     try {
-      const published = await publishRainAdjustment(pool, now());
+      const published = await publishRainAdjustment(
+        pool,
+        now(),
+        options.rainAdjustmentRuntime,
+      );
       diagnosticWriter(createWorkerDiagnostic({
         count: published ? 1 : 0, durationMs: elapsedMilliseconds(startedAt, now()),
         errorCode: null, event: "source_run", release: options.version,
@@ -415,6 +425,15 @@ async function runWorkerIterationWithState(
     lastSuccessAt: successState.lastSuccessAt,
     sources: results,
   };
+}
+
+// preserve legacy injected enablement unless a registry selection exists
+function rainAdjustmentInferenceIsActive(
+  runtime: LoadedForecastAdjustmentRainRuntimeRegistryV1 | undefined,
+  legacyEnabled: boolean | undefined,
+): boolean {
+  // require both the existing feature gate and any explicit active registry
+  return legacyEnabled === true && (runtime === undefined || runtime.state === "active");
 }
 
 export interface EcmwfTemperatureCanaryCollectionResult {
@@ -744,7 +763,7 @@ function emptyTemperatureRecentErrorState(
 
 // fail closed before optional collector work
 function temperatureCanaryCollectionIsActive(
-  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 | undefined,
+  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntime | undefined,
   now: string,
 ): boolean {
   // preserve disabled loader results
@@ -1432,6 +1451,8 @@ export async function startWorkerProcess(
           }),
       now: () => new Date().toISOString(),
     }).load();
+  const rainAdjustmentRuntime =
+    await createForecastAdjustmentRainRuntimeRegistryLoader().load();
   const fetchTempest =
     configuration.tempestApiKey === null
       ? undefined
@@ -1463,6 +1484,7 @@ export async function startWorkerProcess(
         }
       : {}),
     ecowitt: configuration.ecowitt,
+    rainAdjustmentRuntime,
     tempest: configuration.tempest,
     temperatureCanaryRuntime,
     tides: configuration.tides,
