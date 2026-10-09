@@ -1790,7 +1790,7 @@ test("temperature wind and rain settings gate their own adjusted values", () => 
     assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour"), settings.rain ? 2.5 : raw.metrics.precipitationRateMmPerHour);
     assert.equal(forecastMetricValue(row, "precipitationMm", false), raw.metrics.precipitationMm);
     assert.equal(forecastMetricValue(row, "precipitationRateMmPerHour", false), raw.metrics.precipitationRateMmPerHour);
-    assert.equal(html.includes("data-forecast-adjustment-toggle"), bits !== 0);
+    assert.equal(html.includes("data-forecast-adjustment-toggle"), true);
     assert.equal(html.includes("Adjusted temperature uses ECMWF"), settings.temperature);
     assert.doesNotMatch(html, /experimental/i);
     assert.equal(html.includes("2.5 mm"), settings.rain);
@@ -1999,7 +1999,7 @@ test("malformed settings and rain evidence fall back to unchanged raw values", (
     rain: false,
   });
   assert.equal(forecastMetricValue(malformedSettings.data[0], "precipitationMm"), forecastRecord.metrics.precipitationMm);
-  assert.doesNotMatch(renderWeatherDashboard({
+  assert.match(renderWeatherDashboard({
     ...forecastState(malformedSettings.data, malformedSettings.adjustmentRuntime),
     forecastAdjustmentSettings: malformedSettings.adjustmentSettings,
   }, "forecast"), /data-forecast-adjustment-toggle/u);

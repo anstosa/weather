@@ -36,7 +36,8 @@ const shellPaths = [
   `/assets/${release}/styles.css`,
   `/assets/${release}/client.js`,
   `/assets/${release}/index.js`,
-  `/assets/${release}/units.js`
+  `/assets/${release}/units.js`,
+  `/assets/${release}/solar-cloud.js`
 ];
 const shellPathSet = new Set(shellPaths);
 const dashboardPaths = new Set(["/", "/logs", "/map", "/forecast", "/trends", "/settings"]);

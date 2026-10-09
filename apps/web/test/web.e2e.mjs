@@ -1363,6 +1363,7 @@ async function startFixtureServer() {
       [`/assets/${fixtureAssetVersion}/client.js`, [join(distRoot, "client.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/index.js`, [join(distRoot, "index.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/units.js`, [join(distRoot, "units.js"), "text/javascript; charset=utf-8"]],
+      [`/assets/${fixtureAssetVersion}/solar-cloud.js`, [join(distRoot, "solar-cloud.js"), "text/javascript; charset=utf-8"]],
     ]);
     const requestedAsset = assets.get(url.pathname);
     const adminRoute = url.pathname === "/admin" || url.pathname === "/admin/";
@@ -1435,6 +1436,108 @@ async function startFixtureServer() {
     state,
   };
 }
+
+// verify daylight cloud correction and automatic fail-raw behavior in the rendered dashboard
+test("WS90 sunlight clouds fade within 24 hours and retire on stale readings", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const at = "2026-08-21T20:00:00.000Z";
+  const regional = {
+    ...current, id: "solar-regional", validAt: at, receivedAt: at,
+    freshness: { ...current.freshness, status: "fresh", ageSeconds: 0 },
+    metrics: { ...current.metrics, cloudCoverPercent: 90, precipitationRateMmPerHour: 0, windSpeedMps: 1 },
+  };
+  // keep the source identity distinct from the nearby physical fixture
+  const ws90 = {
+    ...physicalCurrent, id: "solar-ws90", validAt: at, receivedAt: at,
+    freshness: { ...physicalCurrent.freshness, status: "fresh", ageSeconds: 0 },
+    metrics: { ...physicalCurrent.metrics, cloudCoverPercent: null, solarRadiationWm2: 800, precipitationRateMmPerHour: 0, windSpeedMps: 1 },
+    provenance: { ...physicalCurrent.provenance, providerKey: "ecowitt-local", stationSlug: "ballydidean-ecowitt", sourceId: "ws90" },
+  };
+  fixture.state.adjustmentSettings = { version: 1, temperature: false, wind: false, rain: false };
+  fixture.state.forecastRecords = forecast.map(
+    // make the regional cloud baseline constant so the fade is observable
+    (record) => ({ ...record, metrics: { ...record.metrics, cloudCoverPercent: 90 } }),
+  );
+
+  try {
+    browser = await launchBrowser();
+    // check the same behavior at desktop and narrow mobile widths
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      fixture.state.currentRecords = [ws90, regional];
+      fixture.state.failReads = false;
+      const page = await createFixturePage(browser, { viewport, timezoneId: site.timezone });
+      const errors = [];
+      // collect browser startup and render failures
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.clock.install({ time: new Date(at) });
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      const cloudCard = page.locator("[data-condition='clouds']");
+      assert.match(await cloudCard.locator(".condition-primary").textContent() ?? "", /10%/u);
+      assert.match(await cloudCard.textContent() ?? "", /Sunlight estimate · experimental/u);
+      assert.equal(await cloudCard.locator(".condition-detail").isVisible(), true);
+      assert.equal(await cloudCard.locator(".forecast-adjusted-icon").count(), 1);
+      assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /01-sunny\.svg$/u);
+      const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+      await toggle.click();
+      assert.match(await cloudCard.locator(".condition-primary").textContent() ?? "", /90%/u);
+      assert.equal(await cloudCard.locator(".forecast-adjusted-icon").count(), 0);
+      assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+      await toggle.click();
+      await page.getByRole("link", { name: "Forecast", exact: true }).click();
+      await page.locator("[data-forecast-charts]").waitFor();
+      const grid = page.locator("[data-forecast-charts]");
+      const chart = page.locator("[data-forecast-chart='clouds']");
+      const series = JSON.parse(await chart.getAttribute("data-forecast-series"));
+      assert.equal(series[0].values[12], 90);
+      assert.equal(series[0].values[13], 90);
+      assert.equal(Math.round(series[0].values[14]), 13);
+      assert.equal(Math.round(series[0].values[19]), 30);
+      assert.match(await chart.locator(".forecast-chart-heading").textContent() ?? "", /experimental/u);
+      await grid.focus();
+      await page.keyboard.press("ArrowRight");
+      const selected = await grid.getAttribute("data-forecast-selected-position");
+      const initialForecastReads = fixture.state.requests.filter(
+        // distinguish current-only polling from a forecast reload
+        (request) => request.includes("/forecast?"),
+      ).length;
+      fixture.state.failReads = true;
+      await page.clock.fastForward(360_100);
+      await page.waitForFunction(
+        // wait for the timer's timestamp guard to remove the solar marker despite request failures
+        () => !document.querySelector("[data-forecast-chart='clouds'] .forecast-adjusted-icon"),
+      );
+      const staleSeries = JSON.parse(await chart.getAttribute("data-forecast-series"));
+      assert.equal(staleSeries[0].values.every(
+        // old observations cannot continue correcting future cloud hours
+        (value) => value === 90,
+      ), true);
+      assert.equal(await grid.getAttribute("data-forecast-selected-position"), selected);
+      assert.equal(await grid.evaluate(
+        // retain focus so one keyboard step still advances exactly one forecast hour
+        (element) => element === document.activeElement,
+      ), true);
+      await page.keyboard.press("ArrowRight");
+      assert.equal(Number(await grid.getAttribute("data-forecast-selected-position")), Number(selected) + 1);
+      assert.equal(fixture.state.requests.filter(
+        // current polling must not request forecasts or restart the page loader
+        (request) => request.includes("/forecast?"),
+      ).length, initialForecastReads);
+      assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+      assert.deepEqual(errors, []);
+      assert.equal(await page.evaluate(
+        // prevent the experimental label from widening a mobile viewport
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ), true);
+      await page.close();
+    }
+  } finally {
+    // release the browser and fixture even on a failed assertion
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
 
 test("manifest and service worker provide an installable application shell", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();

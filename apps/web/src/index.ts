@@ -9,6 +9,7 @@ import {
   type UnitPreferences,
   type UnitPreferenceStorage,
 } from "./units.js";
+import { createSolarCloudBias, projectSolarCloudCover, type SolarCloudSample } from "./solar-cloud.js";
 
 export {
   DEFAULT_UNIT_PREFERENCES,
@@ -120,7 +121,73 @@ export interface WeatherRecord {
   readonly validAt: string;
 }
 
-// name the only adjustable browser metrics
+// keep experimental projections private rather than trusting serialized api metadata
+const solarCloudValues = new WeakMap<WeatherRecord, number>();
+
+// project fresh on-site sunlight without changing normalized records or governed families
+export function withSolarCloudAdjustment<T extends Pick<DashboardState, "current" | "selectedSite"> &
+  Partial<Pick<DashboardState, "forecast" | "forecastAdjustmentMode">>>(state: T, now = new Date()): T {
+  // discard former render-only projections before re-evaluating freshness
+  const rawRecord = (record: WeatherRecord): WeatherRecord => solarCloudValues.has(record) ? { ...record } : record;
+  const current = state.current.map(rawRecord);
+  const forecast = state.forecast?.map(rawRecord);
+  const raw = { ...state, current, ...forecast === undefined ? {} : { forecast } };
+  // raw mode never consumes experimental sunlight estimates
+  if (state.forecastAdjustmentMode === "raw") {
+    return raw;
+  }
+  // choose the newest exact source without falling back to a nearby station
+  const latest = (records: readonly WeatherRecord[]): WeatherRecord | undefined => records.toSorted(
+    // keep the latest source revision first
+    (left, right) => Date.parse(right.validAt) - Date.parse(left.validAt),
+  )[0];
+  const ws90 = latest(current.filter(
+    // the gateway model is gw3000 even though its radiation sensor is the ws90
+    (record) => record.provenance.providerKey === "ecowitt-local" &&
+      record.provenance.sourceKind === "physical_sensor" && record.provenance.stationSlug === "ballydidean-ecowitt",
+  ));
+  const regional = latest(current.filter(
+    // pair only the regional model's current cloud estimate
+    (record) => record.provenance.providerKey === "open-meteo" && record.provenance.sourceKind === "model_current",
+  ));
+  // carry explicit freshness and provenance into the pure estimator
+  const sample = (record: WeatherRecord | undefined, metric: "solarRadiationWm2" | "cloudCoverPercent"): SolarCloudSample | null =>
+    record === undefined ? null : {
+      value: record.metrics[metric], validAt: record.validAt, receivedAt: record.receivedAt,
+      freshnessStatus: record.freshness.status, recordId: record.id, sourceId: record.provenance.sourceId,
+    };
+  const site = state.selectedSite ?? PRODUCT_SITE;
+  const bias = createSolarCloudBias({ ...site, now: now.toISOString(), ws90: sample(ws90, "solarRadiationWm2"), regional: sample(regional, "cloudCoverPercent") });
+  // missing stale or low-sun readings preserve every raw value
+  if (bias === null) {
+    return raw;
+  }
+  // retain corrected values only on trusted ephemeral render clones
+  const project = (record: WeatherRecord, targetAt: string): WeatherRecord => {
+    const value = projectSolarCloudCover(record.metrics.cloudCoverPercent, targetAt, bias);
+    // omit unchanged unavailable and out-of-horizon values
+    if (value === null || !Number.isFinite(value) || value === record.metrics.cloudCoverPercent) {
+      return record;
+    }
+    const projected = { ...record };
+    solarCloudValues.set(projected, value);
+    return projected;
+  };
+  return {
+    ...raw,
+    current: current.map(
+      // current estimates apply at evaluation time rather than the model's older interval
+      (record) => record === regional ? project(record, now.toISOString()) : record,
+    ),
+    ...forecast === undefined ? {} : { forecast: forecast.map(
+      // leave other providers and historical products untouched
+      (record) => record.provenance.providerKey === "open-meteo" && record.provenance.sourceKind === "forecast"
+        ? project(record, record.validAt) : record,
+    ) },
+  };
+}
+
+// name only the governed browser adjustment metrics
 export type ForecastAdjustmentMetric =
   | "relativeHumidityPercent"
   | "temperatureC"
@@ -3270,6 +3337,8 @@ export class WeatherDashboardController {
   #homeNetworkGeneration = 0;
   #homeNetworkLayoutRequest: Promise<void> | null = null;
   #homeNetworkRefresh: Promise<void> | null = null;
+  #currentRefresh: Promise<void> | null = null;
+  #currentGeneration = 0;
   #view: WeatherView;
   #state: DashboardState;
 
@@ -3371,9 +3440,52 @@ export class WeatherDashboardController {
     this.#homeNetworkGeneration += 1;
     this.#homeNetworkLayoutRequest = null;
     this.#homeNetworkRefresh = null;
+    this.#currentGeneration += 1;
     this.#view = view;
     this.patch({ homeNetwork: false, propertySensorLayoutLoading: false });
     await this.loadSelectedSite();
+  }
+
+  // re-evaluate expiry and refresh only current readings without resetting forecast selection
+  async refreshCurrentReadings(): Promise<void> {
+    const site = this.#state.selectedSite;
+    // keep weather polling off unrelated routes and full-page loads
+    if (site === null || (this.#view !== "home" && this.#view !== "forecast") || this.#state.loading) {
+      return;
+    }
+    this.emit();
+    // avoid overlapping current requests after timer and resume events
+    if (this.#currentRefresh !== null) {
+      return this.#currentRefresh;
+    }
+    const generation = this.#currentGeneration;
+    // isolate failures from the retained forecast and let timestamp gates retire old estimates
+    const refresh = (async (): Promise<void> => {
+      try {
+        const response = await getJson<RecordsResponse>(this.#fetcher, buildCurrentUrl(this.#apiBaseUrl, site.slug, {}));
+        const responseSite = requireProductSite(response.site);
+        // ignore late responses from former routes sites or full-weather loads
+        if (generation !== this.#currentGeneration || this.#state.selectedSite?.slug !== site.slug || this.#state.loading) {
+          return;
+        }
+        const forecastAdjustmentMode = this.#state.forecastAdjustmentMode;
+        const inputs = currentWeatherIconInputs(response.data, forecastAdjustmentMode);
+        const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
+        persistNowIconCache(this.#storage, cachedNowIcon);
+        this.patch({ current: response.data, cachedNowIcon, selectedSite: responseSite });
+      } catch {
+        // preserve last-good raw readings while re-rendering to enforce freshness
+        if (generation === this.#currentGeneration) {
+          this.emit();
+        }
+      }
+    })();
+    this.#currentRefresh = refresh;
+    try {
+      await refresh;
+    } finally {
+      this.#currentRefresh = null;
+    }
   }
 
   // recheck one ephemeral homepage display boundary
@@ -3781,6 +3893,8 @@ export class WeatherDashboardController {
       return;
     }
 
+    this.#currentGeneration += 1;
+
     this.patch({
       error: null,
       homeNetwork: false,
@@ -4152,22 +4266,26 @@ export function mountWeatherDashboard(
   options: DashboardOptions = {},
 ): WeatherDashboardController {
   const controller = new WeatherDashboardController(options);
+  let previousForecast: readonly WeatherRecord[] | undefined;
   bindHomepageTitleSize(root);
 
   // redraw and wire one state snapshot
   controller.subscribe((state) => {
     const toggleHadFocus = root.querySelector("[data-forecast-adjustment-toggle]") === document.activeElement;
+    const forecastHadFocus = root.querySelector("[data-forecast-charts]") === document.activeElement;
     const forecastPosition = root.querySelector<HTMLElement>("[data-forecast-charts]")
       ?.dataset.forecastSelectedPosition;
+    const retainForecast = !state.loading && state.forecast === previousForecast;
     root.innerHTML = renderWeatherDashboard(state, controller.view, controller.isAdmin);
 
-    // retain the selected forecast hour across preference redraws
-    if (toggleHadFocus && forecastPosition !== undefined && forecastPosition !== null) {
+    // retain the selected forecast hour across preferences and current-only redraws
+    if ((toggleHadFocus || retainForecast) && forecastPosition !== undefined && forecastPosition !== null) {
       root.querySelector<HTMLElement>("[data-forecast-charts]")
         ?.setAttribute("data-forecast-initial-index", forecastPosition);
     }
 
     bindDashboardControls(root, controller);
+    previousForecast = state.forecast;
     fitHomepageTitle(root);
 
     // retain keyboard focus on the replaced preference switch
@@ -4175,11 +4293,43 @@ export function mountWeatherDashboard(
       root.querySelector<HTMLButtonElement>("[data-forecast-adjustment-toggle]")
         ?.focus({ preventScroll: true });
     }
+    // keep keyboard scrubbing usable after an automatic current refresh
+    if (forecastHadFocus && retainForecast) {
+      root.querySelector<HTMLElement>("[data-forecast-charts]")?.focus({ preventScroll: true });
+    }
   });
   bindConditionDayRefresh(root, controller);
   bindHomeNetworkRefresh(root, controller);
+  bindCurrentReadingsRefresh(root, controller);
   void controller.initialize();
   return controller;
+}
+
+// keep sunlight input and expiry current while weather-bearing pages are visible
+function bindCurrentReadingsRefresh(root: HTMLElement, controller: WeatherDashboardController): void {
+  let timer: number | undefined;
+  // retire listeners and polling with the detached dashboard
+  const cleanup = (): void => {
+    window.clearInterval(timer);
+    window.removeEventListener("online", refresh);
+    document.removeEventListener("visibilitychange", refresh);
+  };
+  // resume safely without fetching historical or administrative products
+  const refresh = (): void => {
+    // detached roots cannot create background requests
+    if (!root.isConnected) {
+      cleanup();
+      return;
+    }
+    // hidden tabs wait for an explicit visibility resume
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+    void controller.refreshCurrentReadings();
+  };
+  window.addEventListener("online", refresh);
+  document.addEventListener("visibilitychange", refresh);
+  timer = window.setInterval(refresh, 60_000);
 }
 
 // refit the fixed-height title after viewport and font changes
@@ -4313,6 +4463,7 @@ export function renderWeatherDashboard(
   view: WeatherView = "home",
   isAdmin = false,
 ): string {
+  state = withSolarCloudAdjustment(state);
   return `
     <main class="shell">
       <header class="masthead${view === "forecast" ? " forecast-masthead" : view === "home" ? " home-masthead" : ""}">
@@ -4338,21 +4489,24 @@ export function currentWeatherIcon(
   state: Pick<DashboardState, "current" | "selectedSite"> & Partial<Pick<DashboardState, "forecastAdjustmentMode">>,
   now = new Date(),
 ): Readonly<{ name: string; label: string }> {
-  return selectCurrentWeatherIcon(currentWeatherIconInputs(state.current, state.forecastAdjustmentMode), state.selectedSite ?? PRODUCT_SITE, now);
+  const projected = withSolarCloudAdjustment(state, now);
+  return selectCurrentWeatherIcon(currentWeatherIconInputs(projected.current, state.forecastAdjustmentMode, true), state.selectedSite ?? PRODUCT_SITE, now);
 }
 
 // share selected source priority and cloud provenance between live and cached artwork
 function currentWeatherIconInputs(
   records: readonly WeatherRecord[],
   mode: ForecastAdjustmentMode = "adjusted",
+  useSolarAdjustment = false,
 ): NowIconInputs | null {
   const current = preferredCurrentRecords(records, mode);
   const rain = findMetric(current, "precipitationRateMmPerHour");
   const windy = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
-  const cloud = findMetric(current.filter(
+  const cloudRecord = current.find(
     // cloud cover is modeled rather than measured by the on-site gateway
-    (record) => record.provenance.sourceKind === "model_current",
-  ), "cloudCoverPercent");
+    (record) => record.provenance.sourceKind === "model_current" && record.metrics.cloudCoverPercent !== null,
+  );
+  const cloud = cloudRecord === undefined ? null : forecastMetricValue(cloudRecord, "cloudCoverPercent", useSolarAdjustment && mode !== "raw");
   return parseNowIconInputs({ rain, cloud, windy });
 }
 
@@ -4396,12 +4550,13 @@ function selectCurrentWeatherIcon(
 
 // keep known artwork through navigation and reserve its space while first loading
 function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): string {
+  state = withSolarCloudAdjustment(state, now);
   const mode = state.forecastAdjustmentMode ?? "adjusted";
   const cached = isNowIconCacheFresh(state.cachedNowIcon, now.getTime()) &&
     (state.cachedNowIcon.forecastAdjustmentMode ?? "adjusted") === mode
     ? state.cachedNowIcon
     : null;
-  const inputs = currentWeatherIconInputs(state.current, mode) ?? cached;
+  const inputs = currentWeatherIconInputs(state.current, mode, true) ?? cached;
   // loading is not an unavailable weather condition
   if (inputs === null && state.loading) {
     return `<span class="section-nav-weather-icon section-nav-weather-skeleton skeleton-line" role="img" aria-label="Loading current weather" aria-busy="true"></span>`;
@@ -4420,16 +4575,6 @@ function renderForecastAdjustmentToggle(
     return "";
   }
 
-  // omit a switch with no enabled adjustment group
-  if (
-    state.forecastAdjustmentSettings != null &&
-    !state.forecastAdjustmentSettings.temperature &&
-    !state.forecastAdjustmentSettings.wind &&
-    !state.forecastAdjustmentSettings.rain
-  ) {
-    return "";
-  }
-
   const available = forecastAdjustmentsAvailable(state);
   // reflect the persisted preference even during regional fallback
   const adjusted = state.forecastAdjustmentMode !== "raw";
@@ -4440,7 +4585,7 @@ function renderForecastAdjustmentToggle(
       role="switch"
       aria-checked="${String(adjusted)}"
       aria-label="Adjusted"
-      title="Switch between adjusted and raw forecast values."
+      title="Switch between adjusted and regional values."
       data-forecast-adjustment-toggle
       data-forecast-adjustment-activation-mode="${escapeHtml(state.forecastAdjustmentRuntime?.activationMode ?? "disabled")}"
       data-forecast-adjustment-available="${String(available)}"
@@ -4460,7 +4605,10 @@ function renderForecastAdjustmentToggle(
 // detect one usable adjusted forecast value
 function forecastAdjustmentsAvailable(state: DashboardState): boolean {
   const settings = state.forecastAdjustmentSettings ?? null;
-  return state.forecast.some(
+  return [...state.current, ...state.forecast].some(
+    // experimental sunlight corrections remain separate from governed model families
+    (record) => solarCloudValues.has(record),
+  ) || state.forecast.some(
     // require one validated active decision from either isolated runtime
     (record) =>
       (state.forecastAdjustmentRuntime?.state === "active" &&
@@ -5039,27 +5187,35 @@ export function pressureChangeBand(changeHpa: number | null): ConditionBand {
 
 // compare daylight and overall clarity alongside full-day cloud extrema
 function renderCloudsCondition(state: DashboardState): string {
+  state = withSolarCloudAdjustment(state);
   const site = state.selectedSite ?? PRODUCT_SITE;
+  const useAdjustments = state.forecastAdjustmentMode !== "raw";
   const current = state.current.filter(
     // keep model estimates distinct from on-site observations
     (record) => record.provenance.sourceKind === "model_current",
   );
-  const cover = findMetric(current, "cloudCoverPercent");
+  const currentCloud = current.find(
+    // select one modeled current value for both its reading and correction marker
+    (record) => record.metrics.cloudCoverPercent !== null,
+  );
+  const cover = currentCloud === undefined ? null : forecastMetricValue(currentCloud, "cloudCoverPercent", useAdjustments);
+  const sunlightEstimate = currentCloud !== undefined && useAdjustments && solarCloudValues.has(currentCloud);
   const now = new Date();
   const forecast = forecastForSiteDay(state.forecast, now.toISOString(), site.timezone);
   const sun = eveningSunTimes(site, now);
-  const daytime = clearestCloudRange(forecast, site.timezone, sun);
-  const overall = clearestCloudRange(forecast, site.timezone);
+  const daytime = clearestCloudRange(forecast, site.timezone, sun, useAdjustments);
+  const overall = clearestCloudRange(forecast, site.timezone, undefined, useAdjustments);
   const differentRange = overall.value !== "—" &&
     (overall.value !== daytime.value || overall.unit !== daytime.unit);
 
   return renderConditionCard({
-    band: cloudBand(cover),
-    className: "compact-condition clouds-condition",
+    adjusted: forecastValuesAreAdjusted([...currentCloud === undefined ? [] : [currentCloud], ...forecast], ["cloudCoverPercent"], useAdjustments),
+    band: sunlightEstimate ? { ...cloudBand(cover), detail: "Sunlight estimate · experimental" } : cloudBand(cover),
+    className: `compact-condition clouds-condition${sunlightEstimate ? " solar-cloud-estimate" : ""}`,
     forecast: {
       readings: [
-        { label: "Max", measurement: formatFixedMeasurement(maximumMetric(forecast, "cloudCoverPercent", false), "%", 0) },
-        { label: "Min", measurement: formatFixedMeasurement(minimumMetric(forecast, "cloudCoverPercent", false), "%", 0) },
+        { label: "Max", measurement: formatFixedMeasurement(maximumMetric(forecast, "cloudCoverPercent", useAdjustments), "%", 0) },
+        { label: "Min", measurement: formatFixedMeasurement(minimumMetric(forecast, "cloudCoverPercent", useAdjustments), "%", 0) },
       ],
     },
     icon: "cloud",
@@ -5078,6 +5234,7 @@ export function clearestCloudRange(
   records: readonly WeatherRecord[],
   timezone: string,
   daylight?: Readonly<{ sunrise: Date | null; sunset: Date | null }>,
+  useAdjustments = false,
 ): FormattedMeasurement {
   const hours = records.filter(
     // reject bins wholly outside daylight before choosing the minimum
@@ -5090,7 +5247,7 @@ export function clearestCloudRange(
     // preserve caller order while finding adjacent hourly bins
     (left, right) => Date.parse(left.validAt) - Date.parse(right.validAt),
   );
-  const minimum = minimumMetric(hours, "cloudCoverPercent", false);
+  const minimum = minimumMetric(hours, "cloudCoverPercent", useAdjustments);
 
   // keep missing forecasts distinct from clear skies
   if (minimum === null) {
@@ -5099,7 +5256,7 @@ export function clearestCloudRange(
 
   const first = hours.findIndex(
     // retain the earliest tied minimum rather than spanning separate windows
-    (record) => record.metrics.cloudCoverPercent === minimum,
+    (record) => forecastMetricValue(record, "cloudCoverPercent", useAdjustments) === minimum,
   );
   const firstHour = Date.parse(hours[first]!.validAt);
   const start = new Date(Math.max(firstHour, daylight?.sunrise?.getTime() ?? firstHour));
@@ -5108,7 +5265,7 @@ export function clearestCloudRange(
   // include every consecutive minimum-cover hour and its full interval
   for (const hour of hours.slice(first + 1)) {
     // stop at higher cover, missing data or a gap in the hourly series
-    if (hour.metrics.cloudCoverPercent !== minimum || Date.parse(hour.validAt) !== end) {
+    if (forecastMetricValue(hour, "cloudCoverPercent", useAdjustments) !== minimum || Date.parse(hour.validAt) !== end) {
       break;
     }
 
@@ -6073,6 +6230,7 @@ function buildForecastCharts(
   records: readonly WeatherRecord[],
   pressureContext: readonly WeatherRecord[],
 ): readonly ForecastChartDefinition[] {
+  const cloudsAdjusted = forecastValuesAreAdjusted(hours, ["cloudCoverPercent"], useAdjustments);
   // apply the selected adjustment mode to each displayed metric
   const metric = (key: WeatherMetricKey): readonly (number | null)[] => hours.map(
     // align every weather metric to the shared hourly index
@@ -6136,11 +6294,12 @@ function buildForecastCharts(
       }],
     },
     {
+      adjusted: cloudsAdjusted,
       domain: { maximum: 100, minimum: 0 },
       format: "cloudCover",
       icon: "cloud",
       key: "clouds",
-      label: "Clouds",
+      label: cloudsAdjusted ? "Clouds · experimental" : "Clouds",
       series: [{ label: "Cover", values: metric("cloudCoverPercent") }],
     },
     {
@@ -13035,6 +13194,11 @@ export function forecastMetricValue(
   const rainDecision = record.rainAdjustment;
   const temperatureDecision = record.temperatureAdjustment;
 
+  // use only locally generated sunlight projections without expanding governed model metrics
+  if (useAdjustments && metric === "cloudCoverPercent") {
+    return solarCloudValues.get(record) ?? record.metrics.cloudCoverPercent;
+  }
+
   // reuse the hourly rain amount as its hourly rate
   if (
     useAdjustments &&
@@ -13077,7 +13241,8 @@ function forecastValuesAreAdjusted(
     (record) => metrics.some(
       // distinguish active corrections from equal-valued or missing raw fallbacks
       (metric) => {
-        const active = (metric === "temperatureC" && record.temperatureAdjustment?.state === "active") ||
+        const active = (metric === "cloudCoverPercent" && solarCloudValues.has(record)) ||
+          (metric === "temperatureC" && record.temperatureAdjustment?.state === "active") ||
           ((metric === "precipitationMm" || metric === "precipitationRateMmPerHour") && record.rainAdjustment?.state === "active") ||
           (record.adjustment?.state === "active" &&
             record.adjustment.appliedMetrics.includes(metric as ForecastAdjustmentMetric));

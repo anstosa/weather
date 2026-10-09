@@ -200,6 +200,73 @@ Gold marks the selected adjustment family; it does not correct current readings
 or change the metrics plotted in a chart. Switching the mode also selects the
 current source as described above.
 
+## Experimental WS90 sunlight cloud correction
+
+With Adjusted on, the dashboard can raise or lower the current regional cloud
+estimate and the next 24 hours of Open-Meteo cloud forecasts using the on-site
+WS90 `solarRadiationWm2` reading. The Clouds card, its daily extrema and clearest
+window, the forecast cloud chart, and live Now artwork use the same selected
+values. Changed cloud icons are gold; the card and chart identify the estimate
+as experimental. Raw/off mode remains regional-only and unchanged.
+
+This is an instantaneous sunlight proxy, not a measured fraction of the sky
+and not a trained, qualified, or promoted adjustment family. Temperature, wind,
+rain, their admin switches, public API records, history, map imagery, and widget
+v2/v3 contracts are unchanged. The global display switch remains available even
+when all three governed families are disabled, so the experiment can be turned
+off without altering their exact settings contract.
+
+The browser selects only `ecowitt-local` physical readings from
+`ballydidean-ecowitt`, paired with Open-Meteo `model_current` cloud cover. A
+GW3000 device label denotes the gateway, not a different radiation sensor.
+Nearby stations, inverter feeds, and modeled radiation cannot substitute.
+Both samples must be explicitly fresh, with valid timezone-bearing timestamps,
+nonempty provenance identifiers, reception no earlier than observation and no
+future timestamps. Observation and reception ages are at most 5 minutes for
+the WS90 and 20 minutes for the model, with at most 20 minutes between their
+valid times. Generic API freshness alone is insufficient.
+
+At the observation and evaluation times, solar elevation must be at least
+15 degrees and expected clear-sky irradiance at least 200 W/m². Radiation must
+be greater than 5 and no greater than 2500 W/m²; ratios above 1.5 times clear-sky
+irradiance are rejected. Missing, stale, delayed, suspicious, nighttime, and
+low-sun inputs preserve raw cloud values. These conservative experimental
+gates are defaults, not empirically calibrated thresholds.
+
+Solar position follows [NOAA's solar calculations](https://gml.noaa.gov/grad/solcalc/calcdetails.html).
+Clear-sky horizontal irradiance uses the Haurwitz expression
+`1098 × cos(zenith) × exp(-0.059 / cos(zenith))`, as implemented by
+[pvlib](https://github.com/pvlib/pvlib-python/blob/main/pvlib/clearsky.py).
+The cloud proxy is
+`100 × sqrt(clamp((1 - min(1, radiation / (0.85 × clearSky))) / 0.65, 0, 1))`.
+The attenuation relationship is adapted from
+[USACE's computed cloud cover method](https://www.hec.usace.army.mil/confluence/wqetm/input-data-sets/meteorological-data),
+which uses daily radiation; this instantaneous adaptation is not validated by
+that reference. The 15% clear-sky tolerance, ±80 percentage-point bias cap, and
+24-hour fade are explicit experimental choices, not fitted coefficients.
+
+The bias is proxy minus paired regional cloud cover, capped to ±80 points.
+Current cover applies that bias at evaluation time, not the older modeled
+observation time. A future hour receives
+`bias × max(0, 1 - (hour - observationTime) / 24 hours)`, clamped to 0–100%.
+Past hours and hours at or beyond `observationTime + 24 hours` remain exact raw.
+Re-rendering an unchanged reading never slides its horizon forward. Each new
+accepted reading replaces the bias; once current inputs stop qualifying, the
+entire experimental projection retires rather than persisting stale evidence.
+
+Visible Home and Forecast pages refresh only `/current` once per minute and
+on connectivity or visibility resume. Requests do not overlap, late responses
+from former routes/full loads are ignored, and failures retain last-good raw
+records while re-evaluating correction expiry. Forecast selection is retained
+across these current-only redraws. Artwork
+caches deliberately store raw modeled cloud cover, never the experimental
+correction, so offline or unrelated-route artwork cannot extend its lifetime.
+
+Shading, dirty sensors, haze, smoke, humidity, and cloud-edge enhancement can
+change radiation without changing sky fraction. No independent cloud truth or
+forecast-accuracy improvement has been established. Evaluate against observed
+sky conditions before tuning these defaults or treating the proxy as a model.
+
 ## Bounded production snapshot
 
 Run the production export only with explicit authority. The command accepts

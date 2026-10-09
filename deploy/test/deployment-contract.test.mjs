@@ -656,6 +656,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
   await writeFile(join(fixtureRoot, "apps/web/dist/client.js"), "export { ready } from './index.js';\n");
   await writeFile(join(fixtureRoot, "apps/web/dist/index.js"), "export { ready } from './units.js';\n");
   await writeFile(join(fixtureRoot, "apps/web/dist/units.js"), "export const ready = true;\n");
+  await writeFile(join(fixtureRoot, "apps/web/dist/solar-cloud.js"), "export const sunlight = true;\n");
   const xweatherClientId = join(fixtureRoot, "xweather-client-id");
   const xweatherClientSecret = join(fixtureRoot, "xweather-client-secret");
   const xweatherUsagePath = join(fixtureRoot, "xweather-usage.json");
@@ -1150,6 +1151,7 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     const client = await fetch(`http://127.0.0.1:${webPort}/assets/2026.08.25-7/client.js`);
     const library = await fetch(`http://127.0.0.1:${webPort}/assets/2026.08.25-7/index.js`);
     const units = await fetch(`http://127.0.0.1:${webPort}/assets/2026.08.25-7/units.js`);
+    const solarCloud = await fetch(`http://127.0.0.1:${webPort}/assets/2026.08.25-7/solar-cloud.js`);
     const stylesheet = await fetch(`http://127.0.0.1:${webPort}/assets/2026.08.25-7/styles.css`);
     const staleAsset = await fetch(`http://127.0.0.1:${webPort}/assets/2026.08.25-6/index.js`);
     const unversionedAsset = await fetch(`http://127.0.0.1:${webPort}/index.js`);
@@ -1317,6 +1319,10 @@ test("web edge serves allowlisted assets and bounded read-only upstream proxies"
     assert.equal(client.headers.get("content-type"), "text/javascript; charset=utf-8");
     assert.equal(library.headers.get("content-type"), "text/javascript; charset=utf-8");
     assert.equal(units.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.equal(solarCloud.status, 200);
+    assert.equal(solarCloud.headers.get("content-type"), "text/javascript; charset=utf-8");
+    assert.match(solarCloud.headers.get("cache-control"), /immutable/u);
+    assert.equal(await solarCloud.text(), "export const sunlight = true;\n");
     assert.match(stylesheet.headers.get("cache-control"), /immutable/u);
     assert.equal(staleAsset.status, 404);
     assert.equal(annualTrends.status, 200);
