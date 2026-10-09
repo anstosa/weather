@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter, getEventListeners } from "node:events";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -733,6 +734,9 @@ test("ssh transport exposes only next, page ack and final ack fixed grammars", a
   await executeAdjustmentArchiveSshVerb("final_ack", [HASH_A, HASH_B], { spawnImpl });
   assert.equal(calls.length, 3);
   assert.equal(calls[0].file, "/usr/bin/ssh");
+  assert.deepEqual(calls[0].args.slice(0, 2), [
+    "-F", join(import.meta.dirname, "../..", "deploy/config/ssh_config"),
+  ]);
   assert.deepEqual(calls[0].args.slice(-2), ["weather-pi", "adjustment-archive-next"]);
   assert.deepEqual(calls[1].args.slice(-4), ["weather-pi", "adjustment-archive-ack", HASH_A, HASH_B]);
   assert.deepEqual(calls[2].args.slice(-4), ["weather-pi", "adjustment-archive-ack-final", HASH_A, HASH_B]);
@@ -1089,6 +1093,45 @@ test("legacy census counts a symlink inode without following its target", async 
 
     assert.equal(result.entryCount, 3);
     assert.ok(result.allocatedBytes >= 0n);
+  } finally {
+    await rm(fixtureRoot, { force: true, recursive: true });
+  }
+});
+
+test("legacy census counts foreign regular allocations as metadata", async () => {
+  const foreignPath = "/usr/bin/true";
+  const details = await lstat(foreignPath, { bigint: true });
+
+  // require a genuine foreign public fixture
+  assert.notEqual(details.uid, BigInt(process.getuid()));
+  const result = await measureImmutableLegacyCensus([foreignPath], details.dev);
+
+  assert.equal(result.entryCount, 1);
+  assert.equal(result.allocatedBytes, details.blocks * 512n);
+});
+
+test("legacy census deduplicates hardlinks and rejects device drift", async () => {
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "weather-adjustment-census-hardlink-"));
+  const first = join(fixtureRoot, "first.bin");
+  const second = join(fixtureRoot, "second.bin");
+
+  // isolate and remove every census fixture byte
+  try {
+    await writeFile(first, Buffer.alloc(8 * 1_024), { mode: 0o600 });
+    await link(first, second);
+    const rootDetails = await lstat(fixtureRoot, { bigint: true });
+    const fileDetails = await lstat(first, { bigint: true });
+    const result = await measureImmutableLegacyCensus([fixtureRoot], rootDetails.dev);
+
+    assert.equal(result.entryCount, 3);
+    assert.equal(
+      result.allocatedBytes,
+      rootDetails.blocks * 512n + fileDetails.blocks * 512n,
+    );
+    await assert.rejects(
+      measureImmutableLegacyCensus([fixtureRoot], rootDetails.dev + 1n),
+      /archive backing census is invalid/u,
+    );
   } finally {
     await rm(fixtureRoot, { force: true, recursive: true });
   }

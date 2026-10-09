@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
 import type { Pool, QueryResultRow } from "pg";
 
+import type { Queryable } from "./pool.js";
+
 const HOUR_MS = 3_600_000;
 const HASH = /^[a-f0-9]{64}$/u;
 
@@ -38,6 +40,27 @@ export interface RainAdjustmentRun {
   readonly generatedAt: string;
   readonly hours: readonly RainAdjustmentHour[];
 }
+
+// expose only the exact server-persisted rain gate needed for revision archival
+export interface PersistedRainAdjustmentRevision {
+  readonly generatedAt: string;
+  readonly hours: readonly RainAdjustmentHour[];
+  readonly inputSha256: string;
+  readonly modelSha256: string;
+  readonly runInitializedAt: string;
+  readonly storedContentSha256: string;
+}
+
+// finish cold publication only after the serving transaction commits
+export interface RainAdjustmentRevisionPublication {
+  readonly publish: () => Promise<void>;
+}
+
+// stage and bind one exact persisted gate inside its serving transaction
+export type RainAdjustmentRevisionArchiver = (
+  queryable: Queryable,
+  revision: PersistedRainAdjustmentRevision,
+) => Promise<RainAdjustmentRevisionPublication | null>;
 
 interface CaptureRow extends QueryResultRow {
   readonly id: string;
@@ -115,15 +138,66 @@ export async function readPendingRainAdjustmentCaptures(
 }
 
 // append one public-safe projection without changing any previous forecast
-export async function appendRainAdjustmentRun(pool: Pool, run: RainAdjustmentRun): Promise<boolean> {
-  const result = await pool.query(`
-    INSERT INTO rain_adjustment_runs (run_initialized_at, model_sha256, input_sha256,
-      forecast_claim_id, first_received_at, decision_at, hours)
-    VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-    ON CONFLICT (run_initialized_at, model_sha256) DO NOTHING RETURNING run_initialized_at
-  `, [run.runInitializedAt, run.modelSha256, run.inputSha256, run.forecastClaimId,
-    run.firstReceivedAt, run.decisionAt, JSON.stringify(run.hours)]);
-  return result.rowCount === 1;
+export async function appendRainAdjustmentRun(
+  pool: Pool,
+  run: RainAdjustmentRun,
+  revisionArchiver?: RainAdjustmentRevisionArchiver,
+): Promise<boolean> {
+  const client = await pool.connect();
+  let publication: RainAdjustmentRevisionPublication | null = null;
+  let inserted = false;
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{
+      generatedAt: Date;
+      hours: readonly RainAdjustmentHour[];
+      inputSha256: string;
+      modelSha256: string;
+      runInitializedAt: Date;
+      storedContentSha256: string;
+    }>(`
+      INSERT INTO rain_adjustment_runs (run_initialized_at, model_sha256, input_sha256,
+        forecast_claim_id, first_received_at, decision_at, hours)
+      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+      ON CONFLICT (run_initialized_at, model_sha256) DO NOTHING
+      RETURNING run_initialized_at AS "runInitializedAt", model_sha256 AS "modelSha256",
+        input_sha256 AS "inputSha256", generated_at AS "generatedAt", hours,
+        encode(digest(hours::text, 'sha256'), 'hex') AS "storedContentSha256"
+    `, [run.runInitializedAt, run.modelSha256, run.inputSha256, run.forecastClaimId,
+      run.firstReceivedAt, run.decisionAt, JSON.stringify(run.hours)]);
+    const row = result.rows[0];
+    inserted = row !== undefined;
+    // archive only the new immutable serving revision and never backfill conflict rows
+    if (row !== undefined && revisionArchiver !== undefined) {
+      try {
+        publication = await revisionArchiver(client, {
+          generatedAt: row.generatedAt.toISOString(),
+          hours: row.hours,
+          inputSha256: row.inputSha256,
+          modelSha256: row.modelSha256,
+          runInitializedAt: row.runInitializedAt.toISOString(),
+          storedContentSha256: row.storedContentSha256,
+        });
+      } catch {
+        // preserve ordinary serving after a bounded revision archive failure
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+  // publish staged bytes only after the live row and pointer transaction commits
+  if (publication !== null) {
+    try {
+      await publication.publish();
+    } catch {
+      // preserve serving after a permanent cold publication gap
+    }
+  }
+  return inserted;
 }
 
 // read one recent inference without granting the API access to provider bodies

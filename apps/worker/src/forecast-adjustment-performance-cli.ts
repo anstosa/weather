@@ -978,7 +978,10 @@ async function createWindReport(
     throw new Error(`active wind runtime is unavailable: ${runtime.reasonCode}`);
   }
 
-  const enabled = runtime.bundle.authorization.enabledMetricBands;
+  // score the exact mask carried by either qualified runtime grammar
+  const enabled = "maintenanceBundleSha256" in runtime.bundle
+    ? runtime.bundle.candidate.enabledMetricBands
+    : runtime.bundle.authorization.enabledMetricBands;
   const counterfactualByBand = new Map<string, ForecastAdjustmentPerformancePair[]>(
     enabled.map((pair) => [`${pair.metric}:${pair.leadBand}`, []]),
   );

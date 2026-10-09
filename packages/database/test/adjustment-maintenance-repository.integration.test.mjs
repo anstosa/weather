@@ -18,9 +18,12 @@ import {
 } from "../dist/index.js";
 import {
   createMaintenanceShadowPredictionMetadata,
+  createMaintenanceShadowSourceIdentity,
   encodeMaintenanceBinary64,
+  encodeMaintenanceShadowSourceProjection,
   encodeMaintenanceShadowValues,
   MAINTENANCE_SHADOW_LIMITS,
+  MAINTENANCE_SHADOW_SOURCE_VERSION,
   MAINTENANCE_SHADOW_VALUES_VERSION,
 } from "../../forecast-adjustment/dist/maintenance-shadow-values.js";
 import {
@@ -62,14 +65,56 @@ function registrationIdentity(registration) {
 
 // build every required lead in one exact family body
 function stageShadowBody(family, registration, dueKey, issuedAt) {
+  const sourceRows = Array.from({ length: MAINTENANCE_SHADOW_LIMITS[family].rows },
+    // preserve each closed raw forecast row outside the public body
+    (_, index) => {
+      const validAt = new Date(Date.parse(registration.intervalStartAt) - 6 * HOUR_MS + index * HOUR_MS)
+        .toISOString();
+      const common = {
+        validAt,
+        leadHours: index + 1,
+        modelLeadHours: index + 7,
+        referenceAt: new Date(Date.parse(validAt) - (index + 7) * HOUR_MS).toISOString(),
+        receivedAt: issuedAt,
+        sourceSha256: registration.sourceSha256,
+        contentSha256: sha256(`${family}-source-row-${index + 1}`),
+        adapterVersion: "open-meteo/v4",
+        contractEpoch: "forecast/v4",
+        dataset: "best_match",
+        providerKey: "open-meteo",
+        sourceKey: "open-meteo-forecast",
+        sourceConfigFingerprint: "open-meteo-forecast/v4",
+        upstreamModel: "best_match",
+        revisionCount: 0,
+      };
+      // include only the exact family raw metric fields
+      if (family === "temperature") {
+        return { ...common, temperatureC64: encodeMaintenanceBinary64(12.5) };
+      }
+      if (family === "wind") {
+        return { ...common, windSpeedMps64: encodeMaintenanceBinary64(10), windGustMps64: encodeMaintenanceBinary64(20) };
+      }
+      return { ...common, precipitationMm64: encodeMaintenanceBinary64(3) };
+    });
+  const sourceBytes = encodeMaintenanceShadowSourceProjection({
+    contractVersion: MAINTENANCE_SHADOW_SOURCE_VERSION,
+    family,
+    registrationSha256: registration.registrationSha256,
+    candidateSha256: registration.candidateSha256,
+    sourceSha256: registration.sourceSha256,
+    dueKey,
+    issuedAt,
+    rowCount: sourceRows.length,
+    rows: sourceRows,
+  });
+  const sourceIdentity = createMaintenanceShadowSourceIdentity(sourceBytes);
   const rows = Array.from({ length: MAINTENANCE_SHADOW_LIMITS[family].rows },
     // preserve the complete ordered lead sequence
     (_, index) => {
       const common = {
         leadHours: index + 1,
-        sourceRowSha256: sha256(`${family}-source-row-${index + 1}`),
-        validAt: new Date(Date.parse(registration.intervalStartAt) + index * HOUR_MS)
-          .toISOString(),
+        sourceRowSha256: sourceIdentity.sourceRowSha256[index],
+        validAt: sourceRows[index].validAt,
       };
       // retain the exact temperature row schema
       if (family === "temperature") {
@@ -102,18 +147,20 @@ function stageShadowBody(family, registration, dueKey, issuedAt) {
         fallbackCode: "none",
       };
     });
-  return encodeMaintenanceShadowValues({
+  const bytes = encodeMaintenanceShadowValues({
     contractVersion: MAINTENANCE_SHADOW_VALUES_VERSION,
     family,
     registrationSha256: registration.registrationSha256,
     candidateSha256: registration.candidateSha256,
+    sourceSha256: registration.sourceSha256,
     dueKey,
     issuedAt,
-    sourceReceiptSha256: sha256(`${family}-source-receipt`),
-    inputSha256: sha256(`${family}-input`),
+    sourceReceiptSha256: sourceIdentity.sourceReceiptSha256,
+    inputSha256: sourceIdentity.inputSha256,
     rowCount: rows.length,
     rows,
-  });
+  }, sourceBytes);
+  return { bytes, sourceBytes };
 }
 
 // append exact staged bytes and prove their database admission identity
@@ -123,11 +170,14 @@ async function appendStagedBody(
   appendPrediction,
   family,
   registration,
-  bytes,
+  staged,
 ) {
-  const prediction = createMaintenanceShadowPredictionMetadata(bytes);
+  const prediction = {
+    ...createMaintenanceShadowPredictionMetadata(staged.bytes, staged.sourceBytes),
+    stageReceiptSha256: sha256(Buffer.concat([staged.sourceBytes, staged.bytes])),
+  };
   assert.equal(prediction.rowCount, MAINTENANCE_SHADOW_LIMITS[family].rows);
-  assert.equal(prediction.predictionBodySha256, sha256(bytes));
+  assert.equal(prediction.predictionBodySha256, sha256(staged.bytes));
   const receipt = await appendPrediction(appendQueryable, prediction);
   assert.equal(receipt.predictionSha256, prediction.predictionSha256);
   assert.equal(await isAdjustmentShadowBodyAdmitted(
@@ -266,6 +316,7 @@ test("adjustment maintenance repositories preserve the PostgreSQL role boundary"
       candidateSha256: "7".repeat(64),
       family: "rain",
       registrationSha256: "1".repeat(64),
+      sourceSha256: "7".repeat(64),
     };
     await assert.rejects(
       registerRainAdjustmentShadow(api, rainRegistration),
@@ -320,7 +371,7 @@ test("adjustment maintenance repositories preserve the PostgreSQL role boundary"
         ENABLE TRIGGER adjustment_shadow_registrations_v2_guard_insert`);
     }
     const rainBytes = stageShadowBody("rain", rainRegistration, dueKey, issuedAt);
-    const rainRows = JSON.parse(rainBytes).rows;
+    const rainRows = JSON.parse(rainBytes.bytes).rows;
     assert.deepEqual(
       Object.keys(rainRows[0]).filter((key) => key.endsWith("Probability64")),
       ["occurrenceProbability64", "atLeast1_0Probability64", "atLeast2_5Probability64"],
@@ -338,13 +389,19 @@ test("adjustment maintenance repositories preserve the PostgreSQL role boundary"
     const stored = (await owner.query(`
       SELECT to_char(committed_at AT TIME ZONE 'UTC',
         'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS committed_at,
-        committed_at < min_valid_at AS before_valid
+        committed_at < min_valid_at AS before_valid,
+        to_char(scored_min_valid_at AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS scored_min_valid_at,
+        to_char(scored_max_valid_at AT TIME ZONE 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS scored_max_valid_at
       FROM adjustment_shadow_predictions_v2
       WHERE prediction_sha256 = $1
     `, [prediction.predictionSha256])).rows[0];
     assert.deepEqual(stored, {
       before_valid: true,
       committed_at: appended.committedAt,
+      scored_max_valid_at: new Date(clocks.interval_start.getTime() + 5 * HOUR_MS).toISOString(),
+      scored_min_valid_at: clocks.interval_start.toISOString(),
     });
     const availability = await readTrainingAdjustmentConfirmationAvailability(
       exporter,

@@ -3,17 +3,128 @@
 set -euo pipefail
 
 readonly ADJUSTMENT_RUNNER_NODE="${HOME}/n/bin/node"
-readonly ADJUSTMENT_RUNNER_INSTALL_ROOT="${HOME}/.local/lib/weather-adjustment-maintenance"
-readonly ADJUSTMENT_RUNNER_UNIT_ROOT="${HOME}/.config/systemd/user"
-readonly ADJUSTMENT_RUNNER_SSH_CONFIG="${HOME}/weather/deploy/config/ssh_config"
+readonly ADJUSTMENT_RUNNER_INSTALL_ROOT="${HOME}/.weather/adjustment-maintenance/runner"
+readonly ADJUSTMENT_RUNNER_UNIT_ROOT="/etc/systemd/system"
+readonly ADJUSTMENT_RUNNER_USER="ubuntu"
+readonly ADJUSTMENT_RUNNER_UID="1000"
+readonly ADJUSTMENT_RUNNER_GID="1000"
+readonly ADJUSTMENT_RUNNER_RUNTIME_ROOT="/run/user/1000"
+readonly ADJUSTMENT_RUNNER_AGENT_SOCKET="/run/user/1000/openssh_agent"
+readonly -a ADJUSTMENT_RUNNER_UNIT_FILES=(
+  "scripts/systemd/system/weather-adjustment-archive.service"
+  "scripts/systemd/system/weather-adjustment-daily.service"
+  "scripts/systemd/system/weather-adjustment-daily.timer"
+  "scripts/systemd/system/weather-adjustment-monthly.service"
+  "scripts/systemd/system/weather-adjustment-monthly.timer"
+)
 readonly -a ADJUSTMENT_RUNNER_FILES=(
+  "deploy/config/ssh_config"
+  "deploy/scripts/adjustment-evaluation-package.mjs"
   "deploy/scripts/adjustment-evidence-store.mjs"
+  "deploy/scripts/forecast-adjustment-scorecard-contract.mjs"
+  "apps/worker/package.json"
+  "packages/domain/package.json"
+  "packages/forecast-adjustment/package.json"
+  "scripts/await-check.mjs"
   "scripts/research/adjustment_archive_job.mjs"
+  "scripts/research/adjustment_capture_readiness.mjs"
+  "scripts/research/adjustment_confirmation_values.mjs"
+  "scripts/research/adjustment_rain_confirmation_values.mjs"
   "scripts/research/adjustment_cycle_pages.mjs"
+  "scripts/research/adjustment_fit_inputs.mjs"
+  "scripts/research/adjustment_fit_sandbox.mjs"
+  "scripts/research/adjustment_historical_archive.mjs"
+  "scripts/research/adjustment_historical_fit_assembler.mjs"
+  "scripts/research/adjustment_monthly_projection.mjs"
+  "scripts/research/adjustment_daily_evaluation.mjs"
+  "scripts/research/adjustment_maintenance_capture_job.mjs"
+  "scripts/research/adjustment_maintenance_runtime_adapter.mjs"
+  "scripts/research/adjustment_maintenance_runtime_manifest.mjs"
+  "scripts/research/adjustment_maintenance_controller.mjs"
   "scripts/research/adjustment_maintenance_state.mjs"
+  "scripts/research/adjustment_model_release.mjs"
   "scripts/research/adjustment_plaintext_archive.mjs"
   "scripts/research/adjustment_private_directory.mjs"
-  "scripts/systemd/user/weather-adjustment-archive.service"
+  "scripts/research/adjustment_rain_control_reference.mjs"
+  "scripts/research/adjustment_rain_monthly_projection.mjs"
+  "scripts/research/adjustment_rain_model_package.mjs"
+  "scripts/research/adjustment_revision_custody_pack.mjs"
+  "scripts/research/adjustment_revision_cold_drain.mjs"
+  "scripts/research/adjustment_rolling_schedule.mjs"
+  "scripts/research/build_moisture_targets.py"
+  "scripts/research/build_rain_sub24.py"
+  "scripts/research/export_moisture_history.py"
+  "scripts/research/export_rain_wind_runtime.py"
+  "scripts/research/rain_context.py"
+  "scripts/research/rain_context_features.py"
+  "scripts/research/rain_event_guard.py"
+  "scripts/research/rain_hurdle.py"
+  "scripts/research/rain_hurdle_calibration.py"
+  "scripts/research/rain_ordinal.py"
+  "scripts/research/rain_recency.py"
+  "scripts/research/rain_recency_calibration.py"
+  "scripts/research/rain_refresh.py"
+  "scripts/research/rain_residual.py"
+  "scripts/research/rain_search.py"
+  "scripts/research/rain_sub24.py"
+  "scripts/research/rain_trajectory.py"
+  "scripts/research/rain_trajectory_features.py"
+  "scripts/research/rain_wind.py"
+  "scripts/research/rain_wind_features.py"
+  "scripts/research/rain_wind_source.py"
+  "scripts/research/retain_moisture_research.py"
+  "scripts/research/run_rain_sub24.py"
+  "scripts/research/temperature_refresh.py"
+  "scripts/research/temperature_seasonal_ridge.py"
+  "scripts/research/temperature_shortlead_models.py"
+  "scripts/research/adjustment-maintenance-runtime/forecast/package.json"
+  "scripts/research/adjustment-maintenance-runtime/forecast/algorithm-v1.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/apply.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/bootstrap-v1.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/calendar.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/candidate.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/evaluate.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/evidence.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/holdout-ledger.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/index.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-capture-epoch.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-policy.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-runtime-package.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-revision-projection.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-shadow-catalog.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-shadow-comparator.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/maintenance-shadow-values.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/performance-scorecard.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/rain-hurdle-wind-artifact.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/rain-hurdle-wind.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/rain-maintenance-controls.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/rain-fixed-gauge-target.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/rain-runtime-registry.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/runtime-bundle.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/runtime-loader.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-canary.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-analog-research.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-analog-shrinkage.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-analog-stress-validation.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-analog-validation.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-causal-guard.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-frozen-replay.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-lead-research.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-live-replay-events.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-mos-runtime.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-nowcast-research.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/temperature-weather-research.js"
+  "scripts/research/adjustment-maintenance-runtime/forecast/wind-canary.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/package.json"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/forecast-adjustment.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/forecast-anchor-record.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/index.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/ingestion.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/provenance.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/rain-collection.js"
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/weather-record.js"
+  "scripts/research/adjustment-maintenance-runtime/worker/forecast-adjustment-wind-refresh-cli.js"
+  "${ADJUSTMENT_RUNNER_UNIT_FILES[@]}"
 )
 
 # print one reviewed source manifest
@@ -106,27 +217,77 @@ adjustment_require_controlled_directory() {
   fi
 }
 
-# require every production ancestor below home to reject broad parent drift
-require_install_ancestors() {
-  local target
-  # validate both the release parent and user-unit root chains
-  for target in "$1" "$2"; do
-    # prohibit targets outside the fixed current-user home
-    if [[ "${target}" != "${HOME}"/* ]]; then
-      printf 'install ancestor is outside home: %s\n' "${target}" >&2
+# require every private runtime ancestor below home to reject broad parent drift
+require_private_install_ancestors() {
+  local target="$1"
+  # prohibit targets outside the fixed current-user home
+  if [[ "${target}" != "${HOME}"/* ]]; then
+    printf 'install ancestor is outside home: %s\n' "${target}" >&2
+    return 1
+  fi
+  adjustment_require_controlled_directory "${HOME}" "controlled"
+  local current="${HOME}"
+  local suffix="${target#"${HOME}"/}"
+  local segment
+  local -a segments=()
+  IFS='/' read -r -a segments <<<"${suffix}"
+  # inspect every literal ancestor without repairing existing permissions
+  for segment in "${segments[@]}"; do
+    current="${current}/${segment}"
+    # create only the dedicated terminal parent after its ancestors pass
+    if [[ ! -e "${current}" && "${current}" == "${target}" ]]; then
+      mkdir -m 0700 -- "${current}"
+    fi
+    # require exact privacy for weather state and the dedicated parent
+    if [[ "${current}" == "${HOME}/.weather" || "${current}" == "${target}" ]]; then
+      adjustment_require_controlled_directory "${current}" "private"
+    else
+      adjustment_require_controlled_directory "${current}" "controlled"
+    fi
+  done
+}
+
+# require one root-owned public system-unit directory without repairing it
+adjustment_require_public_unit_root() {
+  local target="$1"
+  # require one absolute canonical production directory
+  if [[ "${target}" != /* || ! -d "${target}" || -L "${target}" ||
+    "$(readlink -f -- "${target}")" != "${target}" ]]; then
+    printf 'public unit directory is invalid: %s\n' "${target}" >&2
+    return 1
+  fi
+  local current=""
+  local segment
+  local -a segments=()
+  IFS='/' read -r -a segments <<<"${target#/}"
+  # bind every literal ancestor to root ownership and closed writes
+  for segment in "${segments[@]}"; do
+    current="${current}/${segment}"
+    local mode
+    # reject links, foreign ownership and external writes without mutation
+    if [[ ! -d "${current}" || -L "${current}" ||
+      "$(stat -c '%u:%g' -- "${current}")" != "0:0" ]]; then
+      printf 'public unit directory is invalid: %s\n' "${current}" >&2
       return 1
     fi
-    local current="${HOME}"
-    local suffix="${target#"${HOME}"/}"
-    local segment
-    local -a segments=()
-    IFS='/' read -r -a segments <<<"${suffix}"
-    # inspect every literal ancestor without repairing permissions
-    for segment in "${segments[@]}"; do
-      current="${current}/${segment}"
-      adjustment_require_controlled_directory "${current}" "controlled"
-    done
+    mode="$(stat -c '%a' -- "${current}")"
+    # reject group or other write authority
+    if (( (8#${mode} & 8#022) != 0 )); then
+      printf 'public unit directory is externally writable: %s\n' "${current}" >&2
+      return 1
+    fi
   done
+}
+
+# require one immutable root-owned public system unit
+adjustment_require_public_unit_file() {
+  local path="$1"
+  # reject links, foreign ownership, broad modes and path substitution
+  if [[ ! -f "${path}" || -L "${path}" || "$(readlink -f -- "${path}")" != "${path}" ||
+    "$(stat -c '%u:%g:%a:%h' -- "${path}")" != "0:0:644:1" ]]; then
+    printf 'public unit file is invalid: %s\n' "${path}" >&2
+    return 1
+  fi
 }
 
 # expose one no-op copy verification fault hook
@@ -139,35 +300,133 @@ runner_before_unit_install() {
   :
 }
 
-# atomically install the unit from one frozen release
+# install one root-owned public file through the fixed privilege boundary
+adjustment_public_install() {
+  /usr/bin/sudo -- /usr/bin/install -o root -g root -m 0644 -- "$1" "$2"
+}
+
+# publish one root-owned public file through the fixed privilege boundary
+adjustment_public_move() {
+  /usr/bin/sudo -- /usr/bin/mv -Tf -- "$1" "$2"
+}
+
+# remove one named public transaction file through the fixed privilege boundary
+adjustment_public_remove() {
+  /usr/bin/sudo -- /usr/bin/rm -f -- "$1"
+}
+
+# atomically install the public unit from one frozen release
 install_runner_unit() {
   local source="$1"
   local destination="$2"
   local temporary="${destination}.incoming-$$"
   runner_before_unit_install "${source}" "${destination}" || return $?
-  install -m 0600 -- "${source}" "${temporary}" || return $?
-  mv -Tf -- "${temporary}" "${destination}" || return $?
+  adjustment_public_install "${source}" "${temporary}" || return $?
+  adjustment_public_move "${temporary}" "${destination}" || return $?
+  adjustment_require_public_unit_file "${destination}"
 }
 
-# require the pinned runtime and closed job readiness
+# restore one public unit without invoking the installation fault hook
+restore_runner_unit() {
+  local source="$1"
+  local destination="$2"
+  local temporary="${destination}.incoming-$$"
+  adjustment_public_install "${source}" "${temporary}" || return $?
+  adjustment_public_move "${temporary}" "${destination}" || return $?
+  adjustment_require_public_unit_file "${destination}"
+}
+
+# install every reviewed public unit from one frozen release
+install_runner_units() {
+  local release_root="$1"
+  local unit_root="$2"
+  local relative
+  # publish the closed unit set before one manager reload
+  for relative in "${ADJUSTMENT_RUNNER_UNIT_FILES[@]}"; do
+    install_runner_unit \
+      "${release_root}/${relative}" "${unit_root}/$(basename -- "${relative}")"
+  done
+}
+
+# require every reviewed public unit to be loaded from its root-owned fragment
+require_loaded_runner_units() {
+  local unit_root="$1"
+  local relative
+  # bind the closed unit set after one manager reload
+  for relative in "${ADJUSTMENT_RUNNER_UNIT_FILES[@]}"; do
+    require_loaded_public_unit "${unit_root}/$(basename -- "${relative}")"
+  done
+}
+
+# require the fixed unprivileged runtime identity and active user manager
+require_user_manager_readiness() {
+  # bind the fixed unit identity to the existing local account
+  if [[ "$(id -u "${ADJUSTMENT_RUNNER_USER}")" != "${ADJUSTMENT_RUNNER_UID}" ||
+    "$(id -g "${ADJUSTMENT_RUNNER_USER}")" != "${ADJUSTMENT_RUNNER_GID}" ||
+    "$(id -u)" != "${ADJUSTMENT_RUNNER_UID}" || "${HOME}" != "/home/ubuntu" ]]; then
+    printf '%s\n' "adjustment runner identity is unproven" >&2
+    return 1
+  fi
+  # require one literal owner-private runtime directory and owner agent socket
+  if [[ ! -d "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}" ||
+    -L "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}" ||
+    "$(readlink -f -- "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}")" != \
+      "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}" ||
+    "$(stat -c '%u:%g:%a' -- "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}")" != \
+      "${ADJUSTMENT_RUNNER_UID}:${ADJUSTMENT_RUNNER_GID}:700" ||
+    ! -S "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}/bus" ||
+    "$(stat -c '%u:%g' -- "${ADJUSTMENT_RUNNER_RUNTIME_ROOT}/bus")" != \
+      "${ADJUSTMENT_RUNNER_UID}:${ADJUSTMENT_RUNNER_GID}" ||
+    ! -S "${ADJUSTMENT_RUNNER_AGENT_SOCKET}" ||
+    "$(stat -c '%u:%g' -- "${ADJUSTMENT_RUNNER_AGENT_SOCKET}")" != \
+      "${ADJUSTMENT_RUNNER_UID}:${ADJUSTMENT_RUNNER_GID}" ]]; then
+    printf '%s\n' "adjustment user runtime is unproven" >&2
+    return 1
+  fi
+  # require both managers and the user bus to be active before installation
+  if ! /usr/bin/systemctl is-active --quiet "user@${ADJUSTMENT_RUNNER_UID}.service" ||
+    ! XDG_RUNTIME_DIR="${ADJUSTMENT_RUNNER_RUNTIME_ROOT}" \
+      /usr/bin/systemctl --user is-active --quiet dbus.socket; then
+    printf '%s\n' "adjustment user manager is unavailable" >&2
+    return 1
+  fi
+}
+
+# require the pinned runtime and installed capture readiness
 require_runtime_readiness() {
-  local source_root="$1"
+  local release_root="$1"
+  local ssh_config="${release_root}/deploy/config/ssh_config"
   # require exact local executables and fixed ssh configuration
   if [[ ! -x "${ADJUSTMENT_RUNNER_NODE}" ||
     "$("${ADJUSTMENT_RUNNER_NODE}" --version)" != "v24.16.0" ||
     ! -x /usr/bin/ssh || ! -x /usr/bin/flock ||
-    ! -f "${ADJUSTMENT_RUNNER_SSH_CONFIG}" || -L "${ADJUSTMENT_RUNNER_SSH_CONFIG}" ]]; then
+    ! -f "${ssh_config}" || -L "${ssh_config}" ]]; then
     printf '%s\n' "adjustment archive runtime readiness is unproven" >&2
     return 1
   fi
-  # let the runner prove physical, count and remote readiness without initialization
+  require_user_manager_readiness
+  # prove the installed closure and every read-only capture authority
   "${ADJUSTMENT_RUNNER_NODE}" \
-    "${source_root}/scripts/research/adjustment_archive_job.mjs" --readiness >/dev/null
+    "${release_root}/scripts/research/adjustment_maintenance_capture_job.mjs" \
+      --readiness >/dev/null
 }
 
-# reload only the current user's unit definitions
-reload_user_systemd() {
-  /usr/bin/systemctl --user daemon-reload
+# reload only the root-owned system unit definitions
+reload_systemd() {
+  /usr/bin/sudo -- /usr/bin/systemctl daemon-reload
+}
+
+# require the system manager to load the root-owned public fragment
+require_loaded_public_unit() {
+  local unit_file="$1"
+  local fragment
+  fragment="$(/usr/bin/systemctl show \
+    --property=FragmentPath --value "$(basename -- "${unit_file}")")"
+  # reject missing, shadowed or path-normalized manager state
+  if [[ "${fragment}" != "${unit_file}" ]]; then
+    printf 'loaded public unit differs: %s\n' "${fragment}" >&2
+    return 1
+  fi
 }
 
 # install one immutable disabled runner release
@@ -191,12 +450,10 @@ install_adjustment_maintenance_runner() {
     printf '%s\n' "source manifest differs" >&2
     return 1
   fi
-  require_runtime_readiness "${source_root}"
-
   local releases_root="${install_root}/releases"
   local release_root="${releases_root}/${source_commit}"
   local incoming_root="${releases_root}/.incoming-${source_commit}-$$"
-  local unit_file="${unit_root}/weather-adjustment-archive.service"
+  local primary_unit_file="${unit_root}/weather-adjustment-archive.service"
   local current_link="${install_root}/current"
   local current_temporary="${install_root}/.current-$$"
   local transaction_root="${install_root}/.transaction-$$"
@@ -204,9 +461,10 @@ install_adjustment_maintenance_runner() {
   install_parent="$(dirname -- "${install_root}")"
 
   umask 0077
-  require_install_ancestors "${install_parent}" "${unit_root}"
+  require_private_install_ancestors "${install_parent}"
+  adjustment_require_public_unit_root "${unit_root}"
+  local relative
   adjustment_require_controlled_directory "${install_parent}" "controlled"
-  adjustment_require_controlled_directory "${unit_root}" "controlled"
   # create only a missing dedicated root under its already proven parent
   if [[ ! -e "${install_root}" ]]; then
     mkdir -m 0700 -- "${install_root}"
@@ -227,7 +485,6 @@ install_adjustment_maintenance_runner() {
   # publish only when the immutable release is absent
   if [[ ! -e "${release_root}" && ! -L "${release_root}" ]]; then
     mkdir -m 0700 -- "${incoming_root}"
-    local relative
     # copy every verified member into a regular-file-only layout
     for relative in "${ADJUSTMENT_RUNNER_FILES[@]}"; do
       mkdir -p -- "${incoming_root}/$(dirname -- "${relative}")"
@@ -260,6 +517,17 @@ install_adjustment_maintenance_runner() {
     fi
   fi
 
+  # run readiness only from the frozen installed release before public mutation
+  if ! require_runtime_readiness "${release_root}"; then
+    printf '%s\n' "adjustment capture readiness is unproven" >&2
+    # remove only the unpublished release created by this transaction
+    if [[ "${release_created}" == "true" ]]; then
+      chmod -R u+w -- "${release_root}"
+      rm -rf -- "${release_root}"
+    fi
+    return 1
+  fi
+
   mkdir -m 0700 -- "${transaction_root}"
   local previous_current="absent"
   # retain one validated prior release pointer
@@ -276,35 +544,41 @@ install_adjustment_maintenance_runner() {
       return 1
     fi
   fi
-  local previous_unit="absent"
-  # retain one private regular unit for rollback
-  if [[ -e "${unit_file}" || -L "${unit_file}" ]]; then
-    if [[ ! -f "${unit_file}" || -L "${unit_file}" ||
-      "$(stat -c '%u:%a' -- "${unit_file}")" != "$(id -u):600" ]]; then
-      printf '%s\n' "existing archive unit is invalid" >&2
-      rm -rf -- "${transaction_root}"
-      # remove only the unpublished release created by this transaction
-      if [[ "${release_created}" == "true" ]]; then
-        chmod -R u+w -- "${release_root}"
-        rm -rf -- "${release_root}"
+  local -A previous_units=()
+  local unit_file
+  local unit_name
+  # retain every root-owned public unit for rollback
+  for relative in "${ADJUSTMENT_RUNNER_UNIT_FILES[@]}"; do
+    unit_name="$(basename -- "${relative}")"
+    unit_file="${unit_root}/${unit_name}"
+    previous_units["${unit_name}"]="absent"
+    # snapshot only a valid existing public unit
+    if [[ -e "${unit_file}" || -L "${unit_file}" ]]; then
+      if ! adjustment_require_public_unit_file "${unit_file}"; then
+        printf 'existing runner unit is invalid: %s\n' "${unit_name}" >&2
+        rm -rf -- "${transaction_root}"
+        # remove only the unpublished release created by this transaction
+        if [[ "${release_created}" == "true" ]]; then
+          chmod -R u+w -- "${release_root}"
+          rm -rf -- "${release_root}"
+        fi
+        return 1
       fi
-      return 1
+      cp -- "${unit_file}" "${transaction_root}/previous-${unit_name}"
+      chmod 0600 -- "${transaction_root}/previous-${unit_name}"
+      previous_units["${unit_name}"]="present"
     fi
-    cp -- "${unit_file}" "${transaction_root}/previous-unit"
-    chmod 0600 -- "${transaction_root}/previous-unit"
-    previous_unit="present"
-  fi
+  done
 
   local activation_status=0
   # activate the pointer and unit as one rollback-capable transaction
   if ln -s -- "releases/${source_commit}" "${current_temporary}" &&
     mv -Tf -- "${current_temporary}" "${current_link}" &&
-    install_runner_unit \
-      "${release_root}/scripts/systemd/user/weather-adjustment-archive.service" \
-      "${unit_file}" &&
-    reload_user_systemd \
+    install_runner_units "${release_root}" "${unit_root}" &&
+    reload_systemd \
       "${source_root}" "${expected_manifest_sha256}" "${install_root}" \
-      "${release_root}" "${unit_file}" "${unit_root}"; then
+      "${release_root}" "${primary_unit_file}" "${unit_root}" &&
+    require_loaded_runner_units "${unit_root}"; then
     activation_status=0
   else
     activation_status=$?
@@ -312,21 +586,32 @@ install_adjustment_maintenance_runner() {
 
   # restore both activation files after any install or reload failure
   if [[ "${activation_status}" -ne 0 ]]; then
-    rm -f -- "${current_temporary}" "${unit_file}.incoming-$$"
+    rm -f -- "${current_temporary}"
+    # clear only this transaction's named public temporary files
+    for relative in "${ADJUSTMENT_RUNNER_UNIT_FILES[@]}"; do
+      adjustment_public_remove \
+        "${unit_root}/$(basename -- "${relative}").incoming-$$" >/dev/null 2>&1 || true
+    done
     if [[ "${previous_current}" == "absent" ]]; then
       rm -f -- "${current_link}"
     else
       ln -s -- "${previous_current}" "${current_temporary}"
       mv -Tf -- "${current_temporary}" "${current_link}"
     fi
-    if [[ "${previous_unit}" == "absent" ]]; then
-      rm -f -- "${unit_file}"
-    else
-      install -m 0600 -- "${transaction_root}/previous-unit" "${unit_file}"
-    fi
-    reload_user_systemd \
+    # restore the exact prior state of every public unit
+    for relative in "${ADJUSTMENT_RUNNER_UNIT_FILES[@]}"; do
+      unit_name="$(basename -- "${relative}")"
+      unit_file="${unit_root}/${unit_name}"
+      if [[ "${previous_units["${unit_name}"]}" == "absent" ]]; then
+        adjustment_public_remove "${unit_file}"
+      else
+        restore_runner_unit \
+          "${transaction_root}/previous-${unit_name}" "${unit_file}"
+      fi
+    done
+    reload_systemd \
       "${source_root}" "${expected_manifest_sha256}" "${install_root}" \
-      "${release_root}" "${unit_file}" "${unit_root}" >/dev/null 2>&1 || true
+      "${release_root}" "${primary_unit_file}" "${unit_root}" >/dev/null 2>&1 || true
     rm -rf -- "${transaction_root}"
     # remove only the release created and rolled back by this transaction
     if [[ "${release_created}" == "true" ]]; then

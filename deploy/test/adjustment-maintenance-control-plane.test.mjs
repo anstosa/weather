@@ -165,7 +165,13 @@ async function createFixture({ partial = false, actualCandidate = false } = {}) 
   // overlay either the actual partial worktree slice or all reviewed changes
   for (const relativePath of partial ? partialPaths : changedPaths) {
     if (partial || actualCandidate) {
-      await cp(join(repoRoot, relativePath), join(candidate, relativePath));
+      // keep the historical v13 candidate immutable after later control upgrades
+      if (actualCandidate) {
+        await writeFile(join(candidate, relativePath), execFileSync("git", ["show",
+          `56b327d9c750946f6f6963b6fe1fa5c9bba791ca:${relativePath}`], { cwd: repoRoot }));
+      } else {
+        await cp(join(repoRoot, relativePath), join(candidate, relativePath));
+      }
       const identity = identities.find((entry) => entry.relativePath === relativePath);
       await chmod(join(candidate, relativePath), identity.mode);
     } else {

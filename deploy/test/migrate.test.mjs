@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { migrateAndBootstrap } from "../scripts/migrate.mjs";
+import { migrateAndBootstrap, parseMigrationEntrypointArguments } from "../scripts/migrate.mjs";
+
+// the optional bridge cannot accept arbitrary flags or schema operands
+test("migration entrypoint accepts only the closed atomic maintenance flag", () => {
+  assert.deepEqual(parseMigrationEntrypointArguments([]), {});
+  assert.deepEqual(parseMigrationEntrypointArguments(["--atomic-maintenance-v14"]), {
+    atomicMaintenanceV14: true,
+  });
+  // refuse duplicates and unknown arguments before database initialization
+  for (const argumentsList of [["--atomic"], ["--atomic-maintenance-v14", "21"],
+    ["--atomic-maintenance-v14", "--atomic-maintenance-v14"]]) {
+    assert.throws(() => parseMigrationEntrypointArguments(argumentsList), /arguments are invalid/u);
+  }
+});
 
 // create ordered entrypoint doubles
 function createDependencies(events, records) {

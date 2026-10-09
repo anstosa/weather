@@ -95,7 +95,7 @@ const WINDOWS_POWERSHELL =
 const WINDOWS_WSL = "/mnt/c/Windows/System32/wsl.exe";
 const FIXED_WSL_DISTRIBUTION = "Ubuntu";
 const FIXED_WSL_HOME = "/home/ubuntu";
-const FIXED_SSH_CONFIG = join(homedir(), "weather", "deploy", "config", "ssh_config");
+const FIXED_SSH_CONFIG = resolve(import.meta.dirname, "../..", "deploy/config/ssh_config");
 const FIXED_REMOTE_HOST = "weather-pi";
 const FIXED_OPEN_CYCLE_PATH = join(
   ADJUSTMENT_DEFAULT_STATE_ROOT,
@@ -525,7 +525,24 @@ async function measureAdjustmentCapacityEvidence(spawnImpl) {
   };
 }
 
-// count immutable legacy allocations without following their links
+// bind one census path to its previously observed inode
+async function requireStableCensusPath(path, expected) {
+  let actual;
+  // convert path disappearance into one closed census failure
+  try {
+    actual = await lstat(path, { bigint: true });
+  } catch {
+    throw new Error("archive backing census is invalid");
+  }
+  // refuse replacement or filesystem drift between metadata observations
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino ||
+    actual.mode !== expected.mode) {
+    throw new Error("archive backing census is invalid");
+  }
+  return actual;
+}
+
+// count legacy allocation metadata without trusting or opening file contents
 export async function measureImmutableLegacyCensus(roots, expectedDevice) {
   // accept only one bounded absolute-root list
   if (!Array.isArray(roots) || roots.length === 0 || roots.length > 4 ||
@@ -542,7 +559,6 @@ export async function measureImmutableLegacyCensus(roots, expectedDevice) {
   if (device < 0n) {
     throw new TypeError("archive backing census device is invalid");
   }
-  const ownerUid = BigInt(process.getuid());
   const seen = new Set();
   let allocatedBytes = 0n;
   let entryCount = 0;
@@ -563,12 +579,16 @@ export async function measureImmutableLegacyCensus(roots, expectedDevice) {
     // walk without following links or crossing the expected filesystem
     while (pending.length > 0) {
       const current = pending.pop();
+      // rebind only paths that will be traversed after their first observation
+      if (current.details.isDirectory()) {
+        current.details = await requireStableCensusPath(current.path, current.details);
+      }
       entryCount += 1;
       const supportedType = current.details.isDirectory() || current.details.isFile() ||
         current.details.isSymbolicLink();
-      // stop an unexpectedly unbounded, foreign or active special census
+      // stop an unexpectedly unbounded, cross-device or active special census
       if (entryCount > MAXIMUM_CENSUS_ENTRIES || current.details.dev !== device ||
-        current.details.uid !== ownerUid || !supportedType) {
+        !supportedType) {
         throw new Error("archive backing census is invalid");
       }
       const identity = `${current.details.dev}:${current.details.ino}`;
@@ -580,11 +600,20 @@ export async function measureImmutableLegacyCensus(roots, expectedDevice) {
       // never traverse an immutable legacy symlink
       if (current.details.isDirectory()) {
         const directory = await opendir(current.path);
+        await requireStableCensusPath(current.path, current.details);
         // inspect every literal child through lstat only
         for await (const entry of directory) {
           const path = join(current.path, entry.name);
-          pending.push({ details: await lstat(path, { bigint: true }), path });
+          let childDetails;
+          // reject concurrent entry removal rather than undercounting it
+          try {
+            childDetails = await lstat(path, { bigint: true });
+          } catch {
+            throw new Error("archive backing census is invalid");
+          }
+          pending.push({ details: childDetails, path });
         }
+        await requireStableCensusPath(current.path, current.details);
       }
     }
   }
@@ -680,19 +709,10 @@ async function measureBackingCCapacity(spawnImpl, homeDetails) {
 }
 
 // evaluate every local and remote gate without creating archive state
-export async function inspectAdjustmentArchiveJobReadiness() {
+async function inspectAdjustmentArchiveLocalReadinessEvidence() {
   const reasons = [];
   let capacityEvidence = null;
-  // retain every independent code/runtime blocker
-  if (process.version !== REQUIRED_NODE_VERSION) {
-    reasons.push("node_runtime_unready");
-  }
-  if (ADJUSTMENT_ARCHIVE_COUNT_CONTRACT_READY !== true) {
-    reasons.push("committed_graph_count_contract_pending");
-  }
-  if (ADJUSTMENT_ARCHIVE_REMOTE_GATE_READY !== true) {
-    reasons.push("remote_predecessor_activation_contract_pending");
-  }
+  let archive = null;
 
   try {
     capacityEvidence = await measureAdjustmentCapacityEvidence(spawn);
@@ -708,7 +728,7 @@ export async function inspectAdjustmentArchiveJobReadiness() {
   }
 
   try {
-    const archive = await inspectExistingArchiveEnvelope(capacityEvidence);
+    archive = await inspectExistingArchiveEnvelope(capacityEvidence);
     // preserve every literal archive and task count ceiling
     if (archive.allocatedBytes > ADJUSTMENT_ARCHIVE_MAXIMUM_BYTES ||
       archive.objectCount > ADJUSTMENT_MAXIMUM_COMMITTED_OBJECTS ||
@@ -726,6 +746,51 @@ export async function inspectAdjustmentArchiveJobReadiness() {
       reasons.push("archive_envelope_unavailable");
     }
   }
+
+  return { archive, capacityEvidence, reasons };
+}
+
+// evaluate every local physical and finite-count gate without mutation
+export async function inspectAdjustmentArchiveLocalReadiness() {
+  const reasons = [];
+  // retain every independent local code/runtime blocker
+  if (process.version !== REQUIRED_NODE_VERSION) {
+    reasons.push("node_runtime_unready");
+  }
+  if (ADJUSTMENT_ARCHIVE_COUNT_CONTRACT_READY !== true) {
+    reasons.push("committed_graph_count_contract_pending");
+  }
+  const evidence = await inspectAdjustmentArchiveLocalReadinessEvidence();
+  reasons.push(...evidence.reasons);
+  return {
+    contractVersion: "adjustment-archive-local-readiness/v1",
+    ready: reasons.length === 0,
+    reason: reasons[0] ?? "ready",
+    status: evidence.archive === null ? null : {
+      allocatedBytes: evidence.archive.allocatedBytes.toString(),
+      fileCount: evidence.archive.fileCount,
+      incomingCount: evidence.archive.incomingCount,
+      objectCount: evidence.archive.objectCount,
+      taskInodes: evidence.archive.taskInodes.toString(),
+    },
+  };
+}
+
+// evaluate every local and remote gate without creating archive state
+export async function inspectAdjustmentArchiveJobReadiness() {
+  const reasons = [];
+  // retain every independent code/runtime blocker
+  if (process.version !== REQUIRED_NODE_VERSION) {
+    reasons.push("node_runtime_unready");
+  }
+  if (ADJUSTMENT_ARCHIVE_COUNT_CONTRACT_READY !== true) {
+    reasons.push("committed_graph_count_contract_pending");
+  }
+  if (ADJUSTMENT_ARCHIVE_REMOTE_GATE_READY !== true) {
+    reasons.push("remote_predecessor_activation_contract_pending");
+  }
+  const evidence = await inspectAdjustmentArchiveLocalReadinessEvidence();
+  reasons.push(...evidence.reasons);
 
   // prove inherited agent and forced next only after reviewed remote gates exist
   if (reasons.length === 0) {

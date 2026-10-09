@@ -27,6 +27,17 @@ POLICY = {"contractVersion": "rain-maintenance-fit/v2", "grid": list(GRID),
           "developmentRows": 32896, "confirmationOpened": False}
 
 
+# preserve raw event calls after every selected projection
+def guard_projection(raw, projected):
+    np = importlib.import_module("numpy")
+    raw, projected = np.asarray(raw, dtype=float), np.asarray(projected, dtype=float)
+    # reject invalid numerical projections before applying safety
+    if raw.shape != projected.shape or not np.isfinite(raw).all() or not np.isfinite(projected).all() or (raw < 0).any() or (projected < 0).any():
+        raise ValueError("invalid rain grid guard predictions")
+    return np.where(raw >= 1, raw,
+                    np.where(raw >= .1, np.maximum(.1, projected), projected))
+
+
 # reject normalized instants before deriving causal receipt boundaries
 def instant(value):
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -82,7 +93,7 @@ def project_grid(raw, probabilities, amount, calibration, months):
         if name == GRID[6]:
             selected = raw >= 1
             predicted[selected] = .25 * raw[selected] + .75 * predicted[selected]
-        output[name] = (predicted, probability)
+        output[name] = (guard_projection(raw, predicted), probability)
     return output
 
 
@@ -124,13 +135,21 @@ def native_arrays(rows):
 
 
 # run the shared closed development evaluator, never minting a qualification
-def screen_grid(rows, projected):
-    bridge = """
+def screen_grid(rows, projected, population=None):
+    bridge_v2 = """
 import { readFileSync } from 'node:fs';
 import { createRainMaintenanceEvaluationRow, evaluateRainMaintenanceDevelopment }
   from './packages/forecast-adjustment/dist/maintenance-policy.js';
 const rows = JSON.parse(readFileSync(0, 'utf8')).map(createRainMaintenanceEvaluationRow);
 process.stdout.write(JSON.stringify(evaluateRainMaintenanceDevelopment(rows)));
+"""
+    bridge_v3 = """
+import { readFileSync } from 'node:fs';
+import { createRainMaintenanceEvaluationRow, evaluateRainMaintenanceDevelopmentV3 }
+  from './packages/forecast-adjustment/dist/maintenance-policy.js';
+const input = JSON.parse(readFileSync(0, 'utf8'));
+const rows = input.rows.map(createRainMaintenanceEvaluationRow);
+process.stdout.write(JSON.stringify(evaluateRainMaintenanceDevelopmentV3(rows, input.population)));
 """
     np = importlib.import_module("numpy")
     weights = importlib.import_module("run_rain_sub24").weights
@@ -148,11 +167,13 @@ process.stdout.write(JSON.stringify(evaluateRainMaintenanceDevelopment(rows)));
                           "firstEdgeCommittedAt": None,
                           "candidateProbability": dict(zip(("atLeast0_1", "atLeast1_0", "atLeast2_5"), map(float, probabilities[index]), strict=True))})
             inputs.append(value)
-        data = json.dumps(inputs, separators=(",", ":"), allow_nan=False).encode()
+        data = json.dumps(inputs if population is None else {"population": population, "rows": inputs},
+                          separators=(",", ":"), allow_nan=False).encode()
         # cap the native scorer pipe independently of the overall fitter input
         if len(data) > 64 * 1024 * 1024:
             raise ValueError("rain development scorer input exceeded")
-        result = subprocess.run(["node", "--input-type=module", "-e", bridge], input=data,
+        result = subprocess.run(["node", "--input-type=module", "-e",
+                                 bridge_v2 if population is None else bridge_v3], input=data,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
         report = json.loads(result.stdout)
         support = {}
@@ -177,13 +198,154 @@ process.stdout.write(JSON.stringify(evaluateRainMaintenanceDevelopment(rows)));
     return reports
 
 
+# hash one value with the shared sorted canonical json and lf representation
+def canonical_hash(value):
+    content = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+    return hashlib.sha256(content).hexdigest()
+
+
+# validate one complete annual value-blind source population
+def validate_development_population(population, rows):
+    fields = {"contractVersion", "cycleHours", "developmentEndAt", "developmentStartAt",
+              "eligibleRowCount", "excludedColdRowCount", "expectedRowCount",
+              "missingSourceRowCount", "missingTargetRowCount", "observedRowCount",
+              "operationalHorizonHours", "populationMemberRootSha256",
+              "populationReceiptRootSha256", "populationSha256", "sourceModelLeadHours",
+              "sourcePopulation"}
+    member_fields = {"issuedAt", "key", "modelLeadHours", "operationalHorizonHours",
+                     "phaseEligible", "sourceMemberSha256", "sourceReceiptSha256",
+                     "targetAvailable", "validAt"}
+    # reject missing, extra or incomplete proof fields before native allocation
+    if set(population) != fields or population["contractVersion"] != "rain-maintenance-development-population/v3":
+        raise ValueError("invalid rain development population")
+    start, end = instant(population["developmentStartAt"]), instant(population["developmentEndAt"])
+    expected_start = end.replace(year=end.year - 1)
+    model_leads = list(range(9, 32))
+    operational = list(range(1, 24))
+    # freeze the exact calendar year and source-to-operational lead offset
+    if start != expected_start or population["cycleHours"] != [0, 6, 12, 18] or population["sourceModelLeadHours"] != model_leads or population["operationalHorizonHours"] != operational or not isinstance(population["sourcePopulation"], list):
+        raise ValueError("rain development interval differs")
+    expected = {}
+    first_run_hour = math.floor((start.timestamp() / 3600 - 31) / 6) * 6
+    end_hour = int(end.timestamp() // 3600)
+    # include the issuance halo needed by target clocks at both boundaries
+    for run_hour in range(first_run_hour, end_hour - 9 + 1, 6):
+        run = dt.datetime.fromtimestamp(run_hour * 3600, dt.timezone.utc)
+        issued = run + dt.timedelta(hours=8)
+        # preserve source leads nine through thirty-one without resampling
+        for lead in model_leads:
+            valid = run + dt.timedelta(hours=lead)
+            # omit only target clocks outside the half-open annual interval
+            if valid < start or valid >= end:
+                continue
+            key = f"{run.isoformat(timespec='milliseconds').replace('+00:00', 'Z')}/{valid.isoformat(timespec='milliseconds').replace('+00:00', 'Z')}"
+            expected[key] = {"issuedAt": issued.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+                             "modelLeadHours": lead, "operationalHorizonHours": lead - 8,
+                             "validAt": valid.isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+    seen = set()
+    eligible = []
+    excluded = 0
+    # validate exact archive source identities and geometry in expected order
+    for member in population["sourcePopulation"]:
+        # prohibit caller-defined source metadata or duplicate keys
+        if set(member) != member_fields or member["key"] in seen or member["key"] not in expected:
+            raise ValueError("rain development source member differs")
+        geometry = expected[member["key"]]
+        # bind the source member to its original issued and target clocks
+        if any(member[field] != geometry[field] for field in geometry) or type(member["phaseEligible"]) is not bool or type(member["targetAvailable"]) is not bool or not all(isinstance(member[field], str) and len(member[field]) == 64 and all(character in "0123456789abcdef" for character in member[field]) for field in ("sourceMemberSha256", "sourceReceiptSha256")):
+            raise ValueError("rain development source member differs")
+        seen.add(member["key"])
+        # retain source-temperature eligibility without opening target values
+        if member["phaseEligible"]:
+            # every source-eligible development row requires its actual native target
+            if not member["targetAvailable"]:
+                raise ValueError("rain development target is unavailable")
+            eligible.append(member["key"])
+        else:
+            excluded += 1
+    counts = [population[name] for name in ("eligibleRowCount", "excludedColdRowCount",
+              "expectedRowCount", "missingSourceRowCount", "missingTargetRowCount", "observedRowCount")]
+    # require complete source custody and recomputed roots before fitting
+    if any(type(value) is not int or value < 0 for value in counts) or set(expected) != seen or population["expectedRowCount"] != len(expected) or population["observedRowCount"] != len(expected) or population["eligibleRowCount"] != len(eligible) or population["excludedColdRowCount"] != excluded or population["missingSourceRowCount"] != 0 or population["missingTargetRowCount"] != 0 or population["populationMemberRootSha256"] != canonical_hash(sorted(member["sourceMemberSha256"] for member in population["sourcePopulation"])) or population["populationReceiptRootSha256"] != canonical_hash(sorted({member["sourceReceiptSha256"] for member in population["sourcePopulation"]})) or population["populationSha256"] != canonical_hash(population["sourcePopulation"]):
+        raise ValueError("rain development population proof differs")
+    # match the exact source-eligible population to actual target-bearing rows
+    if sorted(eligible) != sorted(row["key"] for row in rows):
+        raise ValueError("rain development evaluation population differs")
+
+
+# derive original earlier-only raw-control scales for one historical month
+def historical_control_scales(data, month):
+    np = importlib.import_module("numpy")
+    search = importlib.import_module("rain_search")
+    residual = importlib.import_module("rain_residual")
+    recent = importlib.import_module("rain_recency_calibration")
+    legacy = importlib.import_module("run_rain_sub24")
+    fit, calibration, _, bounds = maintenance_month_masks(data, month)
+    legacy_fit, legacy_calibration, _, _ = legacy.month_masks(data, month)
+    actual, hours, raw = data["actual"][calibration], data["hour"][calibration], data["raw"][calibration]
+    counts = {"training": residual.support(data["actual"][fit], data["hour"][fit]),
+              "calibration": residual.support(actual, hours)}
+    common = residual.supported(counts["training"], search.POLICY["trainingSupport"]) and residual.supported(counts["calibration"], search.POLICY["calibrationSupport"]) and int(legacy_fit.sum()) >= 1000 and int((data["actual"][legacy_fit] >= .1).sum()) >= 100 and int(legacy_calibration.sum()) >= 200
+    # an unsupported historical control month cannot be omitted or raw-filled
+    if not common:
+        return None
+    same_window = search.calibrate(actual, hours, lambda scale: np.clip(raw * scale, 0, 30))["scale"]
+    mass = recent.recent_weights(hours, bounds["calibrationMaximumValidHourExclusive"])
+    effective = recent.effective_support(actual, hours, mass)
+    recent_supported = effective["effectiveDates"] >= 30 and effective["effectiveWetDates"] >= 3
+    recent_scale = recent.calibrate(actual, hours, lambda scale: np.clip(raw * scale, 0, 30), mass)["scale"] if recent_supported else same_window
+    legacy_scale = legacy.volume_scale(data["actual"][legacy_calibration], data["raw"][legacy_calibration], data["hour"][legacy_calibration])
+    return {"legacy": legacy_scale, "recent": recent_scale, "sameWindow": same_window}
+
+
+# build one historical-only shared policy row from earlier-cutoff controls
+def historical_evaluation_row(row, incumbent, probability, scales):
+    raw = row["raw"]
+    native_probability = {"atLeast0_1": float(raw >= .1), "atLeast1_0": float(raw >= 1),
+                          "atLeast2_5": float(raw >= 2.5)}
+    incumbent_probability = dict(zip(("atLeast0_1", "atLeast1_0", "atLeast2_5"),
+                                     map(float, probability), strict=True))
+    return {"actualBestMatchPrediction": raw, "applied": True, "candidatePrediction": incumbent,
+            "candidateProbability": incumbent_probability, "evidenceClass": "historical_development",
+            "farmTarget": None, "firstEdgeCommittedAt": None,
+            "horizonHours": row["operationalHorizonHours"], "incumbentPrediction": incumbent,
+            "incumbentProbability": incumbent_probability, "key": row["key"],
+            "localDate": instant(row["validAt"]).astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat(),
+            "nativeSourcePrediction": raw, "nativeSourceProbability": native_probability,
+            "nearestThree": None, "persistencePrediction": row["persistencePrediction"] if row["persistencePrediction"] is not None else raw,
+            "provenanceComplete": True, "providerFamily": None,
+            "rawTargetHourTemperatureC": row["rawTargetHourTemperatureC"],
+            "recentVolumeScalePrediction": min(30, raw * scales["recent"]),
+            "runKey": row["runInitializedAt"], "sameWindowVolumeScalePrediction": min(30, raw * scales["sameWindow"]),
+            "sourceReceiptAt": None, "sourceRowSha256": row["sourceRowSha256"], "stationKey": None,
+            "target": row["actual"], "targetRowSha256": row["targetRowSha256"],
+            "unchangedOrdinalPrediction": incumbent, "validAt": row["validAt"],
+            "volumeScalePrediction": raw * scales["legacy"]}
+
+
+# validate one future-only joined row's operational and archive identities
+def validate_v3_row(row):
+    persistence = row.get("persistencePrediction")
+    hashes = (row.get("sourceRowSha256"), row.get("targetRowSha256"))
+    lead = row.get("modelLeadHours")
+    # require the original source lead offset and genuine member hashes
+    if lead not in range(9, 32) or row.get("operationalHorizonHours") != lead - 8 or int((instant(row["validAt"]) - instant(row["runInitializedAt"])).total_seconds() // 3600) != lead or any(not isinstance(value, str) or len(value) != 64 or any(character not in "0123456789abcdef" for character in value) for value in hashes) or (persistence is not None and (not isinstance(persistence, (int, float)) or isinstance(persistence, bool) or not math.isfinite(persistence) or persistence < 0)):
+        raise ValueError("rain future-only row provenance differs")
+
+
 # execute the actual current four-head fitter and a finite earlier-only grid
 def fit_monthly_rain(payload, output_root):
     wind = importlib.import_module("rain_wind")
     names = importlib.import_module("rain_wind_features").FEATURE_NAMES
     np = importlib.import_module("numpy")
-    # prevent caller-defined families, grids and predictor order
-    if set(payload) != {"contractVersion", "month", "featureNames", "trainingRows", "developmentRows"} or payload["contractVersion"] != "rain-maintenance-fit-input/v2" or payload["featureNames"] != list(names):
+    version = payload.get("contractVersion")
+    v3 = version == "rain-maintenance-fit-input/v3"
+    expected_fields = {"contractVersion", "month", "featureNames", "trainingRows", "developmentRows"}
+    # admit only the additive annual proof on the future-only v3 path
+    if v3:
+        expected_fields.add("developmentPopulation")
+    # prevent caller-defined families, grids and predictor order on either disjoint version
+    if set(payload) != expected_fields or version not in ("rain-maintenance-fit-input/v2", "rain-maintenance-fit-input/v3") or payload["featureNames"] != list(names):
         raise ValueError("invalid rain fit-only input")
     training, development = payload["trainingRows"], payload["developmentRows"]
     # reject unbounded population sizes before allocating native matrices
@@ -191,6 +353,12 @@ def fit_monthly_rain(payload, output_root):
         raise ValueError("rain fit row ceiling exceeded")
     validate_rows(training, payload["month"])
     validate_rows(development, payload["month"])
+    # bind the full annual source proof before reading any development labels
+    if v3:
+        validate_development_population(payload["developmentPopulation"], development)
+        # verify every joined training and development identity before model allocation
+        for row in (*training, *development):
+            validate_v3_row(row)
     combined = {row["key"]: row for row in training}
     # shared historical keys must retain identical immutable numerical inputs
     for row in development:
@@ -203,14 +371,17 @@ def fit_monthly_rain(payload, output_root):
     data, x = native_arrays(rows)
     masks = maintenance_month_masks(data, payload["month"])
     _, _, final_state = wind.fit_month(output_root, data, x, payload["month"], np.empty(0), masks=masks)
-    report = {**POLICY, "dueMonth": payload["month"], "state": "no_candidate", "selectedId": None,
+    policy = {**POLICY, "contractVersion": "rain-maintenance-fit/v3",
+              "developmentPopulationSha256": payload["developmentPopulation"]["populationSha256"],
+              "developmentRows": len(development)} if v3 else POLICY
+    report = {**policy, "dueMonth": payload["month"], "state": "no_candidate", "selectedId": None,
               "fitState": final_state, "reason": "insufficient_development", "gridReports": {}, "artifact": None}
     # all four final heads must be real supported fits, not control replay
     if not final_state["supported"] or final_state["model"] is None or any(value["reason"] != "fitted" for value in final_state["model"]["heads"].values()):
         report["reason"] = "insufficient_native_fit_support"
         return report
-    # a partial population cannot replace the frozen development matrix
-    if len(development) != 32896 or any("evaluationRow" not in row or "gaugeCount" not in row for row in development):
+    # a partial population cannot replace either disjoint development contract
+    if (not v3 and (len(development) != 32896 or any("evaluationRow" not in row or "gaugeCount" not in row for row in development))) or (v3 and (not development or any("gaugeCount" not in row for row in development))):
         return report
     by_key = {row["key"]: index for index, row in enumerate(rows)}
     projected = {name: (np.full(len(development), np.nan), np.full((len(development), 3), np.nan)) for name in GRID}
@@ -220,8 +391,9 @@ def fit_monthly_rain(payload, output_root):
         mask = maintenance_month_masks(data, month)
         control = data["raw"][mask[2]].copy()
         indices, _, state = wind.fit_month(output_root, data, x, month, control, masks=mask)
+        scales = historical_control_scales(data, month) if v3 else None
         # unsupported historical months cannot be omitted from the population
-        if not state["supported"] or any(value["reason"] != "fitted" for value in state["model"]["heads"].values()):
+        if not state["supported"] or any(value["reason"] != "fitted" for value in state["model"]["heads"].values()) or (v3 and scales is None):
             report["reason"] = "insufficient_development_month"
             return report
         import xgboost as xgb
@@ -240,6 +412,10 @@ def fit_monthly_rain(payload, output_root):
             # include only the month's genuine decision population
             if month_labels[position] == month and index in lookup:
                 local_index = lookup[index]
+                # reconstruct original earlier-cutoff controls without a prior publication dependency
+                if v3:
+                    row["evaluationRow"] = historical_evaluation_row(row, float(grid[GRID[0]][0][local_index]),
+                                                                      grid[GRID[0]][1][local_index], scales)
                 # keep every arm on exactly the same row
                 for name in GRID:
                     projected[name][0][position] = grid[name][0][local_index]
@@ -248,7 +424,8 @@ def fit_monthly_rain(payload, output_root):
     if any(not np.isfinite(value).all() for pair in projected.values() for value in pair):
         report["reason"] = "development_alignment_gap"
         return report
-    reports = screen_grid(development, projected)
+    reports = screen_grid(development, projected,
+                          payload["developmentPopulation"] if v3 else None)
     eligible = [name for name in GRID if reports[name]["eligible"]]
     selected = min(eligible, key=lambda name: (reports[name]["mae"], name)) if eligible else None
     report.update({"gridReports": reports, "selectedId": selected, "reason": "no_development_gate_passer"})
@@ -267,6 +444,118 @@ def fit_monthly_rain(payload, output_root):
     return report
 
 
+# normalize signed zero only in the public json numerical representation
+def canonical_control_numbers(value):
+    # json has one zero representation and both signs compare identically in tree traversal
+    if isinstance(value, float) and value == 0:
+        return 0
+    # preserve ordered numerical tree arrays
+    if isinstance(value, list):
+        return [canonical_control_numbers(item) for item in value]
+    # preserve closed artifact fields without adding metadata
+    if isinstance(value, dict):
+        return {key: canonical_control_numbers(item) for key, item in value.items()}
+    return value
+
+
+# fit a pre-month reference without development selection or confirmation access
+def fit_rain_control_reference(payload, output_root, clock=None):
+    np = importlib.import_module("numpy")
+    context = importlib.import_module("rain_context")
+    names = importlib.import_module("rain_wind_features").FEATURE_NAMES
+    ordinal = importlib.import_module("rain_ordinal")
+    search = importlib.import_module("rain_search")
+    residual = importlib.import_module("rain_residual")
+    recent = importlib.import_module("rain_recency_calibration")
+    legacy = importlib.import_module("run_rain_sub24")
+    # keep this reference input disjoint from candidate fitting
+    if set(payload) != {"contractVersion", "featureNames", "month", "requestedAt", "trainingRows"} or payload["contractVersion"] != "rain-control-reference-fit-input/v1" or payload["featureNames"] != list(names):
+        raise ValueError("invalid rain control reference input")
+    month_start = dt.datetime.strptime(payload["month"], "%Y-%m").replace(tzinfo=dt.timezone.utc)
+    requested = instant(payload["requestedAt"])
+    cutoff = month_start - dt.timedelta(days=7)
+    # prohibit early reference publication and month-boundary backdating
+    if month_start.strftime("%Y-%m") != payload["month"] or not cutoff <= requested < month_start:
+        raise ValueError("rain control reference request chronology differs")
+    rows = payload["trainingRows"]
+    # cap the original earlier-only population before numerical allocation
+    if not isinstance(rows, list) or len(rows) > MAX_ROWS:
+        raise ValueError("rain control reference row ceiling exceeded")
+    validate_rows(rows, payload["month"])
+    rows = sorted(rows, key=lambda row: (row["validAt"], row["key"]))
+    data, x = native_arrays(rows)
+    fit, calibration, _, bounds = maintenance_month_masks(data, payload["month"])
+    legacy_fit, legacy_calibration, _, legacy_bounds = legacy.month_masks(data, payload["month"])
+    counts = {"training": residual.support(data["actual"][fit], data["hour"][fit]),
+              "calibration": residual.support(data["actual"][calibration], data["hour"][calibration])}
+    legacy_counts = {"trainingRows": int(legacy_fit.sum()), "trainingWetRows": int((data["actual"][legacy_fit] >= .1).sum()),
+                     "calibrationRows": int(legacy_calibration.sum())}
+    common_supported = residual.supported(counts["training"], search.POLICY["trainingSupport"]) and residual.supported(counts["calibration"], search.POLICY["calibrationSupport"]) and legacy_counts["trainingRows"] >= 1000 and legacy_counts["trainingWetRows"] >= 100 and legacy_counts["calibrationRows"] >= 200
+    now = clock or (lambda: dt.datetime.now(dt.timezone.utc))
+    stamp = lambda value: value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    report = {"calibrationEndAt": stamp(cutoff), "calibrationStartAt": stamp(cutoff - dt.timedelta(days=90)),
+              "contractVersion": "rain-control-reference-fit/v1", "generatedAt": None,
+              "legacyCalibrationStartAt": stamp(cutoff - dt.timedelta(days=45)), "modelMonth": payload["month"],
+              "ordinalArtifact": None, "parityRows": [], "reason": "insufficient_control_support",
+              "scales": None, "state": "unsupported", "support": None, "trainingMaximumValidAt": None}
+    # never fit or fill a control when its full original support is unavailable
+    if common_supported:
+        directory = Path(output_root) / "control-heads"
+        models, state = context.fit_ordinal(x[fit], data["actual"][fit], data["hour"][fit], directory, list(names))
+        # all four actual fitted heads are required by the portable runtime
+        if any(head["reason"] != "fitted" for head in state["heads"].values()):
+            report["reason"] = "insufficient_ordinal_head_support"
+        else:
+            actual, hours, raw = data["actual"][calibration], data["hour"][calibration], data["raw"][calibration]
+            probabilities, amount = context.predict_ordinal(models, x[calibration], list(names))
+            proposed = ordinal.calibrate_events(actual, raw, probabilities, hours)
+            rules, _ = search.checked_rules(actual, raw, probabilities, hours, proposed)
+            categories = ordinal.event_categories(raw, probabilities, rules)
+            blended = search.blended(raw, amount)
+            scalar = search.calibrate(actual, hours, lambda scale: ordinal.project_amount(blended, categories, scale))
+            same_window = search.calibrate(actual, hours, lambda scale: np.clip(raw * scale, 0, 30))["scale"]
+            mass = recent.recent_weights(hours, bounds["calibrationMaximumValidHourExclusive"])
+            effective = recent.effective_support(actual, hours, mass)
+            recent_supported = effective["effectiveDates"] >= 30 and effective["effectiveWetDates"] >= 3
+            recent_scale = recent.calibrate(actual, hours, lambda scale: np.clip(raw * scale, 0, 30), mass)["scale"] if recent_supported else same_window
+            legacy_scale = legacy.volume_scale(data["actual"][legacy_calibration], data["raw"][legacy_calibration], data["hour"][legacy_calibration])
+            compact = importlib.import_module("export_rain_wind_runtime").compact_head
+            heads = {}
+            # publish only numerical operations from newly fitted native models
+            for name, head in state["heads"].items():
+                heads[name] = compact((directory / head["modelFile"]).read_bytes(), name, list(names))
+            artifact = canonical_control_numbers({"categoryScales": [scalar["scale"]] * 3, "contractVersion": "rain-hurdle-wind-runtime/v1",
+                        "featureNames": list(names), "heads": heads, "modelMonth": payload["month"],
+                        "rules": [{"threshold": rule["threshold"], "cutoff": rule["cutoff"]} for rule in rules]})
+            support = {"calibrationDates": counts["calibration"]["dates"], "calibrationHours": counts["calibration"]["hours"],
+                       "calibrationRows": counts["calibration"]["rows"], "calibrationWetDates": counts["calibration"]["wetDates"],
+                       "calibrationWetHours": counts["calibration"]["wetHours"], "effectiveDates": effective["effectiveDates"],
+                       "effectiveWetDates": effective["effectiveWetDates"], "legacyCalibrationRows": legacy_counts["calibrationRows"],
+                       "legacyTrainingRows": legacy_counts["trainingRows"], "legacyTrainingWetRows": legacy_counts["trainingWetRows"],
+                       "trainingDates": counts["training"]["dates"], "trainingHours": counts["training"]["hours"],
+                       "trainingRows": counts["training"]["rows"], "trainingWetDates": counts["training"]["wetDates"],
+                       "trainingWetHours": counts["training"]["wetHours"]}
+            synthetic = np.asarray([[0.] * len(names), [1.] * len(names), [np.nan] * len(names)], dtype=np.float32)
+            raw_parity = np.asarray([.5, 2., 4.], dtype=np.float64)
+            synthetic[:, 5] = raw_parity
+            pc, ac = context.predict_ordinal(models, synthetic, list(names))
+            predicted = ordinal.project_amount(search.blended(raw_parity, ac), ordinal.event_categories(raw_parity, pc, rules), scalar["scale"])
+            parity = [{"features": [None if not math.isfinite(float(value)) else float(value) for value in synthetic[index]],
+                       "raw": float(raw_parity[index]), "prediction": float(predicted[index]),
+                       "probabilities": list(map(float, pc[index]))} for index in range(len(synthetic))]
+            report.update({"ordinalArtifact": artifact, "parityRows": parity, "reason": "pre_month_reference",
+                           "scales": {"legacy": legacy_scale, "recent": recent_scale,
+                                      "recentSupported": bool(recent_supported), "sameWindow": same_window},
+                           "state": "supported", "support": support,
+                           "trainingMaximumValidAt": stamp(dt.datetime.fromtimestamp(int(data["hour"][fit].max()) * 3600, dt.timezone.utc))})
+    generated = now()
+    # record true completion time and refuse crossing the month boundary
+    if generated.tzinfo != dt.timezone.utc or not requested <= generated < month_start:
+        raise ValueError("rain control reference completion chronology differs")
+    report["generatedAt"] = stamp(generated)
+    return report
+
+
 # use fixed sandbox paths and prohibit result overwrite
 def main():
     # no caller path, code string or registration operation is accepted
@@ -278,7 +567,12 @@ def main():
         raise ValueError("invalid rain sandbox input")
     # destroy native model intermediates inside the kernel-bounded private output mount
     with tempfile.TemporaryDirectory(dir="/output", prefix="rain-native-") as temporary:
-        result = fit_monthly_rain(json.loads(path.read_bytes()), Path(temporary))
+        payload = json.loads(path.read_bytes())
+        # dispatch only the disjoint pre-month contract through the same sandbox
+        if payload.get("contractVersion") == "rain-control-reference-fit-input/v1":
+            result = fit_rain_control_reference(payload, Path(temporary))
+        else:
+            result = fit_monthly_rain(payload, Path(temporary))
     content = json.dumps(result, sort_keys=True, separators=(",", ":"), allow_nan=False).encode() + b"\n"
     # the persisted family graph remains separately bounded
     if len(content) > MAX_OUTPUT_BYTES:
