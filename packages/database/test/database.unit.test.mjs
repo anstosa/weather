@@ -12,6 +12,7 @@ import {
   loadDatabaseConfiguration,
   loadSiteConfiguration,
   loadTempestConfiguration,
+  getCurrentWeather,
   getForecastPressureContext,
   getWeatherForecast,
   getEcmwfTemperatureCanarySidecar,
@@ -363,6 +364,39 @@ test("history rejects reversed ranges before querying PostgreSQL", async () => {
       }),
     /history from must be earlier/u,
   );
+});
+
+// verify public reads never expand the private revision pointer
+test("public weather reads select only their reviewed columns", async () => {
+  const queries = [];
+  const pool = {
+    // capture each authoritative weather query
+    async query(text) {
+      queries.push(text);
+      return { rows: [] };
+    },
+  };
+
+  await getCurrentWeather(pool, "ballydidean");
+  await listWeatherHistory(pool, { siteSlug: "ballydidean" });
+  await getWeatherForecast(pool, {
+    asOf: "2026-09-01T00:00:00.000Z",
+    hours: 24,
+    siteSlug: "ballydidean",
+  });
+  await getForecastPressureContext(pool, {
+    asOf: "2026-09-01T07:00:00.000Z",
+    siteSlug: "ballydidean",
+  });
+
+  assert.equal(queries.length, 4);
+  // require each lateral record scan to remain column-scoped
+  for (const query of queries) {
+    assert.doesNotMatch(query, /SELECT\s+candidate\.\*/u);
+    assert.doesNotMatch(query, /adjustment_revision_receipt/u);
+    assert.match(query, /candidate\.content_hash/u);
+    assert.match(query, /candidate\.water_level_m/u);
+  }
 });
 
 // verify live forecasts require the forecast capability

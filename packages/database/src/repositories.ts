@@ -1856,7 +1856,7 @@ export async function getCurrentWeather(
       JOIN sites si ON si.id = st.site_id
       JOIN providers p ON p.id = s.provider_id
       JOIN LATERAL (
-        SELECT candidate.*
+        SELECT ${weatherRecordLateralSelection()}
         FROM weather_records candidate
         WHERE candidate.source_id = s.id
         ORDER BY candidate.valid_at DESC, candidate.id DESC
@@ -1945,7 +1945,7 @@ export async function getWeatherForecast(
       JOIN sites si ON si.id = st.site_id
       JOIN providers p ON p.id = s.provider_id
       JOIN LATERAL (
-        SELECT candidate.*
+        SELECT ${weatherRecordLateralSelection()}
         FROM weather_records candidate
         WHERE candidate.source_id = s.id
           -- expose the existing identity-index prefix before filtering old runs
@@ -2095,7 +2095,7 @@ export async function getForecastPressureContext(
         LIMIT 1
       ) context_run ON true
       JOIN LATERAL (
-        SELECT candidate.*
+        SELECT ${weatherRecordLateralSelection()}
         FROM weather_records candidate
         WHERE candidate.source_id = s.id
           AND candidate.source_kind = 'forecast'
@@ -2997,7 +2997,7 @@ export async function listWeatherHistory(
       JOIN sites si ON si.id = st.site_id
       JOIN providers p ON p.id = s.provider_id
       JOIN LATERAL (
-        SELECT candidate.*
+        SELECT ${weatherRecordLateralSelection()}
         FROM weather_records candidate
         WHERE ${recordConditions.join("\n          AND ")}
         ORDER BY candidate.valid_at DESC, candidate.id DESC
@@ -4533,6 +4533,46 @@ function weatherRecordSelection(): string {
     st.slug AS "stationSlug",
     si.slug AS "siteSlug",
     p.provider_key AS "providerKey"
+  `;
+}
+
+// select only the public columns inside lateral scans
+function weatherRecordLateralSelection(): string {
+  return `
+    candidate.id,
+    candidate.source_id,
+    candidate.source_kind,
+    candidate.valid_at,
+    candidate.product_run_at,
+    candidate.first_received_at,
+    candidate.last_received_at,
+    candidate.upstream_timezone,
+    candidate.upstream_model,
+    candidate.device_vendor,
+    candidate.device_model,
+    candidate.device_serial,
+    candidate.quality_metadata,
+    candidate.provider_metadata,
+    candidate.temperature_c,
+    candidate.apparent_temperature_c,
+    candidate.precipitation_mm,
+    candidate.wind_speed_mps,
+    candidate.wind_gust_mps,
+    candidate.pressure_hpa,
+    candidate.relative_humidity_percent,
+    candidate.cloud_cover_percent,
+    candidate.wind_direction_degrees,
+    candidate.content_hash,
+    candidate.revision_count,
+    candidate.black_globe_temperature_c,
+    candidate.pm25_micrograms_per_cubic_meter,
+    candidate.precipitation_rate_mm_per_hour,
+    candidate.soil_electrical_conductivity_us_cm,
+    candidate.soil_moisture_percent,
+    candidate.solar_radiation_wm2,
+    candidate.uv_index,
+    candidate.wet_bulb_globe_temperature_c,
+    candidate.water_level_m
   `;
 }
 
