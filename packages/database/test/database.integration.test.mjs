@@ -35,8 +35,8 @@ import {
   verifyMigrationReadiness,
 } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -72,7 +72,7 @@ test(
     let successfulBackfillIdentity;
 
     try {
-      // verify the complete 0017 migration and checksum ledger
+      // verify the complete 0018 migration and checksum ledger
       await context.test("I-DB-01 empty database migrates with checksums", async () => {
         const result = await runMigrations(pool, migrationDirectory);
         const ledger = await pool.query(
@@ -97,9 +97,10 @@ test(
           "0015_rain_station_access.sql",
           "0016_rain_adjustment.sql",
           "0017_adjustment_evaluation_export.sql",
+          "0018_adjustment_maintenance_v2.sql",
         ]);
         assert.equal(result.serverVersionNum >= 150_000, true);
-        assert.equal(ledger.rowCount, 17);
+        assert.equal(ledger.rowCount, 18);
         // require every migration checksum
         for (const row of ledger.rows) {
           assert.match(row.checksum, /^[a-f0-9]{64}$/u);
@@ -138,6 +139,7 @@ test(
             "0015_rain_station_access.sql",
             "0016_rain_adjustment.sql",
             "0017_adjustment_evaluation_export.sql",
+            "0018_adjustment_maintenance_v2.sql",
           ]);
           await assert.rejects(
             () => runMigrations(pool, directory),
@@ -157,20 +159,20 @@ test(
         }
       });
 
-      // verify concurrent serialization through migration 0017
+      // verify concurrent serialization through migration 0018
       await context.test("I-DB-03 concurrent migrators serialize", async () => {
         const database = `weather_concurrent_${process.pid}`;
         await adminPool.query(`CREATE DATABASE ${database} OWNER weather_owner`);
-        const left = createTestPool(server, database);
-        const right = createTestPool(server, database);
+        const left = createTestPool(server, database, "weather_owner", "owner-test");
+        const right = createTestPool(server, database, "weather_owner", "owner-test");
 
         try {
           const [first, second] = await Promise.all([
             runMigrations(left, migrationDirectory),
             runMigrations(right, migrationDirectory),
           ]);
-          assert.equal(first.applied.length + second.applied.length, 17);
-          assert.equal(first.current.length + second.current.length, 17);
+          assert.equal(first.applied.length + second.applied.length, 18);
+          assert.equal(first.current.length + second.current.length, 18);
         } finally {
           await Promise.all([left.end(), right.end()]);
           await adminPool.query(`DROP DATABASE ${database}`);
@@ -403,7 +405,7 @@ test(
           );
           assert.deepEqual(
             await verifyMigrationReadiness(ingestPool, migrationDirectory),
-            { version: "0017_adjustment_evaluation_export.sql" },
+            { version: "0018_adjustment_maintenance_v2.sql" },
           );
           try {
             // reject unproven candidate history
@@ -434,7 +436,7 @@ test(
                 },
                 release: "2026.08.22-1",
               }),
-              { version: "0017_adjustment_evaluation_export.sql" },
+              { version: "0018_adjustment_maintenance_v2.sql" },
             );
             await pool.query(
               "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
@@ -496,11 +498,18 @@ test(
       await context.test("I-DB-08 PostgreSQL 15 migrates and PostgreSQL 14 fails preflight", async () => {
         const version15 = await startPostgres(15, "pg15");
         const version14 = await startPostgres(14, "pg14");
-        const pool15 = createTestPool(version15);
+        const admin15 = createTestPool(version15);
+        let pool15;
         const pool14 = createTestPool(version14);
 
         try {
-          await createRuntimeRoles(pool15);
+          await prepareRuntimeRoles(admin15);
+          pool15 = createTestPool(
+            version15,
+            "weather_test",
+            "weather_owner",
+            "owner-test",
+          );
           const migrated = await runMigrations(pool15, migrationDirectory);
           assert.equal(migrated.serverVersionNum >= 150_000, true);
           await assert.rejects(
@@ -512,7 +521,7 @@ test(
           );
           assert.equal(ledger14.rows[0].ledger, null);
         } finally {
-          await Promise.all([pool15.end(), pool14.end()]);
+          await Promise.all([pool15?.end(), admin15.end(), pool14.end()]);
           await Promise.all([stopPostgres(version15), stopPostgres(version14)]);
         }
       });

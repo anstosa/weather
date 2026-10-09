@@ -14,8 +14,8 @@ import {
   runMigrations,
 } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -84,20 +84,29 @@ async function exportRows(pool, fromDate, toDate) {
 
 test("migration 0017 upgrades the exact 0016 ledger without changing retained data", { timeout: 180_000 }, async () => {
   const server = await startPostgres(17, "adjustment-evaluation-upgrade");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
   const root = await mkdtemp(join(tmpdir(), "weather-adjustment-upgrade-"));
   const legacyDirectory = join(root, "migrations");
+  const targetDirectory = join(root, "target-migrations");
+  let owner;
 
   try {
     await mkdir(legacyDirectory);
+    await mkdir(targetDirectory);
 
-    // construct the immutable predecessor ledger only
+    // construct the immutable historical ledgers
     for (const name of (await readdir(migrationDirectory)).sort()) {
-      if (name !== "0017_adjustment_evaluation_export.sql") {
+      // retain the exact predecessor
+      if (name < "0017_adjustment_evaluation_export.sql") {
         await cp(join(migrationDirectory, name), join(legacyDirectory, name));
       }
+      // retain the exact target
+      if (name <= "0017_adjustment_evaluation_export.sql") {
+        await cp(join(migrationDirectory, name), join(targetDirectory, name));
+      }
     }
-    await createRuntimeRoles(owner);
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     const legacy = await runMigrations(owner, legacyDirectory);
     assert.equal(legacy.applied.at(-1), "0016_rain_adjustment.sql");
     await applyRuntimeAcl(server);
@@ -108,7 +117,7 @@ test("migration 0017 upgrades the exact 0016 ledger without changing retained da
     await owner.query(`INSERT INTO sites
       (slug, display_name, latitude, longitude, timezone)
       VALUES ('upgrade-retained', 'Upgrade retained', 47.95, -122.43, 'UTC')`);
-    const upgraded = await runMigrations(owner, migrationDirectory);
+    const upgraded = await runMigrations(owner, targetDirectory);
     assert.deepEqual(upgraded.applied, ["0017_adjustment_evaluation_export.sql"]);
     await applyRuntimeAcl(server);
     assert.deepEqual(await exportRoleRelations(owner), [
@@ -136,7 +145,7 @@ test("migration 0017 upgrades the exact 0016 ledger without changing retained da
       ],
     );
   } finally {
-    await owner.end();
+    await Promise.all([owner?.end(), admin.end()]);
     await stopPostgres(server);
     await rm(root, { force: true, recursive: true });
   }
@@ -144,12 +153,14 @@ test("migration 0017 upgrades the exact 0016 ledger without changing retained da
 
 test("adjustment evaluation export is bounded, repeatable-read, and limited to four views", { timeout: 180_000 }, async () => {
   const server = await startPostgres(17, "adjustment-evaluation-export");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
+  let owner;
   let exporter;
   let api;
 
   try {
-    await createRuntimeRoles(owner);
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     await runMigrations(owner, migrationDirectory);
     await bootstrapSiteConfiguration(owner, await loadSiteConfiguration(sitePath));
     await applyRuntimeAcl(server);
@@ -307,7 +318,7 @@ test("adjustment evaluation export is bounded, repeatable-read, and limited to f
     assert.deepEqual(copiedReceipt.metadata, receiptMetadata);
     const manifest = await exporter.query("SELECT * FROM adjustment_evaluation_export_manifest_v1");
     assert.equal(manifest.rows[0].schema_migration, "0017_adjustment_evaluation_export.sql");
-    assert.equal(manifest.rows[0].migration_names.at(-1), "0017_adjustment_evaluation_export.sql");
+    assert.equal(manifest.rows[0].migration_names.at(-1), "0018_adjustment_maintenance_v2.sql");
 
     await assert.rejects(exportRows(exporter, "2026-10-02", "2026-10-01"), /division by zero/u);
     await assert.rejects(exportRows(exporter, "2026-10-01", "2026-10-15"), /division by zero/u);
@@ -333,7 +344,7 @@ test("adjustment evaluation export is bounded, repeatable-read, and limited to f
       "forecast_training_export_rows_v1",
     ]);
   } finally {
-    await Promise.all([owner.end(), exporter?.end(), api?.end()]);
+    await Promise.all([owner?.end(), exporter?.end(), api?.end(), admin.end()]);
     await stopPostgres(server);
   }
 });

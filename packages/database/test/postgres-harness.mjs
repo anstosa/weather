@@ -98,6 +98,16 @@ export async function createRuntimeRoles(pool) {
   `);
 }
 
+// prepare the production migration owner
+export async function prepareRuntimeRoles(pool) {
+  await createRuntimeRoles(pool);
+  await pool.query(`
+    ALTER ROLE weather_owner LOGIN PASSWORD 'owner-test';
+    ALTER DATABASE weather_test OWNER TO weather_owner;
+    ALTER SCHEMA public OWNER TO weather_owner;
+  `);
+}
+
 // wait for server readiness
 async function waitForPostgres(server) {
   let lastError;

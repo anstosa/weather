@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { appendRainAdjustmentRun, readPendingRainAdjustmentCaptures, readRainAdjustmentRun, runMigrations } from "../dist/index.js";
-import { createRuntimeRoles, createTestPool, startPostgres, stopPostgres } from "./postgres-harness.mjs";
+import { createTestPool, prepareRuntimeRoles, startPostgres, stopPostgres } from "./postgres-harness.mjs";
 
 const executeFile = promisify(execFile);
 const root = resolve(import.meta.dirname, "../../..");
@@ -14,12 +14,14 @@ const root = resolve(import.meta.dirname, "../../..");
 // exercise real PostgreSQL guards and runtime grants without provider traffic
 test("rain serving is an immutable bounded projection with private inputs", { timeout: 180_000 }, async () => {
   const server = await startPostgres(17, "rain-adjustment");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
+  let owner;
   let ingest;
   let api;
   let exporter;
   try {
-    await createRuntimeRoles(owner);
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     await runMigrations(owner, resolve(root, "packages/database/migrations"));
     await executeFile("docker", ["cp", resolve(root, "deploy/postgres/runtime-acl-v2.sql"), `${server.name}:/tmp/acl.sql`]);
     await executeFile("docker", ["exec", server.name, "psql", "--username", server.user, "--dbname", "weather_test", "--file", "/tmp/acl.sql"]);
@@ -81,7 +83,7 @@ test("rain serving is an immutable bounded projection with private inputs", { ti
     await assert.rejects(appendRainAdjustmentRun(ingest, { ...run, modelSha256: "e".repeat(64),
       firstReceivedAt: decision.toISOString() }), /source is unavailable/u);
   } finally {
-    await Promise.all([owner.end(), ingest?.end(), api?.end(), exporter?.end()]);
+    await Promise.all([owner?.end(), ingest?.end(), api?.end(), exporter?.end(), admin.end()]);
     await stopPostgres(server);
   }
 });

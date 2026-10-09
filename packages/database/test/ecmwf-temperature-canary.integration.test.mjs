@@ -14,8 +14,8 @@ import {
   runMigrations,
 } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -69,12 +69,14 @@ function runInput() {
 
 test("ECMWF temperature sidecar is immutable private and single-run", async () => {
   const server = await startPostgres(15, "ecmwf-temperature-canary");
-  const ownerPool = createTestPool(server);
+  const adminPool = createTestPool(server);
+  let ownerPool;
   let ingestPool;
   let apiPool;
 
   try {
-    await createRuntimeRoles(ownerPool);
+    await prepareRuntimeRoles(adminPool);
+    ownerPool = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     await runMigrations(ownerPool, migrationDirectory);
     await bootstrapSiteConfiguration(
       ownerPool,
@@ -282,7 +284,8 @@ test("ECMWF temperature sidecar is immutable private and single-run", async () =
   } finally {
     await apiPool?.end().catch(() => undefined);
     await ingestPool?.end().catch(() => undefined);
-    await ownerPool.end().catch(() => undefined);
+    await ownerPool?.end().catch(() => undefined);
+    await adminPool.end().catch(() => undefined);
     await stopPostgres(server);
   }
 });

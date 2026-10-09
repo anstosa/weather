@@ -17,8 +17,8 @@ import {
   runMigrations,
 } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -48,13 +48,13 @@ function insertStation(pool, request, policy, policySha) {
 }
 
 // stage the exact published prefix without editing published SQL
-async function previousMigrationDirectory() {
+async function historicalMigrationDirectory(lastMigration) {
   const directory = await mkdtemp(join(tmpdir(), "weather-rain-migration-prefix-"));
 
-  // copy only files present before station authorization
+  // copy only the requested historical prefix
   for (const name of await readdir(migrationDirectory)) {
     // keep the original immutable migration filenames and bytes
-    if (/^\d{4}_.*\.sql$/u.test(name) && name < "0015_rain_station_access.sql") {
+    if (/^\d{4}_.*\.sql$/u.test(name) && name <= lastMigration) {
       await copyFile(join(migrationDirectory, name), join(directory, name));
     }
   }
@@ -105,13 +105,15 @@ function receipt(body, outcome = "valid", httpStatus = 200, availableByDecision 
 
 test("rain claims and raw receipts are bounded private immutable evidence", { timeout: 600_000 }, async () => {
   const server = await startPostgres(17, "rain-collection");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
+  let owner;
   let ingest;
   let api;
   let exporter;
 
   try {
-    await createRuntimeRoles(owner);
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     await runMigrations(owner, migrationDirectory);
     await applyAcl(server);
     ingest = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
@@ -211,19 +213,21 @@ test("rain claims and raw receipts are bounded private immutable evidence", { ti
     assert.equal(stationStatus.stationsSeen, 1);
     assert.equal(stationStatus.modelEnabled, false);
   } finally {
-    await Promise.all([ingest?.end(), api?.end(), exporter?.end(), owner.end()]);
+    await Promise.all([ingest?.end(), api?.end(), exporter?.end(), owner?.end(), admin.end()]);
     await stopPostgres(server);
   }
 });
 
 test("rain 429 manual review persists across restarts", { timeout: 600_000 }, async () => {
   const server = await startPostgres(17, "rain-manual-pause");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
+  let owner;
   let ingest;
   let api;
 
   try {
-    await createRuntimeRoles(owner);
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     await runMigrations(owner, migrationDirectory);
     await applyAcl(server);
     ingest = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
@@ -239,18 +243,20 @@ test("rain 429 manual review persists across restarts", { timeout: 600_000 }, as
       RAIN_COLLECTION_POLICY.expiresAt);
     assert.equal(await claimRainCaptureSlot(ingest, { request, release: "2026.09.13-1" }), null);
   } finally {
-    await Promise.all([ingest?.end(), api?.end(), owner.end()]);
+    await Promise.all([ingest?.end(), api?.end(), owner?.end(), admin.end()]);
     await stopPostgres(server);
   }
 });
 
 test("rain compressed-byte reservations block HTTP claims before evidence is lost", { timeout: 600_000 }, async () => {
   const server = await startPostgres(17, "rain-storage-budget");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
+  let owner;
   let ingest;
 
   try {
-    await createRuntimeRoles(owner);
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     await runMigrations(owner, migrationDirectory);
     await applyAcl(server);
     ingest = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
@@ -285,22 +291,26 @@ test("rain compressed-byte reservations block HTTP claims before evidence is los
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 1_200));
     assert.ok(await claimRainCaptureSlot(ingest, { request, release: "2026.09.13-1" }));
   } finally {
-    await Promise.all([ingest?.end(), owner.end()]);
+    await Promise.all([ingest?.end(), owner?.end(), admin.end()]);
     await stopPostgres(server);
   }
 });
 
 test("rain station access upgrades the exact policy without mutating prior evidence", { timeout: 600_000 }, async () => {
   const server = await startPostgres(17, "rain-station-upgrade");
-  const owner = createTestPool(server);
+  const admin = createTestPool(server);
+  let owner;
   let previousDirectory;
+  let targetDirectory;
   let ingest;
   let api;
   let exporter;
 
   try {
-    previousDirectory = await previousMigrationDirectory();
-    await createRuntimeRoles(owner);
+    previousDirectory = await historicalMigrationDirectory("0014_rain_collection.sql");
+    targetDirectory = await historicalMigrationDirectory("0017_adjustment_evaluation_export.sql");
+    await prepareRuntimeRoles(admin);
+    owner = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     const previous = await runMigrations(owner, previousDirectory);
     assert.equal(previous.applied.at(-1), "0014_rain_collection.sql");
     await applyAcl(server);
@@ -336,7 +346,7 @@ test("rain station access upgrades the exact policy without mutating prior evide
       /station access is not authorized/u);
 
     // apply the exact 0015-through-0017 suffix without rewriting evidence
-    const upgraded = await runMigrations(owner, migrationDirectory);
+    const upgraded = await runMigrations(owner, targetDirectory);
     assert.deepEqual(upgraded.applied, [
       "0015_rain_station_access.sql",
       "0016_rain_adjustment.sql",
@@ -364,11 +374,16 @@ test("rain station access upgrades the exact policy without mutating prior evide
       /station access is not authorized/u);
 
     // prove an older worker can claim a fresh forecast on the upgraded guard
-    await owner.query("CREATE DATABASE weather_rain_old_worker_test");
-    const oldWorker = createTestPool(server, "weather_rain_old_worker_test");
+    await admin.query("CREATE DATABASE weather_rain_old_worker_test OWNER weather_owner");
+    const oldWorker = createTestPool(
+      server,
+      "weather_rain_old_worker_test",
+      "weather_owner",
+      "owner-test",
+    );
 
     try {
-      await runMigrations(oldWorker, migrationDirectory);
+      await runMigrations(oldWorker, targetDirectory);
       const oldRequest = forecastRequest((await oldWorker.query("SELECT clock_timestamp() AS now")).rows[0].now);
       const oldWorkerClaim = await oldWorker.query(`
         INSERT INTO rain_capture_claims
@@ -383,7 +398,7 @@ test("rain station access upgrades the exact policy without mutating prior evide
         /station access is not authorized/u);
     } finally {
       await oldWorker.end();
-      await owner.query("DROP DATABASE weather_rain_old_worker_test");
+      await admin.query("DROP DATABASE weather_rain_old_worker_test");
     }
 
     // reject mismatched or forged complete envelopes before station egress
@@ -451,11 +466,15 @@ test("rain station access upgrades the exact policy without mutating prior evide
     assert.equal(await claimRainCaptureSlot(ingest,
       { request: overBudget, release: "2026.09.13-3" }), null);
   } finally {
-    await Promise.all([ingest?.end(), api?.end(), exporter?.end(), owner.end()]);
+    await Promise.all([ingest?.end(), api?.end(), exporter?.end(), owner?.end(), admin.end()]);
     await stopPostgres(server);
     // remove only the temporary migration prefix created by this test
     if (previousDirectory !== undefined) {
       await rm(previousDirectory, { recursive: true, force: true });
+    }
+    // remove the historical target
+    if (targetDirectory !== undefined) {
+      await rm(targetDirectory, { recursive: true, force: true });
     }
   }
 });

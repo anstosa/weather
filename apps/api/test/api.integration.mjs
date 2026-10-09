@@ -31,20 +31,28 @@ const siteConfigurationPath = join(repositoryRoot, "config/sites/ballydidean.jso
 test("real PostgreSQL serves active versioned API reads and exact readiness", { timeout: 300_000 }, async (context) => {
   const postgres = await startPostgres(17, "api");
   const admin = createTestPool(postgres);
+  let owner;
   let apiPool;
   let server;
 
   try {
     await createRuntimeRoles(admin);
-    await runMigrations(admin, migrationDirectory);
+    // match the production migration principal
+    await admin.query(`
+      ALTER ROLE weather_owner LOGIN PASSWORD 'owner-test';
+      ALTER DATABASE weather_test OWNER TO weather_owner;
+      ALTER SCHEMA public OWNER TO weather_owner;
+    `);
+    owner = createTestPool(postgres, "weather_test", "weather_owner", "owner-test");
+    await runMigrations(owner, migrationDirectory);
     // apply deployed privileges before exercising the private collection view
     execFileSync("docker", ["exec", "-i", postgres.name, "psql", "--set=ON_ERROR_STOP=1",
       "--username", postgres.user, "--dbname", "weather_test"], {
       input: await readFile(join(repositoryRoot, "deploy/postgres/runtime-acl-v2.sql")),
     });
     const configuration = await loadSiteConfiguration(siteConfigurationPath);
-    await bootstrapSiteConfiguration(admin, configuration);
-    const sources = await admin.query(
+    await bootstrapSiteConfiguration(owner, configuration);
+    const sources = await owner.query(
       "SELECT active, id, source_key, source_kind, source_config_fingerprint FROM sources ORDER BY source_kind, source_key",
     );
     const currentSource = sources.rows.find(
@@ -63,25 +71,25 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     assert.ok(currentSource);
     assert.ok(historySource);
     assert.ok(forecastSource);
-    const currentRun = await insertSucceededRun(admin, currentSource, "scheduled");
-    const historyRun = await insertSucceededRun(admin, historySource, "backfill");
+    const currentRun = await insertSucceededRun(owner, currentSource, "scheduled");
+    const historyRun = await insertSucceededRun(owner, historySource, "backfill");
     const forecastContextRun = await insertSucceededRun(
-      admin,
+      owner,
       forecastSource,
       "scheduled",
     );
-    const forecastRun = await insertSucceededRun(admin, forecastSource, "scheduled");
-    await insertRecord(admin, currentSource, currentRun, {
+    const forecastRun = await insertSucceededRun(owner, forecastSource, "scheduled");
+    await insertRecord(owner, currentSource, currentRun, {
       idSuffix: "current-new",
       temperatureC: 16.2,
       validAt: "2026-08-22T04:50:00.000Z",
     });
-    await insertRecord(admin, currentSource, currentRun, {
+    await insertRecord(owner, currentSource, currentRun, {
       idSuffix: "current-old",
       temperatureC: 15.8,
       validAt: "2026-08-22T03:50:00.000Z",
     });
-    await insertRecord(admin, historySource, historyRun, {
+    await insertRecord(owner, historySource, historyRun, {
       idSuffix: "history-tied",
       temperatureC: 14.9,
       validAt: "2026-08-22T04:50:00.000Z",
@@ -89,7 +97,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
     });
     // store one complete pre-midnight forecast vintage
     for (let index = 0; index < 6; index += 1) {
-      await insertRecord(admin, forecastSource, forecastContextRun, {
+      await insertRecord(owner, forecastSource, forecastContextRun, {
         idSuffix: `forecast-context-${String(index)}`,
         pressureHpa: 1008 + index,
         productRunAt: "2026-08-21T06:00:00.000Z",
@@ -99,19 +107,19 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         ).toISOString(),
       });
     }
-    await insertRecord(admin, forecastSource, forecastRun, {
+    await insertRecord(owner, forecastSource, forecastRun, {
       idSuffix: "forecast-first",
       productRunAt: "2026-08-22T05:00:00.000Z",
       temperatureC: 16.8,
       validAt: "2026-08-21T07:00:00.000Z",
     });
-    await insertRecord(admin, forecastSource, forecastRun, {
+    await insertRecord(owner, forecastSource, forecastRun, {
       idSuffix: "forecast-second",
       productRunAt: "2026-08-22T05:00:00.000Z",
       temperatureC: 17.1,
       validAt: "2026-08-22T06:00:00.000Z",
     });
-    await admin.query(
+    await owner.query(
       `
         INSERT INTO worker_heartbeats (
           worker_instance,
@@ -123,7 +131,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         VALUES ('api-integration', '2026-08-22T04:55:00.000Z', '2026-08-22T04:50:00.000Z', 'idle', 'test/v1')
       `,
     );
-    await insertInactiveMetadata(admin);
+    await insertInactiveMetadata(owner);
 
     apiPool = createTestPool(postgres, "weather_test", "weather_api", "api-test");
     const store = createDatabaseWeatherReadStore(apiPool, {
@@ -300,7 +308,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       );
       const baselineBody = await baselineResponse.json();
 
-      await admin.query(
+      await owner.query(
         "REVOKE SELECT ON forecast_runtime_provenance_v1 FROM weather_api",
       );
 
@@ -315,14 +323,14 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         assert.equal(faultResponse.status, 200);
         assert.equal(JSON.stringify(faultBody), JSON.stringify(baselineBody));
       } finally {
-        await admin.query(
+        await owner.query(
           "GRANT SELECT ON forecast_runtime_provenance_v1 TO weather_api",
         );
       }
     });
 
     await context.test("deactivated sources disappear from current and history", async () => {
-      await admin.query("UPDATE sources SET active = false WHERE id = $1", [
+      await owner.query("UPDATE sources SET active = false WHERE id = $1", [
         currentSource.id,
       ]);
       const currentResponse = await fetch(
@@ -343,7 +351,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         historyBody.data.some((record) => record.provenance.sourceId === String(currentSource.id)),
         false,
       );
-      await admin.query("UPDATE sources SET active = true WHERE id = $1", [
+      await owner.query("UPDATE sources SET active = true WHERE id = $1", [
         currentSource.id,
       ]);
     });
@@ -354,11 +362,11 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(healthyResponse.status, 200);
       assert.deepEqual(healthy.data.migration, {
         status: "current",
-        version: "0017_adjustment_evaluation_export.sql",
+        version: "0018_adjustment_maintenance_v2.sql",
       });
       assert.deepEqual(healthy.data.worker, { freshness: "fresh" });
 
-      await admin.query(
+      await owner.query(
         "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
         ["9999_future.sql", "1".repeat(64)],
       );
@@ -369,7 +377,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         status: "outdated",
         version: null,
       });
-      const migrationHistory = await admin.query(
+      const migrationHistory = await owner.query(
         "SELECT name, checksum FROM schema_migrations ORDER BY name",
       );
       const historySha256 = createHash("sha256")
@@ -400,13 +408,13 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
       assert.equal(authorizedResponse.status, 200);
       assert.deepEqual(authorized.data.migration, {
         status: "current",
-        version: "0017_adjustment_evaluation_export.sql",
+        version: "0018_adjustment_maintenance_v2.sql",
       });
 
-      const ledger = await admin.query(
+      const ledger = await owner.query(
         "SELECT checksum FROM schema_migrations WHERE name = '0001_initial_weather.sql'",
       );
-      await admin.query(
+      await owner.query(
         "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
         ["0".repeat(64)],
       );
@@ -418,11 +426,11 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
         version: null,
       });
       assert.doesNotMatch(JSON.stringify(unhealthy), /checksum|postgres|password|error/u);
-      await admin.query(
+      await owner.query(
         "UPDATE schema_migrations SET checksum = $1 WHERE name = '0001_initial_weather.sql'",
         [ledger.rows[0].checksum],
       );
-      await admin.query(
+      await owner.query(
         "DELETE FROM schema_migrations WHERE name = '9999_future.sql'",
       );
     });
@@ -442,6 +450,7 @@ test("real PostgreSQL serves active versioned API reads and exact readiness", { 
 
     await Promise.all([
       apiPool?.end(),
+      owner?.end(),
       admin.end(),
     ]);
     await stopPostgres(postgres);

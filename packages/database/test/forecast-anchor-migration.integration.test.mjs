@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { runMigrations } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -31,12 +31,15 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-anchor-upgrade-"));
   const legacyDirectory = join(directory, "migrations");
+  const targetDirectory = join(directory, "target-migrations");
   const server = await startPostgres(17, "anchor-upgrade");
-  const pool = createTestPool(server);
+  const admin = createTestPool(server);
+  let pool;
 
   // run one disposable upgrade proof
   try {
     await mkdir(legacyDirectory);
+    await mkdir(targetDirectory);
 
     // copy the immutable previous-image migration set
     for (const migrationName of legacyMigrationNames) {
@@ -46,7 +49,19 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
       );
     }
 
-    await createRuntimeRoles(pool);
+    // retain the exact historical 0017 target
+    for (const migrationName of (await readdir(migrationDirectory)).sort()) {
+      // stop before newer migrations
+      if (migrationName <= "0017_adjustment_evaluation_export.sql") {
+        await copyFile(
+          join(migrationDirectory, migrationName),
+          join(targetDirectory, migrationName),
+        );
+      }
+    }
+
+    await prepareRuntimeRoles(admin);
+    pool = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     const legacy = await runMigrations(pool, legacyDirectory);
     assert.deepEqual(legacy.applied, legacyMigrationNames);
     const fixture = await pool.query(`
@@ -161,7 +176,7 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
       "SELECT to_jsonb(weather_records) AS record FROM weather_records WHERE id = $1",
       [fixture.rows[0].id],
     );
-    const upgraded = await runMigrations(pool, migrationDirectory);
+    const upgraded = await runMigrations(pool, targetDirectory);
     const after = await pool.query(
       "SELECT to_jsonb(weather_records) AS record FROM weather_records WHERE id = $1",
       [fixture.rows[0].id],
@@ -204,7 +219,7 @@ test("0009 upgrades an existing v4 database without rewriting live forecast rows
     );
   } finally {
     // clean disposable upgrade resources
-    await pool.end();
+    await Promise.all([pool?.end(), admin.end()]);
     await stopPostgres(server);
     await rm(directory, { force: true, recursive: true });
   }

@@ -18,8 +18,8 @@ import {
   startIngestionRun,
 } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -35,11 +35,13 @@ test(
   { timeout: 300_000 },
   async () => {
     const server = await startPostgres(17, "forecast-anchor-repository");
-    const pool = createTestPool(server);
+    const admin = createTestPool(server);
+    let pool;
     let apiPool;
 
     try {
-      await createRuntimeRoles(pool);
+      await prepareRuntimeRoles(admin);
+      pool = createTestPool(server, "weather_test", "weather_owner", "owner-test");
       await runMigrations(pool, migrationDirectory);
       const sources = await seedForecastSources(pool);
       const identity = anchorChunkIdentity(sources.anchor);
@@ -202,7 +204,8 @@ test(
     } finally {
       await Promise.all([
         apiPool?.end() ?? Promise.resolve(),
-        pool.end(),
+        pool?.end() ?? Promise.resolve(),
+        admin.end(),
       ]);
       await stopPostgres(server);
     }

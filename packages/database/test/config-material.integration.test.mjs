@@ -9,8 +9,8 @@ import {
   runMigrations,
 } from "../dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "./postgres-harness.mjs";
@@ -25,10 +25,12 @@ test(
   { timeout: 300_000 },
   async () => {
     const server = await startPostgres(17, "config-material");
-    const pool = createTestPool(server);
+    const admin = createTestPool(server);
+    let pool;
 
     try {
-      await createRuntimeRoles(pool);
+      await prepareRuntimeRoles(admin);
+      pool = createTestPool(server, "weather_test", "weather_owner", "owner-test");
       await runMigrations(pool, migrationDirectory);
       const raw = JSON.parse(await readFile(siteConfigurationPath, "utf8"));
       const baseline = parseSiteConfiguration(raw);
@@ -53,7 +55,7 @@ test(
         assert.deepEqual(await materialSnapshot(pool), expected);
       }
     } finally {
-      await pool.end();
+      await Promise.all([pool?.end(), admin.end()]);
       await stopPostgres(server);
     }
   },
