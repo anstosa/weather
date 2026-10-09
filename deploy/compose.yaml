@@ -133,6 +133,8 @@ services:
     environment:
       <<: *database-environment
       WEATHER_API_PORT: "3001"
+      WEATHER_ADJUSTMENT_MAINTENANCE_ARCHIVE_ORIGIN: http://web:3004
+      WEATHER_ADJUSTMENT_MAINTENANCE_INTERNAL_PORT: "3003"
       WEATHER_DATABASE_APPLICATION_NAME: weather-api
       WEATHER_DATABASE_USER: weather_api
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_api_password
@@ -145,6 +147,20 @@ services:
     secrets:
       - source: weather_api_password
         target: weather_api_password
+    volumes:
+      # require root-prepared immutable metadata files
+      - type: bind
+        source: /opt/weather/current/deploy/state/adjustment-candidate-catalog.json
+        target: /run/weather/adjustment-candidate-catalog.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/weather/current/deploy/state/adjustment-capture-epoch.json
+        target: /run/weather/adjustment-capture-epoch.json
+        read_only: true
+        bind:
+          create_host_path: false
     networks: [web_api, data]
     depends_on:
       migration:
@@ -177,6 +193,7 @@ services:
     environment:
       <<: *database-environment
       WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH: ${WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH:-1}
+      WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN: http://api:3003
       WEATHER_DATABASE_APPLICATION_NAME: weather-worker
       WEATHER_DATABASE_USER: weather_ingest
       WEATHER_DATABASE_PASSWORD_FILE: /run/secrets/weather_ingest_password
@@ -194,6 +211,20 @@ services:
         target: weather_ingest_password
       - source: weather_tempest_api_key
         target: weather_tempest_api_key
+    volumes:
+      # require root-prepared immutable metadata files
+      - type: bind
+        source: /opt/weather/current/deploy/state/adjustment-candidate-catalog.json
+        target: /run/weather/adjustment-candidate-catalog.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/weather/current/deploy/state/adjustment-capture-epoch.json
+        target: /run/weather/adjustment-capture-epoch.json
+        read_only: true
+        bind:
+          create_host_path: false
     networks: [data, provider_egress]
     depends_on:
       migration:
@@ -239,6 +270,8 @@ services:
       PORT: "3000"
       WEATHER_API_ORIGIN: http://api:3001
       WEATHER_ADJUSTMENT_EVIDENCE_ROOT: /var/lib/weather/xweather/adjustment-evidence
+      WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN: http://api:3003
+      WEATHER_ADJUSTMENT_MAINTENANCE_INTERNAL_PORT: "3004"
       WEATHER_RELEASE: ${WEATHER_RELEASE:?set WEATHER_RELEASE}
       WEATHER_SITE_CONFIG_PATH: /opt/weather/config/sites/ballydidean.json
       WEATHER_XWEATHER_USAGE_PATH: /var/lib/weather/xweather/usage.json

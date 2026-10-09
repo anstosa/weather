@@ -141,8 +141,9 @@ test("fixed v13 authorization target must be caller-owned private empty and sing
 
 test("fixed v13 proof is empty-fixture bounded and publishes only after source runtime checks", async () => {
   const update = await readFile(updateScript, "utf8");
+  // inspect the shared bounded implementation behind the fixed v13 wrapper
   const fixed = update
-    .split("verify_fixed_v13_source_compatibility() (")[1]
+    .split("verify_bounded_maintenance_source_compatibility() (")[1]
     .split("\n)\n\n# run previous-image checks")[0];
   const legacy = update
     .split("verify_previous_image_compatibility() (")[1]

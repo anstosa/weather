@@ -1,6 +1,10 @@
 // keep the production release-capacity contract in the deployed helper
 export {
   ADJUSTMENT_RELEASE_CAPACITY_VERSION,
+  ADJUSTMENT_INERT_V14_CAPACITY_VERSION,
+  ADJUSTMENT_FAMILY_RELEASE_CAPACITY_VERSION,
+  ADJUSTMENT_FAMILY_RELEASE_INVENTORY_VERSION,
+  ADJUSTMENT_FAMILY_RELEASE_COMPENSATION_SCOPE,
   ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES,
   ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_INODES,
   ADJUSTMENT_RELEASE_CONTROL_MAX_BYTES,
@@ -14,6 +18,8 @@ export {
   collectAdjustmentReleaseCapacityInventory,
   dockerChainIdentity,
   evaluateAdjustmentReleaseCapacity,
+  evaluateAdjustmentFamilyReleaseCapacity,
+  evaluateAdjustmentInertV14ReleaseCapacity,
   measureReleaseLayer,
   measureReleasePathEntry,
   weatherRegistryBlobRedirectUrl,

@@ -10,6 +10,12 @@ import {
   deepFreeze,
 } from "./candidate.js";
 import { RAIN_HURDLE_WIND_ARTIFACT_SHA256 } from "./rain-hurdle-wind-artifact.js";
+import { RAIN_HURDLE_WIND_ARTIFACT_JSON } from "./rain-hurdle-wind-artifact.js";
+import { loadInstalledMaintenanceServingCandidate } from "./maintenance-shadow-catalog.js";
+import {
+  createMaintenanceShadowServingAuthority,
+  type MaintenanceShadowServingAuthority,
+} from "./maintenance-shadow-comparator.js";
 import { FORECAST_ADJUSTMENT_RUNTIME_ROOT } from "./runtime-loader.js";
 
 export const FORECAST_ADJUSTMENT_RAIN_RUNTIME_REGISTRY_FILENAME =
@@ -38,15 +44,29 @@ export type ForecastAdjustmentRainRuntimeRegistryV1 =
       readonly siteKey: "ballydidean";
     };
 
+interface ForecastAdjustmentRainMaintenanceRegistryV1 {
+  readonly activePackage: Readonly<{
+    readonly actionSha256: string;
+    readonly artifactSha256: string;
+    readonly candidateSha256: string;
+    readonly path: string;
+  }> | null;
+  readonly contractVersion: "forecast-adjustment-rain-maintenance-registry/v1";
+  readonly rawReason: "policy_raw" | null;
+  readonly siteKey: "ballydidean";
+}
+
 // report one hash-bound compiled rain runtime state
 export type LoadedForecastAdjustmentRainRuntimeRegistryV1 =
   | {
       readonly artifactSha256: typeof RAIN_HURDLE_WIND_ARTIFACT_SHA256;
+      readonly comparatorAuthority: MaintenanceShadowServingAuthority;
       readonly reasonCode: null;
       readonly state: "active";
     }
   | {
       readonly artifactSha256: null;
+      readonly comparatorAuthority?: MaintenanceShadowServingAuthority;
       readonly reasonCode: "policy_raw" | "registry_invalid";
       readonly state: "disabled";
     };
@@ -107,15 +127,62 @@ async function loadRainRuntimeRegistryFromRoot(
       absoluteRoot,
     );
 
+    // require root-installed qualification before selecting compiled maintenance bytes
+    if ("activePackage" in registry) {
+      if (registry.activePackage === null) {
+        validateRawRainMaintenanceRegistry(registry);
+        return disabledRainRuntime("policy_raw", createMaintenanceShadowServingAuthority({
+          artifactBytes: null,
+          artifactIdentitySha256: null,
+          authorityKind: "policy_raw",
+          family: "rain",
+          receiptBytes: Buffer.from(canonicalJsonBytes(registry as unknown as JsonValue)),
+        }));
+      }
+      const installed = await loadInstalledMaintenanceServingCandidate({
+        family: "rain",
+        sourceRoot: resolve(absoluteRoot, "..", ".."),
+      });
+      // bind the selected portable artifact to the bytes compiled into this image
+      if (installed === null || installed.receipt.bundleSha256 !== RAIN_HURDLE_WIND_ARTIFACT_SHA256) {
+        throw new RangeError("compiled rain maintenance artifact differs");
+      }
+      return deepFreeze({
+        artifactSha256: RAIN_HURDLE_WIND_ARTIFACT_SHA256,
+        comparatorAuthority: createMaintenanceShadowServingAuthority({
+          artifactBytes: Buffer.from(canonicalJsonBytes(installed.bundle as unknown as JsonValue)),
+          artifactIdentitySha256: installed.receipt.bundleSha256,
+          authorityKind: "maintenance_qualified",
+          family: "rain",
+          receiptBytes: Buffer.from(canonicalJsonBytes(installed.receipt as unknown as JsonValue)),
+        }),
+        reasonCode: null,
+        state: "active" as const,
+      });
+    }
+
     // preserve exact raw bytes without inspecting the compiled artifact
     if (registry.activeArtifact === null) {
       validateRawRainRegistry(registry);
-      return disabledRainRuntime("policy_raw");
+      return disabledRainRuntime("policy_raw", createMaintenanceShadowServingAuthority({
+        artifactBytes: null,
+        artifactIdentitySha256: null,
+        authorityKind: "policy_raw",
+        family: "rain",
+        receiptBytes: Buffer.from(canonicalJsonBytes(registry as unknown as JsonValue)),
+      }));
     }
 
     validateActiveRainRegistry(registry);
     return deepFreeze({
       artifactSha256: RAIN_HURDLE_WIND_ARTIFACT_SHA256,
+      comparatorAuthority: createMaintenanceShadowServingAuthority({
+        artifactBytes: Buffer.from(RAIN_HURDLE_WIND_ARTIFACT_JSON),
+        artifactIdentitySha256: RAIN_HURDLE_WIND_ARTIFACT_SHA256,
+        authorityKind: "legacy_active",
+        family: "rain",
+        receiptBytes: Buffer.from(canonicalJsonBytes(registry as unknown as JsonValue)),
+      }),
       reasonCode: null,
       state: "active" as const,
     });
@@ -128,7 +195,7 @@ async function loadRainRuntimeRegistryFromRoot(
 async function readRainRegistry(
   path: string,
   root: string,
-): Promise<ForecastAdjustmentRainRuntimeRegistryV1> {
+): Promise<ForecastAdjustmentRainRuntimeRegistryV1 | ForecastAdjustmentRainMaintenanceRegistryV1> {
   const target = resolve(path);
 
   // keep the fixed filename directly below the selected root
@@ -181,9 +248,20 @@ async function readRainRegistry(
       throw new RangeError("rain runtime registry is not canonical JSON");
     }
 
-    return parsed as ForecastAdjustmentRainRuntimeRegistryV1;
+    return parsed as ForecastAdjustmentRainRuntimeRegistryV1 | ForecastAdjustmentRainMaintenanceRegistryV1;
   } finally {
     await handle.close();
+  }
+}
+
+// validate one raw maintenance registry without consulting installed authority
+function validateRawRainMaintenanceRegistry(registry: ForecastAdjustmentRainMaintenanceRegistryV1): void {
+  // reject extensions and every active selector on the raw branch
+  if (Object.keys(registry).join(",") !== "activePackage,contractVersion,rawReason,siteKey" ||
+      registry.activePackage !== null || registry.contractVersion !==
+        "forecast-adjustment-rain-maintenance-registry/v1" || registry.rawReason !== "policy_raw" ||
+      registry.siteKey !== "ballydidean") {
+    throw new RangeError("rain maintenance raw registry is invalid");
   }
 }
 
@@ -231,6 +309,12 @@ function validateActiveRainRegistry(
 // create one deeply frozen disabled rain runtime
 function disabledRainRuntime(
   reasonCode: "policy_raw" | "registry_invalid",
+  comparatorAuthority?: MaintenanceShadowServingAuthority,
 ): LoadedForecastAdjustmentRainRuntimeRegistryV1 {
-  return deepFreeze({ artifactSha256: null, reasonCode, state: "disabled" });
+  return deepFreeze({
+    artifactSha256: null,
+    ...(comparatorAuthority === undefined ? {} : { comparatorAuthority }),
+    reasonCode,
+    state: "disabled",
+  });
 }

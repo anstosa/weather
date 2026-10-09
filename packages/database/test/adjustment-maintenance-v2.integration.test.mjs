@@ -346,25 +346,42 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
       /closed function context/u,
     );
 
-    const schemaSha256 = "eb9930a1e12919d6f35feb2d402b87b336859b24f031f0e2e3d99168716dc0cd";
+    const schemaSha256 = "4255feacfd464adf2cbbf1139ecdf30d9d00b847775c556407367ad1449d9e63";
     const jitteredIssuedAt = new Date(clocks.due_at.getTime() + 300_123);
     const prediction = {
       bodyByteCount: 2048,
+      candidateSha256: registration.candidateSha256,
       dueKey: `capture/${clocks.due_at.toISOString()}`,
       inputSha256: "2".repeat(64),
       issuedAt: jitteredIssuedAt.toISOString(),
-      maxValidAt: new Date(clocks.interval_start.getTime() + 11 * 3_600_000).toISOString(),
-      minValidAt: clocks.interval_start.toISOString(),
+      maxValidAt: new Date(clocks.interval_start.getTime() + 5 * 3_600_000).toISOString(),
+      minValidAt: new Date(clocks.interval_start.getTime() - 6 * 3_600_000).toISOString(),
       predictionBodySha256: "3".repeat(64),
       predictionSchemaSha256: schemaSha256,
       predictionSha256: "",
       registrationSha256: registration.registrationSha256,
       rowCount: 12,
-      sourceReceiptSha256: "4".repeat(64),
+      sourceReceiptSha256: "",
+      sourceSha256: registration.sourceSha256,
+      stageReceiptSha256: "6".repeat(64),
     };
-    prediction.predictionSha256 = sha256([
-      "adjustment-shadow-prediction/v2",
+    prediction.sourceReceiptSha256 = sha256([
+      "adjustment-shadow-source-receipt/v1",
       prediction.registrationSha256,
+      prediction.candidateSha256,
+      prediction.sourceSha256,
+      prediction.dueKey,
+      prediction.issuedAt,
+      prediction.minValidAt,
+      prediction.maxValidAt,
+      String(prediction.rowCount),
+      prediction.inputSha256,
+    ].join("\n"));
+    prediction.predictionSha256 = sha256([
+      "adjustment-shadow-prediction/v3",
+      prediction.registrationSha256,
+      prediction.candidateSha256,
+      prediction.sourceSha256,
       prediction.dueKey,
       prediction.issuedAt,
       prediction.minValidAt,
@@ -381,7 +398,7 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
         ...prediction,
         rowCount: 13,
       }]),
-      /body bounds/u,
+      /registration binding/u,
     );
     await assert.rejects(
       api.query("SELECT weather_append_adjustment_temperature_shadow_v2($1)", [{
@@ -418,6 +435,15 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
     assert.equal(appended.inserted, true);
     assert.equal(appended.predictionSha256, prediction.predictionSha256);
     assert.match(appended.committedAt, /^\d{4}-\d{2}-\d{2}T/u);
+    assert.equal(appended.revisionReceipt.contractVersion,
+      "adjustment-revision-commit-receipt/v1");
+    assert.equal(appended.revisionReceipt.archiveCommitOrdinal, "1");
+    assert.equal(appended.revisionReceipt.projectionKind, "shadow_prediction");
+    assert.equal(appended.revisionReceipt.projectionIdentitySha256,
+      prediction.sourceReceiptSha256);
+    assert.equal(appended.revisionReceipt.projectionSha256, prediction.inputSha256);
+    assert.equal(appended.revisionReceipt.stageReceiptSha256,
+      prediction.stageReceiptSha256);
     const retried = (await api.query(
       "SELECT weather_append_adjustment_temperature_shadow_v2($1) AS receipt",
       [prediction],
@@ -425,9 +451,17 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
     assert.match(prediction.issuedAt, /[.]123Z$/u);
     assert.equal(retried.inserted, false);
     assert.equal(retried.committedAt, appended.committedAt);
+    assert.deepEqual(retried.revisionReceipt, appended.revisionReceipt);
+    await assert.rejects(
+      api.query("SELECT weather_append_adjustment_temperature_shadow_v2($1)", [{
+        ...prediction,
+        stageReceiptSha256: "7".repeat(64),
+      }]),
+      /retry differs/u,
+    );
     await assert.rejects(
       api.query("SELECT weather_append_adjustment_wind_shadow_v2($1)", [prediction]),
-      /family or schema/u,
+      /registration binding/u,
     );
     assert.equal((await api.query(
       "SELECT adjustment_shadow_body_admission_v2($1,$2,$3,$4) AS admitted",
@@ -439,6 +473,17 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
       [registration.registrationSha256, prediction.dueKey, "5".repeat(64),
         prediction.bodyByteCount],
     )).rows[0].admitted, false);
+    const revisionAdmission = (await api.query(
+      "SELECT adjustment_shadow_revision_admission_v1($1,$2,$3,$4) AS receipt",
+      [registration.registrationSha256, prediction.dueKey,
+        prediction.predictionBodySha256, prediction.bodyByteCount],
+    )).rows[0].receipt;
+    assert.deepEqual(revisionAdmission, appended.revisionReceipt);
+    assert.equal((await api.query(
+      "SELECT adjustment_shadow_revision_admission_v1($1,$2,$3,$4) AS receipt",
+      [registration.registrationSha256, prediction.dueKey, "5".repeat(64),
+        prediction.bodyByteCount],
+    )).rows[0].receipt, null);
     await assert.rejects(
       owner.query("UPDATE adjustment_shadow_registrations_v2 SET family = family"),
       /immutable/u,
@@ -461,6 +506,19 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
     assert.equal(JSON.stringify(available).includes(prediction.predictionBodySha256), false);
     await assert.rejects(
       exporter.query("SELECT * FROM adjustment_shadow_predictions_v2"),
+      /permission denied/u,
+    );
+    const frontier = (await exporter.query(
+      "SELECT adjustment_revision_frontier_v1() AS frontier",
+    )).rows[0].frontier;
+    assert.deepEqual(frontier, {
+      archiveCommitOrdinal: "1",
+      contractVersion: "adjustment-revision-frontier/v1",
+      frontierSha256: appended.revisionReceipt.frontierSha256,
+      projectionCount: "1",
+    });
+    await assert.rejects(
+      api.query("SELECT adjustment_revision_frontier_v1()"),
       /permission denied/u,
     );
     await assert.rejects(
@@ -547,6 +605,19 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
       metadata_generation: 0,
       prediction_count: 1,
     });
+    await assert.rejects(
+      callWithAnchor(owner, {
+        "weather.adjustment_maintenance_anchor_kind": "shadow_metadata_transfer",
+        "weather.adjustment_maintenance_anchor_sha256": transferAnchor,
+      }, "SELECT weather_finalize_adjustment_shadow_metadata_v2($1)", [{
+        ...finalization,
+        finalDisposition: "final",
+      }]),
+      /immutable/u,
+    );
+    assert.equal((await owner.query(`SELECT count(*)::integer AS count
+      FROM adjustment_shadow_predictions_v2
+      WHERE registration_sha256 = $1`, [registration.registrationSha256])).rows[0].count, 1);
     const finalized = await callWithAnchor(owner, {
       "weather.adjustment_maintenance_anchor_kind": "shadow_metadata_transfer",
       "weather.adjustment_maintenance_anchor_sha256": transferAnchor,
@@ -671,6 +742,108 @@ test("adjustment maintenance v2 is inactive, value-free, role-closed, and idempo
       ]),
       /permission denied/u,
     );
+
+    const terminalAnchor = "1".repeat(64);
+    const actionCompletedAt = new Date().toISOString();
+    const terminalResult = {
+      actionCompletedAt,
+      actionDisposition: "promoted_verified",
+      actionSha256: "2".repeat(64),
+      maintenanceAnchorSha256: terminalAnchor,
+      reconciliationSha256: "",
+      registrationSha256: registration.registrationSha256,
+      terminalMemberSha256: "5".repeat(64),
+      terminalResultSha256: "3".repeat(64),
+    };
+    terminalResult.reconciliationSha256 = sha256([
+      "adjustment-shadow-terminal-reconciliation/v2",
+      registration.registrationSha256,
+      registration.family,
+      registration.candidateSha256,
+      registration.sourceSha256,
+      registration.reservedKeySha256,
+      terminalResult.terminalMemberSha256,
+      terminalResult.terminalResultSha256,
+      access.accessSha256,
+      terminalResult.actionSha256,
+      terminalResult.actionDisposition,
+      terminalResult.actionCompletedAt,
+      successor,
+      "1",
+      "1",
+      terminalAnchor,
+    ].join("\n"));
+    await assert.rejects(
+      callWithAnchor(owner, {
+        "weather.adjustment_maintenance_anchor_kind": "terminal_action_reconciliation",
+        "weather.adjustment_maintenance_anchor_sha256": terminalAnchor,
+        "weather.adjustment_terminal_member_root_sha256": registration.candidateSha256,
+      }, "SELECT weather_record_adjustment_shadow_terminal_result_v2($1)", [{
+        ...terminalResult,
+        terminalMemberSha256: registration.candidateSha256,
+      }]),
+      /member root is invalid/u,
+    );
+    await assert.rejects(
+      callWithAnchor(owner, {
+        "weather.adjustment_maintenance_anchor_kind": "terminal_action_reconciliation",
+        "weather.adjustment_maintenance_anchor_sha256": terminalAnchor,
+        "weather.adjustment_terminal_member_root_sha256": terminalResult.terminalMemberSha256,
+      }, "SELECT weather_record_adjustment_shadow_terminal_result_v2($1)", [{
+        ...terminalResult,
+        reconciliationSha256: "0".repeat(64),
+      }]),
+      /identity is invalid/u,
+    );
+    const recordedTerminal = await callWithAnchor(owner, {
+      "weather.adjustment_maintenance_anchor_kind": "terminal_action_reconciliation",
+      "weather.adjustment_maintenance_anchor_sha256": terminalAnchor,
+      "weather.adjustment_terminal_member_root_sha256": terminalResult.terminalMemberSha256,
+    }, "SELECT weather_record_adjustment_shadow_terminal_result_v2($1) AS receipt", [
+      terminalResult,
+    ]);
+    assert.equal(recordedTerminal.rows[0].receipt.status, "recorded");
+    await assert.rejects(
+      api.query("SELECT weather_retire_adjustment_shadow_registration_v2($1)", [{
+        reconciliationSha256: terminalResult.reconciliationSha256,
+        registrationSha256: registration.registrationSha256,
+        retirementAnchorSha256: "4".repeat(64),
+      }]),
+      /permission denied/u,
+    );
+    const retirementAnchor = "4".repeat(64);
+    const retired = await callWithAnchor(owner, {
+      "weather.adjustment_maintenance_anchor_kind": "terminal_registration_retirement",
+      "weather.adjustment_maintenance_anchor_sha256": retirementAnchor,
+    }, "SELECT weather_retire_adjustment_shadow_registration_v2($1) AS receipt", [{
+      reconciliationSha256: terminalResult.reconciliationSha256,
+      registrationSha256: registration.registrationSha256,
+      retirementAnchorSha256: retirementAnchor,
+    }]);
+    assert.equal(retired.rows[0].receipt.status, "retired");
+    assert.equal((await owner.query(`SELECT count(*)::integer AS count
+      FROM adjustment_shadow_terminal_results_v2
+      WHERE registration_sha256 = $1`, [registration.registrationSha256])).rows[0].count, 1);
+    const successorRegistration = {
+      ...registration,
+      artifactSha256: "4".repeat(64),
+      candidateSha256: "5".repeat(64),
+      cohortSha256: "6".repeat(64),
+      registrationSha256: "",
+    };
+    successorRegistration.registrationSha256 = sha256([
+      "adjustment-shadow-registration/v2", successorRegistration.siteKey,
+      successorRegistration.family, successorRegistration.candidateSha256,
+      successorRegistration.artifactSha256, successorRegistration.policySha256,
+      successorRegistration.cohortSha256, successorRegistration.reservedKeySha256,
+      successorRegistration.sourceSha256, successorRegistration.intervalStartAt,
+      successorRegistration.intervalEndAt, successorRegistration.targetCutoffAt,
+      successorRegistration.terminalAt,
+    ].join("\n"));
+    assert.equal((await api.query(
+      "SELECT weather_register_adjustment_shadow_v2($1) AS receipt",
+      [successorRegistration],
+    )).rows[0].receipt.inserted, true);
   } finally {
     await Promise.all([
       admin.end(),

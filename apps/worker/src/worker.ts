@@ -1,9 +1,16 @@
+import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
-import { FORECAST_OBSERVATION_STATIONS, RAIN_COLLECTION_POLICY } from "@weather/domain";
+import {
+  FORECAST_OBSERVATION_SOURCE_LINEAGES,
+  FORECAST_OBSERVATION_STATIONS,
+  RAIN_COLLECTION_POLICY,
+} from "@weather/domain";
 import {
   abandonExpiredRuns,
   acquireSourceSession,
+  bindAdjustmentEcmwfTemperatureRevision,
+  bindAdjustmentWeatherRevisions,
   completeScheduledIngestion,
   createDatabasePool,
   discoverDueSources,
@@ -12,11 +19,17 @@ import {
   listCausalEcmwfTemperatureCanaryPriorHours,
   listCausalForecastObservationHourlyStations,
   listEcmwfTemperatureCanaryRunInitializations,
+  listPendingPhysicalWeatherAdjustmentRevisions,
   persistEcmwfTemperatureCanaryRun,
+  markAdjustmentRevisionGap,
   startIngestionRun,
   updateWorkerHeartbeat,
   type DueSource,
+  type AdjustmentRevisionCommitReceipt,
   type EcmwfTemperatureCanaryRecentErrorState,
+  type PersistedEcmwfTemperatureRevision,
+  type PersistedWeatherAdjustmentRevision,
+  type Queryable,
   type EcowittConfiguration,
   type PublicStationConfiguration,
   type PublicStationConfigurationStation,
@@ -62,11 +75,26 @@ import {
 import {
   createForecastAdjustmentRainRuntimeRegistryLoader,
   createForecastAdjustmentTemperatureCanaryRuntimeLoader,
+  loadAdjustmentRevisionCaptureEpochWitness,
   forecastAdjustmentTemperatureCanaryIsActiveAt,
+  loadInstalledMaintenanceShadowCandidate,
+  loadInstalledRainMaintenanceControlReference,
   localCalendarFeaturesFor,
   scalarNetworkActual,
+  adjustmentRevisionLogicalKeySha256,
+  adjustmentRevisionProjectionIdentity,
+  parseAdjustmentRevisionBatchProjection,
+  parseAdjustmentRevisionProjection,
+  parseAdjustmentTemperatureNativeSourceProjection,
+  requireAdjustmentRevisionProjectionAfterCaptureEpoch,
+  encodeAdjustmentRevisionProjection,
+  encodeAdjustmentTemperatureNativeSourceProjection,
+  encodeAdjustmentRevisionBatchProjection,
+  encodeMaintenanceBinary64,
   type LoadedForecastAdjustmentTemperatureCanaryRuntime,
+  type AdjustmentRevisionCaptureEpochWitness,
   type LoadedForecastAdjustmentRainRuntimeRegistryV1,
+  type InstalledRainMaintenanceControlReference,
 } from "@weather/forecast-adjustment";
 
 import { loadWorkerConfiguration } from "./config.js";
@@ -84,7 +112,16 @@ import {
 } from "./health.js";
 import { planIngestionDeadlines } from "./run-deadline.js";
 import { collectRainEvidence, isRainCollectionEnabled, type RainCollectionOptions } from "./rain-collection.js";
-import { publishRainAdjustment } from "./rain-adjustment.js";
+import { publishRainFixedGaugeTarget } from "./rain-fixed-gauge-target-producer.js";
+import {
+  createHttpRainAdjustmentMaintenanceClient,
+  publishRainAdjustment,
+  stageAdjustmentRevisionWithBackpressure,
+  type AdjustmentRevisionGap,
+  type AdjustmentRevisionStageReceipt,
+  type RainAdjustmentMaintenanceClient,
+  type RainAdjustmentMaintenanceOptions,
+} from "./rain-adjustment.js";
 import {
   executePublicStationBackfill,
   resolvePublicStationBackfillSources,
@@ -119,6 +156,10 @@ export interface WorkerRepository {
 }
 
 export interface WorkerIterationOptions {
+  readonly adjustmentCaptureEpoch?: AdjustmentRevisionCaptureEpochWitness;
+  readonly adjustmentMaintenanceCapture?: (
+    request: Readonly<{ dueKey: string; issuedAt: string }>,
+  ) => Promise<void>;
   readonly diagnosticWriter?: (diagnostic: WorkerDiagnostic) => void;
   readonly fetchCurrent?: OpenMeteoCurrentOperation;
   readonly fetchEcmwfSingleRun?: OpenMeteoEcmwfSingleRunOperation;
@@ -137,6 +178,9 @@ export interface WorkerIterationOptions {
   readonly publicStations?: PublicStationConfiguration | null;
   readonly rainCollection?: RainCollectionOptions;
   readonly rainAdjustmentEnabled?: boolean;
+  readonly rainAdjustmentMaintenance?: RainAdjustmentMaintenanceOptions;
+  readonly rainAdjustmentControlReference?: InstalledRainMaintenanceControlReference;
+  readonly rainAdjustmentRevisionClient?: RainAdjustmentMaintenanceClient;
   readonly rainAdjustmentRuntime?: LoadedForecastAdjustmentRainRuntimeRegistryV1;
   readonly tempest?: TempestConfiguration | null;
   readonly temperatureCanaryRuntime?: LoadedForecastAdjustmentTemperatureCanaryRuntime;
@@ -224,6 +268,12 @@ async function runWorkerIterationWithState(
           ? {}
           : { fetchOptions: options.fetchOptions }),
         now,
+        ...(options.rainAdjustmentRevisionClient === undefined
+          ? {}
+          : { revisionClient: options.rainAdjustmentRevisionClient }),
+        ...(options.adjustmentCaptureEpoch === undefined
+          ? {}
+          : { captureEpoch: options.adjustmentCaptureEpoch }),
         repository,
         site: options.site,
         ...(options.fetchCurrent === undefined
@@ -304,6 +354,12 @@ async function runWorkerIterationWithState(
           ? {}
           : { fetchEcmwfSingleRun: options.fetchEcmwfSingleRun }),
         now,
+        ...(options.rainAdjustmentRevisionClient === undefined
+          ? {}
+          : { revisionClient: options.rainAdjustmentRevisionClient }),
+        ...(options.adjustmentCaptureEpoch === undefined
+          ? {}
+          : { captureEpoch: options.adjustmentCaptureEpoch }),
         repository,
         site: options.site,
       });
@@ -369,6 +425,40 @@ async function runWorkerIterationWithState(
     }
   }
 
+  // materialize one post-epoch closed target hour after raw collection completes
+  if (options.rainCollection !== undefined &&
+      options.rainAdjustmentRevisionClient !== undefined &&
+      options.adjustmentCaptureEpoch !== undefined) {
+    const startedAt = now().getTime();
+    try {
+      const result = await publishRainFixedGaugeTarget(
+        pool,
+        options.adjustmentCaptureEpoch,
+        options.rainAdjustmentRevisionClient,
+      );
+      diagnosticWriter(createWorkerDiagnostic({
+        count: result.state === "published" ? result.revisionCount : 0,
+        durationMs: elapsedMilliseconds(startedAt, now()),
+        errorCode: result.state === "gap" ? result.reason : null,
+        event: "source_run",
+        release: options.version,
+        runId: null,
+        sourceId: "rain-fixed-gauge-target",
+      }));
+    } catch {
+      // preserve ordinary serving when target custody or storage is unavailable
+      diagnosticWriter(createWorkerDiagnostic({
+        count: 0,
+        durationMs: elapsedMilliseconds(startedAt, now()),
+        errorCode: "rain_fixed_gauge_target_failed",
+        event: "source_run",
+        release: options.version,
+        runId: null,
+        sourceId: "rain-fixed-gauge-target",
+      }));
+    }
+  }
+
   // publish model output independently of collection and other adjustment failures
   if (rainAdjustmentInferenceIsActive(
     options.rainAdjustmentRuntime,
@@ -380,6 +470,10 @@ async function runWorkerIterationWithState(
         pool,
         now(),
         options.rainAdjustmentRuntime,
+        options.rainAdjustmentMaintenance,
+        options.rainAdjustmentRevisionClient,
+        options.adjustmentCaptureEpoch,
+        options.rainAdjustmentControlReference,
       );
       diagnosticWriter(createWorkerDiagnostic({
         count: published ? 1 : 0, durationMs: elapsedMilliseconds(startedAt, now()),
@@ -393,6 +487,16 @@ async function runWorkerIterationWithState(
         errorCode: "rain_adjustment_failed", event: "source_run", release: options.version,
         runId: null, sourceId: "rain-adjustment",
       }));
+    }
+  }
+
+  // trigger the stable private capture key after all retained producers have run
+  if (options.adjustmentMaintenanceCapture !== undefined) {
+    try {
+      const capture = adjustmentMaintenanceCaptureDueAt(new Date(loopAt));
+      await options.adjustmentMaintenanceCapture(capture);
+    } catch {
+      // keep public ingestion and serving available when graph capture is blocked
     }
   }
 
@@ -432,8 +536,31 @@ function rainAdjustmentInferenceIsActive(
   runtime: LoadedForecastAdjustmentRainRuntimeRegistryV1 | undefined,
   legacyEnabled: boolean | undefined,
 ): boolean {
-  // require both the existing feature gate and any explicit active registry
-  return legacyEnabled === true && (runtime === undefined || runtime.state === "active");
+  const rootSelectedRaw = runtime?.state === "disabled" && runtime.reasonCode === "policy_raw" &&
+    runtime.comparatorAuthority !== undefined;
+  // preserve raw service while retaining its genuine future-only capture path
+  return legacyEnabled === true &&
+    (runtime === undefined || runtime.state === "active" || rootSelectedRaw);
+}
+
+// derive the latest fixed six-hour capture clock without using mutable loop jitter
+export function adjustmentMaintenanceCaptureDueAt(
+  now: Date,
+): Readonly<{ dueKey: string; issuedAt: string }> {
+  const nowMilliseconds = now.getTime();
+  // reject invalid injected scheduler clocks
+  if (!Number.isFinite(nowMilliseconds)) {
+    throw new RangeError("adjustment maintenance scheduler clock is invalid");
+  }
+  const cycleHours = Math.floor(now.getUTCHours() / 6) * 6;
+  const cycle = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cycleHours);
+  let issuedAtMilliseconds = cycle + 35 * 60_000;
+  // use the previous exact cycle before the current cycle reaches its due minute
+  if (issuedAtMilliseconds > nowMilliseconds) {
+    issuedAtMilliseconds -= 6 * 3_600_000;
+  }
+  const issuedAt = new Date(issuedAtMilliseconds).toISOString();
+  return { dueKey: `capture/${issuedAt}`, issuedAt };
 }
 
 export interface EcmwfTemperatureCanaryCollectionResult {
@@ -450,6 +577,8 @@ export async function collectEcmwfTemperatureCanaryRuns(
     fetchOptions?: ProviderFetchOptions;
     now: () => Date;
     repository: WorkerRepository;
+    revisionClient?: RainAdjustmentMaintenanceClient;
+    captureEpoch?: AdjustmentRevisionCaptureEpochWitness;
     site: SiteConfiguration;
   }>,
 ): Promise<EcmwfTemperatureCanaryCollectionResult> {
@@ -532,7 +661,11 @@ export async function collectEcmwfTemperatureCanaryRuns(
               : "causal_recent_error_state_insufficient",
         stateStatus,
         upstreamModel: batch.upstreamModel,
-      });
+      }, options.revisionClient === undefined
+        ? undefined
+        : options.captureEpoch === undefined
+          ? undefined
+          : createEcmwfTemperatureRevisionArchiver(pool, options.revisionClient, options.captureEpoch));
       persistedRuns += 1;
     } catch {
       // continue warming after one unavailable or rejected run
@@ -541,6 +674,559 @@ export async function collectEcmwfTemperatureCanaryRuns(
   }
 
   return { failedRuns, persistedRuns, requestedRuns };
+}
+
+// create one transactional ECMWF archive adapter for a newly persisted run
+export function createEcmwfTemperatureRevisionArchiver(
+  pool: DatabasePool,
+  client: RainAdjustmentMaintenanceClient,
+  captureEpoch: AdjustmentRevisionCaptureEpochWitness,
+  pause?: (milliseconds: number) => Promise<void>,
+) {
+  return async (
+    queryable: Queryable,
+    revision: PersistedEcmwfTemperatureRevision,
+  ): Promise<Readonly<{ publish: () => Promise<void> }>> => {
+    const logicalKey = {
+      contentSha256: revision.contentHash,
+      leadHours: null,
+      providerResponseSha256: revision.providerResponseSha256,
+      runInitializedAt: revision.runInitializedAt,
+      siteId: revision.siteId,
+      sourceId: null,
+      sourceType: "ecmwf_temperature_run",
+      validAt: null,
+    };
+    const logicalKeySha256 = adjustmentRevisionLogicalKeySha256("native_source", logicalKey);
+    const databaseKey = {
+      providerResponseSha256: revision.providerResponseSha256,
+      runInitializedAt: revision.runInitializedAt,
+      siteId: revision.siteId,
+      storedContentSha256: revision.contentHash,
+    };
+    let projection: Buffer;
+    let identity: string;
+    // encode the complete eighteen-hour run returned by the database transaction
+    try {
+      projection = encodeAdjustmentTemperatureNativeSourceProjection({
+        contractVersion: "adjustment-temperature-native-source-projection/v2",
+        family: "temperature",
+        logicalKey,
+        logicalReceivedAt: revision.logicalReceivedAt,
+        projectionKind: "native_source",
+        recentErrorState: revision.recentErrorState,
+        recentErrorStateSha256: revision.recentErrorStateSha256,
+        rows: temperatureNativeRevisionRows(revision),
+        source: {
+          adapterVersion: revision.adapterVersion,
+          contractEpoch: "ecmwf-temperature-canary/v1",
+          dataset: "single_run",
+          providerKey: "open-meteo",
+          sourceConfigFingerprint: ecmwfTemperatureRevisionSourceFingerprint(revision),
+          sourceId: `site:${revision.siteId}`,
+          sourceKey: `open-meteo-ecmwf-single-run:${revision.siteSlug}`,
+          sourceKind: "forecast",
+          upstreamModel: revision.upstreamModel,
+        },
+        storedContentSha256: revision.contentHash,
+      });
+      requireAdjustmentRevisionProjectionAfterCaptureEpoch(
+        captureEpoch,
+        parseAdjustmentTemperatureNativeSourceProjection(projection),
+      );
+      identity = adjustmentRevisionProjectionIdentity(projection);
+    } catch {
+      const gap = ecmwfTemperatureRevisionGap(logicalKeySha256, null, "archive_stage_failed");
+      await markAdjustmentRevisionGap(queryable, "ecmwf_temperature", databaseKey, gap);
+      return { publish: () => recordWorkerRevisionGap(client, gap) };
+    }
+    let stageReceipt: AdjustmentRevisionStageReceipt;
+    // require archive durability before assigning the database frontier ordinal
+    try {
+      stageReceipt = await stageAdjustmentRevisionWithBackpressure(client, projection, pause);
+      validateWorkerRevisionStageReceipt(stageReceipt, "native_source", identity);
+    } catch {
+      const gap = ecmwfTemperatureRevisionGap(logicalKeySha256, identity, "archive_stage_failed");
+      await markAdjustmentRevisionGap(queryable, "ecmwf_temperature", databaseKey, gap);
+      return { publish: () => recordWorkerRevisionGap(client, gap) };
+    }
+    let revisionReceipt: AdjustmentRevisionCommitReceipt;
+    // bind the durable complete run inside the same serving transaction
+    try {
+      revisionReceipt = (await bindAdjustmentEcmwfTemperatureRevision(queryable, {
+        ...databaseKey,
+        projectionIdentitySha256: identity,
+        projectionSha256: identity,
+        stageReceiptSha256: stageReceipt.stageReceiptSha256,
+      })).revisionReceipt;
+    } catch {
+      const gap = ecmwfTemperatureRevisionGap(logicalKeySha256, identity, "database_bind_failed");
+      await markAdjustmentRevisionGap(queryable, "ecmwf_temperature", databaseKey, gap);
+      return { publish: () => recordWorkerRevisionGap(client, gap) };
+    }
+    return {
+      // publish only after the temperature serving transaction commits
+      async publish() {
+        try {
+          await client.publishRevision(projection, stageReceipt, revisionReceipt);
+        } catch (error) {
+          const gap = ecmwfTemperatureRevisionGap(logicalKeySha256, identity, "archive_publish_failed");
+          let marked = false;
+          // preserve a stricter api-side admission marker if one already exists
+          try {
+            await markAdjustmentRevisionGap(pool, "ecmwf_temperature", databaseKey, gap);
+            marked = true;
+          } catch {
+            // the api may already have persisted a different permanent category
+          }
+          // archive only the matching category this caller persisted
+          if (marked) {
+            await recordWorkerRevisionGap(client, gap);
+          }
+          throw error;
+        }
+      },
+    };
+  };
+}
+
+// bind the full native run to the exact serving best-match product
+function temperatureNativeRevisionRows(
+  revision: PersistedEcmwfTemperatureRevision,
+): readonly Readonly<Record<string, string | number | boolean | null>>[] {
+  const bestMatchByValidAt = new Map(revision.bestMatchRows.map(
+    // retain the exact database valid-time identity
+    (row) => [new Date(row.validAt).toISOString(), row],
+  ));
+  // require one complete source-decision serving horizon before encoding
+  if (revision.hours.length !== 18 || revision.bestMatchRows.length !== 12 ||
+      new Set(revision.bestMatchRows.map((row) => row.sourceId)).size !== 1 ||
+      new Set(revision.bestMatchRows.map((row) => String(row.productRunAt))).size !== 1) {
+    throw new RangeError("temperature native comparator geometry differs");
+  }
+  return revision.hours.map(
+    // retain every native hour and only its eligible serving comparator
+    (hour) => {
+      const bestMatch = hour.modelLeadHours < 7
+        ? null
+        : bestMatchByValidAt.get(hour.validAt) ?? null;
+      // prohibit a missing or non-best-match eligible source row
+      if (hour.modelLeadHours >= 7 && (bestMatch === null ||
+          bestMatch.productRunAt === null || bestMatch.upstreamModel !== "best_match" ||
+          bestMatch.providerMetadata?.dataset !== "best_match")) {
+        throw new RangeError("temperature native comparator differs");
+      }
+      return {
+        bestMatchContentSha256: bestMatch?.contentHash ?? null,
+        bestMatchProductRunAt: bestMatch === null
+          ? null : new Date(bestMatch.productRunAt!).toISOString(),
+        bestMatchSourceId: bestMatch?.sourceId ?? null,
+        bestMatchTemperatureC64: nullableRevisionBinary64(bestMatch?.temperatureC ?? null),
+        contentSha256: hour.contentHash,
+        modelCycle: revision.modelCycle,
+        modelLeadHours: hour.modelLeadHours,
+        rawRelativeHumidityPercent64: nullableRevisionBinary64(hour.rawRelativeHumidityPercent),
+        rawTemperatureC64: encodeMaintenanceBinary64(hour.rawTemperatureC),
+        rawWindSpeedMps64: nullableRevisionBinary64(hour.rawWindSpeedMps),
+        validAt: hour.validAt,
+      };
+    },
+  );
+}
+
+// hash the exact fixed provider request configuration for this site
+function ecmwfTemperatureRevisionSourceFingerprint(
+  revision: PersistedEcmwfTemperatureRevision,
+): string {
+  return createHash("sha256").update([
+    revision.adapterVersion,
+    revision.siteSlug,
+    revision.siteLatitude.toFixed(6),
+    revision.siteLongitude.toFixed(6),
+    revision.upstreamModel,
+    "forecast_hours=19",
+    "temperature_2m,relative_humidity_2m,wind_speed_10m",
+  ].join("\n") + "\n").digest("hex");
+}
+
+// create one closed permanent temperature revision gap
+function ecmwfTemperatureRevisionGap(
+  logicalKeySha256: string,
+  identity: string | null,
+  reason: AdjustmentRevisionGap["reason"],
+): AdjustmentRevisionGap {
+  return {
+    logicalKeySha256,
+    projectionIdentitySha256: identity,
+    projectionKind: "native_source",
+    projectionSha256: identity,
+    reason,
+  };
+}
+
+// relay one already-persisted revision gap without affecting serving
+async function recordWorkerRevisionGap(
+  client: RainAdjustmentMaintenanceClient,
+  gap: AdjustmentRevisionGap,
+): Promise<void> {
+  try {
+    await client.recordRevisionGap(gap);
+  } catch {
+    // keep the database marker authoritative during an archive outage
+  }
+}
+
+// validate one whole-body durable stage receipt from the private api
+function validateWorkerRevisionStageReceipt(
+  receipt: AdjustmentRevisionStageReceipt,
+  projectionKind: AdjustmentRevisionStageReceipt["projectionKind"],
+  identity: string,
+): void {
+  const unsigned = {
+    contractVersion: receipt.contractVersion,
+    durable: receipt.durable,
+    durableAt: receipt.durableAt,
+    projectionIdentitySha256: receipt.projectionIdentitySha256,
+    projectionKind: receipt.projectionKind,
+    projectionSha256: receipt.projectionSha256,
+  };
+  // reject a generic acknowledgement or a self-hash over different fields
+  if (receipt.contractVersion !== "adjustment-revision-stage-receipt/v1" || receipt.durable !== true ||
+      receipt.projectionKind !== projectionKind || receipt.projectionIdentitySha256 !== identity ||
+      receipt.projectionSha256 !== identity || !Number.isFinite(Date.parse(receipt.durableAt)) ||
+      new Date(receipt.durableAt).toISOString() !== receipt.durableAt ||
+      receipt.stageReceiptSha256 !== createHash("sha256")
+        .update(`${JSON.stringify(unsigned)}\n`).digest("hex")) {
+    throw new RangeError("adjustment revision stage receipt differs");
+  }
+}
+
+// retain null while encoding one exact finite provider value
+function nullableRevisionBinary64(value: number | null): string | null {
+  return value === null ? null : encodeMaintenanceBinary64(value);
+}
+
+// create one transactional target/comparator archive adapter for normalized ingestion
+export function createWeatherAdjustmentRevisionArchiver(
+  pool: DatabasePool,
+  client: RainAdjustmentMaintenanceClient,
+  captureEpoch: AdjustmentRevisionCaptureEpochWitness,
+  pause?: (milliseconds: number) => Promise<void>,
+) {
+  return async (
+    queryable: Queryable,
+    changedRevisions: readonly PersistedWeatherAdjustmentRevision[],
+  ): Promise<Readonly<{ publish: () => Promise<void> }> | null> => {
+    const selected = await selectWeatherAdjustmentRevisionGroup(
+      queryable,
+      changedRevisions,
+      captureEpoch,
+    );
+    // omit irrelevant or not-yet-complete cohorts without fabricating a gap
+    if (selected === null) {
+      return null;
+    }
+    const { projectionKind, revisions } = selected;
+    const first = revisions[0]!;
+    const record = first.record;
+    const dataset = record.metadata.provider?.dataset;
+    const logicalKey = {
+      productRunAt: record.productRunAt,
+      sourceId: record.sourceId,
+      sourceKind: record.sourceKind as "forecast" | "physical_sensor",
+      validAt: record.validAt,
+    };
+    let projection: Buffer;
+    let identity: string;
+    // encode the complete same-source group retained by the serving transaction
+    try {
+      projection = encodeAdjustmentRevisionBatchProjection({
+        contractVersion: "adjustment-revision-batch-projection/v2",
+        family: projectionKind === "actual_best_match" ? "wind" : "shared",
+        logicalKey,
+        logicalReceivedAt: first.logicalReceivedAt,
+        projectionKind,
+        rows: revisions.map(weatherAdjustmentRevisionRow),
+        source: {
+          adapterVersion: first.adapterVersion,
+          contractEpoch: weatherAdjustmentRevisionContractEpoch(first, projectionKind),
+          dataset: projectionKind === "actual_best_match" ? String(dataset) : first.sourceKey,
+          providerKey: first.providerKey,
+          sourceConfigFingerprint: first.sourceConfigFingerprint,
+          sourceId: record.sourceId,
+          sourceKey: first.sourceKey,
+          sourceKind: record.sourceKind,
+          upstreamModel: projectionKind === "actual_best_match"
+            ? record.metadata.model
+            : null,
+        },
+        storedContentSha256: first.contentHash,
+      });
+      requireAdjustmentRevisionProjectionAfterCaptureEpoch(
+        captureEpoch,
+        parseAdjustmentRevisionBatchProjection(projection),
+      );
+      identity = adjustmentRevisionProjectionIdentity(projection);
+    } catch {
+      const gaps = await markWeatherAdjustmentRevisionGaps(
+        queryable,
+        revisions,
+        projectionKind,
+        null,
+        "archive_stage_failed",
+      );
+      return { publish: () => recordWorkerRevisionGaps(client, gaps) };
+    }
+    let stageReceipt: AdjustmentRevisionStageReceipt;
+    // require durable canonical bytes before binding every grouped serving row
+    try {
+      stageReceipt = await stageAdjustmentRevisionWithBackpressure(client, projection, pause);
+      validateWorkerRevisionStageReceipt(stageReceipt, projectionKind, identity);
+    } catch {
+      const gaps = await markWeatherAdjustmentRevisionGaps(
+        queryable,
+        revisions,
+        projectionKind,
+        identity,
+        "archive_stage_failed",
+      );
+      return { publish: () => recordWorkerRevisionGaps(client, gaps) };
+    }
+    let revisionReceipts: readonly AdjustmentRevisionCommitReceipt[];
+    // bind the one durable body to every exact grouped serving revision
+    try {
+      const batch = await bindAdjustmentWeatherRevisions(queryable, revisions.map((revision) => ({
+        productRunAt: revision.record.productRunAt,
+        projectionIdentitySha256: identity,
+        projectionSha256: identity,
+        sourceId: revision.record.sourceId,
+        sourceKind: revision.record.sourceKind as "forecast" | "physical_sensor",
+        stageReceiptSha256: stageReceipt.stageReceiptSha256,
+        storedContentSha256: revision.contentHash,
+        validAt: revision.record.validAt,
+      })));
+      // require the database batch to preserve every exact ordered content identity
+      if (batch.receipts.length !== revisions.length || batch.receipts.some((entry, index) =>
+        entry.storedContentSha256 !== revisions[index]?.contentHash ||
+        entry.validAt !== revisions[index]?.record.validAt)) {
+        throw new Error("weather revision receipt batch differs");
+      }
+      revisionReceipts = batch.receipts.map(
+        // retain the server-assigned global-frontier receipts unchanged
+        (entry) => entry.revisionReceipt as unknown as AdjustmentRevisionCommitReceipt,
+      );
+    } catch {
+      const gaps = await markWeatherAdjustmentRevisionGaps(
+        queryable,
+        revisions,
+        projectionKind,
+        identity,
+        "database_bind_failed",
+      );
+      return { publish: () => recordWorkerRevisionGaps(client, gaps) };
+    }
+    return {
+      // publish only after completeScheduledIngestion commits the serving transaction
+      async publish() {
+        try {
+          await client.publishRevisionBatch(projection, stageReceipt, revisionReceipts);
+        } catch (error) {
+          const gaps = revisions.map(
+            // retain every row-specific logical key in its permanent marker
+            (revision) => weatherAdjustmentRevisionGap(
+              adjustmentRevisionLogicalKeySha256(projectionKind, {
+                productRunAt: revision.record.productRunAt,
+                sourceId: revision.record.sourceId,
+                sourceKind: revision.record.sourceKind,
+                validAt: revision.record.validAt,
+              }),
+              projectionKind,
+              identity,
+              "archive_publish_failed",
+            ),
+          );
+          // preserve stricter api-side markers while completing every matching row marker
+          for (const [index, gap] of gaps.entries()) {
+            const revision = revisions[index]!;
+            try {
+              await markAdjustmentRevisionGap(pool, "weather_record", {
+                productRunAt: revision.record.productRunAt,
+                sourceId: revision.record.sourceId,
+                sourceKind: revision.record.sourceKind as "forecast" | "physical_sensor",
+                storedContentSha256: revision.contentHash,
+                validAt: revision.record.validAt,
+              }, gap);
+            } catch {
+              // the api may already have persisted a different permanent category
+            }
+          }
+          try {
+            // archive one terminal body disposition while retaining every row marker
+            await client.recordRevisionGap(gaps[0]!);
+          } catch {
+            // the api may already have archived the grouped terminal disposition
+          }
+          throw error;
+        }
+      },
+    };
+  };
+}
+
+// select one bounded future-only comparator run or accumulated target group
+async function selectWeatherAdjustmentRevisionGroup(
+  queryable: Queryable,
+  changed: readonly PersistedWeatherAdjustmentRevision[],
+  captureEpoch: AdjustmentRevisionCaptureEpochWitness,
+): Promise<Readonly<{
+  projectionKind: "actual_best_match" | "target_revision";
+  revisions: readonly PersistedWeatherAdjustmentRevision[];
+}> | null> {
+  const first = changed[0];
+  // omit empty or mixed caller batches before any archive I/O
+  if (first === undefined || changed.some((revision) =>
+    revision.record.sourceId !== first.record.sourceId ||
+    revision.record.sourceKind !== first.record.sourceKind)) {
+    return null;
+  }
+  const dataset = first.record.metadata.provider?.dataset;
+  // capture only four complete 168-hour Best Match runs per UTC day
+  if (first.record.sourceKind === "forecast" && first.sourceKey === "open-meteo-forecast-v4" &&
+      first.record.productRunAt !== null && dataset === "best_match" &&
+      first.record.metadata.model === "best_match") {
+    const runAt = Date.parse(first.record.productRunAt);
+    // align comparator custody to the same four daily causal evaluation cycles
+    if (new Date(runAt).getUTCHours() % 6 !== 0) {
+      return null;
+    }
+    const revisions = changed.filter((revision) =>
+      revision.record.productRunAt === first.record.productRunAt &&
+      Date.parse(revision.record.validAt) > runAt &&
+      Date.parse(revision.record.validAt) <= runAt + 168 * 3_600_000)
+      .sort((left, right) => Date.parse(left.record.validAt) - Date.parse(right.record.validAt));
+    // refuse a partial run rather than pretending it is a complete wind source
+    return revisions.length === 168
+      ? { projectionKind: "actual_best_match", revisions }
+      : null;
+  }
+  const lineage = FORECAST_OBSERVATION_SOURCE_LINEAGES.find(
+    // admit only exact source identities consumed by adjustment training
+    (candidate) => candidate.sourceKey === first.sourceKey &&
+      candidate.checkedFingerprint === first.sourceConfigFingerprint,
+  );
+  // exclude unrelated physical products and superseded training lineages
+  if (first.record.sourceKind !== "physical_sensor" || first.record.productRunAt !== null ||
+      lineage === undefined) {
+    return null;
+  }
+  const revisions = await listPendingPhysicalWeatherAdjustmentRevisions(
+    queryable,
+    first.record.sourceId,
+    captureEpoch.epochAt,
+  );
+  return revisions.length === 0 ? null : { projectionKind: "target_revision", revisions };
+}
+
+// persist every row-specific permanent marker for one grouped body failure
+async function markWeatherAdjustmentRevisionGaps(
+  queryable: Queryable,
+  revisions: readonly PersistedWeatherAdjustmentRevision[],
+  projectionKind: "actual_best_match" | "target_revision",
+  identity: string | null,
+  reason: AdjustmentRevisionGap["reason"],
+): Promise<readonly AdjustmentRevisionGap[]> {
+  const gaps: AdjustmentRevisionGap[] = [];
+  // bind each permanent category to its exact current serving revision
+  for (const revision of revisions) {
+    const logicalKey = {
+      productRunAt: revision.record.productRunAt,
+      sourceId: revision.record.sourceId,
+      sourceKind: revision.record.sourceKind,
+      validAt: revision.record.validAt,
+    };
+    const gap = weatherAdjustmentRevisionGap(
+      adjustmentRevisionLogicalKeySha256(projectionKind, logicalKey),
+      projectionKind,
+      identity,
+      reason,
+    );
+    await markAdjustmentRevisionGap(queryable, "weather_record", {
+      ...logicalKey,
+      sourceKind: revision.record.sourceKind as "forecast" | "physical_sensor",
+      storedContentSha256: revision.contentHash,
+    }, gap);
+    gaps.push(gap);
+  }
+  return gaps;
+}
+
+// archive every row-specific permanent category after the serving transaction commits
+async function recordWorkerRevisionGaps(
+  client: RainAdjustmentMaintenanceClient,
+  gaps: readonly AdjustmentRevisionGap[],
+): Promise<void> {
+  const archiveGaps = gaps[0]?.projectionIdentitySha256 === null ? gaps : gaps.slice(0, 1);
+  // preserve every no-body row gap but only one disposition for one shared body
+  for (const gap of archiveGaps) {
+    await client.recordRevisionGap(gap);
+  }
+}
+
+// encode every canonical stored weather metric as exact nullable binary64
+function weatherAdjustmentRevisionRow(
+  revision: PersistedWeatherAdjustmentRevision,
+): Readonly<Record<string, string | null>> {
+  const metrics = revision.record.metrics;
+  return {
+    apparentTemperatureC64: nullableRevisionBinary64(metrics.apparentTemperatureC),
+    blackGlobeTemperatureC64: nullableRevisionBinary64(metrics.blackGlobeTemperatureC),
+    cloudCoverPercent64: nullableRevisionBinary64(metrics.cloudCoverPercent),
+    contentSha256: revision.contentHash,
+    pm25MicrogramsPerCubicMeter64: nullableRevisionBinary64(metrics.pm25MicrogramsPerCubicMeter),
+    precipitationMm64: nullableRevisionBinary64(metrics.precipitationMm),
+    precipitationRateMmPerHour64: nullableRevisionBinary64(metrics.precipitationRateMmPerHour),
+    pressureHpa64: nullableRevisionBinary64(metrics.pressureHpa),
+    relativeHumidityPercent64: nullableRevisionBinary64(metrics.relativeHumidityPercent),
+    soilElectricalConductivityMicrosiemensPerCm64:
+      nullableRevisionBinary64(metrics.soilElectricalConductivityMicrosiemensPerCm),
+    soilMoisturePercent64: nullableRevisionBinary64(metrics.soilMoisturePercent),
+    solarRadiationWm264: nullableRevisionBinary64(metrics.solarRadiationWm2),
+    temperatureC64: nullableRevisionBinary64(metrics.temperatureC),
+    uvIndex64: nullableRevisionBinary64(metrics.uvIndex),
+    validAt: revision.record.validAt,
+    waterLevelM64: nullableRevisionBinary64(metrics.waterLevelM),
+    wetBulbGlobeTemperatureC64: nullableRevisionBinary64(metrics.wetBulbGlobeTemperatureC),
+    windDirectionDegrees64: nullableRevisionBinary64(metrics.windDirectionDegrees),
+    windGustMps64: nullableRevisionBinary64(metrics.windGustMps),
+    windSpeedMps64: nullableRevisionBinary64(metrics.windSpeedMps),
+  };
+}
+
+// derive one explicit adapter/config contract epoch without provider-private fields
+function weatherAdjustmentRevisionContractEpoch(
+  revision: PersistedWeatherAdjustmentRevision,
+  projectionKind: "actual_best_match" | "target_revision",
+): string {
+  const identity = createHash("sha256").update(
+    `${revision.adapterVersion}\0${revision.sourceConfigFingerprint}`,
+  ).digest("hex");
+  return `${projectionKind === "actual_best_match" ? "legacy-v4" : "normalized-weather/v1"}/${identity}`;
+}
+
+// create one closed permanent target or comparator gap
+function weatherAdjustmentRevisionGap(
+  logicalKeySha256: string,
+  projectionKind: "actual_best_match" | "target_revision",
+  identity: string | null,
+  reason: AdjustmentRevisionGap["reason"],
+): AdjustmentRevisionGap {
+  return {
+    logicalKeySha256,
+    projectionIdentitySha256: identity,
+    projectionKind,
+    projectionSha256: identity,
+    reason,
+  };
 }
 
 // freeze one causal recent-error state at model initialization
@@ -771,6 +1457,11 @@ function temperatureCanaryCollectionIsActive(
     return false;
   }
 
+  // keep collection active for a root-qualified permanent package
+  if ("maintenancePackage" in runtime.bundle) {
+    return true;
+  }
+
   try {
     return forecastAdjustmentTemperatureCanaryIsActiveAt(runtime.bundle, now);
   } catch {
@@ -793,6 +1484,8 @@ export async function runScheduledSource(
     fetchTide?: NoaaTideRangeOperation;
     now: () => Date;
     repository: WorkerRepository;
+    revisionClient?: RainAdjustmentMaintenanceClient;
+    captureEpoch?: AdjustmentRevisionCaptureEpochWitness;
     site: SiteConfiguration;
     ecowitt?: EcowittConfiguration | null;
     publicStations?: PublicStationConfiguration | null;
@@ -1088,6 +1781,15 @@ export async function runScheduledSource(
         : lastRecord.validAt,
       providerCursor: batch.providerCursor,
       records: batch.records,
+      ...(options.revisionClient === undefined
+        ? {}
+        : options.captureEpoch === undefined
+          ? {}
+          : { revisionArchiver: createWeatherAdjustmentRevisionArchiver(
+            pool,
+            options.revisionClient,
+            options.captureEpoch,
+          ) }),
       responseMetadata: batch.responseMetadata,
       runId,
       upstreamResponseChecksum: batch.checksum,
@@ -1453,6 +2155,29 @@ export async function startWorkerProcess(
     }).load();
   const rainAdjustmentRuntime =
     await createForecastAdjustmentRainRuntimeRegistryLoader().load();
+  let adjustmentCaptureEpoch: AdjustmentRevisionCaptureEpochWitness | undefined;
+  // keep every producer inactive until the root-installed zero-frontier witness exists
+  try {
+    adjustmentCaptureEpoch = await loadAdjustmentRevisionCaptureEpochWitness();
+  } catch {
+    adjustmentCaptureEpoch = undefined;
+  }
+  const rainAdjustmentRevisionClient = configuration.adjustmentMaintenanceApiOrigin === null ||
+    adjustmentCaptureEpoch === undefined
+    ? undefined
+    : createHttpRainAdjustmentMaintenanceClient(configuration.adjustmentMaintenanceApiOrigin);
+  const rainAdjustmentMaintenance = await loadRainAdjustmentMaintenance(
+    rainAdjustmentRevisionClient,
+    adjustmentCaptureEpoch,
+  );
+  const rainAdjustmentControlReference = await loadRainAdjustmentControlReference(
+    rainAdjustmentRevisionClient,
+    adjustmentCaptureEpoch,
+  );
+  const adjustmentMaintenanceCapture = configuration.adjustmentMaintenanceApiOrigin === null ||
+    adjustmentCaptureEpoch === undefined
+    ? undefined
+    : createAdjustmentMaintenanceCaptureTrigger(configuration.adjustmentMaintenanceApiOrigin);
   const fetchTempest =
     configuration.tempestApiKey === null
       ? undefined
@@ -1465,9 +2190,11 @@ export async function startWorkerProcess(
   );
   const durableHealth = await readWorkerHealth(pool, configuration.instance);
   const runIteration = createWorkerIterationRunner(pool, {
+    ...(adjustmentCaptureEpoch === undefined ? {} : { adjustmentCaptureEpoch }),
     fetchCurrent,
     fetchEcmwfSingleRun,
     fetchForecast,
+    ...(adjustmentMaintenanceCapture === undefined ? {} : { adjustmentMaintenanceCapture }),
     ...(fetchTempest === undefined ? {} : { fetchTempest }),
     instance: configuration.instance,
     lastSuccessAt: durableHealth.lastSuccessAt,
@@ -1485,6 +2212,9 @@ export async function startWorkerProcess(
       : {}),
     ecowitt: configuration.ecowitt,
     rainAdjustmentRuntime,
+    ...(rainAdjustmentControlReference === undefined ? {} : { rainAdjustmentControlReference }),
+    ...(rainAdjustmentMaintenance === undefined ? {} : { rainAdjustmentMaintenance }),
+    ...(rainAdjustmentRevisionClient === undefined ? {} : { rainAdjustmentRevisionClient }),
     tempest: configuration.tempest,
     temperatureCanaryRuntime,
     tides: configuration.tides,
@@ -1544,6 +2274,82 @@ export async function startWorkerProcess(
     configuration.publicStations,
     configuration.version,
   );
+}
+
+// load shadow-only rain state without blocking the served worker process
+async function loadRainAdjustmentMaintenance(
+  client: RainAdjustmentMaintenanceClient | undefined,
+  captureEpoch: AdjustmentRevisionCaptureEpochWitness | undefined,
+): Promise<RainAdjustmentMaintenanceOptions | undefined> {
+  // preserve an omitted private relay as an inactive shadow path
+  if (client === undefined || captureEpoch === undefined) {
+    return undefined;
+  }
+  try {
+    const candidate = await loadInstalledMaintenanceShadowCandidate({ family: "rain" });
+    // keep serving active when no root-installed rain slot exists
+    if (candidate === null) {
+      return undefined;
+    }
+    return {
+      candidate,
+      captureEpoch,
+      client,
+    };
+  } catch {
+    // fail closed for shadow eligibility without stopping serving
+    return undefined;
+  }
+}
+
+// load pre-month control authority independently of any fitted shadow candidate
+async function loadRainAdjustmentControlReference(
+  client: RainAdjustmentMaintenanceClient | undefined,
+  captureEpoch: AdjustmentRevisionCaptureEpochWitness | undefined,
+): Promise<InstalledRainMaintenanceControlReference | undefined> {
+  // keep control scoring inactive without the private archive path and epoch witness
+  if (client === undefined || captureEpoch === undefined) {
+    return undefined;
+  }
+  try {
+    const reference = await loadInstalledRainMaintenanceControlReference();
+    // an omitted control slot is an explicit feature-only capture state
+    if (reference === null) {
+      return undefined;
+    }
+    return reference;
+  } catch {
+    // preserve serving and feature capture when control authority is unavailable
+    return undefined;
+  }
+}
+
+// create one credential-free trigger on the existing private data network
+function createAdjustmentMaintenanceCaptureTrigger(
+  origin: string,
+): NonNullable<WorkerIterationOptions["adjustmentMaintenanceCapture"]> {
+  const base = new URL(origin);
+  // prohibit public hosts, paths, credentials and query controls
+  if (base.protocol !== "http:" ||
+      !["api", "127.0.0.1", "localhost", "[::1]"].includes(base.hostname) ||
+      base.username !== "" || base.password !== "" || base.pathname !== "/" ||
+      base.search !== "" || base.hash !== "") {
+    throw new RangeError("adjustment maintenance api origin is invalid");
+  }
+  return async (request) => {
+    const response = await fetch(
+      new URL("/internal/adjustment-maintenance/shadow/capture", base),
+      {
+        body: JSON.stringify(request),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    );
+    // do not reinterpret a blocked graph capture as worker success
+    if (!response.ok) {
+      throw new Error("adjustment maintenance capture failed");
+    }
+  };
 }
 
 // resume configured public archives without blocking worker readiness

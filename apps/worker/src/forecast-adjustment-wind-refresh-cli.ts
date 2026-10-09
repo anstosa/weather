@@ -1,13 +1,18 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { canonicalJsonBytes, fitWindMaintenanceDevelopment } from "@weather/forecast-adjustment";
+import {
+  ADJUSTMENT_ARCHIVE_WIND_FIT_MAXIMUM_MEMBERS,
+  canonicalJsonBytes,
+  fitWindMaintenanceDevelopment,
+} from "@weather/forecast-adjustment";
 import type { JsonValue } from "@weather/domain";
 
 const INPUT_PATH = "/input/data/wind.json";
 const OUTPUT_PATH = "/output/wind.json";
 const INPUT_MAX_BYTES = 512 * 1_024 * 1_024;
 const OUTPUT_MAX_BYTES = 8 * 1_024 * 1_024;
+const LEGACY_WIND_OPENED_MEMBER_MAXIMUM = 65_536;
 
 // accept only the fixed credential-isolated fitter entry
 export function parseWindRefreshArguments(arguments_: readonly string[]): void {
@@ -28,9 +33,13 @@ export function parseWindRefreshInput(value: unknown): Parameters<typeof fitWind
   }
   const { contractVersion: _version, ...input } = value as { contractVersion: string } &
     Parameters<typeof fitWindMaintenanceDevelopment>[0];
+  const openedMemberMaximum = input.manifest?.contractVersion ===
+    "adjustment-wind-archive-fit-manifest/v2"
+    ? ADJUSTMENT_ARCHIVE_WIND_FIT_MAXIMUM_MEMBERS
+    : LEGACY_WIND_OPENED_MEMBER_MAXIMUM;
   // reject unbounded arrays before the shared robust hierarchy is constructed
   if (!Array.isArray(input.rows) || input.rows.length > 4_000_000 ||
-      !Array.isArray(input.openedMembers) || input.openedMembers.length > 65_536) {
+      !Array.isArray(input.openedMembers) || input.openedMembers.length > openedMemberMaximum) {
     throw new RangeError("wind fit input row ceiling exceeded");
   }
   return input;

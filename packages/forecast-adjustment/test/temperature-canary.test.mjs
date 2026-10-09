@@ -7,6 +7,8 @@ import test from "node:test";
 import {
   applyEcmwfTemperatureMosRuntime,
   applyForecastAdjustmentTemperatureCanary,
+  applyForecastAdjustmentTemperatureMaintenanceCandidate,
+  applyForecastAdjustmentTemperatureShadowCandidate,
   canonicalJsonBytes,
   canonicalObjectSha256,
   createPermanentForecastAdjustmentTemperatureCanaryAuthorization,
@@ -196,6 +198,80 @@ test("temperature canary applies ECMWF without replacing Best Match raw", () => 
   assert.equal(decision.sourceForecast.upstreamModel, "ecmwf_ifs");
   assert.notEqual(decision.correctedTemperatureC, 17.2);
   assert.match(decision.recentErrorStateSha256, /^[a-f0-9]{64}$/u);
+});
+
+test("temperature shadow evaluates a verified candidate outside its activation window", () => {
+  const decision = applyForecastAdjustmentTemperatureShadowCandidate(
+    createBundle(),
+    {
+      evaluatedAt: "2026-09-23T06:10:00.000Z",
+      rawBestMatchTemperatureC: 17.2,
+      recentErrorState: {
+        ...createState(),
+        maximumSourceRunInitializedAt: "2026-09-22T00:00:00.000Z",
+        maximumSourceValidAt: "2026-09-22T17:00:00.000Z",
+        targetRunInitializedAt: "2026-09-23T00:00:00.000Z",
+        windowEndValidAt: "2026-09-22T17:00:00.000Z",
+      },
+      sourceForecast: createSource({
+        firstReceivedAt: "2026-09-23T06:05:00.000Z",
+        runInitializedAt: "2026-09-23T00:00:00.000Z",
+        validAt: "2026-09-23T07:00:00.000Z",
+      }),
+      validAt: "2026-09-23T07:00:00.000Z",
+    },
+  );
+  assert.equal(decision.state, "active", decision.reasonCode);
+  assert.equal(decision.reasonCode, null);
+});
+
+test("qualified temperature maintenance requires root receipt authority", () => {
+  const incumbent = createPermanentBundle();
+  const material = {
+    bundleSha256: "f".repeat(64),
+    maintenanceAuthority: null,
+    model: incumbent.model,
+    servedForecastIdentity: incumbent.servedForecastIdentity,
+    trainingForecastIdentity: incumbent.trainingForecastIdentity,
+  };
+  const input = {
+    evaluatedAt: "2026-10-02T06:10:00.000Z",
+    rawBestMatchTemperatureC: 17.2,
+    recentErrorState: {
+      ...createState(),
+      maximumSourceRunInitializedAt: "2026-10-01T00:00:00.000Z",
+      maximumSourceValidAt: "2026-10-01T17:00:00.000Z",
+      targetRunInitializedAt: "2026-10-02T00:00:00.000Z",
+      windowEndValidAt: "2026-10-01T17:00:00.000Z",
+    },
+    sourceForecast: createSource({
+      firstReceivedAt: "2026-10-02T06:05:00.000Z",
+      runInitializedAt: "2026-10-02T00:00:00.000Z",
+      validAt: "2026-10-02T07:00:00.000Z",
+    }),
+    validAt: "2026-10-02T07:00:00.000Z",
+  };
+  const shadow = applyForecastAdjustmentTemperatureMaintenanceCandidate(material, input);
+  assert.equal(shadow.state, "active", shadow.reasonCode);
+  const blocked = applyForecastAdjustmentTemperatureCanary(
+    { bundle: material, reasonCode: null, state: "active" },
+    input,
+  );
+  assert.equal(blocked.state, "disabled");
+  assert.equal(blocked.reasonCode, "registry_invalid");
+  const qualified = applyForecastAdjustmentTemperatureCanary({
+    bundle: {
+      ...material,
+      maintenanceAuthority: {
+        actionSha256: "a".repeat(64),
+        fullMemberRootSha256: "b".repeat(64),
+        policyReportSha256: "c".repeat(64),
+      },
+    },
+    reasonCode: null,
+    state: "active",
+  }, input);
+  assert.equal(qualified.state, "active", qualified.reasonCode);
 });
 
 test("temperature canary uses the direct branch during causal warmup", () => {

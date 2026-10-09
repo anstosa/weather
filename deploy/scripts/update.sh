@@ -13,6 +13,7 @@ Usage:
   update.sh activate RELEASE
   update.sh rollback
   update.sh recover
+  update.sh adjustment-family-release TARGET_RELEASE COMPENSATING_RELEASE EXPECTED_CURRENT_RELEASE EXPECTED_SOURCE_RELEASE EXPECTED_SETTINGS_SHA256 FAMILY ACTION_SHA256 REPORT_SHA256 FENCE
   update.sh status
 
 yolo resolves the exact ARM64 images, enforces the local pull floor, applies
@@ -29,9 +30,10 @@ releases_dir="$deploy_dir/releases"
 state_dir="$deploy_dir/state"
 capacity_evidence=/var/lib/weather/preflight-latest.json
 v13_resource_evidence=/var/lib/weather/preflight-v13-resource.json
-control_plane_version=13
+control_plane_version=14
+recurring_previous_release=2026.10.09-1
+recurring_previous_control_plane_sha256=603eb8f488ba78be3d7ecf76b0d587346d1c36432255d390d86d2b768c8fecba
 maintenance_previous_release=2026.10.07-3
-maintenance_previous_control_plane_sha256=16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d
 legacy_control_plane_version=6
 legacy_control_plane_sha256=c4d74581b84505e065fdec63447dfdded1d14221e459777a88e37729275f33b5
 migration_authorization_version=1
@@ -41,6 +43,10 @@ image_cleanup_maximum_inventory_lines=4096
 image_cleanup_maximum_containers=1024
 weather_server_image_repository=ghcr.io/anstosa/weather-server
 weather_web_image_repository=ghcr.io/anstosa/weather-web
+adjustment_family_state_root=/opt/weather/current/deploy/state/adjustment-release-state
+adjustment_family_deploy_state=/opt/weather/current/deploy/state
+adjustment_family_releases=/opt/weather/current/deploy/releases
+adjustment_family_settings=/var/lib/weather/xweather/forecast-adjustment-settings.json
 
 # locate one validated release environment
 release_env() {
@@ -221,7 +227,7 @@ require_literal_adjustment_release_capacity() (
 
   # this gate is intentionally limited to the reviewed v12-to-v13 inert bridge
   [[ "$source_release" == "$maintenance_previous_release" &&
-    "$target_version" == "$control_plane_version" ]] ||
+    "$target_version" == 13 ]] ||
     die "literal adjustment release capacity is unsupported outside the fixed inert v13 bridge"
 
   # keep the direct bridge on the exact retained database and tunnel infrastructure
@@ -257,6 +263,74 @@ const receipt = JSON.parse(readFileSync(process.argv[2], "utf8"));
 if (receipt.contractVersion !== "adjustment-release-capacity/v3" ||
   receipt.compensationScope !== "fixed-inert-v13-whole-release-source-restore" ||
   receipt.sourceRelease !== "2026.10.07-3" ||
+  receipt.state !== "capacity_ready" || receipt.retirementCreditBytes !== 0 ||
+  receipt.compatibilityFixtureBytes !== 64 * 1_024 * 1_024 ||
+  receipt.compatibilityFixtureInodes !== 4_096 ||
+  receipt.futureStateBytes !== 1 * 1_024 * 1_024 ||
+  !Number.isSafeInteger(receipt.retainedControlBytes) ||
+  receipt.retainedControlBytes < 0 ||
+  !Array.isArray(receipt.imageDigests) || receipt.imageDigests.length !== 6 ||
+  !Number.isSafeInteger(receipt.requiredFreeBytes) ||
+  !Number.isSafeInteger(receipt.requiredFreeInodes)) {
+  throw new Error("literal release capacity receipt is invalid");
+}
+NODE
+  then
+    die "literal adjustment release capacity receipt is invalid"
+  fi
+  printf 'Literal adjustment release capacity passed: %s\n' \
+    "$(tr -d '\n' <"$receipt")" >&2
+)
+
+# enforce the fixed inert v14 literal source/target/compensation ledger
+require_literal_inert_v14_release_capacity() (
+  local source_env=$1
+  local target_env=$2
+  local source_release target_version receipt status key
+  local source_server source_web target_server target_web
+  require_file "$source_env"
+  require_file "$target_env"
+  source_release=$(env_value "$source_env" WEATHER_RELEASE)
+  target_version=$(env_value "$target_env" WEATHER_CONTROL_PLANE_VERSION)
+
+  # this gate is intentionally limited to the reviewed inactive v13-to-v14 inert bridge
+  [[ "$source_release" == "$recurring_previous_release" &&
+    "$target_version" == 14 ]] ||
+    die "literal adjustment release capacity is unsupported outside the fixed inert v14 bridge"
+
+  # keep the direct bridge on the exact retained database and tunnel infrastructure
+  for key in POSTGRES_IMAGE CLOUDFLARED_IMAGE WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR; do
+    [[ "$(env_value "$source_env" "$key")" == "$(env_value "$target_env" "$key")" ]] ||
+      die "fixed inert v14 infrastructure identity differs: $key"
+  done
+  source_server=$(env_value "$source_env" WEATHER_SERVER_IMAGE)
+  source_web=$(env_value "$source_env" WEATHER_WEB_IMAGE)
+  target_server=$(env_value "$target_env" WEATHER_SERVER_IMAGE)
+  target_web=$(env_value "$target_env" WEATHER_WEB_IMAGE)
+  receipt=$(mktemp "${TMPDIR:-/tmp}/weather-release-capacity.XXXXXX.json") ||
+    die "literal adjustment release receipt could not be created"
+  trap 'rm -f -- "$receipt"' EXIT
+  chmod 600 "$receipt" || die "literal adjustment release receipt is not private"
+  status=0
+  node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" inert-v14-release-capacity \
+    "$source_server" "$source_web" "$target_server" "$target_web" \
+    >"$receipt" || status=$?
+  require_bounded_image_cleanup_snapshot "$receipt" 1
+
+  # surface the closed refusal receipt without treating it as admission
+  if ((status != 0)); then
+    cat "$receipt" >&2
+    die "literal adjustment release image capacity is blocked"
+  fi
+  if ! node --input-type=module - "$receipt" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const receipt = JSON.parse(readFileSync(process.argv[2], "utf8"));
+
+// require the exact successful no-retirement receipt
+if (receipt.contractVersion !== "adjustment-inert-v14-release-capacity/v1" ||
+  receipt.compensationScope !== "fixed-inert-v14-whole-release-source-restore" ||
+  receipt.sourceRelease !== "2026.10.09-1" ||
   receipt.state !== "capacity_ready" || receipt.retirementCreditBytes !== 0 ||
   receipt.compatibilityFixtureBytes !== 64 * 1_024 * 1_024 ||
   receipt.compatibilityFixtureInodes !== 4_096 ||
@@ -732,11 +806,11 @@ require_control_plane_compatibility() {
     return
   fi
 
-  # accept only the complete pinned maintenance predecessor
-  if [[ "$expected_version" == 12 &&
-    "$expected_digest" == "$maintenance_previous_control_plane_sha256" ]]; then
+  # accept only the complete pinned recurring-maintenance predecessor
+  if [[ "$expected_version" == 13 &&
+    "$expected_digest" == "$recurring_previous_control_plane_sha256" ]]; then
     expected_release=$(env_value "$env_file" WEATHER_RELEASE)
-    [[ "$expected_release" == "$maintenance_previous_release" ]] ||
+    [[ "$expected_release" == "$recurring_previous_release" ]] ||
       die "deployment control-plane identity is unsupported without an exact versioned allowlisted handoff"
     return
   fi
@@ -1000,6 +1074,235 @@ require_fixed_v13_source_identity() {
     die "fixed v13 source compatibility requires a distinct target release"
 }
 
+# require the one source image set reviewed for the inert v14 bridge
+require_fixed_v14_source_identity() {
+  local target_env=$1
+  local source_env=$2
+  local source_control source_control_version source_release source_server source_web
+  local target_release target_version
+  source_control=$(env_value "$source_env" WEATHER_CONTROL_PLANE_SHA256)
+  source_control_version=$(env_value "$source_env" WEATHER_CONTROL_PLANE_VERSION)
+  source_release=$(env_value "$source_env" WEATHER_RELEASE)
+  source_server=$(env_value "$source_env" WEATHER_SERVER_IMAGE)
+  source_web=$(env_value "$source_env" WEATHER_WEB_IMAGE)
+  target_release=$(env_value "$target_env" WEATHER_RELEASE)
+  target_version=$(env_value "$target_env" WEATHER_CONTROL_PLANE_VERSION)
+
+  [[ "$source_release" == "2026.10.09-1" ]] ||
+    die "fixed v14 source compatibility requires release 2026.10.09-1"
+  [[ "$source_control_version" == 13 &&
+    "$source_control" == "603eb8f488ba78be3d7ecf76b0d587346d1c36432255d390d86d2b768c8fecba" ]] ||
+    die "fixed v14 source control-plane identity differs"
+  [[ "$source_server" == "ghcr.io/anstosa/weather-server@sha256:fb140b46d6eaea463ba2d10dc74303eac515135a37c21ddb746cdce744fd23ab" ]] ||
+    die "fixed v14 source server image identity differs"
+  [[ "$source_web" == "ghcr.io/anstosa/weather-web@sha256:fdcb2d10da4c9ed5ec8651bafa96c9d2b240b66b85db85619b909d6e144e2d7b" ]] ||
+    die "fixed v14 source web image identity differs"
+  [[ "$target_version" == 14 ]] ||
+    die "fixed v14 source compatibility requires a version 14 target"
+  [[ "$target_release" != "$source_release" ]] ||
+    die "fixed v14 source compatibility requires a distinct target release"
+}
+
+# verify all migration names and bytes before publishing v14 compatibility authority
+require_fixed_v14_migration_ledger() {
+  local environment=$1
+  local database=$2
+  WEATHER_ENV_FILE=$environment compose exec -T postgres \
+    psql --no-psqlrc --set=ON_ERROR_STOP=1 --username postgres --dbname "$database" -tAc \
+    'SELECT row_to_json(manifest) FROM adjustment_evaluation_export_manifest_v1 manifest' | \
+    node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" verify-maintenance-ledger-v14-rolling ||
+    die "fixed v14 compatibility fixture lacks the exact complete 0021 ledger"
+}
+
+# create or verify only the fixed dedicated rain target sources
+initialize_adjustment_rain_fixed_gauge_target_sources_v1() (
+  local environment=$1
+  local database
+  [[ "$EUID" == 0 ]] || die "rain target source initialization requires root"
+  validate_release_env "$environment" "$(env_value "$environment" WEATHER_RELEASE)"
+  require_control_plane_compatibility "$environment"
+  [[ "$(env_value "$environment" WEATHER_CONTROL_PLANE_VERSION)" == 14 ]] ||
+    die "rain target source initialization requires v14"
+  require_deployment_secrets
+  database=$(env_value "$environment" WEATHER_DATABASE_NAME)
+  validate_database_name "$database"
+  require_fixed_v14_migration_ledger "$environment" "$database"
+  # keep the existing owner secret inside the database container process environment
+  # shellcheck disable=SC2016
+  node --max-old-space-size=48 --max-semi-space-size=1 \
+    "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+    rain-fixed-gauge-target-sources-sql-v1 | \
+    WEATHER_ENV_FILE=$environment compose exec -T postgres \
+      sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_owner_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host 127.0.0.1 --username weather_owner --dbname "$1"' \
+      adjustment-rain-target-sources "$database" | \
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+      project-rain-fixed-gauge-target-sources-v1
+)
+
+# retry the fixed source initialization only against the current v14 release
+initialize_current_adjustment_rain_fixed_gauge_target_sources_v1() (
+  local current environment
+  [[ "$EUID" == 0 ]] || die "rain target source initialization requires root"
+  acquire_release_transaction_lock
+  current=$(read_release_state "$state_dir/current-release")
+  environment=$(release_env "$current")
+  initialize_adjustment_rain_fixed_gauge_target_sources_v1 "$environment"
+)
+
+# initialize only the create-once schedule independently derived from the root epoch
+initialize_adjustment_registration_schedule_v3() (
+  local bootstrap_sha256=$1
+  local current environment database temporary
+  [[ "$EUID" == 0 && "$bootstrap_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+    die "registration schedule initialization requires root and one hash"
+  acquire_release_transaction_lock
+  current=$(read_release_state "$state_dir/current-release")
+  environment=$(release_env "$current")
+  validate_release_env "$environment" "$current"
+  require_control_plane_compatibility "$environment"
+  [[ "$(env_value "$environment" WEATHER_CONTROL_PLANE_VERSION)" == 14 ]] ||
+    die "registration schedule requires the current v14 control plane"
+  require_deployment_secrets
+  database=$(env_value "$environment" WEATHER_DATABASE_NAME)
+  validate_database_name "$database"
+  require_fixed_v14_migration_ledger "$environment" "$database"
+  temporary=$(mktemp "$state_dir/.registration-schedule.XXXXXX.sql")
+  chmod 600 "$temporary"
+  # remove only this unpublished bounded SQL inode on every exit
+  trap 'rm -f -- "$temporary"' EXIT
+  node --max-old-space-size=48 --max-semi-space-size=1 \
+    "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+    registration-schedule-initialize-sql-v3 "$bootstrap_sha256" >"$temporary"
+  # keep the existing owner secret inside the database container process environment
+  # shellcheck disable=SC2016
+  WEATHER_ENV_FILE=$environment compose exec -T postgres \
+    sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_owner_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host 127.0.0.1 --username weather_owner --dbname "$1"' \
+    adjustment-registration-schedule "$database" <"$temporary" | \
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+      verify-registration-schedule-initialization-v3 "$bootstrap_sha256"
+)
+
+# read only closed rolling registrations and reconciled predecessor identities
+read_adjustment_registration_lifecycle_status_v4() (
+  local current environment database
+  [[ "$EUID" == 0 ]] || die "registration lifecycle status requires root"
+  acquire_release_transaction_lock
+  current=$(read_release_state "$state_dir/current-release")
+  environment=$(release_env "$current")
+  validate_release_env "$environment" "$current"
+  require_control_plane_compatibility "$environment"
+  [[ "$(env_value "$environment" WEATHER_CONTROL_PLANE_VERSION)" == 14 ]] ||
+    die "registration lifecycle status requires v14"
+  require_deployment_secrets
+  database=$(env_value "$environment" WEATHER_DATABASE_NAME)
+  validate_database_name "$database"
+  require_fixed_v14_migration_ledger "$environment" "$database"
+  # keep all SQL and schema identities inside the fixed reviewed owner boundary
+  # shellcheck disable=SC2016
+  node --max-old-space-size=48 --max-semi-space-size=1 \
+    "$deploy_dir/scripts/adjustment-evaluation-package.mjs" registration-lifecycle-status-sql-v4 | \
+    WEATHER_ENV_FILE=$environment compose exec -T postgres \
+      sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_owner_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host 127.0.0.1 --username weather_owner --dbname "$1"' \
+      adjustment-registration-lifecycle "$database" | \
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" project-registration-lifecycle-status-v4
+)
+
+# execute only a canonical authenticated owner operation under the deployment fence
+run_adjustment_owner_operation_v3() (
+  local kind=$1 identity=$2 current environment database result_kind
+  [[ "$EUID" == 0 ]] || die "adjustment owner operation requires root"
+  [[ "$kind" =~ ^(access|terminal|retire|unsupported-terminal|unsupported-retire)$ &&
+    "$identity" =~ ^[a-f0-9]{64}$ ]] || die "adjustment owner operation is invalid"
+  # reuse only the closed terminal response grammar after disjoint request authorization
+  case "$kind" in
+    unsupported-terminal) result_kind=terminal ;;
+    unsupported-retire) result_kind=retire ;;
+    *) result_kind=$kind ;;
+  esac
+  acquire_release_transaction_lock
+  current=$(read_release_state "$state_dir/current-release")
+  environment=$(release_env "$current")
+  validate_release_env "$environment" "$current"
+  require_control_plane_compatibility "$environment"
+  [[ "$(env_value "$environment" WEATHER_CONTROL_PLANE_VERSION)" == 14 ]] || die "adjustment owner operation requires v14"
+  require_deployment_secrets
+  database=$(env_value "$environment" WEATHER_DATABASE_NAME)
+  validate_database_name "$database"
+  require_fixed_v14_migration_ledger "$environment" "$database"
+  # stdin remains the bounded request and no password enters command arguments
+  # shellcheck disable=SC2016
+  node --max-old-space-size=48 --max-semi-space-size=1 "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+    owner-operation-sql-v3 "$kind" "$identity" | \
+    WEATHER_ENV_FILE=$environment compose exec -T postgres \
+      sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_owner_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host 127.0.0.1 --username weather_owner --dbname "$1"' \
+      adjustment-owner-operation "$database" | \
+    node --max-old-space-size=48 --max-semi-space-size=1 "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+      owner-operation-result-v3 "$result_kind"
+)
+
+# finalize only compact rows covered by the current authenticated custody proof
+finalize_adjustment_shadow_metadata_custody_v1() (
+  local proof=$1 current environment database preparation consumed
+  [[ "$EUID" == 0 ]] || die "shadow metadata custody finalization requires root"
+  [[ "$proof" =~ ^[a-f0-9]{64}$ ]] || die "shadow metadata custody identity is invalid"
+  require_command setpriv
+  acquire_release_transaction_lock
+  current=$(read_release_state "$state_dir/current-release")
+  environment=$(release_env "$current")
+  validate_release_env "$environment" "$current"
+  require_control_plane_compatibility "$environment"
+  [[ "$(env_value "$environment" WEATHER_CONTROL_PLANE_VERSION)" == 14 ]] ||
+    die "shadow metadata custody finalization requires v14"
+  require_deployment_secrets
+  database=$(env_value "$environment" WEATHER_DATABASE_NAME)
+  validate_database_name "$database"
+  require_fixed_v14_migration_ledger "$environment" "$database"
+  # preserve the actual consumed receipt when the SSH response was lost
+  if consumed=$(setpriv --reuid=10002 --regid=10002 --clear-groups \
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evidence-store.mjs" shadow-metadata-custody-consumed-v1 "$proof"); then
+    # null means that the current proof still needs its owner transaction
+    if [[ "$consumed" != null ]]; then
+      printf '%s\n' "$consumed"
+      return
+    fi
+  fi
+  preparation=$(setpriv --reuid=10002 --regid=10002 --clear-groups \
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" shadow-metadata-preparation-identity-v1 "$proof")
+  # persist native manifest and successor arguments before deleting any hot row
+  if [[ "$preparation" == unprepared ]]; then
+    # shellcheck disable=SC2016
+    setpriv --reuid=10002 --regid=10002 --clear-groups \
+      node --max-old-space-size=48 --max-semi-space-size=1 \
+        "$deploy_dir/scripts/adjustment-evaluation-package.mjs" shadow-metadata-preparation-sql-v1 "$proof" | \
+      WEATHER_ENV_FILE=$environment compose exec -T postgres \
+        sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_owner_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host 127.0.0.1 --username weather_owner --dbname "$1"' \
+        adjustment-shadow-metadata "$database" | \
+      setpriv --reuid=10002 --regid=10002 --clear-groups \
+        node --max-old-space-size=48 --max-semi-space-size=1 \
+          "$deploy_dir/scripts/adjustment-evaluation-package.mjs" prepare-shadow-metadata-custody-v1 "$proof" >/dev/null
+    preparation=$(setpriv --reuid=10002 --regid=10002 --clear-groups \
+      node --max-old-space-size=48 --max-semi-space-size=1 \
+        "$deploy_dir/scripts/adjustment-evaluation-package.mjs" shadow-metadata-preparation-identity-v1 "$proof")
+  fi
+  [[ "$preparation" =~ ^[a-f0-9]{64}$ ]] || die "shadow metadata custody preparation is unavailable"
+  # the native function verifies the exact prepared generation or its byte-identical retry
+  # shellcheck disable=SC2016
+  setpriv --reuid=10002 --regid=10002 --clear-groups \
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" shadow-metadata-finalization-sql-v1 "$preparation" | \
+    WEATHER_ENV_FILE=$environment compose exec -T postgres \
+      sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_owner_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 --host 127.0.0.1 --username weather_owner --dbname "$1"' \
+      adjustment-shadow-metadata "$database" | \
+    setpriv --reuid=10002 --regid=10002 --clear-groups \
+      node --max-old-space-size=48 --max-semi-space-size=1 \
+        "$deploy_dir/scripts/adjustment-evaluation-package.mjs" consume-shadow-metadata-custody-v1 "$preparation"
+)
+
 # require one caller-created private publication inode
 require_fixed_v13_authorization_target() {
   local path=$1
@@ -1013,11 +1316,22 @@ require_fixed_v13_authorization_target() {
     die "fixed v13 source compatibility authorization must be a private empty single-link file"
 }
 
-# prove the exact source runtime against a small target-schema fixture
-verify_fixed_v13_source_compatibility() (
+# retain the exact immutable v13 bridge contract
+verify_fixed_v13_source_compatibility() {
+  verify_bounded_maintenance_source_compatibility "$1" "$2" "$3" v13
+}
+
+# prove the current v13 runtime only for its separate inactive v14 successor
+verify_fixed_v14_source_compatibility() {
+  verify_bounded_maintenance_source_compatibility "$1" "$2" "$3" v14
+}
+
+# share the bounded fixture without widening either source identity
+verify_bounded_maintenance_source_compatibility() (
   local target_env=$1
   local source_env=$2
   local authorization_path=$3
+  local scope=$4
   local candidate api_container unproven_api_container provider_container
   local provider_image provider_network source_release target_release history_sha256
   local ledger_state non_compatibility_source_ids compatibility_source_count
@@ -1033,7 +1347,8 @@ verify_fixed_v13_source_compatibility() (
   local api_started=false
   local unproven_api_started=false
   local provider_started=false
-  candidate="weather_v13_compat_$(date -u +%Y%m%d%H%M%S)_$$"
+  [[ "$scope" == v13 || "$scope" == v14 ]] || die "unsupported bounded maintenance compatibility scope"
+  candidate="weather_${scope}_compat_$(date -u +%Y%m%d%H%M%S)_$$"
   api_container="${candidate}_api"
   unproven_api_container="${candidate}_api_unproven"
   provider_container="${candidate}_provider"
@@ -1044,7 +1359,12 @@ verify_fixed_v13_source_compatibility() (
 
   validate_release_env "$source_env" "$source_release"
   validate_release_env "$target_env" "$target_release"
-  require_fixed_v13_source_identity "$target_env" "$source_env"
+  # enforce the corresponding fixed source instead of a caller-selected predecessor
+  if [[ "$scope" == v13 ]]; then
+    require_fixed_v13_source_identity "$target_env" "$source_env"
+  else
+    require_fixed_v14_source_identity "$target_env" "$source_env"
+  fi
   require_fixed_v13_authorization_target "$authorization_path"
 
   # sample free filesystem capacity without prospective cleanup credit
@@ -1169,8 +1489,13 @@ verify_fixed_v13_source_compatibility() (
   ledger_state=$(WEATHER_ENV_FILE=$source_env compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
       --tuples-only --no-align --command "SELECT count(*)::text || ':' || count(*) FILTER (WHERE name = '0018_adjustment_maintenance_v2.sql')::text || ':' || COALESCE(max(checksum) FILTER (WHERE name = '0018_adjustment_maintenance_v2.sql'), '') FROM schema_migrations")
-  [[ "$ledger_state" == "18:1:c13d2c2c39096887712ae97f0b863f8a7ab52074ca320575f8c4c1f9b72a50a3" ]] ||
-    die "fixed v13 compatibility fixture lacks the exact complete 0018 ledger"
+  # the historical bridge retains its exact eighteen-migration boundary
+  if [[ "$scope" == v13 ]]; then
+    [[ "$ledger_state" == "18:1:c13d2c2c39096887712ae97f0b863f8a7ab52074ca320575f8c4c1f9b72a50a3" ]] ||
+      die "fixed v13 compatibility fixture lacks the exact complete 0018 ledger"
+  else
+    require_fixed_v14_migration_ledger "$source_env" "$candidate"
+  fi
   measure_fixed_v13_compatibility schema "$candidate"
 
   non_compatibility_source_ids=$(WEATHER_ENV_FILE=$source_env compose exec -T postgres \
@@ -1383,7 +1708,7 @@ verify_previous_image_compatibility() (
   # restore the exact migration boundary shipped by the previous Git image
   WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --set=ON_ERROR_STOP=1 --username postgres --dbname "$candidate" \
-      --command "CREATE OR REPLACE FUNCTION weather_source_is_current(candidate_id bigint) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS \$function\$ SELECT NOT EXISTS (SELECT 1 FROM public.sources candidate JOIN public.sources successor ON successor.station_id = candidate.station_id AND successor.active AND successor.material_provider_config->>'supersedesSourceKey' = candidate.source_key WHERE candidate.id = candidate_id); \$function\$; DROP TABLE IF EXISTS adjustment_shadow_predictions_v2, adjustment_confirmation_accesses_v2, adjustment_shadow_registrations_v2; DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_registration_v2(); DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_prediction_v2(); DROP FUNCTION IF EXISTS weather_guard_adjustment_confirmation_access_v2(); DROP FUNCTION IF EXISTS weather_reject_adjustment_maintenance_mutation(); DROP FUNCTION IF EXISTS weather_register_adjustment_shadow_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_temperature_shadow_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_wind_shadow_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_rain_shadow_v2(jsonb); DROP FUNCTION IF EXISTS adjustment_shadow_body_admission_v2(text,text,text,integer); DROP FUNCTION IF EXISTS weather_finalize_adjustment_shadow_metadata_v2(jsonb); DROP FUNCTION IF EXISTS weather_record_adjustment_confirmation_access_v2(jsonb); DROP FUNCTION IF EXISTS adjustment_confirmation_availability_v2(text); DROP FUNCTION IF EXISTS adjustment_confirmation_export_v2(text,text,smallint); DROP VIEW IF EXISTS adjustment_evaluation_export_manifest_v1; DROP VIEW IF EXISTS adjustment_evaluation_export_rows_v1; DROP VIEW IF EXISTS rain_collection_status_v1; DROP TABLE IF EXISTS rain_adjustment_runs; DROP FUNCTION IF EXISTS weather_guard_rain_adjustment_run(); DROP TABLE IF EXISTS rain_capture_receipts; DROP TABLE IF EXISTS rain_capture_claims; DROP FUNCTION IF EXISTS weather_guard_rain_capture_claim(); DROP FUNCTION IF EXISTS weather_guard_rain_capture_receipt(); DROP FUNCTION IF EXISTS weather_reject_rain_capture_mutation(); DROP VIEW IF EXISTS forecast_runtime_provenance_v1; DROP VIEW IF EXISTS forecast_training_export_manifest_v1; DROP VIEW IF EXISTS forecast_training_export_rows_v1; DROP TABLE IF EXISTS ecmwf_temperature_canary_hours; DROP TABLE IF EXISTS ecmwf_temperature_canary_runs; DROP FUNCTION IF EXISTS weather_guard_ecmwf_temperature_canary_run_update(); DROP FUNCTION IF EXISTS weather_require_ecmwf_temperature_canary_hour_identity(); DROP FUNCTION IF EXISTS weather_reject_ecmwf_temperature_canary_hour_mutation(); DROP TABLE IF EXISTS forecast_anchor_records; DROP FUNCTION IF EXISTS weather_require_historical_forecast_anchor_source(); DROP FUNCTION IF EXISTS weather_guard_forecast_anchor_record_update(); GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC; ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO PUBLIC; REVOKE SELECT (capabilities) ON sources FROM weather_api; DELETE FROM schema_migrations WHERE name IN ('0009_forecast_anchor_records.sql', '0010_forecast_training_export.sql', '0011_forecast_runtime_provenance.sql', '0012_hide_archive_only_forecasts_from_live_reads.sql', '0013_ecmwf_temperature_canary.sql', '0014_rain_collection.sql', '0015_rain_station_access.sql', '0016_rain_adjustment.sql', '0017_adjustment_evaluation_export.sql', '0018_adjustment_maintenance_v2.sql')"
+      --command "CREATE OR REPLACE FUNCTION weather_source_is_current(candidate_id bigint) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public AS \$function\$ SELECT NOT EXISTS (SELECT 1 FROM public.sources candidate JOIN public.sources successor ON successor.station_id = candidate.station_id AND successor.active AND successor.material_provider_config->>'supersedesSourceKey' = candidate.source_key WHERE candidate.id = candidate_id); \$function\$; DROP TABLE IF EXISTS adjustment_shadow_registration_windows_v3, adjustment_registration_horizons_v3, adjustment_registration_schedule_v3; DROP FUNCTION IF EXISTS adjustment_shadow_registration_slot_v3(text); DROP FUNCTION IF EXISTS weather_register_adjustment_shadow_v3(jsonb); DROP FUNCTION IF EXISTS weather_initialize_adjustment_registration_schedule_v3(jsonb); DROP FUNCTION IF EXISTS weather_guard_adjustment_registration_v3(); DROP FUNCTION IF EXISTS weather_reject_adjustment_registration_v3_mutation(); DROP TRIGGER IF EXISTS weather_records_clear_adjustment_revision_pointer_v1 ON weather_records; DROP TRIGGER IF EXISTS forecast_anchor_records_clear_adjustment_revision_pointer_v1 ON forecast_anchor_records; DROP TRIGGER IF EXISTS rain_adjustment_runs_immutable ON rain_adjustment_runs; DROP FUNCTION IF EXISTS weather_append_adjustment_shadow_v4(jsonb,text); DROP FUNCTION IF EXISTS adjustment_revision_frontier_v1(); DROP FUNCTION IF EXISTS adjustment_shadow_revision_admission_v1(text,text,text,integer); DROP FUNCTION IF EXISTS weather_clear_adjustment_revision_pointer_v1(); DROP FUNCTION IF EXISTS weather_issue_adjustment_revision_receipt_v1(text,text,text,text); DROP FUNCTION IF EXISTS weather_bind_weather_record_revisions_v1(jsonb); DROP FUNCTION IF EXISTS weather_bind_forecast_anchor_revisions_v1(jsonb); DROP FUNCTION IF EXISTS weather_guard_rain_adjustment_revision_v1(); DROP FUNCTION IF EXISTS weather_bind_rain_gate_revision_v1(jsonb); DROP FUNCTION IF EXISTS weather_bind_ecmwf_temperature_revision_v1(jsonb); DROP FUNCTION IF EXISTS adjustment_revision_serving_snapshot_v1(timestamptz,bigint); DROP FUNCTION IF EXISTS adjustment_weather_revision_admission_v1(jsonb); DROP FUNCTION IF EXISTS adjustment_forecast_anchor_revision_admission_v1(jsonb); DROP FUNCTION IF EXISTS adjustment_rain_gate_revision_admission_v1(jsonb); DROP FUNCTION IF EXISTS adjustment_ecmwf_temperature_revision_admission_v1(jsonb); DROP FUNCTION IF EXISTS weather_mark_adjustment_revision_gap_v1(text,jsonb,jsonb); ALTER TABLE weather_records DROP COLUMN IF EXISTS adjustment_revision_receipt; ALTER TABLE forecast_anchor_records DROP COLUMN IF EXISTS adjustment_revision_receipt; ALTER TABLE rain_adjustment_runs DROP COLUMN IF EXISTS adjustment_revision_receipt; ALTER TABLE ecmwf_temperature_canary_runs DROP COLUMN IF EXISTS adjustment_revision_receipt; DROP FUNCTION IF EXISTS weather_adjustment_revision_receipt_valid_v1(jsonb); DROP TABLE IF EXISTS adjustment_revision_frontier_v1; DROP SEQUENCE IF EXISTS adjustment_revision_ordinal_v1; DROP TABLE IF EXISTS adjustment_shadow_terminal_results_v2; DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_terminal_result_v2(); DROP FUNCTION IF EXISTS weather_record_adjustment_shadow_terminal_result_v2(jsonb); DROP FUNCTION IF EXISTS weather_retire_adjustment_shadow_registration_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_shadow_v3(jsonb,text); DROP TABLE IF EXISTS adjustment_shadow_predictions_v2, adjustment_confirmation_accesses_v2, adjustment_shadow_registrations_v2; DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_registration_v2(); DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_prediction_v2(); DROP FUNCTION IF EXISTS weather_guard_adjustment_confirmation_access_v2(); DROP FUNCTION IF EXISTS weather_reject_adjustment_maintenance_mutation(); DROP FUNCTION IF EXISTS weather_register_adjustment_shadow_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_temperature_shadow_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_wind_shadow_v2(jsonb); DROP FUNCTION IF EXISTS weather_append_adjustment_rain_shadow_v2(jsonb); DROP FUNCTION IF EXISTS adjustment_shadow_body_admission_v2(text,text,text,integer); DROP FUNCTION IF EXISTS weather_finalize_adjustment_shadow_metadata_v2(jsonb); DROP FUNCTION IF EXISTS weather_record_adjustment_confirmation_access_v2(jsonb); DROP FUNCTION IF EXISTS adjustment_confirmation_availability_v2(text); DROP FUNCTION IF EXISTS adjustment_confirmation_export_v2(text,text,smallint); DROP VIEW IF EXISTS adjustment_evaluation_export_manifest_v1; DROP VIEW IF EXISTS adjustment_evaluation_export_rows_v1; DROP VIEW IF EXISTS rain_collection_status_v1; DROP TABLE IF EXISTS rain_adjustment_runs; DROP FUNCTION IF EXISTS weather_guard_rain_adjustment_run(); DROP TABLE IF EXISTS rain_capture_receipts; DROP TABLE IF EXISTS rain_capture_claims; DROP FUNCTION IF EXISTS weather_guard_rain_capture_claim(); DROP FUNCTION IF EXISTS weather_guard_rain_capture_receipt(); DROP FUNCTION IF EXISTS weather_reject_rain_capture_mutation(); DROP VIEW IF EXISTS forecast_runtime_provenance_v1; DROP VIEW IF EXISTS forecast_training_export_manifest_v1; DROP VIEW IF EXISTS forecast_training_export_rows_v1; DROP TABLE IF EXISTS ecmwf_temperature_canary_hours; DROP TABLE IF EXISTS ecmwf_temperature_canary_runs; DROP FUNCTION IF EXISTS weather_guard_ecmwf_temperature_canary_run_update(); DROP FUNCTION IF EXISTS weather_require_ecmwf_temperature_canary_hour_identity(); DROP FUNCTION IF EXISTS weather_reject_ecmwf_temperature_canary_hour_mutation(); DROP TABLE IF EXISTS forecast_anchor_records; DROP FUNCTION IF EXISTS weather_require_historical_forecast_anchor_source(); DROP FUNCTION IF EXISTS weather_guard_forecast_anchor_record_update(); GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC; ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO PUBLIC; REVOKE SELECT (capabilities) ON sources FROM weather_api; DELETE FROM schema_migrations WHERE name IN ('0009_forecast_anchor_records.sql', '0010_forecast_training_export.sql', '0011_forecast_runtime_provenance.sql', '0012_hide_archive_only_forecasts_from_live_reads.sql', '0013_ecmwf_temperature_canary.sql', '0014_rain_collection.sql', '0015_rain_station_access.sql', '0016_rain_adjustment.sql', '0017_adjustment_evaluation_export.sql', '0018_adjustment_maintenance_v2.sql', '0019_adjustment_maintenance_recurring.sql', '0020_adjustment_revision_frontier.sql', '0021_adjustment_rolling_registration.sql')"
   baseline_schema_state=$(WEATHER_ENV_FILE=$previous_env compose exec -T postgres \
     psql --username postgres --dbname "$candidate" --tuples-only --no-align \
       --command "SELECT count(*)::text || ':' || COALESCE(to_regclass('forecast_anchor_records')::text, '') || ':' || COALESCE(to_regclass('forecast_training_export_rows_v1')::text, '') || ':' || COALESCE(to_regclass('ecmwf_temperature_canary_runs')::text, '') || ':' || COALESCE(to_regclass('ecmwf_temperature_canary_hours')::text, '') || ':' || COALESCE(to_regclass('rain_capture_claims')::text, '') || ':' || COALESCE(to_regclass('rain_capture_receipts')::text, '') || ':' || COALESCE(to_regclass('rain_collection_status_v1')::text, '') FROM schema_migrations")
@@ -1674,6 +1999,215 @@ start_exact_release() (
   WEATHER_ENV_FILE=$env_file compose up -d --remove-orphans --wait || return 1
 )
 
+# require the inherited family command to retain the shared release lock
+require_adjustment_family_release_lock() {
+  local descriptor=${WEATHER_RELEASE_LOCK_FD:-}
+  [[ "$descriptor" =~ ^[1-9][0-9]{0,2}$ && -e "/proc/self/fd/$descriptor" ]] ||
+    die "adjustment family release lock is unavailable"
+  [[ "$(stat -Lc '%d:%i' "/proc/self/fd/$descriptor")" == \
+    "$(stat -c '%d:%i' "$adjustment_family_deploy_state")" ]] ||
+    die "adjustment family release lock identity differs"
+}
+
+# create only an absent private transaction root
+ensure_adjustment_family_private_state_root() {
+  local root=$1
+
+  # create only a genuinely absent leaf beneath the already trusted state directory
+  if [[ ! -e "$root" && ! -L "$root" ]]; then
+    install -d -o 0 -g 0 -m 0700 "$root"
+  fi
+
+  # refuse existing ownership or mode drift without repairing or adopting it
+  [[ -d "$root" && ! -L "$root" &&
+    "$(realpath -e "$root")" == "$root" &&
+    "$(stat -c '%u:%g:%a' "$root")" == "0:0:700" ]] ||
+    die "adjustment family transaction root is unsafe"
+}
+
+# verify the installed state roots match the fixed privileged paths
+require_adjustment_family_fixed_roots() {
+  local ancestor mode
+
+  # reject linked, foreign or other-writable ancestors in the installed tree
+  for ancestor in /opt /opt/weather /opt/weather/current /opt/weather/current/deploy \
+    "$adjustment_family_deploy_state" "$adjustment_family_releases"; do
+    [[ -d "$ancestor" && ! -L "$ancestor" && "$(realpath -e "$ancestor")" == "$ancestor" &&
+      "$(stat -c '%u:%g' "$ancestor")" == "0:0" ]] ||
+      die "adjustment family deployment ancestor is unsafe: $ancestor"
+    mode=$(stat -c '%a' "$ancestor")
+    (( (8#$mode & 0002) == 0 )) ||
+      die "adjustment family deployment ancestor is other-writable: $ancestor"
+  done
+  [[ "$(stat -c '%a' "$adjustment_family_deploy_state")" == 775 &&
+    "$(stat -c '%a' "$adjustment_family_releases")" == 775 ]] ||
+    die "adjustment family deployment directory mode differs"
+  [[ "$(stat -c '%d:%i' "$state_dir")" == \
+    "$(stat -c '%d:%i' "$adjustment_family_deploy_state")" ]] ||
+    die "adjustment family deployment state root differs"
+  [[ "$(stat -c '%d:%i' "$releases_dir")" == \
+    "$(stat -c '%d:%i' "$adjustment_family_releases")" ]] ||
+    die "adjustment family release root differs"
+  ensure_adjustment_family_private_state_root "$adjustment_family_state_root"
+}
+
+# compare the live release and exact operator settings before preparation work
+require_adjustment_family_source_cas() {
+  local expected_release=$1
+  local expected_settings_sha256=$2
+  local owner size
+  [[ "$(read_release_state "$state_dir/current-release")" == "$expected_release" ]] ||
+    die "adjustment family source release differs before preparation"
+  [[ -f "$adjustment_family_settings" && ! -L "$adjustment_family_settings" &&
+    "$(realpath -e "$adjustment_family_settings")" == "$adjustment_family_settings" &&
+    "$(stat -c '%a:%h' "$adjustment_family_settings")" == "600:1" ]] ||
+    die "adjustment family settings file is unsafe"
+  owner=$(stat -c '%u:%g' "$adjustment_family_settings")
+  [[ "$owner" == 0:0 || "$owner" == 10002:10002 ]] ||
+    die "adjustment family settings owner differs"
+  size=$(stat -c '%s' "$adjustment_family_settings")
+  [[ "$size" =~ ^[1-9][0-9]{0,3}$ && "$size" -le 4096 ]] ||
+    die "adjustment family settings size is invalid"
+  [[ "$(sha256sum "$adjustment_family_settings" | awk '{print $1}')" == \
+    "$expected_settings_sha256" ]] ||
+    die "adjustment family settings changed before preparation"
+}
+
+# render one family release from exact current infrastructure settings
+render_adjustment_family_release_env() {
+  local release=$1
+  local source_env=$2
+  local target server_image web_image temporary key
+  validate_release "$release"
+  require_file "$source_env"
+  target=$(release_env "$release")
+  server_image=$(resolve_arm64_image "$weather_server_image_repository:$release")
+  web_image=$(resolve_arm64_image "$weather_web_image_repository:$release")
+
+  # reuse only an environment with exact resolved images and retained infrastructure
+  if [[ -e "$target" || -L "$target" ]]; then
+    validate_release_env "$target" "$release"
+    [[ "$(env_value "$target" WEATHER_SERVER_IMAGE)" == "$server_image" &&
+      "$(env_value "$target" WEATHER_WEB_IMAGE)" == "$web_image" ]] ||
+      die "adjustment family release images differ"
+    for key in POSTGRES_IMAGE CLOUDFLARED_IMAGE WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR \
+      WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH \
+      WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH; do
+      [[ "$(env_value "$target" "$key")" == "$(env_value "$source_env" "$key")" ]] ||
+        die "adjustment family release infrastructure differs: $key"
+    done
+    printf '%s\n' "$target"
+    return
+  fi
+  temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.env.partial")
+  trap 'rm -f -- "$temporary"' RETURN
+  write_release_env "$source_env" "$temporary" "$release" "$server_image" "$web_image" \
+    "$(env_value "$source_env" POSTGRES_IMAGE)" \
+    "$(env_value "$source_env" CLOUDFLARED_IMAGE)"
+  validate_release_env "$temporary" "$release"
+  mv "$temporary" "$target"
+  trap - RETURN
+  printf '%s\n' "$target"
+}
+
+# prepare both immutable releases and one pre-pull literal capacity receipt
+prepare_adjustment_family_release_pair() {
+  local target_release=$1
+  local compensating_release=$2
+  local source_release=$3
+  local family=$4
+  local action_sha256=$5
+  local source_env target_env compensating_env capacity temporary status image
+  local -a images
+  require_adjustment_family_fixed_roots
+  source_env=$(release_env "$source_release")
+  validate_release_env "$source_env" "$source_release"
+  require_control_plane_compatibility "$source_env"
+  target_env=$(render_adjustment_family_release_env "$target_release" "$source_env")
+  compensating_env=$(render_adjustment_family_release_env "$compensating_release" "$source_env")
+  capacity="$adjustment_family_state_root/capacity-sha256-${action_sha256}.json"
+  temporary=$(mktemp "$adjustment_family_state_root/.capacity.XXXXXX.tmp")
+  trap 'rm -f -- "$temporary"' RETURN
+  status=0
+  node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" family-release-capacity \
+    "$action_sha256" "$family" "$source_release" \
+    "$(env_value "$source_env" WEATHER_SERVER_IMAGE)" \
+    "$(env_value "$source_env" WEATHER_WEB_IMAGE)" \
+    "$(env_value "$target_env" WEATHER_SERVER_IMAGE)" \
+    "$(env_value "$target_env" WEATHER_WEB_IMAGE)" \
+    "$(env_value "$compensating_env" WEATHER_SERVER_IMAGE)" \
+    "$(env_value "$compensating_env" WEATHER_WEB_IMAGE)" >"$temporary" || status=$?
+  chmod 600 "$temporary"
+
+  # preserve the refusal receipt while denying every blocked pull
+  if ((status != 0)); then
+    cat "$temporary" >&2
+    die "adjustment family release capacity is blocked"
+  fi
+  mv "$temporary" "$capacity"
+  trap - RETURN
+  mapfile -t images < <(printf '%s\n' \
+    "$(env_value "$target_env" WEATHER_SERVER_IMAGE)" \
+    "$(env_value "$target_env" WEATHER_WEB_IMAGE)" \
+    "$(env_value "$compensating_env" WEATHER_SERVER_IMAGE)" \
+    "$(env_value "$compensating_env" WEATHER_WEB_IMAGE)" | LC_ALL=C sort -u)
+
+  # pull only the four literal application references covered by capacity
+  for image in "${images[@]}"; do
+    validate_image_reference "$image"
+    docker image pull "$image" >/dev/null
+  done
+}
+
+# publish one family-only release marker without touching schema state
+record_adjustment_family_release_success() {
+  local target=$1
+  local baseline=$2
+  write_private_state "$state_dir/previous-release" "$baseline"
+  write_active_symlink "$target"
+  write_private_state "$state_dir/current-release" "$target"
+}
+
+# switch only application images under the inherited family transaction lock
+apply_adjustment_family_release_unlocked() {
+  local target=$1
+  local expected_current=$2
+  local alternate_current=$3
+  local current target_env current_env key
+  require_adjustment_family_release_lock
+  current=$(read_release_state "$state_dir/current-release")
+
+  # accept only an already committed exact-target retry
+  if [[ "$current" == "$target" ]]; then
+    target_env=$(release_env "$target")
+    validate_release_env "$target_env" "$target"
+    require_control_plane_compatibility "$target_env"
+    [[ -L "$state_dir/active.env" &&
+      "$(readlink "$state_dir/active.env")" == "../releases/$target.env" ]] ||
+      die "adjustment family active release link differs"
+    return
+  fi
+  [[ "$current" == "$expected_current" || "$current" == "$alternate_current" ]] ||
+    die "adjustment family current release differs"
+  target_env=$(release_env "$target")
+  current_env=$(release_env "$current")
+  validate_release_env "$target_env" "$target"
+  validate_release_env "$current_env" "$current"
+  require_control_plane_compatibility "$target_env"
+  require_control_plane_compatibility "$current_env"
+
+  # family releases retain every database, infrastructure and operator setting
+  for key in POSTGRES_IMAGE CLOUDFLARED_IMAGE WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR \
+    WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH \
+    WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH; do
+    [[ "$(env_value "$target_env" "$key")" == "$(env_value "$current_env" "$key")" ]] ||
+      die "adjustment family live infrastructure differs: $key"
+  done
+  require_deployment_secrets
+  restore_images "$target_env" || die "adjustment family image switch failed"
+  record_adjustment_family_release_success "$target" "$current"
+}
+
 # prepare one direct release without clone-based staging
 prepare_yolo_release() {
   local release=$1
@@ -1896,6 +2430,289 @@ yolo_release() (
   printf 'Release %s is active after direct deployment.\n' "$release"
 )
 
+# initialize only an exact empty root-owned catalog for the inactive code handoff
+require_inert_v14_empty_catalog() {
+  local catalog="$state_dir/adjustment-candidate-catalog.json"
+  local owner group mode links
+  require_adjustment_family_fixed_roots
+  # atomically create the fixed read-only bind source without an application-owned directory
+  if [[ ! -e "$catalog" && ! -L "$catalog" ]]; then
+    local temporary
+    temporary=$(mktemp "$state_dir/.adjustment-candidate-catalog.XXXXXX")
+    printf '%s\n' '{"contractVersion":"adjustment-installed-candidate-catalog/v1","entries":[]}' >"$temporary"
+    chmod 644 "$temporary"
+    chown 0:0 "$temporary"
+    sync -f "$temporary"
+    ln "$temporary" "$catalog" || { rm -f -- "$temporary"; die "inactive v14 catalog publication collided"; }
+    rm -f -- "$temporary"
+    sync -f "$state_dir"
+  fi
+  [[ -f "$catalog" && ! -L "$catalog" ]] || die "inactive v14 catalog must be a regular file"
+  read -r owner group mode links < <(stat --format='%u %g %a %h' "$catalog")
+  [[ "$owner" == 0 && "$group" == 0 && "$mode" == 644 && "$links" == 1 ]] ||
+    die "inactive v14 catalog ownership differs"
+  cmp -s "$catalog" <(printf '%s\n' '{"contractVersion":"adjustment-installed-candidate-catalog/v1","entries":[]}') ||
+    die "inactive v14 catalog is not the exact inert empty baseline"
+}
+
+# prepare one direct release without clone-based staging
+prepare_inert_v14_release() {
+  local release=$1
+  local source_env=$2
+  local target server_source web_source server_image web_image postgres_image
+  local cloudflared_image temporary image
+  local -a images
+  target=$(release_env "$release")
+
+  # reuse an exact previously rendered release
+  if [[ -e "$target" || -L "$target" ]]; then
+    validate_release_env "$target" "$release"
+    require_control_plane_compatibility "$target"
+    require_fixed_v14_source_identity "$target" "$source_env"
+    cleanup_obsolete_weather_images "$source_env" "$target"
+    require_image_pull_capacity_floor
+    require_v13_resource_gate
+    require_literal_inert_v14_release_capacity "$source_env" "$target"
+    WEATHER_ENV_FILE=$target compose pull >&2
+    require_literal_inert_v14_release_capacity "$source_env" "$target"
+    printf '%s\n' "$target"
+    return
+  fi
+
+  server_source="$(image_repository "$(env_value "$source_env" WEATHER_SERVER_IMAGE)"):$release"
+  web_source="$(image_repository "$(env_value "$source_env" WEATHER_WEB_IMAGE)"):$release"
+  server_image=$(resolve_arm64_image "$server_source")
+  web_image=$(resolve_arm64_image "$web_source")
+  postgres_image=$(resolve_arm64_image "$(env_value "$source_env" POSTGRES_IMAGE)")
+  cloudflared_image=$(resolve_arm64_image "$(env_value "$source_env" CLOUDFLARED_IMAGE)")
+  temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.env.partial")
+
+  # remove an interrupted render
+  trap 'rm -f "$temporary"' EXIT
+  write_release_env "$source_env" "$temporary" "$release" \
+    "$server_image" "$web_image" "$postgres_image" "$cloudflared_image"
+  require_fixed_v14_source_identity "$temporary" "$source_env"
+  WEATHER_ENV_FILE=$temporary compose config --quiet
+  mapfile -t images < <(WEATHER_ENV_FILE=$temporary compose config --images | sort -u)
+  ((${#images[@]} == 4)) || die "release must contain exactly four images"
+
+  # reject any tag-only rendered image
+  for image in "${images[@]}"; do
+    validate_image_reference "$image"
+  done
+
+  cleanup_obsolete_weather_images "$source_env" "$temporary"
+  require_image_pull_capacity_floor
+  require_v13_resource_gate
+  require_literal_inert_v14_release_capacity "$source_env" "$temporary"
+  WEATHER_ENV_FILE=$temporary compose pull >&2
+  require_literal_inert_v14_release_capacity "$source_env" "$temporary"
+  mv "$temporary" "$target"
+  trap - EXIT
+  printf '%s\n' "$target"
+}
+
+# apply one source-preserving direct release without deployment-time backup
+inert_v14_release() (
+  local release=$1
+  local source_env=$2
+  local target current v14_current_env inert_v14_authorization_path v14_temporary_authorization
+  local actual_history expected_history v14_source_history restored_history schema_after_restore key
+  local git_proof target_commit catalog_sha256 settings_sha256 settings_inode
+  local previous_before=
+  local previous_existed=false
+  local active_mutation_started=false
+  local completed=false
+  current=$(read_optional_release_state "$state_dir/current-release")
+
+  # restore the exact retained source after every active-database mutation failure
+  # shellcheck disable=SC2317,SC2329
+  restore_failed_inert_v14() {
+    local status=$?
+    local recovery_status=0
+    trap - EXIT
+    set +e
+
+    # remove only an unpublished compatibility receipt
+    if [[ -n "${v14_temporary_authorization:-}" ]]; then
+      rm -f -- "$v14_temporary_authorization"
+    fi
+
+    # compensate only after the live database or service transaction began
+    if [[ "$completed" != true && "$active_mutation_started" == true ]]; then
+      printf 'Direct deployment failed; restoring Weather release %s...\n' \
+        "$current" >&2
+      # observe the real schema before injecting source application authorization
+      expected_history=$(env_value \
+        "$inert_v14_authorization_path" WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256) ||
+        recovery_status=1
+      start_postgres "$v14_current_env" || recovery_status=1
+      restored_history=$(migration_history_sha256 \
+        "$v14_current_env" "$(env_value "$v14_current_env" WEATHER_DATABASE_NAME)") ||
+        recovery_status=1
+      schema_after_restore=$(node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+        inert-v14-restoration-schema "$restored_history" "$v14_source_history" \
+        "$current" "$expected_history" "$release") || recovery_status=1
+      if [[ "$recovery_status" == 0 ]] &&
+        restore_images "$v14_current_env" "$current" "$schema_after_restore"; then
+        # remove only an exactly published actionless authority after source health is proven
+        if [[ -n "${catalog_sha256:-}" && -n "${settings_sha256:-}" ]]; then
+          node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" discard-failed-inert-v14-current \
+            "$release" "$target_commit" "$(env_value "$target" WEATHER_SERVER_IMAGE)" \
+            "$(env_value "$target" WEATHER_WEB_IMAGE)" "$catalog_sha256" "$settings_sha256" >/dev/null ||
+            recovery_status=1
+        fi
+        # publish a schema marker only for an exact recognized ledger
+        if [[ -n "$schema_after_restore" ]]; then
+          write_private_state "$state_dir/schema-release" "$schema_after_restore" ||
+            recovery_status=1
+        fi
+        write_active_symlink "$current" || recovery_status=1
+        write_private_state "$state_dir/current-release" "$current" || recovery_status=1
+
+        # restore the pre-transaction rollback marker after a partial commit
+        if [[ "$previous_existed" == true ]]; then
+          write_private_state "$state_dir/previous-release" "$previous_before" ||
+            recovery_status=1
+        else
+          rm -f -- "$state_dir/previous-release" || recovery_status=1
+        fi
+
+        # report compensation capacity only after source state is durable
+        require_literal_inert_v14_release_capacity "$source_env" "$target" ||
+          recovery_status=1
+      else
+        recovery_status=1
+      fi
+
+      # never report an original or compensation failure as a successful release
+      if ((recovery_status != 0)); then
+        printf 'Direct deployment and exact source restoration both failed.\n' >&2
+        exit 1
+      fi
+    fi
+    exit "$status"
+  }
+  trap restore_failed_inert_v14 EXIT
+
+  # require one exact retained predecessor before rendering or pulling images
+  [[ "$current" == "$recurring_previous_release" ]] ||
+    die "control plane v14 requires the exact retained source release"
+
+  # freeze the rollback marker before record_release_success can replace it
+  if [[ -e "$state_dir/previous-release" || -L "$state_dir/previous-release" ]]; then
+    previous_before=$(read_release_state "$state_dir/previous-release")
+    previous_existed=true
+  fi
+  v14_current_env=$(release_env "$current")
+  validate_release_env "$v14_current_env" "$current"
+  validate_release_env "$source_env" "$current"
+  require_control_plane_compatibility "$v14_current_env"
+  require_control_plane_compatibility "$source_env"
+
+  # prevent an explicit source file from changing any retained release setting
+  for key in WEATHER_RELEASE WEATHER_SERVER_IMAGE WEATHER_WEB_IMAGE POSTGRES_IMAGE \
+    CLOUDFLARED_IMAGE WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR \
+    WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH \
+    WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH \
+    WEATHER_CONTROL_PLANE_SHA256 WEATHER_CONTROL_PLANE_VERSION; do
+    [[ "$(env_value "$source_env" "$key")" == "$(env_value "$v14_current_env" "$key")" ]] ||
+      die "direct deployment source differs from the retained release: $key"
+  done
+
+  git_proof=$(node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" verify-inert-v14-release "$release") ||
+    die "inactive v14 exact-commit CI proof failed"
+  target_commit=$(node --input-type=module -e '
+const proof = JSON.parse(process.argv[1]);
+// require the independently resolved literal commit
+if (!/^[a-f0-9]{40}$/.test(proof.targetCommit)) throw new Error("invalid target commit");
+process.stdout.write(proof.targetCommit);
+' "$git_proof")
+  target=$(prepare_inert_v14_release "$release" "$source_env")
+  require_fixed_v14_source_identity "$target" "$source_env"
+  require_inert_v14_empty_catalog
+  require_control_plane_compatibility "$target"
+  require_deployment_secrets
+  inert_v14_authorization_path=$(migration_authorization "$release")
+  v14_temporary_authorization=$(mktemp \
+    "$releases_dir/.${release}.XXXXXX.migration-authorization.partial")
+  verify_fixed_v14_source_compatibility \
+    "$target" "$source_env" "$v14_temporary_authorization"
+
+  # reuse only byte-identical previously proven compatibility authorization
+  if [[ -e "$inert_v14_authorization_path" || -L "$inert_v14_authorization_path" ]]; then
+    validate_migration_authorization \
+      "$inert_v14_authorization_path" "$current" "$release"
+    cmp -s "$v14_temporary_authorization" "$inert_v14_authorization_path" ||
+      die "existing fixed v14 migration authorization differs"
+    rm -f -- "$v14_temporary_authorization"
+    v14_temporary_authorization=
+  else
+    publish_migration_authorization \
+      "$v14_temporary_authorization" "$inert_v14_authorization_path"
+    v14_temporary_authorization=
+  fi
+
+  # bind compensation to the exact complete source ledger observed before mutation
+  v14_source_history=$(migration_history_sha256 \
+    "$v14_current_env" "$(env_value "$v14_current_env" WEATHER_DATABASE_NAME)")
+  [[ "$v14_source_history" =~ ^[a-f0-9]{64}$ ]] ||
+    die "fixed v14 source migration ledger is invalid"
+
+  # remeasure fresh resources and literal images at the last reversible boundary
+  require_v13_resource_gate || die "fixed v14 resource gate failed before activation"
+  require_literal_inert_v14_release_capacity "$source_env" "$target" ||
+    die "fixed v14 literal capacity failed before activation"
+
+  printf 'Applying release %s directly...\n' "$release"
+  active_mutation_started=true
+  start_postgres "$target" || die "fixed v14 PostgreSQL restart failed"
+  # keep the exact maintenance tail atomic for source-safe failure recovery
+  WEATHER_ENV_FILE=$target compose run --rm migration \
+    node deploy/scripts/migrate.mjs --atomic-maintenance-v14 ||
+    die "fixed v14 active migration failed"
+  actual_history=$(migration_history_sha256 \
+    "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)")
+  expected_history=$(env_value \
+    "$inert_v14_authorization_path" WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256)
+  [[ "$actual_history" == "$expected_history" ]] ||
+    die "active migration ledger differs from fixed v14 compatibility proof"
+  write_private_state "$state_dir/schema-release" "$release" ||
+    die "fixed v14 schema marker publication failed"
+  apply_runtime_database_acl "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)" ||
+    die "fixed v14 runtime ACL application failed"
+  verify_runtime_database_acl "$target" "$(env_value "$target" WEATHER_DATABASE_NAME)" ||
+    die "fixed v14 runtime ACL verification failed"
+  # freeze the actual database capture epoch before any new producer can stage
+  "$deploy_dir/scripts/adjustment-evaluation-export.sh" --revision-capture-epoch-init-v1 "$target" ||
+    die "fixed v14 future-only epoch witness publication failed"
+  # provision the isolated twelve-gauge target sources before any producer starts
+  initialize_adjustment_rain_fixed_gauge_target_sources_v1 "$target" ||
+    die "fixed v14 rain target source initialization failed"
+  # freeze validated operator intent before the new writable web process starts
+  read -r settings_inode settings_sha256 < <(
+    node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" inert-v14-settings-snapshot
+  )
+  [[ "$settings_inode" =~ ^[0-9]+:[0-9]+$ && "$settings_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+    die "inactive v14 settings snapshot is unavailable"
+  start_exact_release "$target" || die "fixed v14 target release health failed"
+  require_literal_inert_v14_release_capacity "$source_env" "$target" ||
+    die "fixed v14 idle literal capacity failed"
+  record_release_success "$release" "$current" ||
+    die "fixed v14 release state publication failed"
+  catalog_sha256=$(sha256sum "$state_dir/adjustment-candidate-catalog.json" | awk '{print $1}')
+  node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+    verify-inert-v14-settings-snapshot "$settings_inode" "$settings_sha256" ||
+    die "inactive v14 operator settings changed before publication"
+  node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" bootstrap-inert-v14-current \
+    "$release" "$target_commit" "$(env_value "$target" WEATHER_SERVER_IMAGE)" \
+    "$(env_value "$target" WEATHER_WEB_IMAGE)" "$catalog_sha256" "$settings_sha256" >/dev/null ||
+    die "inactive v14 root source authority publication failed"
+  completed=true
+  trap - EXIT
+  printf 'Release %s is active after direct deployment.\n' "$release"
+)
+
 # activate one forward release
 start_release() (
   local target=$1
@@ -2025,6 +2842,97 @@ action=$1
 shift
 
 case "$action" in
+  # expose no caller-selected family, source, cutoff or SQL on the owner reader
+  adjustment-confirmation-access-burn-v3|adjustment-shadow-terminal-record-v3|adjustment-shadow-terminal-retire-v3|adjustment-shadow-unsupported-terminal-record-v1|adjustment-shadow-unsupported-terminal-retire-v1)
+    [[ "$#" == 1 ]] || die "adjustment owner operation requires one request identity"
+    # select the fixed operation without accepting a function or SQL identifier
+    case "$action" in
+      adjustment-confirmation-access-burn-v3) run_adjustment_owner_operation_v3 access "$1" ;;
+      adjustment-shadow-terminal-record-v3) run_adjustment_owner_operation_v3 terminal "$1" ;;
+      adjustment-shadow-terminal-retire-v3) run_adjustment_owner_operation_v3 retire "$1" ;;
+      adjustment-shadow-unsupported-terminal-record-v1) run_adjustment_owner_operation_v3 unsupported-terminal "$1" ;;
+      adjustment-shadow-unsupported-terminal-retire-v1) run_adjustment_owner_operation_v3 unsupported-retire "$1" ;;
+    esac
+    ;;
+
+  adjustment-shadow-metadata-custody-finalize-v1)
+    [[ "$#" == 1 ]] || die "shadow metadata custody finalization requires one identity"
+    finalize_adjustment_shadow_metadata_custody_v1 "$1"
+    ;;
+
+  adjustment-registration-lifecycle-status-v4)
+    (($# == 0)) || die "registration lifecycle status takes no arguments"
+    read_adjustment_registration_lifecycle_status_v4
+    ;;
+  adjustment-rain-fixed-gauge-target-sources-initialize-v1)
+    (($# == 0)) || die "rain target source initialization takes no arguments"
+    initialize_current_adjustment_rain_fixed_gauge_target_sources_v1
+    ;;
+  # accept only the authenticated create-once schedule identity over bounded stdin
+  adjustment-registration-schedule-initialize-v3)
+    (($# == 1)) || die "registration schedule initialization requires one hash"
+    initialize_adjustment_registration_schedule_v3 "$1"
+    ;;
+  adjustment-family-release)
+    (($# == 9)) || die "adjustment-family-release requires exactly nine arguments"
+    target_release=$1
+    compensating_release=$2
+    expected_current_release=$3
+    expected_source_release=$4
+    expected_settings_sha256=$5
+    family=$6
+    action_sha256=$7
+    report_sha256=$8
+    fence=$9
+    validate_release "$target_release"
+    validate_release "$compensating_release"
+    validate_release "$expected_current_release"
+    validate_release "$expected_source_release"
+    [[ "$expected_settings_sha256" =~ ^[a-f0-9]{64}$ &&
+      "$action_sha256" =~ ^[a-f0-9]{64}$ && "$report_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+      die "adjustment-family-release hashes are invalid"
+    [[ "$family" == temperature || "$family" == wind || "$family" == rain ]] ||
+      die "adjustment-family-release family is invalid"
+    [[ "$fence" =~ ^[1-9][0-9]{0,19}$ ]] ||
+      die "adjustment-family-release fence is invalid"
+    # compare fixed-width decimal strings without signed integer overflow
+    # shellcheck disable=SC2071
+    [[ ${#fence} -lt 20 || "$fence" < 18446744073709551616 ]] ||
+      die "adjustment-family-release fence overflows uint64"
+    [[ "$expected_current_release" == "$expected_source_release" &&
+      "$target_release" != "$compensating_release" &&
+      "$target_release" != "$expected_current_release" &&
+      "$compensating_release" != "$expected_current_release" ]] ||
+      die "adjustment-family-release release identities conflict"
+    acquire_release_transaction_lock
+    require_adjustment_family_fixed_roots
+    require_adjustment_family_source_cas \
+      "$expected_source_release" "$expected_settings_sha256"
+    export WEATHER_RELEASE_LOCK_FD=$release_transaction_lock_fd
+    require_command docker
+    require_command node
+    prepare_adjustment_family_release_pair "$target_release" "$compensating_release" \
+      "$expected_source_release" "$family" "$action_sha256"
+    exec node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" family-release "$@"
+    ;;
+  adjustment-family-apply-unlocked)
+    (($# == 3)) || die "adjustment-family-apply-unlocked requires three releases"
+    validate_release "$1"
+    validate_release "$2"
+    validate_release "$3"
+    apply_adjustment_family_release_unlocked "$1" "$2" "$3"
+    ;;
+  inert-v14)
+    (($# == 1)) || die "inert-v14 requires one immutable release"
+    validate_release "$1"
+    acquire_release_transaction_lock
+    require_adjustment_family_fixed_roots
+    require_command docker
+    require_command node
+    source_env=$(release_env "$recurring_previous_release")
+    require_file "$source_env"
+    inert_v14_release "$1" "$source_env"
+    ;;
   yolo)
     (($# >= 1)) || die "yolo requires a release"
     release=$1
