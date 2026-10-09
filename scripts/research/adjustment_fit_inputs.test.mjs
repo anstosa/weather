@@ -77,10 +77,15 @@ test("fit snapshots copy the closed real-family source allowlists", async () => 
   for (const family of ["rain", "wind"]) {
     const packaged = ADJUSTMENT_FIT_PUBLIC_CODE_ALLOWLIST[family]
       .filter((entry) =>
-        entry.source.startsWith("packages/forecast-adjustment/dist/"))
-      .map((entry) => entry.source.split("/").at(-1))
+        entry.destination.includes("forecast-adjustment/dist/"))
+      .map((entry) => entry.destination.split("/").at(-1))
       .sort();
     assert.deepEqual(packaged, builtForecastAdjustment);
+    assert.equal(
+      ADJUSTMENT_FIT_PUBLIC_CODE_ALLOWLIST[family].some((entry) =>
+        entry.source.startsWith("packages/forecast-adjustment/dist/")),
+      false,
+    );
   }
 
   // construct every family layout rather than accepting an unexercised list
@@ -93,7 +98,6 @@ test("fit snapshots copy the closed real-family source allowlists", async () => 
         entry.destination === ADJUSTMENT_FIT_FAMILY_ENTRIES[family].arguments[0]),
       true,
     );
-    assert.equal(allowlist.some((entry) => entry.source.includes("node_modules")), false);
     assert.equal(allowlist.some((entry) => /(?:^|\/)(?:\.ssh|\.npmrc|package-lock\.json)(?:$|\/)/u
       .test(entry.source)), false);
     let codeRoot;

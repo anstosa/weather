@@ -34,6 +34,7 @@ import {
   type ApplyForecastAdjustmentInputV1,
   type ApplyTemperatureCanaryInputV1,
   type ForecastTemperatureCanaryDecisionV1,
+  type ForecastAdjustmentWindQualifiedMaintenanceDecision,
   type LoadedForecastAdjustmentRuntimeV1,
   type LoadedForecastAdjustmentTemperatureCanaryRuntime,
   type LoadedForecastAdjustmentWindCanaryRuntime,
@@ -62,10 +63,15 @@ import {
   type ApiRainAdjustmentStartupSnapshot,
 } from "./rain-adjustment.js";
 
+export * from "./adjustment-maintenance-shadow.js";
+
 type DatabasePool = Parameters<typeof listActiveSites>[0];
 type LoadedApiForecastAdjustmentRuntime =
   | LoadedForecastAdjustmentRuntimeV1
   | LoadedForecastAdjustmentWindCanaryRuntime;
+type ApiForecastAdjustmentDecision =
+  | ForecastAdjustmentDecision
+  | ForecastAdjustmentWindQualifiedMaintenanceDecision;
 
 export interface HealthSnapshot {
   readonly database: "ready" | "unavailable";
@@ -230,32 +236,39 @@ export interface ApiCurrentWeatherRecord extends ApiWeatherRecord {
 // extend only forecast rows with fail-raw adjustment decisions
 export interface ApiForecastWeatherRecord extends ApiWeatherRecord {
   readonly rainAdjustment: ApiRainAdjustmentDecision;
-  readonly adjustment: ForecastAdjustmentDecision;
+  readonly adjustment: ApiForecastAdjustmentDecision;
   readonly temperatureAdjustment: ForecastTemperatureCanaryDecisionV1;
 }
 
 // expose only bounded startup selection metadata
 export interface ApiForecastAdjustmentRuntime {
-  readonly activationMode: "qualified" | "wind_canary" | null;
+  readonly actionSha256?: string;
+  readonly activationMode: "maintenance_qualified" | "qualified" | "wind_canary" | null;
   readonly activeBundle: string | null;
   readonly authorizationSha256: string | null;
   readonly candidateArtifactSha256: string | null;
   readonly enabledMetrics: readonly ForecastAdjustmentMetric[];
   readonly evaluationReportSha256: string | null;
   readonly expiresAt: string | null;
+  readonly fullMemberRootSha256?: string;
   readonly loadedAt: string;
   readonly qualificationReceiptSha256: string | null;
   readonly reasonCode: LoadedApiForecastAdjustmentRuntime["reasonCode"];
   readonly state: LoadedApiForecastAdjustmentRuntime["state"];
+  readonly policyReportSha256?: string;
   readonly transferReportSha256: string | null;
 }
 
 // expose bounded independent temperature-canary state
 export interface ApiForecastTemperatureAdjustmentRuntime {
+  readonly actionSha256: string | null;
+  readonly activationMode: "maintenance_qualified" | "temperature_canary" | null;
   readonly activeBundle: string | null;
   readonly authorizationSha256: string | null;
   readonly expiresAt: string | null;
+  readonly fullMemberRootSha256: string | null;
   readonly loadedAt: string;
+  readonly policyReportSha256: string | null;
   readonly reasonCode: LoadedForecastAdjustmentTemperatureCanaryRuntime["reasonCode"];
   readonly source: null | {
     readonly adaptiveReady: boolean;
@@ -318,7 +331,7 @@ export interface ApiOptions {
     readonly apply?: (
       runtime: LoadedApiForecastAdjustmentRuntime,
       input: ApplyForecastAdjustmentInputV1,
-    ) => ForecastAdjustmentDecision;
+    ) => ApiForecastAdjustmentDecision;
     readonly loadedAt: string;
     readonly runtime: LoadedApiForecastAdjustmentRuntime;
   };
@@ -738,6 +751,7 @@ function projectForecastAdjustmentRuntime(
   }
 
   const canary = "artifactKind" in runtime.bundle;
+  const maintenance = "maintenanceBundleSha256" in runtime.bundle;
   const expiresAt = canary && "expiresAt" in runtime.bundle.authorization
     ? runtime.bundle.authorization.expiresAt
     : null;
@@ -771,7 +785,12 @@ function projectForecastAdjustmentRuntime(
   ))] as ForecastAdjustmentMetric[];
 
   return {
-    activationMode: canary ? "wind_canary" : "qualified",
+    ...(maintenance ? {
+      actionSha256: runtime.bundle.maintenanceAuthority.actionSha256,
+      fullMemberRootSha256: runtime.bundle.maintenanceAuthority.fullMemberRootSha256,
+      policyReportSha256: runtime.bundle.maintenanceAuthority.policyReportSha256,
+    } : {}),
+    activationMode: canary ? "wind_canary" : maintenance ? "maintenance_qualified" : "qualified",
     activeBundle: runtime.bundle.bundleSha256,
     authorizationSha256: canary
       ? runtime.bundle.authorization.authorizationSha256
@@ -779,12 +798,12 @@ function projectForecastAdjustmentRuntime(
     candidateArtifactSha256:
       runtime.bundle.candidate.candidateArtifactSha256,
     enabledMetrics,
-    evaluationReportSha256: canary
+    evaluationReportSha256: canary || maintenance
       ? null
       : runtime.bundle.evaluationReport.evaluationReportSha256,
     expiresAt,
     loadedAt,
-    qualificationReceiptSha256: canary
+    qualificationReceiptSha256: canary || maintenance
       ? null
       : runtime.bundle.qualificationReceipt.qualificationReceiptSha256,
     reasonCode: null,
@@ -814,27 +833,36 @@ function projectForecastTemperatureAdjustmentRuntime(
   // redact artifact content while loader state is disabled
   if (runtime.state === "disabled") {
     return {
+      actionSha256: null,
+      activationMode: null,
       activeBundle: null,
       authorizationSha256: null,
       expiresAt: null,
+      fullMemberRootSha256: null,
       loadedAt,
+      policyReportSha256: null,
       reasonCode: runtime.reasonCode,
       source: projectTemperatureCanarySourceStatus(source),
       state: "disabled",
     };
   }
 
-  const expiresAt = runtime.bundle.authorization.expiresAt;
+  const maintenance = "maintenancePackage" in runtime.bundle;
+  const expiresAt = maintenance ? null : runtime.bundle.authorization.expiresAt;
   const evaluatedAtMs = Date.parse(evaluatedAt);
 
   // check only the cached authorization clock after startup validation
-  if (evaluatedAtMs < Date.parse(runtime.bundle.authorization.activatedAt) ||
-    (expiresAt !== null && evaluatedAtMs >= Date.parse(expiresAt))) {
+  if (!maintenance && (evaluatedAtMs < Date.parse(runtime.bundle.authorization.activatedAt) ||
+    (expiresAt !== null && evaluatedAtMs >= Date.parse(expiresAt)))) {
     return {
+      actionSha256: null,
+      activationMode: null,
       activeBundle: null,
       authorizationSha256: null,
       expiresAt: null,
+      fullMemberRootSha256: null,
       loadedAt,
+      policyReportSha256: null,
       reasonCode: "canary_expired",
       source: projectTemperatureCanarySourceStatus(source),
       state: "disabled",
@@ -842,10 +870,16 @@ function projectForecastTemperatureAdjustmentRuntime(
   }
 
   return {
+    actionSha256: maintenance ? runtime.bundle.maintenanceAuthority.actionSha256 : null,
+    activationMode: maintenance ? "maintenance_qualified" : "temperature_canary",
     activeBundle: runtime.bundle.bundleSha256,
-    authorizationSha256: runtime.bundle.authorization.authorizationSha256,
+    authorizationSha256: maintenance ? null : runtime.bundle.authorization.authorizationSha256,
     expiresAt,
+    fullMemberRootSha256: maintenance
+      ? runtime.bundle.maintenanceAuthority.fullMemberRootSha256
+      : null,
     loadedAt,
+    policyReportSha256: maintenance ? runtime.bundle.maintenanceAuthority.policyReportSha256 : null,
     reasonCode: null,
     source: projectTemperatureCanarySourceStatus(source),
     state: "active",
@@ -1139,7 +1173,7 @@ async function handleReadRoute(
   applyAdjustment: (
     runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
-  ) => ForecastAdjustmentDecision,
+  ) => ApiForecastAdjustmentDecision,
   temperatureAdjustmentRuntime: LoadedForecastAdjustmentTemperatureCanaryRuntime,
   projectedTemperatureAdjustmentRuntime: ApiForecastTemperatureAdjustmentRuntime,
   applyTemperatureAdjustment: (
@@ -1777,7 +1811,7 @@ function mapForecastWeatherRecords(
   applyAdjustment: (
     runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
-  ) => ForecastAdjustmentDecision,
+  ) => ApiForecastAdjustmentDecision,
   temperatureRuntime: LoadedForecastAdjustmentTemperatureCanaryRuntime,
   temperatureSidecar: EcmwfTemperatureCanarySidecar | null,
   applyTemperatureAdjustment: (
@@ -1987,8 +2021,8 @@ function applyForecastAdjustmentSafely(
   applyAdjustment: (
     runtime: LoadedApiForecastAdjustmentRuntime,
     input: ApplyForecastAdjustmentInputV1,
-  ) => ForecastAdjustmentDecision,
-): ForecastAdjustmentDecision {
+  ) => ApiForecastAdjustmentDecision,
+): ApiForecastAdjustmentDecision {
   // contain every adjustment failure
   try {
     return applyAdjustment(runtime, forecastAdjustmentInput(row, evaluatedAt));

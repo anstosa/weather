@@ -9,6 +9,7 @@ import {
   FORECAST_ADJUSTMENT_CANONICAL_TRAINING_PROVENANCE_V1,
   FORECAST_ADJUSTMENT_WIND_CANARY_TRAINING_IDENTITY_V1,
   applyForecastAdjustment,
+  applyForecastAdjustmentWindShadowCandidate,
   canonicalJsonBytes,
   canonicalObjectSha256,
   canonicalSha256,
@@ -197,6 +198,20 @@ test("wind canary keeps temperature, humidity, and direction raw", () => {
   assert.equal("relativeHumidityPercent" in decision.adjustedMetrics, false);
   assert.equal("windDirectionDegrees" in decision.adjustedMetrics, false);
   assert.equal("qualificationReceiptSha256" in decision, false);
+});
+
+test("wind shadow evaluates a verified candidate outside its activation window", () => {
+  const bundle = createBundle();
+  const active = applyForecastAdjustmentWindShadowCandidate(bundle, {
+    evaluatedAt: "2026-09-11T08:00:00.000Z",
+    metrics: rawMetrics(),
+    rawForecastProvenance: rawProvenance(),
+  });
+  assert.equal(active.state, "active");
+  assert.deepEqual(active.adjustedMetrics, {
+    windGustMps: 11,
+    windSpeedMps: 7,
+  });
 });
 
 test("wind canary rejects rehashed non-wind candidate material", () => {

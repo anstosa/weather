@@ -20,6 +20,17 @@ Usage: adjustment-evaluation-export.sh FROM_DATE TO_DATE
        adjustment-evaluation-export.sh --v2 FROM_DATE TO_DATE
        adjustment-evaluation-export.sh --availability-v2 REGISTRATION_SHA256
        adjustment-evaluation-export.sh --confirmation-v2 REGISTRATION_SHA256 ACCESS_SHA256 CHUNK_INDEX
+       adjustment-evaluation-export.sh --revision-catalog-start-v1 CUTOFF_AT ARCHIVE_COMMIT_ORDINAL
+       adjustment-evaluation-export.sh --revision-catalog-current-start-v1 CUTOFF_AT
+       adjustment-evaluation-export.sh --revision-catalog-page-v1 WATERMARK_ORDINAL WATERMARK_FRONTIER START_SHA256 AFTER_ORDINAL AFTER_FRONTIER PREVIOUS_PAGE_SHA256
+       adjustment-evaluation-export.sh --revision-gap-start-v1
+       adjustment-evaluation-export.sh --revision-gap-page-v1 START_SHA256 FRONTIER_SHA256
+       adjustment-evaluation-export.sh --revision-gap-ack-v1 PAGE_SHA256 GRAPH_SHA256
+       adjustment-evaluation-export.sh --revision-capture-epoch-init-v1 TARGET_RELEASE
+       adjustment-evaluation-export.sh --revision-capture-epoch-v1
+       adjustment-evaluation-export.sh --revision-capture-epoch-snapshot-v1
+       adjustment-evaluation-export.sh --database-ledger-v3
+       adjustment-evaluation-export.sh --registration-schedule-status-v3
 
 Streams one private Ballydidean adjustment-evaluation snapshot for at most
 14 inclusive America/Los_Angeles local dates. V2 daily transport is descriptive
@@ -55,6 +66,86 @@ case "${1:-}" in
     [[ "$chunk_index" =~ ^(0|[1-9]|1[0-9]|2[0-6])$ ]] ||
       die "chunk index is invalid"
     ;;
+  --revision-catalog-start-v1)
+    (($# == 3)) || { usage; exit 2; }
+    mode=revision_catalog_start_v1
+    revision_cutoff=$2
+    revision_ordinal=$3
+    [[ "$revision_cutoff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]] ||
+      die "revision cutoff is invalid"
+    [[ "$revision_ordinal" =~ ^(0|[1-9][0-9]*)$ ]] ||
+      die "revision ordinal is invalid"
+    ;;
+  --revision-catalog-current-start-v1)
+    (($# == 2)) || { usage; exit 2; }
+    mode=revision_catalog_current_start_v1
+    revision_cutoff=$2
+    [[ "$revision_cutoff" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]] ||
+      die "revision cutoff is invalid"
+    ;;
+  --revision-catalog-page-v1)
+    (($# == 7)) || { usage; exit 2; }
+    mode=revision_catalog_page_v1
+    revision_ordinal=$2
+    revision_frontier=$3
+    revision_start_sha256=$4
+    revision_after_ordinal=$5
+    revision_after_frontier=$6
+    revision_previous_page_sha256=$7
+    [[ "$revision_ordinal" =~ ^(0|[1-9][0-9]*)$ ]] ||
+      die "revision watermark ordinal is invalid"
+    [[ "$revision_after_ordinal" =~ ^(0|[1-9][0-9]*)$ ]] ||
+      die "revision cursor ordinal is invalid"
+    # require only lowercase fixed-width page identities
+    for identity in "$revision_frontier" "$revision_start_sha256" \
+      "$revision_after_frontier" "$revision_previous_page_sha256"; do
+      [[ "$identity" =~ ^[a-f0-9]{64}$ ]] || die "revision page identity is invalid"
+    done
+    ;;
+  --revision-gap-start-v1)
+    (($# == 1)) || { usage; exit 2; }
+    mode=revision_gap_start_v1
+    ;;
+  --revision-gap-page-v1)
+    (($# == 3)) || { usage; exit 2; }
+    mode=revision_gap_page_v1
+    revision_gap_start_sha256=$2
+    revision_gap_frontier_sha256=$3
+    [[ "$revision_gap_start_sha256" =~ ^[a-f0-9]{64}$ &&
+      "$revision_gap_frontier_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+      die "revision gap page identity is invalid"
+    ;;
+  --revision-gap-ack-v1)
+    (($# == 3)) || { usage; exit 2; }
+    mode=revision_gap_ack_v1
+    revision_gap_page_sha256=$2
+    revision_gap_graph_sha256=$3
+    [[ "$revision_gap_page_sha256" =~ ^[a-f0-9]{64}$ &&
+      "$revision_gap_graph_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+      die "revision gap acknowledgement identity is invalid"
+    ;;
+  --revision-capture-epoch-init-v1)
+    (($# == 2)) || { usage; exit 2; }
+    mode=revision_capture_epoch_init_v1
+    target_release=$2
+    validate_release "$target_release"
+    ;;
+  --revision-capture-epoch-v1)
+    (($# == 1)) || { usage; exit 2; }
+    mode=revision_capture_epoch_v1
+    ;;
+  --revision-capture-epoch-snapshot-v1)
+    (($# == 1)) || { usage; exit 2; }
+    mode=revision_capture_epoch_snapshot_v1
+    ;;
+  --registration-schedule-status-v3)
+    (($# == 1)) || { usage; exit 2; }
+    mode=registration_schedule_status_v3
+    ;;
+  --database-ledger-v3)
+    (($# == 1)) || { usage; exit 2; }
+    mode=database_ledger_v3
+    ;;
   *)
     (($# == 2)) || { usage; exit 2; }
     mode=legacy_v1
@@ -70,18 +161,116 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
 fi
 
 require_command df
+require_command node
+require_file "$deploy_dir/scripts/adjustment-evidence-store.mjs"
+
+# export only the create-once root-authenticated capture epoch
+if [[ "$mode" == revision_capture_epoch_v1 ]]; then
+  exec node --max-old-space-size=48 --max-semi-space-size=1 \
+    "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-capture-epoch-read-v1
+fi
+# export only the actual zero-frontier snapshot bound by the witness
+if [[ "$mode" == revision_capture_epoch_snapshot_v1 ]]; then
+  exec node --max-old-space-size=48 --max-semi-space-size=1 \
+    "$deploy_dir/scripts/adjustment-evidence-store.mjs" \
+    revision-capture-epoch-snapshot-read-v1
+fi
+
+# run gap transfer through its own cross-process private spool lock
+if [[ "$mode" == revision_gap_start_v1 ]]; then
+  exec env WEATHER_ADJUSTMENT_EVIDENCE_ROOT="$evidence_root" \
+    node --max-old-space-size=192 --max-semi-space-size=4 \
+    "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-gap-start-v1
+fi
+# freeze one bounded page without opening a database transaction
+if [[ "$mode" == revision_gap_page_v1 ]]; then
+  exec env WEATHER_ADJUSTMENT_EVIDENCE_ROOT="$evidence_root" \
+    node --max-old-space-size=192 --max-semi-space-size=4 \
+    "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-gap-page-v1 \
+    "$revision_gap_start_sha256" "$revision_gap_frontier_sha256"
+fi
+# retire only one exact graph-acknowledged pending gap page
+if [[ "$mode" == revision_gap_ack_v1 ]]; then
+  exec env WEATHER_ADJUSTMENT_EVIDENCE_ROOT="$evidence_root" \
+    node --max-old-space-size=192 --max-semi-space-size=4 \
+    "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-gap-ack-v1 \
+    "$revision_gap_page_sha256" "$revision_gap_graph_sha256"
+fi
+
 require_command docker
 require_command flock
-require_command node
 WEATHER_ENV_FILE=$(default_env_file)
 require_file "$WEATHER_ENV_FILE"
 database_name=$(env_value "$WEATHER_ENV_FILE" WEATHER_DATABASE_NAME)
 validate_database_name "$database_name"
-require_file "$deploy_dir/scripts/adjustment-evidence-store.mjs"
 require_file "$deploy_dir/scripts/adjustment-evaluation-package.mjs"
 
+# create the future-only epoch after live 0020 and before target process activation
+if [[ "$mode" == revision_capture_epoch_init_v1 ]]; then
+  target_env="$deploy_dir/releases/${target_release}.env"
+  require_file "$target_env"
+  [[ ! -L "$target_env" ]] || die "capture epoch target environment is linked"
+  [[ "$(env_value "$target_env" WEATHER_RELEASE)" == "$target_release" ]] ||
+    die "capture epoch target release differs"
+  validate_image_reference "$(env_value "$target_env" WEATHER_SERVER_IMAGE)"
+  validate_image_reference "$(env_value "$target_env" WEATHER_WEB_IMAGE)"
+  target_control_sha256=$(env_value "$target_env" WEATHER_CONTROL_PLANE_SHA256)
+  target_control_version=$(env_value "$target_env" WEATHER_CONTROL_PLANE_VERSION)
+  installed_control_sha256=$(control_plane_digest)
+  [[ "$target_control_version" == 14 &&
+    "$target_control_sha256" == "$installed_control_sha256" ]] ||
+    die "capture epoch target control plane differs from installed v14"
+  install -d -o 0 -g 0 -m 0700 "$lock_root"
+  [[ ! -L "$lock_root" ]] || die "adjustment export lock root is linked"
+  exec {epoch_lock_fd}>"$lock_root/adjustment-capture-epoch.lock"
+  chmod 0600 "$lock_root/adjustment-capture-epoch.lock"
+  flock -n "$epoch_lock_fd" || die "another capture epoch initialization is in flight"
+  epoch_payload_sql='adjustment_revision_serving_snapshot_v1(transaction_timestamp(), 0)'
+  # immutable retries validate retained zero proof instead of resetting the live frontier
+  if [[ -e "$deploy_dir/state/adjustment-capture-epoch.json" ||
+    -e "$deploy_dir/state/adjustment-capture-epoch-snapshot.json" ]]; then
+    epoch_payload_sql='NULL::jsonb'
+  fi
+  # expand the password and positional database only inside the container
+  # shellcheck disable=SC2016
+  if ! WEATHER_ENV_FILE=$WEATHER_ENV_FILE compose exec -T postgres \
+    sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_training_export_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --host 127.0.0.1 --username weather_training_export --dbname "$1"' \
+    adjustment-capture-epoch "$database_name" <<SQL |
+\set ON_ERROR_STOP on
+BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL statement_timeout = '5min';
+SET LOCAL lock_timeout = '5s';
+SET LOCAL idle_in_transaction_session_timeout = '30s';
+COPY (
+  SELECT jsonb_build_object(
+    'databaseManifest', to_jsonb(manifest),
+    'payload', $epoch_payload_sql,
+    'transaction', jsonb_build_object(
+      'created_at_utc', to_char(transaction_timestamp() AT TIME ZONE 'UTC',
+        'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+      'idle_in_transaction_session_timeout',
+        current_setting('idle_in_transaction_session_timeout'),
+      'isolation_level', current_setting('transaction_isolation'),
+      'lock_timeout', current_setting('lock_timeout'),
+      'read_only', current_setting('transaction_read_only'),
+      'statement_timeout', current_setting('statement_timeout')
+    )
+  )::text
+  FROM adjustment_evaluation_export_manifest_v1 manifest
+) TO STDOUT WITH (FORMAT csv, DELIMITER E'\x01', QUOTE E'\x02', ESCAPE E'\x02');
+COMMIT;
+SQL
+    node --max-old-space-size=192 --max-semi-space-size=4 \
+      "$deploy_dir/scripts/adjustment-evidence-store.mjs" \
+      revision-capture-epoch-init-v1 "$target_release"
+  then
+    die "adjustment revision capture epoch initialization failed"
+  fi
+  exit 0
+fi
+
 # require edge evidence only for observation packages
-if [[ "$mode" != availability_v2 ]]; then
+if [[ "$mode" != availability_v2 && "$mode" != database_ledger_v3 ]]; then
   [[ -d "$evidence_root" && ! -L "$evidence_root" ]] ||
     die "adjustment evidence root is missing or linked"
 fi
@@ -162,11 +351,36 @@ SQL
 run_function_export() {
   # shellcheck disable=SC2016
   WEATHER_ENV_FILE=$WEATHER_ENV_FILE compose exec -T postgres \
-    sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_training_export_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --host 127.0.0.1 --username weather_training_export --dbname "$1" --set=registration_sha256="$2" --set=access_sha256="$3" --set=chunk_index="$4"' \
+    sh -eu -c 'PGPASSWORD=$(cat /run/secrets/weather_training_export_password); export PGPASSWORD; exec psql --no-password --no-psqlrc --quiet --host 127.0.0.1 --username weather_training_export --dbname "$1" --set=registration_sha256="$2" --set=access_sha256="$3" --set=chunk_index="$4" --set=revision_cutoff="$5" --set=revision_ordinal="$6"' \
     adjustment-maintenance-v2-export "$database_name" \
     "${registration_sha256:-}" "${access_sha256:-}" "${chunk_index:-}" \
+    "${revision_cutoff:-}" "${revision_ordinal:-}" \
     <"$temporary/function-export.sql"
 }
+
+# expose only fixed family slot functions under the read-only training role
+if [[ "$mode" == registration_schedule_status_v3 ]]; then
+  write_function_export_sql "jsonb_build_array(adjustment_shadow_registration_slot_v3('temperature'), adjustment_shadow_registration_slot_v3('wind'), adjustment_shadow_registration_slot_v3('rain'))"
+  if ! run_function_export |
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+      project-registration-schedule-status-v3; then
+    die "adjustment registration schedule status failed"
+  fi
+  exit 0
+fi
+
+# export only the authenticated database ledger and its transaction clock
+if [[ "$mode" == database_ledger_v3 ]]; then
+  write_function_export_sql "NULL::jsonb"
+  if ! run_function_export |
+    node --max-old-space-size=48 --max-semi-space-size=1 \
+      "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+      project-maintenance-ledger-v3; then
+    die "adjustment database ledger export failed"
+  fi
+  exit 0
+fi
 
 # return one value-free availability document without observation data
 if [[ "$mode" == availability_v2 ]]; then
@@ -177,6 +391,48 @@ if [[ "$mode" == availability_v2 ]]; then
       "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
       frame-v2-availability "$registration_sha256"; then
     die "value-free adjustment confirmation availability export failed"
+  fi
+  exit 0
+fi
+
+# export one exact immutable database snapshot as a transfer start
+if [[ "$mode" == revision_catalog_start_v1 ]]; then
+  write_function_export_sql \
+    "adjustment_revision_serving_snapshot_v1(:'revision_cutoff'::timestamptz, :'revision_ordinal'::bigint)"
+  if ! run_function_export |
+    WEATHER_ADJUSTMENT_EVIDENCE_ROOT="$evidence_root" \
+      node --max-old-space-size=192 --max-semi-space-size=4 \
+      "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-cold-start-v1
+  then
+    die "adjustment revision cold transfer start failed"
+  fi
+  exit 0
+fi
+
+# export one current frontier and snapshot from the same read-only transaction
+if [[ "$mode" == revision_catalog_current_start_v1 ]]; then
+  write_function_export_sql \
+    "(SELECT adjustment_revision_serving_snapshot_v1(:'revision_cutoff'::timestamptz, (observed.frontier->>'archiveCommitOrdinal')::bigint) FROM adjustment_revision_frontier_v1() AS observed(frontier))"
+  if ! run_function_export |
+    WEATHER_ADJUSTMENT_EVIDENCE_ROOT="$evidence_root" \
+      node --max-old-space-size=192 --max-semi-space-size=4 \
+      "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-cold-start-v1
+  then
+    die "adjustment revision current cold transfer start failed"
+  fi
+  exit 0
+fi
+
+# export one bounded direct-successor page without rereading mutable serving rows
+if [[ "$mode" == revision_catalog_page_v1 ]]; then
+  if ! WEATHER_ADJUSTMENT_EVIDENCE_ROOT="$evidence_root" \
+    node --max-old-space-size=192 --max-semi-space-size=4 \
+    "$deploy_dir/scripts/adjustment-evidence-store.mjs" revision-cold-page-v1 \
+    "$revision_ordinal" "$revision_frontier" "$revision_start_sha256" \
+    "$revision_after_ordinal" "$revision_after_frontier" \
+    "$revision_previous_page_sha256"
+  then
+    die "adjustment revision cold page export failed"
   fi
   exit 0
 fi

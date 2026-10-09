@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { copyFileSync } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +102,17 @@ export async function buildWorkspaces(workspaces, runWorkspace) {
   }
 }
 
+// copy reviewed non-typescript runtime assets after their workspace compiles
+export function copyWorkspaceRuntimeAssets(workspace, root = repositoryRoot) {
+  // keep the public maintenance contract in the web build output
+  if (workspace.name === "@weather/web") {
+    copyFileSync(
+      join(root, workspace.path, "src", "adjustment-maintenance-contract.mjs"),
+      join(root, workspace.path, "dist", "adjustment-maintenance-contract.mjs"),
+    );
+  }
+}
+
 // compile declarations and JavaScript in the same typechecked pass
 function compileWorkspace(workspace) {
   const compiler = join(repositoryRoot, "node_modules", "typescript", "bin", "tsc");
@@ -118,6 +130,8 @@ function compileWorkspace(workspace) {
   if (result.status !== 0) {
     throw new Error(`build failed for ${workspace.name}: ${result.signal ?? result.status}`);
   }
+
+  copyWorkspaceRuntimeAssets(workspace);
 }
 
 // run only when invoked as the root build command

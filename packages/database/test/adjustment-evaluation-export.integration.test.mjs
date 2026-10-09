@@ -318,7 +318,8 @@ test("adjustment evaluation export is bounded, repeatable-read, and limited to f
     assert.deepEqual(copiedReceipt.metadata, receiptMetadata);
     const manifest = await exporter.query("SELECT * FROM adjustment_evaluation_export_manifest_v1");
     assert.equal(manifest.rows[0].schema_migration, "0017_adjustment_evaluation_export.sql");
-    assert.equal(manifest.rows[0].migration_names.at(-1), "0018_adjustment_maintenance_v2.sql");
+    // retain the complete current ledger without changing the legacy export view
+    assert.equal(manifest.rows[0].migration_names.at(-1), "0021_adjustment_rolling_registration.sql");
 
     await assert.rejects(exportRows(exporter, "2026-10-02", "2026-10-01"), /division by zero/u);
     await assert.rejects(exportRows(exporter, "2026-10-01", "2026-10-15"), /division by zero/u);

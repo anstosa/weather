@@ -32,6 +32,53 @@ const exportScript = join(repoRoot, "deploy/scripts/forecast-training-export.sh"
 const pullScript = join(repoRoot, "deploy/scripts/pull-forecast-training-export.sh");
 const sshRunScript = join(repoRoot, "deploy/scripts/ssh-run.sh");
 const runDeployIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
+const publicValidatorSha256 = "32f6fc48dd191dc5ec6c778b38279ff22bf4ee85691907bfb64e315ef523eb90";
+const publicValidatorForbiddenValueHit = String.raw`apps/web/src/adjustment-maintenance-contract.mjs:  /(?:^|[/\\])\.weather[/\\]model-evidence(?:[/\\]|$)/iu,` + "\n";
+
+// permit only the hash-bound validator's exact private-value rejection rule
+function assertNoApplicationExportAccess(result, surface, validatorSha256) {
+  assert.ok(result.status === 0 || result.status === 1, `${surface} export boundary scan failed`);
+  assert.equal(result.stderr, "", `${surface} export boundary scan produced a diagnostic`);
+
+  // retain the complete public boundary even when the private-value rule disappears
+  if (surface === "apps/web") {
+    assert.equal(validatorSha256, publicValidatorSha256, "public validator bytes changed");
+  }
+
+  // an empty successful scan retains the original no-access boundary
+  if (result.status === 1) {
+    assert.equal(result.stdout, "");
+    return;
+  }
+  assert.equal(surface, "apps/web", `${surface} gained export evidence or key access`);
+  assert.equal(result.stdout, publicValidatorForbiddenValueHit, "apps/web gained export evidence or key access");
+}
+
+// reject every access, extra hit, or drift around the one public denial rule
+test("application export boundary admits only the exact hash-bound denial rule", () => {
+  const allowed = { status: 0, stderr: "", stdout: publicValidatorForbiddenValueHit };
+  assertNoApplicationExportAccess(allowed, "apps/web", publicValidatorSha256);
+  assertNoApplicationExportAccess({ status: 1, stderr: "", stdout: "" }, "apps/api");
+  const rejected = [
+    { ...allowed, stdout: `${allowed.stdout}${allowed.stdout}` },
+    { ...allowed, stdout: `${allowed.stdout}apps/web/src/index.ts:readFile('model-evidence')\n` },
+    { ...allowed, stdout: "apps/web/src/index.ts:weather_training_export_password\n" },
+    { ...allowed, stdout: allowed.stdout.replace("/iu,", "/iu; readFile('model-evidence');") },
+    { ...allowed, stdout: allowed.stdout.replace("adjustment-maintenance-contract.mjs", "index.ts") },
+    { ...allowed, status: 2, stderr: "fatal: scan unavailable" },
+  ];
+
+  // preserve the rejection of each hostile scanner result
+  for (const result of rejected) {
+    assert.throws(() => assertNoApplicationExportAccess(result, "apps/web", publicValidatorSha256));
+  }
+  assert.throws(() => assertNoApplicationExportAccess(allowed, "apps/api", publicValidatorSha256));
+  assert.throws(() => assertNoApplicationExportAccess(allowed, "apps/web", "0".repeat(64)));
+  assert.throws(() => assertNoApplicationExportAccess(
+    { status: 1, stderr: "", stdout: "" }, "apps/web", "0".repeat(64),
+  ));
+});
+
 const hashA = "a".repeat(64);
 const hashB = "b".repeat(64);
 const ambientFingerprint =
@@ -1933,7 +1980,12 @@ test("remote contracts expose no caller-selected database, source, SQL, or path"
       "--",
       surface,
     ], { cwd: repoRoot, encoding: "utf8" });
-    assert.equal(result.status, 1, `${surface} gained export evidence or key access`);
+    // bind the sole private-value denial match to the complete reviewed public validator
+    const validatorHash = surface === "apps/web"
+      ? createHash("sha256").update(await readFile(join(repoRoot,
+        "apps/web/src/adjustment-maintenance-contract.mjs"))).digest("hex")
+      : undefined;
+    assertNoApplicationExportAccess(result, surface, validatorHash);
   }
 
   const workerSecrets = spawnSync("git", [

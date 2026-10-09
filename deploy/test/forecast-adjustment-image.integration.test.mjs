@@ -13,8 +13,21 @@ const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 const providedServerImage = process.env.WEATHER_TEST_SERVER_IMAGE;
 const providedWebImage = process.env.WEATHER_TEST_WEB_IMAGE;
 const providedBuildPackageRoot = process.env.WEATHER_TEST_BUILD_PACKAGE_ROOT;
+const providedBuildWebContract = process.env.WEATHER_TEST_BUILD_WEB_CONTRACT;
 const publicScorecardContractPath =
   "deploy/scripts/forecast-adjustment-scorecard-contract.mjs";
+const publicMaintenanceContractPath =
+  "apps/web/dist/adjustment-maintenance-contract.mjs";
+const publicMaintenanceContractExports = [
+  "createMaintenanceShadowPredictionMetadata",
+  "parseAdjustmentRainFixedGaugeTargetProjection",
+  "parseAdjustmentRevisionProjectionDocument",
+  "parseMaintenanceShadowComparator",
+  "parseMaintenanceShadowSourceProjection",
+  "parseMaintenanceShadowValues",
+  "parseRainMaintenanceControlState",
+  "validateMaintenanceShadowComparatorBinding",
+];
 
 // hash the exact server package files expected from the build stage
 async function collectExpectedPackageFiles(
@@ -82,7 +95,7 @@ const { lstatSync, readFileSync, readdirSync, realpathSync } = require("node:fs"
 const { join, relative } = require("node:path");
 const root = "/opt/weather";
 const nodes = [];
-const publicForecastAdjustmentPaths = new Set([${JSON.stringify(publicScorecardContractPath)}]);
+const publicForecastAdjustmentPaths = new Set([${JSON.stringify(publicScorecardContractPath)}, ${JSON.stringify(publicMaintenanceContractPath)}]);
 // collect nodes without following links
 function walk(directory) {
   // inspect deterministic child nodes
@@ -114,10 +127,10 @@ function hashes(directory) {
 walk(root);
 // identify every sensitive adjustment or private-data node
 const sensitiveNodes = nodes.filter(({ path }) => /forecast-adjustment|(?:^|\\\/)\\.weather-(?:data|models)(?:\\\/|$)|(?:^|\\\/)model-evidence(?:\\\/|$)|sha256-[a-f0-9]{64}\\.json$|training[_-]export[_-]password|(?:decrypt|encrypt)(?:ion)?[-_]?key/iu.test(path));
-// permit only the shared public scorecard contract
+// permit only the two reviewed public contracts among sensitive nodes
 const forbidden = sensitiveNodes.filter(({ path }) => !publicForecastAdjustmentPaths.has(path));
-// bind the allowed path to its exact image bytes and node type
-const publicForecastAdjustmentNodes = sensitiveNodes
+// bind every required public path to its exact image bytes and node type
+const publicForecastAdjustmentNodes = nodes
   .filter(({ path }) => publicForecastAdjustmentPaths.has(path))
   .map(({ path, type }) => ({
     path,
@@ -153,6 +166,82 @@ async function inspectImage(image, mode) {
     { cwd: repoRoot, maxBuffer: 10 * 1024 * 1024, timeout: 120_000 },
   );
   return JSON.parse(stdout);
+}
+
+// import the exact public maintenance contract from the built web image
+async function inspectWebContractExports(image) {
+  const script = `import(${JSON.stringify("./apps/web/dist/adjustment-maintenance-contract.mjs")})`
+    + ".then((module) => process.stdout.write(JSON.stringify(Object.keys(module).sort())))";
+  const { stdout } = await executeFile(
+    "docker",
+    ["run", "--rm", "--entrypoint", "node", image, "--input-type=module", "-e", script],
+    { cwd: repoRoot, maxBuffer: 1024 * 1024, timeout: 120_000 },
+  );
+  return JSON.parse(stdout);
+}
+
+// start the production web command and prove its complete import graph serves
+async function inspectWebServerStartup(image, suffix) {
+  const name = `weather-web-import-test-${suffix}`;
+  try {
+    await executeFile(
+      "docker",
+      [
+        "run",
+        "--detach",
+        "--name",
+        name,
+        "--network",
+        "none",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,size=16m",
+        "--env",
+        "PORT=3000",
+        "--env",
+        "WEATHER_ADJUSTMENT_EVIDENCE_ROOT=/tmp/adjustment-evidence",
+        "--env",
+        "WEATHER_ADMIN_AUTH_PATH=/tmp/admin-auth.json",
+        "--env",
+        "WEATHER_PROPERTY_SENSOR_LAYOUT_PATH=/tmp/property-sensor-layout.json",
+        image,
+      ],
+      { cwd: repoRoot, timeout: 120_000 },
+    );
+    let lastError;
+    // allow the production listener to initialize its disposable private state
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      try {
+        await executeFile(
+          "docker",
+          [
+            "exec",
+            name,
+            "node",
+            "-e",
+            "fetch('http://127.0.0.1:3000/', { method: 'HEAD' }).then((response) => { if (response.status !== 200) process.exit(1); })",
+          ],
+          { cwd: repoRoot, timeout: 10_000 },
+        );
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+      }
+    }
+    const { stdout, stderr } = await executeFile(
+      "docker",
+      ["logs", name],
+      { cwd: repoRoot, maxBuffer: 2 * 1024 * 1024, timeout: 30_000 },
+    );
+    throw new Error(`web image did not serve after startup: ${String(lastError)}\n${stdout}${stderr}`);
+  } finally {
+    await executeFile(
+      "docker",
+      ["rm", "--force", name],
+      { cwd: repoRoot, timeout: 30_000 },
+    ).catch(() => undefined);
+  }
 }
 
 // verify immutable canary material stays server-only and separately selected
@@ -199,14 +288,25 @@ test("built server and web images enforce the adjustment filesystem boundary", {
 
     const web = await inspectImage(webImage, "web");
     assert.deepEqual(web.forbidden, []);
-    // require the copied public validator to match the source contract
+    const expectedWebContract = providedBuildWebContract ??
+      join(repoRoot, "apps/web/dist/adjustment-maintenance-contract.mjs");
+    // require both copied public validators to match reviewed build bytes
     assert.deepEqual(web.publicForecastAdjustmentNodes, [{
+      path: publicMaintenanceContractPath,
+      sha256: createHash("sha256").update(await readFile(expectedWebContract)).digest("hex"),
+      type: "file",
+    }, {
       path: publicScorecardContractPath,
       sha256: createHash("sha256").update(await readFile(
         join(repoRoot, publicScorecardContractPath),
       )).digest("hex"),
       type: "file",
     }]);
+    assert.deepEqual(
+      await inspectWebContractExports(webImage),
+      publicMaintenanceContractExports,
+    );
+    await inspectWebServerStartup(webImage, suffix);
     const server = await inspectImage(serverImage, "server");
     assert.equal(server.linkType, "link");
     assert.equal(

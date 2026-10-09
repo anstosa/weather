@@ -437,6 +437,7 @@ test("forecast repository keeps historical-only sources out of the live route", 
     captured[0].text,
     /NULL::text AS "contractEpoch"/u,
   );
+  assert.match(captured[0].text, /wr\.content_hash AS "contentHash"/u);
   assert.doesNotMatch(captured[0].text, /forecast_runtime_provenance_v1/u);
   assert.deepEqual(captured[0].values, [
     "ballydidean",
@@ -995,6 +996,7 @@ function weatherRecordRowFixture(overrides = {}) {
     blackGlobeTemperatureC: null,
     cloudCoverPercent: 20,
     contractEpoch: null,
+    contentHash: "a".repeat(64),
     deviceModel: "virtual-grid",
     deviceSerial: null,
     deviceVendor: "Open-Meteo",

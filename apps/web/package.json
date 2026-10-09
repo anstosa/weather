@@ -9,7 +9,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && cp src/adjustment-maintenance-contract.mjs dist/adjustment-maintenance-contract.mjs",
     "test": "npm run build && node --test test/*.test.mjs",
     "test:e2e": "npm run build && docker run --rm --init --ipc=host --network host --volume \"$INIT_CWD:/work\" --workdir /work mcr.microsoft.com/playwright:v1.62.1-noble node --test apps/web/test/*.e2e.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"

@@ -1,5 +1,16 @@
 import { pathToFileURL } from "node:url";
 
+// accept only the separately reviewed inactive maintenance bridge
+export function parseMigrationEntrypointArguments(argumentsList) {
+  // preserve the ordinary one-shot without adding runtime authority
+  if (argumentsList.length === 0) return {};
+  // bind atomicity to one fixed source and target ledger
+  if (argumentsList.length === 1 && argumentsList[0] === "--atomic-maintenance-v14") {
+    return { atomicMaintenanceV14: true };
+  }
+  throw new Error("migration entrypoint arguments are invalid");
+}
+
 // initialize the schema and configured site
 export async function migrateAndBootstrap(
   pool,
@@ -94,6 +105,7 @@ const isEntrypoint =
 
 // run only when invoked as the one-shot
 if (isEntrypoint) {
+  const migrationOptions = parseMigrationEntrypointArguments(process.argv.slice(2));
   const {
     bootstrapEcowittConfiguration,
     bootstrapPublicStationConfiguration,
@@ -147,6 +159,7 @@ if (isEntrypoint) {
       runMigrations,
     },
     {
+      ...migrationOptions,
       lockTimeoutMs: configuration.lockTimeoutMs,
       statementTimeoutMs: configuration.statementTimeoutMs,
     },

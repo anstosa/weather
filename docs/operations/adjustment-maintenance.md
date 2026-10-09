@@ -1,8 +1,10 @@
 # Ongoing adjustment maintenance
 
-## Current implementation boundary
+## Historical v13 implementation boundary
 
-The maintenance implementation is **inactive**. Existing serving selections,
+The deployed v13 foundation is **inactive**. The following section records its
+pre-v14 boundary; the [integration contract](adjustment-maintenance-integration.md)
+is the source of truth for the new future-only rolling lineage. Existing serving selections,
 operator switches, generated rain artifact and legacy evidence remain unchanged.
 The new components do not constitute a production promotion service yet.
 
@@ -188,14 +190,16 @@ environment variables or substitute ext4 free space for backing-C free space.
 On 2026-10-08 the fresh backing-C probe observed 43,019,538,432 free bytes.
 The immutable legacy census charges symlinks using `lstat` without traversing
 them; fixed private archive/state roots still reject links. The subsequent
-allocation census refuses an existing foreign-owned file under `.omx/evidence`,
-and the installer refuses broad existing `.local`/`.config` ancestors without
-repairing them. These remain explicit readiness failures, not permission to
-change unrelated files or substitute historical evidence. Available backing-C
+read-only allocation census counts regular and linked legacy inode allocations
+without opening their contents or requiring ownership of retained public files.
+Dedicated archive and state roots still require owner-private, regular entries.
+The runner uses the private `.weather` boundary and public system units rather
+than repairing unrelated `.local`/`.config` ancestors. Device drift, special
+entries, unsafe private roots and incomplete history remain readiness failures. Available backing-C
 space above its 16 GiB floor is also below the full 27 GiB maximum-new-allocation
 layout; actual bounded allocations must independently pass both free floors.
 
-## Remaining integration before activation
+## Historical v13 activation checklist
 
 1. Wire actual shadow inference and the orphan-safe body staging, compact-row
    append and exact admission relay into API/worker/web. The local identity and
@@ -232,11 +236,12 @@ layout; actual bounded allocations must independently pass both free floors.
    this inert integration does not make the unfinished maintenance service
    operational.
 
-The scheduler defaults to disabled. Its two deployment gates are
+The historical scheduler defaulted to disabled. Its two deployment gates were
 `WEATHER_ADJUSTMENT_SCHEDULED_CAPTURE_ENABLED` and
 `WEATHER_ADJUSTMENT_MAINTENANCE_MIGRATION_READY`; setting flags alone is not a
-readiness proof. Finite capture ends on 2027-10-08 and is not automatically
-renewed. No model action is authorized by a v1 scorecard or a daily chart.
+readiness proof. Its old fixed 2027-10-08 end date does not describe the new
+v14 future-only rolling bootstrap, which lasts 1,053 local dates and extends
+only for a genuine registered member’s terminal closure. No model action is authorized by a v1 scorecard or a daily chart.
 
 ## v13 transport and scorecard integration
 

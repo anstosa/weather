@@ -570,6 +570,468 @@ BEGIN
 END;
 $adjustment_maintenance_v2_acl$;
 
+-- reconcile the additive recurring schema without granting a new runtime API
+DO $adjustment_maintenance_recurring_acl$
+DECLARE
+  object_count integer;
+  exact_count integer;
+  maintenance_column record;
+BEGIN
+  SELECT count(*) INTO object_count FROM (
+    SELECT relation.oid FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname = 'adjustment_shadow_terminal_results_v2'
+    UNION ALL
+    SELECT procedure.oid FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public' AND procedure.proname IN (
+      'weather_append_adjustment_shadow_v3',
+      'weather_guard_adjustment_shadow_terminal_result_v2',
+      'weather_record_adjustment_shadow_terminal_result_v2',
+      'weather_retire_adjustment_shadow_registration_v2'
+    )
+  ) objects;
+  -- preserve the complete pre-recurring schema only when the entire annex is absent
+  IF object_count = 0 THEN
+    IF EXISTS (SELECT 1 FROM schema_migrations
+      WHERE name = '0019_adjustment_maintenance_recurring.sql')
+      OR EXISTS (SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('public.adjustment_shadow_predictions_v2')
+          AND attname IN ('candidate_sha256', 'source_sha256',
+            'scored_min_valid_at', 'scored_max_valid_at')
+          AND NOT attisdropped) THEN
+      RAISE EXCEPTION 'recurring maintenance schema is partially absent';
+    END IF;
+    RETURN;
+  END IF;
+  SELECT count(*) INTO exact_count FROM (VALUES
+    (to_regclass('public.adjustment_shadow_terminal_results_v2')::oid),
+    (to_regprocedure('public.weather_append_adjustment_shadow_v3(jsonb,text)')::oid),
+    (to_regprocedure('public.weather_guard_adjustment_shadow_terminal_result_v2()')::oid),
+    (to_regprocedure('public.weather_record_adjustment_shadow_terminal_result_v2(jsonb)')::oid),
+    (to_regprocedure('public.weather_retire_adjustment_shadow_registration_v2(jsonb)')::oid)
+  ) expected(oid) WHERE oid IS NOT NULL;
+  -- refuse partial objects and extra overloads rather than repairing their identities
+  IF object_count <> 5 OR exact_count <> 5
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations
+      WHERE name = '0019_adjustment_maintenance_recurring.sql') THEN
+    RAISE EXCEPTION 'recurring maintenance schema is incomplete';
+  END IF;
+  -- retain only owner-controlled hardened functions and one value-free table
+  IF (SELECT relowner FROM pg_class
+      WHERE oid = 'public.adjustment_shadow_terminal_results_v2'::regclass)
+      <> 'weather_owner'::regrole
+    OR EXISTS (SELECT 1 FROM pg_proc procedure
+      JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname = 'public' AND procedure.proname IN (
+        'weather_append_adjustment_shadow_v3',
+        'weather_guard_adjustment_shadow_terminal_result_v2',
+        'weather_record_adjustment_shadow_terminal_result_v2',
+        'weather_retire_adjustment_shadow_registration_v2'
+      ) AND (procedure.proowner <> 'weather_owner'::regrole
+        OR procedure.provolatile <> 'v'
+        OR procedure.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public']
+        OR procedure.prosecdef IS DISTINCT FROM
+          (procedure.proname <> 'weather_guard_adjustment_shadow_terminal_result_v2'))) THEN
+    RAISE EXCEPTION 'recurring maintenance owner or function hardening differs';
+  END IF;
+  REVOKE ALL ON adjustment_shadow_terminal_results_v2
+    FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  REVOKE EXECUTE ON FUNCTION weather_append_adjustment_shadow_v3(jsonb,text),
+    weather_guard_adjustment_shadow_terminal_result_v2(),
+    weather_record_adjustment_shadow_terminal_result_v2(jsonb),
+    weather_retire_adjustment_shadow_registration_v2(jsonb)
+    FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  -- remove historical column grants without adding direct metadata access
+  FOR maintenance_column IN SELECT attname FROM pg_attribute
+    WHERE attrelid = 'public.adjustment_shadow_terminal_results_v2'::regclass
+      AND attnum > 0 AND NOT attisdropped
+  LOOP
+    EXECUTE format('REVOKE ALL (%I) ON adjustment_shadow_terminal_results_v2 FROM PUBLIC, weather_api, weather_ingest, weather_training_export',
+      maintenance_column.attname);
+  END LOOP;
+END;
+$adjustment_maintenance_recurring_acl$;
+
+-- reconcile the bounded revision-frontier annex without widening runtime writes
+DO $adjustment_revision_frontier_acl$
+DECLARE
+  object_count integer;
+  exact_count integer;
+  revision_column record;
+  serving_grant record;
+  serving_columns text;
+BEGIN
+  SELECT count(*) INTO object_count FROM (
+    SELECT relation.oid FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND relation.relname IN ('adjustment_revision_frontier_v1',
+        'adjustment_revision_ordinal_v1')
+    UNION ALL
+    SELECT procedure.oid FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public' AND procedure.proname IN (
+      'weather_append_adjustment_shadow_v4', 'adjustment_revision_frontier_v1',
+      'adjustment_shadow_revision_admission_v1',
+      'weather_adjustment_revision_receipt_valid_v1',
+      'weather_clear_adjustment_revision_pointer_v1',
+      'weather_issue_adjustment_revision_receipt_v1',
+      'weather_bind_weather_record_revisions_v1',
+      'weather_bind_forecast_anchor_revisions_v1',
+      'weather_guard_rain_adjustment_revision_v1',
+      'weather_bind_rain_gate_revision_v1',
+      'weather_bind_ecmwf_temperature_revision_v1',
+      'adjustment_revision_serving_snapshot_v1',
+      'adjustment_weather_revision_admission_v1',
+      'adjustment_forecast_anchor_revision_admission_v1',
+      'adjustment_rain_gate_revision_admission_v1',
+      'adjustment_ecmwf_temperature_revision_admission_v1'
+      ,'weather_mark_adjustment_revision_gap_v1'
+    )
+  ) objects;
+  -- preserve the complete pre-frontier schema only when the annex is absent
+  IF object_count = 0 THEN
+    IF EXISTS (SELECT 1 FROM schema_migrations
+      WHERE name = '0020_adjustment_revision_frontier.sql')
+      OR EXISTS (SELECT 1 FROM pg_attribute
+        WHERE attrelid = to_regclass('public.adjustment_shadow_predictions_v2')
+          AND attname = 'stage_receipt_sha256' AND NOT attisdropped) THEN
+      RAISE EXCEPTION 'adjustment revision frontier schema is partially absent';
+    END IF;
+    RETURN;
+  END IF;
+  SELECT count(*) INTO exact_count FROM (VALUES
+    (to_regclass('public.adjustment_revision_frontier_v1')::oid),
+    (to_regclass('public.adjustment_revision_ordinal_v1')::oid),
+    (to_regprocedure('public.weather_append_adjustment_shadow_v4(jsonb,text)')::oid),
+    (to_regprocedure('public.adjustment_revision_frontier_v1()')::oid),
+    (to_regprocedure('public.adjustment_shadow_revision_admission_v1(text,text,text,integer)')::oid),
+    (to_regprocedure('public.weather_adjustment_revision_receipt_valid_v1(jsonb)')::oid),
+    (to_regprocedure('public.weather_clear_adjustment_revision_pointer_v1()')::oid),
+    (to_regprocedure('public.weather_issue_adjustment_revision_receipt_v1(text,text,text,text)')::oid),
+    (to_regprocedure('public.weather_bind_weather_record_revisions_v1(jsonb)')::oid),
+    (to_regprocedure('public.weather_bind_forecast_anchor_revisions_v1(jsonb)')::oid),
+    (to_regprocedure('public.weather_guard_rain_adjustment_revision_v1()')::oid),
+    (to_regprocedure('public.weather_bind_rain_gate_revision_v1(jsonb)')::oid),
+    (to_regprocedure('public.weather_bind_ecmwf_temperature_revision_v1(jsonb)')::oid),
+    (to_regprocedure('public.adjustment_revision_serving_snapshot_v1(timestamptz,bigint)')::oid)
+    ,(to_regprocedure('public.adjustment_weather_revision_admission_v1(jsonb)')::oid)
+    ,(to_regprocedure('public.adjustment_forecast_anchor_revision_admission_v1(jsonb)')::oid)
+    ,(to_regprocedure('public.adjustment_rain_gate_revision_admission_v1(jsonb)')::oid)
+    ,(to_regprocedure('public.adjustment_ecmwf_temperature_revision_admission_v1(jsonb)')::oid)
+    ,(to_regprocedure('public.weather_mark_adjustment_revision_gap_v1(text,jsonb,jsonb)')::oid)
+  ) expected(oid) WHERE oid IS NOT NULL;
+  -- refuse partial objects and extra overloads rather than repairing identities
+  IF object_count <> 19 OR exact_count <> 19
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations
+      WHERE name = '0020_adjustment_revision_frontier.sql')
+    OR (SELECT count(*) FROM pg_attribute
+      WHERE attrelid = 'public.adjustment_shadow_predictions_v2'::regclass
+        AND attname IN ('stage_receipt_sha256', 'archive_commit_ordinal',
+          'predecessor_frontier_sha256', 'revision_frontier_sha256',
+          'revision_receipt_sha256', 'archive_committed_at') AND NOT attisdropped) <> 6
+    OR EXISTS (SELECT 1 FROM (VALUES ('weather_records'), ('forecast_anchor_records'),
+        ('rain_adjustment_runs'), ('ecmwf_temperature_canary_runs')) expected(name)
+      WHERE NOT EXISTS (SELECT 1 FROM pg_attribute attribute
+        WHERE attribute.attrelid = to_regclass('public.' || expected.name)
+          AND attribute.attname = 'adjustment_revision_receipt'
+          AND NOT attribute.attisdropped)) THEN
+    RAISE EXCEPTION 'adjustment revision frontier schema is incomplete';
+  END IF;
+  -- retain exact owner-controlled object identities and hardening
+  IF EXISTS (SELECT 1 FROM pg_class relation
+      WHERE relation.oid IN ('public.adjustment_revision_frontier_v1'::regclass,
+        'public.adjustment_revision_ordinal_v1'::regclass)
+        AND relation.relowner <> 'weather_owner'::regrole)
+    OR EXISTS (SELECT 1 FROM pg_proc procedure
+      JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname = 'public'
+        AND procedure.proname IN ('weather_append_adjustment_shadow_v4',
+          'adjustment_revision_frontier_v1', 'adjustment_shadow_revision_admission_v1',
+          'weather_adjustment_revision_receipt_valid_v1',
+          'weather_clear_adjustment_revision_pointer_v1',
+          'weather_issue_adjustment_revision_receipt_v1',
+          'weather_bind_weather_record_revisions_v1',
+          'weather_bind_forecast_anchor_revisions_v1',
+          'weather_guard_rain_adjustment_revision_v1',
+          'weather_bind_rain_gate_revision_v1',
+          'weather_bind_ecmwf_temperature_revision_v1',
+          'adjustment_revision_serving_snapshot_v1',
+          'adjustment_weather_revision_admission_v1',
+          'adjustment_forecast_anchor_revision_admission_v1',
+          'adjustment_rain_gate_revision_admission_v1',
+          'adjustment_ecmwf_temperature_revision_admission_v1',
+          'weather_mark_adjustment_revision_gap_v1')
+        AND (procedure.proowner <> 'weather_owner'::regrole
+          OR procedure.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public']))
+    OR EXISTS (SELECT 1 FROM pg_proc procedure
+      JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+      WHERE namespace.nspname = 'public'
+        AND procedure.proname IN ('weather_append_adjustment_shadow_v4',
+          'adjustment_revision_frontier_v1', 'adjustment_shadow_revision_admission_v1',
+          'weather_bind_weather_record_revisions_v1',
+          'weather_bind_forecast_anchor_revisions_v1',
+          'weather_bind_rain_gate_revision_v1',
+          'weather_bind_ecmwf_temperature_revision_v1',
+          'adjustment_revision_serving_snapshot_v1',
+          'adjustment_weather_revision_admission_v1',
+          'adjustment_forecast_anchor_revision_admission_v1',
+          'adjustment_rain_gate_revision_admission_v1',
+          'adjustment_ecmwf_temperature_revision_admission_v1',
+          'weather_mark_adjustment_revision_gap_v1')
+        AND procedure.prosecdef IS NOT true) THEN
+    RAISE EXCEPTION 'adjustment revision frontier owner or function hardening differs';
+  END IF;
+  REVOKE ALL ON TABLE adjustment_revision_frontier_v1
+    FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  REVOKE ALL ON SEQUENCE adjustment_revision_ordinal_v1
+    FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  REVOKE EXECUTE ON FUNCTION weather_append_adjustment_shadow_v4(jsonb,text),
+    weather_adjustment_revision_receipt_valid_v1(jsonb),
+    weather_clear_adjustment_revision_pointer_v1(),
+    weather_issue_adjustment_revision_receipt_v1(text,text,text,text),
+    weather_bind_weather_record_revisions_v1(jsonb),
+    weather_bind_forecast_anchor_revisions_v1(jsonb),
+    weather_guard_rain_adjustment_revision_v1(),
+    weather_bind_rain_gate_revision_v1(jsonb),
+    weather_bind_ecmwf_temperature_revision_v1(jsonb),
+    adjustment_revision_frontier_v1(),
+    adjustment_shadow_revision_admission_v1(text,text,text,integer),
+    adjustment_revision_serving_snapshot_v1(timestamptz,bigint)
+    ,adjustment_weather_revision_admission_v1(jsonb)
+    ,adjustment_forecast_anchor_revision_admission_v1(jsonb)
+    ,adjustment_rain_gate_revision_admission_v1(jsonb)
+    ,adjustment_ecmwf_temperature_revision_admission_v1(jsonb)
+    ,weather_mark_adjustment_revision_gap_v1(text,jsonb,jsonb)
+    FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  GRANT EXECUTE ON FUNCTION adjustment_revision_frontier_v1(),
+    adjustment_revision_serving_snapshot_v1(timestamptz,bigint)
+    TO weather_training_export;
+  GRANT EXECUTE ON FUNCTION adjustment_shadow_revision_admission_v1(text,text,text,integer)
+    TO weather_api;
+  GRANT EXECUTE ON FUNCTION adjustment_weather_revision_admission_v1(jsonb),
+    adjustment_forecast_anchor_revision_admission_v1(jsonb),
+    adjustment_rain_gate_revision_admission_v1(jsonb),
+    adjustment_ecmwf_temperature_revision_admission_v1(jsonb)
+    TO weather_api;
+  GRANT EXECUTE ON FUNCTION weather_bind_weather_record_revisions_v1(jsonb),
+    weather_bind_forecast_anchor_revisions_v1(jsonb),
+    weather_bind_rain_gate_revision_v1(jsonb),
+    weather_bind_ecmwf_temperature_revision_v1(jsonb)
+    TO weather_ingest;
+  GRANT EXECUTE ON FUNCTION weather_mark_adjustment_revision_gap_v1(text,jsonb,jsonb)
+    TO weather_api, weather_ingest;
+  -- permit only the pure check predicate needed by constrained serving writes
+  GRANT EXECUTE ON FUNCTION weather_adjustment_revision_receipt_valid_v1(jsonb)
+    TO weather_api, weather_ingest;
+  -- replace table-wide grants so future pointer columns stay private
+  FOR serving_grant IN SELECT * FROM (VALUES
+      ('weather_records', 'weather_api', 'SELECT'),
+      ('weather_records', 'weather_ingest', 'SELECT'),
+      ('weather_records', 'weather_ingest', 'INSERT'),
+      ('forecast_anchor_records', 'weather_ingest', 'INSERT'),
+      ('rain_adjustment_runs', 'weather_api', 'SELECT'),
+      ('rain_adjustment_runs', 'weather_ingest', 'SELECT'),
+      ('rain_adjustment_runs', 'weather_ingest', 'INSERT'),
+      ('ecmwf_temperature_canary_runs', 'weather_api', 'SELECT'),
+      ('ecmwf_temperature_canary_runs', 'weather_ingest', 'SELECT'),
+      ('ecmwf_temperature_canary_runs', 'weather_ingest', 'INSERT')
+    ) grant_spec(relation_name, role_name, privilege_name)
+  LOOP
+    SELECT string_agg(format('%I', attribute.attname), ', ' ORDER BY attribute.attnum)
+    INTO STRICT serving_columns FROM pg_attribute attribute
+    WHERE attribute.attrelid = to_regclass('public.' || serving_grant.relation_name)
+      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+      AND attribute.attname <> 'adjustment_revision_receipt';
+    EXECUTE format('REVOKE %s ON %I FROM %I', serving_grant.privilege_name,
+      serving_grant.relation_name, serving_grant.role_name);
+    EXECUTE format('GRANT %s (%s) ON %I TO %I', serving_grant.privilege_name,
+      serving_columns, serving_grant.relation_name, serving_grant.role_name);
+  END LOOP;
+  -- remove direct access to every new per-row receipt field
+  FOR revision_column IN
+    SELECT relation.name AS relation_name, attribute.attname FROM (VALUES
+      ('adjustment_shadow_predictions_v2'), ('weather_records'),
+      ('forecast_anchor_records'), ('rain_adjustment_runs'),
+      ('ecmwf_temperature_canary_runs')) relation(name)
+    JOIN pg_attribute attribute
+      ON attribute.attrelid = to_regclass('public.' || relation.name)
+    WHERE attribute.attname IN ('stage_receipt_sha256', 'archive_commit_ordinal',
+      'predecessor_frontier_sha256', 'revision_frontier_sha256',
+      'revision_receipt_sha256', 'archive_committed_at',
+      'adjustment_revision_receipt') AND NOT attribute.attisdropped
+  LOOP
+    EXECUTE format('REVOKE ALL (%I) ON %I FROM PUBLIC, weather_api, weather_ingest, weather_training_export',
+      revision_column.attname, revision_column.relation_name);
+  END LOOP;
+END;
+$adjustment_revision_frontier_acl$;
+
+-- reconcile the bounded rolling-registration annex with function-only access
+DO $adjustment_rolling_registration_acl$
+DECLARE
+  object_count integer;
+  exact_count integer;
+  registration_column record;
+BEGIN
+  SELECT count(*) INTO object_count FROM (
+    SELECT relation.oid FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public' AND relation.relname IN (
+      'adjustment_registration_schedule_v3',
+      'adjustment_registration_horizons_v3',
+      'adjustment_shadow_registration_windows_v3'
+    )
+    UNION ALL
+    SELECT procedure.oid FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public' AND procedure.proname IN (
+      'weather_guard_adjustment_registration_v3',
+      'weather_reject_adjustment_registration_v3_mutation',
+      'weather_initialize_adjustment_registration_schedule_v3',
+      'weather_register_adjustment_shadow_v3',
+      'adjustment_shadow_registration_slot_v3'
+    )
+  ) objects;
+  -- preserve older complete schemas only when the entire annex is absent
+  IF object_count = 0 THEN
+    IF EXISTS (SELECT 1 FROM schema_migrations
+      WHERE name = '0021_adjustment_rolling_registration.sql') THEN
+      RAISE EXCEPTION 'adjustment rolling registration schema is partially absent';
+    END IF;
+    RETURN;
+  END IF;
+  SELECT count(*) INTO exact_count FROM (VALUES
+    (to_regclass('public.adjustment_registration_schedule_v3')::oid),
+    (to_regclass('public.adjustment_registration_horizons_v3')::oid),
+    (to_regclass('public.adjustment_shadow_registration_windows_v3')::oid),
+    (to_regprocedure('public.weather_guard_adjustment_registration_v3()')::oid),
+    (to_regprocedure('public.weather_reject_adjustment_registration_v3_mutation()')::oid),
+    (to_regprocedure('public.weather_initialize_adjustment_registration_schedule_v3(jsonb)')::oid),
+    (to_regprocedure('public.weather_register_adjustment_shadow_v3(jsonb)')::oid),
+    (to_regprocedure('public.adjustment_shadow_registration_slot_v3(text)')::oid)
+  ) expected(oid) WHERE oid IS NOT NULL;
+  -- reject partial, overloaded, or unledgered object graphs
+  IF object_count <> 8 OR exact_count <> 8
+    OR NOT EXISTS (SELECT 1 FROM schema_migrations
+      WHERE name = '0021_adjustment_rolling_registration.sql') THEN
+    RAISE EXCEPTION 'adjustment rolling registration schema is incomplete';
+  END IF;
+  -- bind every table and function to the database owner
+  IF EXISTS (
+    SELECT 1 FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'public' AND relation.relname IN (
+      'adjustment_registration_schedule_v3',
+      'adjustment_registration_horizons_v3',
+      'adjustment_shadow_registration_windows_v3'
+    ) AND relation.relowner <> 'weather_owner'::regrole
+  ) OR EXISTS (
+    SELECT 1 FROM pg_proc procedure
+    JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'public' AND procedure.proname IN (
+      'weather_guard_adjustment_registration_v3',
+      'weather_reject_adjustment_registration_v3_mutation',
+      'weather_initialize_adjustment_registration_schedule_v3',
+      'weather_register_adjustment_shadow_v3',
+      'adjustment_shadow_registration_slot_v3'
+    ) AND procedure.proowner <> 'weather_owner'::regrole
+  ) THEN
+    RAISE EXCEPTION 'adjustment rolling registration ownership is invalid';
+  END IF;
+  -- require exact volatility, definer, return and search-path boundaries
+  IF EXISTS (
+    SELECT 1 FROM (VALUES
+      ('weather_guard_adjustment_registration_v3',
+        'public.weather_guard_adjustment_registration_v3()', 'trigger', 'v', false),
+      ('weather_reject_adjustment_registration_v3_mutation',
+        'public.weather_reject_adjustment_registration_v3_mutation()', 'trigger', 'v', false),
+      ('weather_initialize_adjustment_registration_schedule_v3',
+        'public.weather_initialize_adjustment_registration_schedule_v3(jsonb)', 'jsonb', 'v', true),
+      ('weather_register_adjustment_shadow_v3',
+        'public.weather_register_adjustment_shadow_v3(jsonb)', 'jsonb', 'v', true),
+      ('adjustment_shadow_registration_slot_v3',
+        'public.adjustment_shadow_registration_slot_v3(text)', 'jsonb', 's', true)
+    ) expected(name, identity, return_type, volatility, security_definer)
+    JOIN pg_proc procedure ON procedure.oid = to_regprocedure(expected.identity)
+    WHERE procedure.prorettype::regtype::text <> expected.return_type
+      OR procedure.provolatile <> expected.volatility::"char"
+      OR procedure.prosecdef IS DISTINCT FROM expected.security_definer
+      OR procedure.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog, public']
+  ) THEN
+    RAISE EXCEPTION 'adjustment rolling registration function hardening differs';
+  END IF;
+  -- require every append-only trigger to remain ordinary and enabled
+  IF (SELECT count(*) FROM pg_trigger trigger
+      JOIN pg_class relation ON relation.oid = trigger.tgrelid
+      JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'public' AND relation.relname IN (
+        'adjustment_registration_schedule_v3',
+        'adjustment_registration_horizons_v3',
+        'adjustment_shadow_registration_windows_v3'
+      ) AND NOT trigger.tgisinternal AND trigger.tgenabled = 'O'
+        AND trigger.tgname IN (
+          'adjustment_registration_schedule_v3_guard_insert',
+          'adjustment_registration_schedule_v3_guard_mutation',
+          'adjustment_registration_schedule_v3_guard_truncate',
+          'adjustment_registration_horizons_v3_guard_insert',
+          'adjustment_registration_horizons_v3_guard_mutation',
+          'adjustment_registration_horizons_v3_guard_truncate',
+          'adjustment_shadow_registration_windows_v3_guard_insert',
+          'adjustment_shadow_registration_windows_v3_guard_mutation',
+          'adjustment_shadow_registration_windows_v3_guard_truncate'
+        ) AND trigger.tgfoid = CASE
+          WHEN trigger.tgname LIKE '%_guard_insert'
+            THEN to_regprocedure('public.weather_guard_adjustment_registration_v3()')
+          ELSE to_regprocedure('public.weather_reject_adjustment_registration_v3_mutation()')
+        END AND trigger.tgtype = CASE
+          WHEN trigger.tgname LIKE '%_guard_insert' THEN 7
+          WHEN trigger.tgname LIKE '%_guard_mutation' THEN 27
+          ELSE 34
+        END) <> 9 THEN
+    RAISE EXCEPTION 'adjustment rolling registration trigger graph is incomplete';
+  END IF;
+
+  REVOKE ALL ON adjustment_registration_schedule_v3,
+    adjustment_registration_horizons_v3,
+    adjustment_shadow_registration_windows_v3
+  FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  REVOKE EXECUTE ON FUNCTION weather_guard_adjustment_registration_v3(),
+    weather_reject_adjustment_registration_v3_mutation(),
+    weather_initialize_adjustment_registration_schedule_v3(jsonb),
+    weather_register_adjustment_shadow_v3(jsonb),
+    adjustment_shadow_registration_slot_v3(text)
+  FROM PUBLIC, weather_api, weather_ingest, weather_training_export;
+  -- erase every historical direct column privilege
+  FOR registration_column IN
+    SELECT relation.relname AS table_name, attribute.attname AS column_name
+    FROM pg_class relation
+    JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+    JOIN pg_attribute attribute ON attribute.attrelid = relation.oid
+    WHERE namespace.nspname = 'public' AND relation.relname IN (
+      'adjustment_registration_schedule_v3',
+      'adjustment_registration_horizons_v3',
+      'adjustment_shadow_registration_windows_v3'
+    ) AND attribute.attnum > 0 AND NOT attribute.attisdropped
+  LOOP
+    EXECUTE format(
+      'REVOKE ALL (%I) ON %I FROM PUBLIC, weather_api, weather_ingest, weather_training_export',
+      registration_column.column_name,
+      registration_column.table_name
+    );
+  END LOOP;
+
+  GRANT EXECUTE ON FUNCTION weather_register_adjustment_shadow_v3(jsonb),
+    adjustment_shadow_registration_slot_v3(text)
+  TO weather_api, weather_ingest;
+  -- expose only the bounded value-free schedule status to the export role
+  GRANT EXECUTE ON FUNCTION adjustment_shadow_registration_slot_v3(text)
+  TO weather_training_export;
+END;
+$adjustment_rolling_registration_acl$;
+
 ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE weather_owner IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
