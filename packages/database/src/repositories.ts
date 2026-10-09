@@ -7,6 +7,7 @@ import {
   createBackfillChunkIdentity,
   createFixedLeadAnchorTrainingRow,
   createLegacyV4RetrievalSnapshotTrainingRow,
+  createNormalizedWeatherRecord,
   forecastAnchorRecordContent,
   validateFingerprint,
   validateIngestionError,
@@ -32,7 +33,7 @@ import type { Pool, PoolClient, QueryResultRow } from "pg";
 
 import type { SiteConfiguration } from "./config.js";
 import type { EcowittConfiguration } from "./ecowitt-config.js";
-import { withTransaction } from "./pool.js";
+import { withTransaction, type Queryable } from "./pool.js";
 import type { PublicStationConfiguration } from "./public-stations-config.js";
 import type { TempestConfiguration } from "./tempest-config.js";
 import type { TideConfiguration } from "./tides-config.js";
@@ -130,8 +131,68 @@ export interface CompleteScheduledIngestionInput {
   readonly responseMetadata?: Readonly<Record<string, JsonValue>> | null;
   readonly runId: string;
   readonly upstreamResponseChecksum?: string | null;
+  readonly revisionArchiver?: WeatherAdjustmentRevisionArchiver;
   readonly windowEndExclusive: string;
   readonly windowStart: string;
+}
+
+// expose one exact new or content-changing normalized serving revision
+export interface PersistedWeatherAdjustmentRevision {
+  readonly adapterVersion: string;
+  readonly contentHash: string;
+  readonly logicalReceivedAt: string;
+  readonly providerKey: string;
+  readonly record: NormalizedWeatherRecord;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceKey: string;
+}
+
+// finish cold publication only after the serving transaction commits
+export interface WeatherAdjustmentRevisionPublication {
+  readonly publish: () => Promise<void>;
+}
+
+// stage and bind one bounded normalized revision group inside its serving transaction
+export type WeatherAdjustmentRevisionArchiver = (
+  queryable: Queryable,
+  revisions: readonly PersistedWeatherAdjustmentRevision[],
+) => Promise<WeatherAdjustmentRevisionPublication | null>;
+
+interface PendingPhysicalWeatherAdjustmentRevisionRow extends QueryResultRow {
+  readonly adapterVersion: string;
+  readonly apparentTemperatureC: number | null;
+  readonly blackGlobeTemperatureC: number | null;
+  readonly cloudCoverPercent: number | null;
+  readonly contentHash: string;
+  readonly deviceModel: string | null;
+  readonly deviceSerial: string | null;
+  readonly deviceVendor: string | null;
+  readonly logicalReceivedAt: Date;
+  readonly pm25MicrogramsPerCubicMeter: number | null;
+  readonly precipitationMm: number | null;
+  readonly precipitationRateMmPerHour: number | null;
+  readonly pressureHpa: number | null;
+  readonly providerKey: string;
+  readonly providerMetadata: Readonly<Record<string, JsonValue>> | null;
+  readonly qualityMetadata: Readonly<Record<string, JsonValue>> | null;
+  readonly receivedAt: Date;
+  readonly relativeHumidityPercent: number | null;
+  readonly sourceConfigFingerprint: string;
+  readonly sourceId: string;
+  readonly sourceKey: string;
+  readonly soilElectricalConductivityMicrosiemensPerCm: number | null;
+  readonly soilMoisturePercent: number | null;
+  readonly solarRadiationWm2: number | null;
+  readonly temperatureC: number | null;
+  readonly upstreamModel: string | null;
+  readonly upstreamTimezone: string;
+  readonly uvIndex: number | null;
+  readonly validAt: Date;
+  readonly waterLevelM: number | null;
+  readonly wetBulbGlobeTemperatureC: number | null;
+  readonly windDirectionDegrees: number | null;
+  readonly windGustMps: number | null;
+  readonly windSpeedMps: number | null;
 }
 
 export interface CompleteBackfillIngestionInput {
@@ -221,6 +282,7 @@ export interface EcmwfTemperatureCanaryRecentErrorState {
 
 // retain one private ECMWF input hour
 export interface EcmwfTemperatureCanaryHour {
+  readonly contentHash: string;
   readonly modelLeadHours: number;
   readonly rawRelativeHumidityPercent: number | null;
   readonly rawTemperatureC: number;
@@ -266,7 +328,7 @@ export interface EcmwfTemperatureCanaryAuditRow {
 // persist one normalized run atomically
 export interface PersistEcmwfTemperatureCanaryRunInput {
   readonly adapterVersion: EcmwfTemperatureCanaryRun["adapterVersion"];
-  readonly hours: readonly EcmwfTemperatureCanaryHour[];
+  readonly hours: readonly Omit<EcmwfTemperatureCanaryHour, "contentHash">[];
   readonly modelCycle: EcmwfTemperatureCanaryRun["modelCycle"];
   readonly providerResponseSha256: string;
   readonly receivedAt: string;
@@ -277,6 +339,36 @@ export interface PersistEcmwfTemperatureCanaryRunInput {
   readonly stateStatus: EcmwfTemperatureCanaryRun["stateStatus"];
   readonly upstreamModel: EcmwfTemperatureCanaryRun["upstreamModel"];
 }
+
+// expose the exact newly persisted run needed for revision archival
+export interface PersistedEcmwfTemperatureRevision {
+  readonly adapterVersion: EcmwfTemperatureCanaryRun["adapterVersion"];
+  readonly bestMatchRows: readonly WeatherRecordRow[];
+  readonly contentHash: string;
+  readonly hours: readonly EcmwfTemperatureCanaryHour[];
+  readonly logicalReceivedAt: string;
+  readonly modelCycle: EcmwfTemperatureCanaryRun["modelCycle"];
+  readonly providerResponseSha256: string;
+  readonly recentErrorState: EcmwfTemperatureCanaryRecentErrorState;
+  readonly recentErrorStateSha256: string;
+  readonly runInitializedAt: string;
+  readonly siteId: string;
+  readonly siteLatitude: number;
+  readonly siteLongitude: number;
+  readonly siteSlug: string;
+  readonly upstreamModel: EcmwfTemperatureCanaryRun["upstreamModel"];
+}
+
+// finish cold publication only after the serving transaction commits
+export interface EcmwfTemperatureRevisionPublication {
+  readonly publish: () => Promise<void>;
+}
+
+// stage and bind one exact persisted run inside its serving transaction
+export type EcmwfTemperatureRevisionArchiver = (
+  queryable: Queryable,
+  revision: PersistedEcmwfTemperatureRevision,
+) => Promise<EcmwfTemperatureRevisionPublication | null>;
 
 // expose one prior forecast selected for a causal target hour
 export interface EcmwfTemperatureCanaryPriorHour extends EcmwfTemperatureCanaryHour {
@@ -452,6 +544,7 @@ export interface WeatherRecordRow extends QueryResultRow {
   readonly apparentTemperatureC: number | null;
   readonly blackGlobeTemperatureC: number | null;
   readonly cloudCoverPercent: number | null;
+  readonly contentHash: string;
   readonly contractEpoch: string | null;
   readonly deviceModel: string | null;
   readonly deviceSerial: string | null;
@@ -1500,9 +1593,20 @@ export async function completeScheduledIngestion(
 ): Promise<void> {
   validateCompletionCounts(input.attempts, input.records.length);
 
-  await withTransaction(session.client, async () => {
+  const publications = await withTransaction(session.client, async () => {
     await assertScheduledRunMatches(session, input);
+    const changed = input.revisionArchiver === undefined
+      ? []
+      : await selectChangedWeatherRevisionInputs(session, input.records);
     await upsertWeatherRecords(session, input.runId, input.records);
+    const staged = input.revisionArchiver === undefined
+      ? []
+      : await archiveChangedWeatherRevisions(
+          session,
+          input.runId,
+          changed,
+          input.revisionArchiver,
+        );
     await advanceScheduledCheckpoint(session, input);
     await finalizeSuccessfulRun(
       session,
@@ -1513,7 +1617,16 @@ export async function completeScheduledIngestion(
       input.upstreamResponseChecksum ?? null,
       "scheduled",
     );
+    return staged;
   });
+  // publish each staged revision only after the serving transaction commits
+  for (const publication of publications) {
+    try {
+      await publication.publish();
+    } catch {
+      // preserve ingestion success after a permanent cold publication gap
+    }
+  }
 }
 
 // atomically store backfill success
@@ -2324,17 +2437,19 @@ export async function listCausalForecastObservationHourlyStations(
 export async function persistEcmwfTemperatureCanaryRun(
   pool: Pool,
   input: PersistEcmwfTemperatureCanaryRunInput,
+  revisionArchiver?: EcmwfTemperatureRevisionArchiver,
 ): Promise<EcmwfTemperatureCanaryRun> {
   const validated = validateEcmwfTemperatureCanaryRunInput(input);
   const client = await pool.connect();
 
   try {
-    return await withTransaction(client, async () => {
-      const site = await client.query<{ id: string }>(
-        "SELECT id FROM sites WHERE slug = $1 AND active",
+    const committed = await withTransaction(client, async () => {
+      const site = await client.query<{ id: string; latitude: number; longitude: number }>(
+        "SELECT id, latitude, longitude FROM sites WHERE slug = $1 AND active",
         [validated.siteSlug],
       );
-      const siteId = requireRow(site.rows[0], "ECMWF temperature canary site").id;
+      const siteRow = requireRow(site.rows[0], "ECMWF temperature canary site");
+      const siteId = siteRow.id;
       const inserted = await client.query<EcmwfTemperatureCanaryRunStorageRow>(
         `
           INSERT INTO ecmwf_temperature_canary_runs (
@@ -2374,6 +2489,7 @@ export async function persistEcmwfTemperatureCanaryRun(
         ],
       );
       let stored = inserted.rows[0];
+      const newlyInserted = stored !== undefined;
 
       // insert hours only for a newly claimed initialization
       if (stored !== undefined) {
@@ -2456,11 +2572,131 @@ export async function persistEcmwfTemperatureCanaryRun(
         );
       }
 
-      return projectEcmwfTemperatureCanaryRun(stored);
+      let publication: EcmwfTemperatureRevisionPublication | null = null;
+      // archive only a newly inserted revision and never backfill a legacy null pointer
+      if (newlyInserted && revisionArchiver !== undefined) {
+        const received = await client.query<{ logicalReceivedAt: Date }>(
+          "SELECT clock_timestamp() AS \"logicalReceivedAt\"",
+        );
+        const logicalReceivedAt = requireRow(received.rows[0],
+          "ECMWF temperature revision receipt").logicalReceivedAt.toISOString();
+        try {
+          const bestMatchRows = await selectEcmwfTemperatureBestMatchRows(
+            client,
+            validated.siteSlug,
+            validated.runInitializedAt,
+            logicalReceivedAt,
+          );
+          publication = await revisionArchiver(client, {
+            adapterVersion: validated.adapterVersion,
+            bestMatchRows,
+            contentHash: stored.contentHash,
+            hours: validated.hours,
+            logicalReceivedAt,
+            modelCycle: validated.modelCycle,
+            providerResponseSha256: stored.providerResponseSha256,
+            recentErrorState: validated.recentErrorState,
+            recentErrorStateSha256: validated.recentErrorStateSha256,
+            runInitializedAt: storageInstant(stored.runInitializedAt, "runInitializedAt"),
+            siteId,
+            siteLatitude: siteRow.latitude,
+            siteLongitude: siteRow.longitude,
+            siteSlug: validated.siteSlug,
+            upstreamModel: validated.upstreamModel,
+          });
+        } catch {
+          // preserve temperature serving after a bounded revision archive failure
+        }
+      }
+      return { publication, run: projectEcmwfTemperatureCanaryRun(stored) };
     });
+    // publish staged bytes only after the serving transaction commits
+    if (committed.publication !== null) {
+      try {
+        await committed.publication.publish();
+      } catch {
+        // preserve serving after a permanent cold publication gap
+      }
+    }
+    return committed.run;
   } finally {
     client.release();
   }
+}
+
+// select the exact best-match product visible at the source-decision clock
+async function selectEcmwfTemperatureBestMatchRows(
+  queryable: Queryable,
+  siteSlug: string,
+  runInitializedAt: string,
+  decisionAt: string,
+): Promise<readonly WeatherRecordRow[]> {
+  const from = new Date(Date.parse(runInitializedAt) + 7 * HOUR_MILLISECONDS).toISOString();
+  const to = new Date(Date.parse(runInitializedAt) + 19 * HOUR_MILLISECONDS).toISOString();
+  const result = await queryable.query<WeatherRecordRow>(
+    `
+      SELECT
+        ${weatherRecordSelection()}
+      FROM sources s
+      JOIN stations st ON st.id = s.station_id
+      JOIN sites si ON si.id = st.site_id
+      JOIN providers p ON p.id = s.provider_id
+      JOIN LATERAL (
+        SELECT candidate.product_run_at
+        FROM weather_records candidate
+        WHERE candidate.source_id = s.id
+          AND candidate.source_kind = 'forecast'
+          AND candidate.product_run_at IS NOT NULL
+          AND candidate.valid_at >= $2
+          AND candidate.valid_at < $3
+          AND candidate.first_received_at <= $4
+          AND candidate.last_received_at <= $4
+          AND candidate.upstream_model = 'best_match'
+          AND candidate.provider_metadata ->> 'dataset' = 'best_match'
+        GROUP BY candidate.product_run_at
+        HAVING COUNT(*) = 12
+          AND MIN(candidate.valid_at) = $2
+          AND MAX(candidate.valid_at) = $3::timestamptz - interval '1 hour'
+          AND BOOL_AND(candidate.valid_at = date_trunc('hour', candidate.valid_at))
+        ORDER BY candidate.product_run_at DESC
+        LIMIT 1
+      ) selected ON true
+      JOIN weather_records wr ON wr.source_id = s.id
+        AND wr.source_kind = 'forecast'
+        AND wr.product_run_at = selected.product_run_at
+        AND wr.valid_at >= $2
+        AND wr.valid_at < $3
+        AND wr.first_received_at <= $4
+        AND wr.last_received_at <= $4
+        AND wr.upstream_model = 'best_match'
+        AND wr.provider_metadata ->> 'dataset' = 'best_match'
+      WHERE si.slug = $1
+        AND si.active
+        AND st.active
+        AND s.active
+        AND p.active
+        AND s.source_kind = 'forecast'
+        AND s.source_key = 'open-meteo-forecast-v4'
+        AND s.capabilities @> '["forecast"]'::jsonb
+        AND ${CURRENT_SOURCE_PREDICATE}
+      ORDER BY wr.valid_at ASC, wr.id ASC
+      LIMIT 12
+    `,
+    [siteSlug, from, to, decisionAt],
+  );
+  const first = result.rows[0];
+  // return no partial geometry for a later permanent source gap
+  if (first === undefined || first.productRunAt === null || result.rows.length !== 12 ||
+      result.rows.some((row, index) => row.sourceId !== first.sourceId ||
+        row.productRunAt === null ||
+        storageInstant(row.productRunAt, "productRunAt") !==
+          storageInstant(first.productRunAt!, "productRunAt") ||
+        storageInstant(row.validAt, "validAt") !==
+          new Date(Date.parse(from) + index * HOUR_MILLISECONDS).toISOString() ||
+        !/^[a-f0-9]{64}$/u.test(row.contentHash))) {
+    return [];
+  }
+  return result.rows;
 }
 
 // select one latest available run without hour mixing
@@ -2510,7 +2746,8 @@ export async function getEcmwfTemperatureCanarySidecar(
         model_lead_hours AS "modelLeadHours",
         raw_temperature_c AS "rawTemperatureC",
         raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
-        raw_wind_speed_mps AS "rawWindSpeedMps"
+        raw_wind_speed_mps AS "rawWindSpeedMps",
+        content_hash AS "contentHash"
       FROM ecmwf_temperature_canary_hours
       WHERE run_id = $1
         AND model_lead_hours BETWEEN 7 AND 18
@@ -2630,7 +2867,8 @@ export async function listEcmwfTemperatureCanaryAuditRows(
         hour.model_lead_hours AS "modelLeadHours",
         hour.raw_temperature_c AS "rawTemperatureC",
         hour.raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
-        hour.raw_wind_speed_mps AS "rawWindSpeedMps"
+        hour.raw_wind_speed_mps AS "rawWindSpeedMps",
+        hour.content_hash AS "contentHash"
       FROM ecmwf_temperature_canary_hours hour
       JOIN ecmwf_temperature_canary_runs run ON run.id = hour.run_id
       JOIN sites site ON site.id = run.site_id
@@ -2682,7 +2920,8 @@ export async function listCausalEcmwfTemperatureCanaryPriorHours(
         hour.model_lead_hours AS "modelLeadHours",
         hour.raw_temperature_c AS "rawTemperatureC",
         hour.raw_relative_humidity_percent AS "rawRelativeHumidityPercent",
-        hour.raw_wind_speed_mps AS "rawWindSpeedMps"
+        hour.raw_wind_speed_mps AS "rawWindSpeedMps",
+        hour.content_hash AS "contentHash"
       FROM ecmwf_temperature_canary_hours hour
       JOIN ecmwf_temperature_canary_runs run ON run.id = hour.run_id
       JOIN sites site ON site.id = run.site_id
@@ -3177,6 +3416,238 @@ async function upsertWeatherRecords(
   }
 }
 
+interface ExistingWeatherRevisionIdentity extends QueryResultRow {
+  readonly contentHash: string;
+  readonly productRunAt: Date | string | null;
+  readonly sourceKind: SourceKind;
+  readonly validAt: Date | string;
+}
+
+// select only revisions introduced or content-changed by this transaction
+async function selectChangedWeatherRevisionInputs(
+  session: SourceSession,
+  records: readonly NormalizedWeatherRecord[],
+): Promise<readonly Readonly<{ contentHash: string; record: NormalizedWeatherRecord }>[]> {
+  // avoid an empty recordset type inference query
+  if (records.length === 0) {
+    return [];
+  }
+  const requested = records.map(
+    // compute the same content identity used by the serving upsert
+    (record) => ({
+      contentHash: createHash("sha256").update(weatherRecordContent(record)).digest("hex"),
+      productRunAt: record.productRunAt,
+      sourceKind: record.sourceKind,
+      validAt: record.validAt,
+    }),
+  );
+  const existing = await session.client.query<ExistingWeatherRevisionIdentity>(`
+    SELECT wr.content_hash AS "contentHash", wr.product_run_at AS "productRunAt",
+      wr.source_kind AS "sourceKind", wr.valid_at AS "validAt"
+    FROM weather_records wr
+    JOIN jsonb_to_recordset($2::jsonb) AS requested(
+      "productRunAt" timestamptz, "sourceKind" text, "validAt" timestamptz
+    ) ON requested."sourceKind" = wr.source_kind
+      AND requested."validAt" = wr.valid_at
+      AND requested."productRunAt" IS NOT DISTINCT FROM wr.product_run_at
+    WHERE wr.source_id = $1
+  `, [session.sourceId, JSON.stringify(requested)]);
+  const prior = new Map(existing.rows.map(
+    // preserve the exact nullable product clock in the identity key
+    (row) => [weatherRevisionIdentityKey(
+      row.sourceKind,
+      storageInstant(row.validAt, "validAt"),
+      row.productRunAt === null ? null : storageInstant(row.productRunAt, "productRunAt"),
+    ), row.contentHash],
+  ));
+  return records.flatMap((record, index) => {
+    const contentHash = requested[index]!.contentHash;
+    const previous = prior.get(weatherRevisionIdentityKey(
+      record.sourceKind,
+      record.validAt,
+      record.productRunAt,
+    ));
+    // never backfill an unchanged legacy null pointer on ordinary ingestion retry
+    return previous === contentHash ? [] : [{ contentHash, record }];
+  });
+}
+
+// stage one bounded eligible normalized group before transaction commit
+async function archiveChangedWeatherRevisions(
+  session: SourceSession,
+  runId: string,
+  changed: readonly Readonly<{ contentHash: string; record: NormalizedWeatherRecord }>[],
+  archiver: WeatherAdjustmentRevisionArchiver,
+): Promise<readonly WeatherAdjustmentRevisionPublication[]> {
+  // skip context queries when no serving value changed
+  if (changed.length === 0) {
+    return [];
+  }
+  const context = await session.client.query<{
+    adapterVersion: string;
+    logicalReceivedAt: Date;
+    providerKey: string;
+    sourceConfigFingerprint: string;
+    sourceKey: string;
+  }>(`
+    SELECT run.adapter_version AS "adapterVersion", run.started_at AS "logicalReceivedAt",
+      provider.provider_key AS "providerKey",
+      run.source_config_fingerprint::text AS "sourceConfigFingerprint",
+      source.source_key AS "sourceKey"
+    FROM ingestion_runs run
+    JOIN sources source ON source.id = run.source_id
+    JOIN providers provider ON provider.id = source.provider_id
+    WHERE run.id = $1 AND run.source_id = $2
+  `, [runId, session.sourceId]);
+  const source = requireRow(context.rows[0], "weather revision source context");
+  const revisions = changed.map(
+    // attach the locked source lineage to each changed stored value
+    (revision) => ({
+      adapterVersion: source.adapterVersion,
+      contentHash: revision.contentHash,
+      logicalReceivedAt: source.logicalReceivedAt.toISOString(),
+      providerKey: source.providerKey,
+      record: revision.record,
+      sourceConfigFingerprint: source.sourceConfigFingerprint,
+      sourceKey: source.sourceKey,
+    }),
+  );
+  try {
+    const publication = await archiver(session.client, revisions);
+    // omit irrelevant weather products without fabricating a gap
+    return publication === null ? [] : [publication];
+  } catch {
+    // preserve ordinary ingestion after a bounded revision archive failure
+    return [];
+  }
+}
+
+// read one full post-epoch physical target group awaiting first archive binding
+export async function listPendingPhysicalWeatherAdjustmentRevisions(
+  queryable: Queryable,
+  sourceId: string,
+  epochAt: string,
+): Promise<readonly PersistedWeatherAdjustmentRevision[]> {
+  // reject generic source selectors and caller-defined historical windows
+  if (!/^[1-9]\d*$/u.test(sourceId)) {
+    throw new RangeError("physical revision source identity is invalid");
+  }
+  const lowerBound = validateUtcInstant(epochAt, "epochAt");
+  const result = await queryable.query<PendingPhysicalWeatherAdjustmentRevisionRow>(`
+    SELECT run.adapter_version AS "adapterVersion",
+      wr.apparent_temperature_c AS "apparentTemperatureC",
+      wr.black_globe_temperature_c AS "blackGlobeTemperatureC",
+      wr.cloud_cover_percent AS "cloudCoverPercent",
+      wr.content_hash AS "contentHash",
+      wr.device_model AS "deviceModel", wr.device_serial AS "deviceSerial",
+      wr.device_vendor AS "deviceVendor", wr.first_received_at AS "logicalReceivedAt",
+      wr.pm25_micrograms_per_cubic_meter AS "pm25MicrogramsPerCubicMeter",
+      wr.precipitation_mm AS "precipitationMm",
+      wr.precipitation_rate_mm_per_hour AS "precipitationRateMmPerHour",
+      wr.pressure_hpa AS "pressureHpa", provider.provider_key AS "providerKey",
+      wr.provider_metadata AS "providerMetadata", wr.quality_metadata AS "qualityMetadata",
+      wr.last_received_at AS "receivedAt",
+      wr.relative_humidity_percent AS "relativeHumidityPercent",
+      run.source_config_fingerprint::text AS "sourceConfigFingerprint",
+      wr.source_id::text AS "sourceId", source.source_key AS "sourceKey",
+      wr.soil_electrical_conductivity_us_cm AS "soilElectricalConductivityMicrosiemensPerCm",
+      wr.soil_moisture_percent AS "soilMoisturePercent",
+      wr.solar_radiation_wm2 AS "solarRadiationWm2", wr.temperature_c AS "temperatureC",
+      wr.upstream_model AS "upstreamModel", wr.upstream_timezone AS "upstreamTimezone",
+      wr.uv_index AS "uvIndex", wr.valid_at AS "validAt", wr.water_level_m AS "waterLevelM",
+      wr.wet_bulb_globe_temperature_c AS "wetBulbGlobeTemperatureC",
+      wr.wind_direction_degrees AS "windDirectionDegrees", wr.wind_gust_mps AS "windGustMps",
+      wr.wind_speed_mps AS "windSpeedMps"
+    FROM weather_records wr
+    JOIN sources source ON source.id = wr.source_id
+    JOIN providers provider ON provider.id = source.provider_id
+    JOIN ingestion_runs run ON run.id = wr.last_ingestion_run_id
+    WHERE wr.source_id = $1 AND wr.source_kind = 'physical_sensor'
+      AND wr.product_run_at IS NULL AND wr.valid_at >= $2 AND wr.first_received_at >= $2
+      AND wr.adjustment_revision_receipt IS NULL
+    ORDER BY wr.valid_at, wr.id
+    LIMIT 168
+  `, [sourceId, lowerBound]);
+  // defer stable lineages until one full bounded body is available
+  if (result.rows.length < 168 && result.rows.every((row) =>
+    row.adapterVersion === result.rows[0]?.adapterVersion &&
+    row.sourceConfigFingerprint === result.rows[0]?.sourceConfigFingerprint)) {
+    return [];
+  }
+  const first = result.rows[0];
+  // preserve an exact short terminal group only at a lineage boundary
+  if (first === undefined) {
+    return [];
+  }
+  const boundaryIndex = result.rows.findIndex((row) =>
+    row.adapterVersion !== first.adapterVersion ||
+    row.sourceConfigFingerprint !== first.sourceConfigFingerprint);
+  const rows = result.rows.slice(0, boundaryIndex === -1
+    ? result.rows.length
+    : boundaryIndex);
+  return rows.map(
+    // reconstruct only the canonical normalized values already retained in storage
+    (row) => ({
+      adapterVersion: row.adapterVersion,
+      contentHash: row.contentHash,
+      logicalReceivedAt: storageInstant(row.logicalReceivedAt, "logicalReceivedAt"),
+      providerKey: row.providerKey,
+      record: createNormalizedWeatherRecord({
+        metadata: {
+          device: row.deviceVendor === null && row.deviceModel === null && row.deviceSerial === null
+            ? null
+            : {
+                ...(row.deviceModel === null ? {} : { model: row.deviceModel }),
+                ...(row.deviceSerial === null ? {} : { serial: row.deviceSerial }),
+                ...(row.deviceVendor === null ? {} : { vendor: row.deviceVendor }),
+              },
+          model: row.upstreamModel,
+          provider: row.providerMetadata,
+          quality: row.qualityMetadata,
+          upstreamTimezone: row.upstreamTimezone,
+        },
+        metrics: {
+          apparentTemperatureC: row.apparentTemperatureC,
+          blackGlobeTemperatureC: row.blackGlobeTemperatureC,
+          cloudCoverPercent: row.cloudCoverPercent,
+          pm25MicrogramsPerCubicMeter: row.pm25MicrogramsPerCubicMeter,
+          precipitationMm: row.precipitationMm,
+          precipitationRateMmPerHour: row.precipitationRateMmPerHour,
+          pressureHpa: row.pressureHpa,
+          relativeHumidityPercent: row.relativeHumidityPercent,
+          soilElectricalConductivityMicrosiemensPerCm:
+            row.soilElectricalConductivityMicrosiemensPerCm,
+          soilMoisturePercent: row.soilMoisturePercent,
+          solarRadiationWm2: row.solarRadiationWm2,
+          temperatureC: row.temperatureC,
+          uvIndex: row.uvIndex,
+          waterLevelM: row.waterLevelM,
+          wetBulbGlobeTemperatureC: row.wetBulbGlobeTemperatureC,
+          windDirectionDegrees: row.windDirectionDegrees,
+          windGustMps: row.windGustMps,
+          windSpeedMps: row.windSpeedMps,
+        },
+        productRunAt: null,
+        receivedAt: storageInstant(row.receivedAt, "receivedAt"),
+        sourceId: row.sourceId,
+        sourceKind: "physical_sensor",
+        validAt: storageInstant(row.validAt, "validAt"),
+      }),
+      sourceConfigFingerprint: row.sourceConfigFingerprint,
+      sourceKey: row.sourceKey,
+    }),
+  );
+}
+
+// create one stable nullable serving-row lookup key
+function weatherRevisionIdentityKey(
+  sourceKind: SourceKind,
+  validAt: string,
+  productRunAt: string | null,
+): string {
+  return `${sourceKind}\n${validAt}\n${productRunAt ?? "null"}`;
+}
+
 // upsert one bounded provider-neutral batch
 async function upsertWeatherRecordBatch(
   session: SourceSession,
@@ -3612,7 +4083,7 @@ function validateEcmwfTemperatureCanaryRunInput(
   input: PersistEcmwfTemperatureCanaryRunInput,
 ): PersistEcmwfTemperatureCanaryRunInput & Readonly<{
   contentHash: string;
-  hours: readonly (EcmwfTemperatureCanaryHour & Readonly<{ contentHash: string }>)[];
+  hours: readonly EcmwfTemperatureCanaryHour[];
   recentErrorStateSha256: string;
 }> {
   const runInitializedAt = validateUtcInstant(
@@ -3872,7 +4343,12 @@ function projectEcmwfTemperatureCanaryRun(
 function projectEcmwfTemperatureCanaryHour(
   row: EcmwfTemperatureCanaryHourStorageRow,
 ): EcmwfTemperatureCanaryHour {
+  // require the stored normalized content identity on every projected hour
+  if (typeof row.contentHash !== "string" || !/^[a-f0-9]{64}$/u.test(row.contentHash)) {
+    throw new Error("stored ECMWF temperature canary hour content hash is invalid");
+  }
   return {
+    contentHash: row.contentHash,
     modelLeadHours: Number(row.modelLeadHours),
     rawRelativeHumidityPercent: row.rawRelativeHumidityPercent,
     rawTemperatureC: row.rawTemperatureC,
@@ -4494,6 +4970,7 @@ function requireStorageText(value: string | null, fieldName: string): string {
 function weatherRecordSelection(): string {
   return `
     wr.id,
+    wr.content_hash AS "contentHash",
     wr.source_id AS "sourceId",
     NULL::text AS "sourceConfigFingerprint",
     NULL::text AS "adapterVersion",

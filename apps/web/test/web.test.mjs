@@ -1196,6 +1196,38 @@ test("disabled temperature settings hide ECMWF credit despite active runtime", (
   assert.doesNotMatch(html, /Adjusted temperature uses ECMWF IFS/u);
 });
 
+test("qualified temperature maintenance requires action and confirmation roots", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+  };
+  const runtime = {
+    ...temperatureCanaryRuntime(),
+    actionSha256: "a".repeat(64),
+    activationMode: "maintenance_qualified",
+    authorizationSha256: null,
+    expiresAt: null,
+    fullMemberRootSha256: "b".repeat(64),
+    policyReportSha256: "c".repeat(64),
+  };
+  const parsed = parseForecastRecordsResponse({
+    data: [{ ...raw, temperatureAdjustment: temperatureCanaryDecision(raw) }],
+    site,
+    temperatureAdjustmentRuntime: runtime,
+  });
+  assert.equal(parsed.temperatureAdjustmentRuntime.state, "active");
+  assert.notEqual(forecastMetricValue(parsed.data[0], "temperatureC"), raw.metrics.temperatureC);
+  const rejected = parseForecastRecordsResponse({
+    data: [{ ...raw, temperatureAdjustment: temperatureCanaryDecision(raw) }],
+    site,
+    temperatureAdjustmentRuntime: { ...runtime, fullMemberRootSha256: null },
+  });
+  assert.equal(rejected.temperatureAdjustmentRuntime.state, "disabled");
+});
+
 // retain exact finite and permanent deadlines at the browser trust boundary
 test("temperature and wind runtimes preserve null or finite expiry and reject malformed expiry", () => {
   const raw = {

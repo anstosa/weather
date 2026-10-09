@@ -132,6 +132,7 @@ jobs:
           WEATHER_TEST_SERVER_IMAGE: weather-server:inspect
           WEATHER_TEST_WEB_IMAGE: weather-web:inspect
           WEATHER_TEST_BUILD_PACKAGE_ROOT: ${{ runner.temp }}/weather-image-check-files/forecast-adjustment
+          WEATHER_TEST_BUILD_WEB_CONTRACT: ${{ runner.temp }}/weather-image-check-files/web/adjustment-maintenance-contract.mjs
         run: node --test deploy/test/forecast-adjustment-image.integration.test.mjs
       - name: Publish validated native ARM64 images
         env:

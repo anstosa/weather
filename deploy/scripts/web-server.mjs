@@ -19,8 +19,20 @@ import {
   AdjustmentEvidenceArchiveTransport,
   AdjustmentEvidenceScheduler,
   AdjustmentEvidenceStore,
+  AdjustmentRevisionArchiveStore,
+  createAdjustmentRevisionArchiveHandler,
   normalizeAdjustmentEvidenceWindow,
 } from "./adjustment-evidence-store.mjs";
+import {
+  createMaintenanceShadowPredictionMetadata,
+  parseAdjustmentRainFixedGaugeTargetProjection,
+  parseAdjustmentRevisionProjectionDocument,
+  parseRainMaintenanceControlState,
+  parseMaintenanceShadowComparator,
+  parseMaintenanceShadowSourceProjection,
+  parseMaintenanceShadowValues,
+  validateMaintenanceShadowComparatorBinding,
+} from "../../apps/web/dist/adjustment-maintenance-contract.mjs";
 import {
   FORECAST_ADJUSTMENT_SCORECARD_MAX_BYTES,
   FORECAST_ADJUSTMENT_SCORECARD_V2_CONTRACT_VERSION,
@@ -52,11 +64,17 @@ const scheduledArchiveTransferEnabled =
 const scheduledCaptureParameter = "__weather_scheduler_nonce";
 const scheduledCaptureRequests = new Map();
 const apiOrigin = parseApiOrigin(process.env.WEATHER_API_ORIGIN);
+const adjustmentMaintenanceApiOrigin = parseOptionalAdjustmentMaintenanceApiOrigin(
+  process.env.WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN,
+);
 const xweatherOrigin = parseXweatherOrigin(
   process.env.WEATHER_XWEATHER_MAP_ORIGIN ?? "https://maps.api.xweather.com",
 );
 const xweatherCredentials = await loadXweatherCredentials();
 const port = parsePort(process.env.PORT ?? "3000");
+const adjustmentMaintenanceInternalPort = parseOptionalPort(
+  process.env.WEATHER_ADJUSTMENT_MAINTENANCE_INTERNAL_PORT,
+);
 const release = parseAssetRelease(process.env.WEATHER_RELEASE ?? "development");
 const productionAnalytics = process.env.NODE_ENV === "production" && release !== "development";
 const homeNetworkMatcher = new HomeNetworkMatcher();
@@ -74,6 +92,15 @@ const adminStore = new WeatherAdminStore({
 const adjustmentEvidenceStore = await new AdjustmentEvidenceStore({
   root: adjustmentEvidenceRoot,
 }).initialize();
+const adjustmentRevisionArchiveHandler = createAdjustmentRevisionArchiveHandler({
+  store: new AdjustmentRevisionArchiveStore({
+    parseProjection: parseAdjustmentRevisionArchiveProjection,
+    parseRainControlState: parseRainMaintenanceControlState,
+    root: adjustmentEvidenceRoot,
+    validateShadowStage: validateAdjustmentShadowRevisionStage,
+    validateShadowCapsule: validateAdjustmentShadowRevisionCapsule,
+  }),
+});
 // keep archive transfer inert until the controller explicitly enables it
 const adjustmentEvidenceArchiveTransport = scheduledArchiveTransferEnabled
   ? await new AdjustmentEvidenceArchiveTransport({
@@ -86,6 +113,7 @@ const adjustmentEvidenceArchiveTransport = scheduledArchiveTransferEnabled
 const adjustmentEvidenceScheduler = await new AdjustmentEvidenceScheduler({
   enabled: scheduledCaptureEnabled,
   migrationReady: scheduledCaptureMigrationReady,
+  readScheduleSlots: readAdjustmentMaintenanceScheduleSlots,
   root: adjustmentEvidenceRoot,
   trigger: triggerScheduledAdjustmentCapture,
 }).initialize();
@@ -144,6 +172,16 @@ const versionedAssets = new Map([
   ["index.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "index.js"), type: "text/javascript; charset=utf-8" }],
   ["units.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "units.js"), type: "text/javascript; charset=utf-8" }],
 ]);
+
+// expose archive mutation only on the compose-private listener
+const adjustmentMaintenanceInternalServer = adjustmentMaintenanceInternalPort === null
+  ? null
+  : createServer(
+      // contain every private transport rejection behind one fixed response
+      async (request, response) => {
+        await serveAdjustmentRevisionArchive(request, response);
+      },
+    );
 
 // route isolated edge requests without trusting browser-supplied identities
 const server = createServer(async (request, response) => {
@@ -304,6 +342,94 @@ const server = createServer(async (request, response) => {
 server.listen(port, "0.0.0.0",
   // start only the admitted clock after the listener is reachable
   () => adjustmentEvidenceScheduler.start());
+// listen only inside the container network with no published host port
+adjustmentMaintenanceInternalServer?.listen(adjustmentMaintenanceInternalPort, "0.0.0.0");
+
+// dispatch one exact private revision archive request
+async function serveAdjustmentRevisionArchive(request, response) {
+  try {
+    // reject browser methods, query aliases and every non-revision route
+    if (request.method !== "POST" || request.url === undefined ||
+      ![
+        "/internal/adjustment-maintenance/archive/stage",
+        "/internal/adjustment-maintenance/archive/publish",
+        "/internal/adjustment-maintenance/archive/gap",
+        "/internal/adjustment-maintenance/revision/stage",
+        "/internal/adjustment-maintenance/revision/publish",
+        "/internal/adjustment-maintenance/revision/gap",
+        "/internal/adjustment-maintenance/rain-control-state/stage",
+        "/internal/adjustment-maintenance/rain-control-state/gap",
+        "/internal/adjustment-maintenance/rain-fixed-gauge-target/gap",
+        "/internal/adjustment-maintenance/rain-fixed-gauge-target/gap/status",
+      ].includes(request.url)) {
+      sendJson(response, 404, { error: "not_found" });
+      return;
+    }
+    const contentType = String(request.headers["content-type"] ?? "")
+      .split(";", 1)[0]?.trim().toLowerCase();
+    // require the api relay's exact machine-readable body class
+    if (contentType !== "application/json") {
+      sendJson(response, 415, { error: "unsupported_media_type" });
+      return;
+    }
+    const input = await readRequestJson(request, 4_832 * 1024);
+    const receipt = await adjustmentRevisionArchiveHandler(request.url, input);
+    sendJson(response, 200, receipt);
+  } catch (error) {
+    // expose only the bounded private spool-capacity condition to the api relay
+    if (error?.code === "adjustment_revision_spool_refused") {
+      sendJson(response, 429, { error: "adjustment_revision_spool_full" });
+      return;
+    }
+    sendJson(response, 409, { error: "revision_archive_rejected" });
+  }
+}
+
+// admit the additive large fixed-gauge body without widening legacy grammars
+function parseAdjustmentRevisionArchiveProjection(bytes) {
+  const value = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  return value?.contractVersion === "adjustment-rain-fixed-gauge-target-projection/v1"
+    ? parseAdjustmentRainFixedGaugeTargetProjection(bytes)
+    : parseAdjustmentRevisionProjectionDocument(bytes);
+}
+
+// validate one shadow capsule through the producer's exact source/body contracts
+function validateAdjustmentShadowRevisionCapsule(capsule) {
+  const source = Buffer.from(capsule.sourceProjectionBase64, "base64");
+  const body = Buffer.from(capsule.bodyBase64, "base64");
+  validateAdjustmentShadowRevisionStage({
+    body,
+    ...(capsule.contractVersion === "adjustment-shadow-revision-capsule/v2"
+      ? { comparator: Buffer.from(capsule.comparatorBase64, "base64") }
+      : {}),
+    metadata: capsule.metadata,
+    sourceProjection: source,
+  });
+}
+
+// validate exact staged shadow source and prediction bytes
+function validateAdjustmentShadowRevisionStage(input) {
+  const source = Buffer.from(input.sourceProjection);
+  const body = Buffer.from(input.body);
+  parseMaintenanceShadowSourceProjection(source);
+  parseMaintenanceShadowValues(body);
+  // bind the additive incumbent member to the same source and candidate body
+  if (input.comparator !== undefined) {
+    const comparator = parseMaintenanceShadowComparator(Buffer.from(input.comparator));
+    validateMaintenanceShadowComparatorBinding(comparator, source, body);
+  }
+  const expected = createMaintenanceShadowPredictionMetadata(body, source);
+  const fields = [
+    "bodyByteCount", "candidateSha256", "dueKey", "inputSha256", "issuedAt",
+    "maxValidAt", "minValidAt", "predictionBodySha256", "predictionSchemaSha256",
+    "predictionSha256", "registrationSha256", "rowCount", "sourceReceiptSha256",
+    "sourceSha256",
+  ];
+  // require every compact field to be reproduced from exact decoded bytes
+  if (fields.some((field) => input.metadata[field] !== expected[field])) {
+    throw new Error("adjustment shadow capsule metadata differs");
+  }
+}
 
 // identify the exact widget route and its rejected near-matches
 function isWidgetForecastPath(pathname) {
@@ -1046,6 +1172,45 @@ function parseApiOrigin(value) {
   return origin;
 }
 
+// validate one optional compose-private api origin
+function parseOptionalAdjustmentMaintenanceApiOrigin(value) {
+  // keep inert and local web processes independent of the private listener
+  if (value === undefined) {
+    return null;
+  }
+  const origin = new URL(value);
+  // admit only the fixed compose service or disposable loopback tests
+  if (origin.protocol !== "http:" ||
+    !["api", "127.0.0.1", "localhost", "[::1]"].includes(origin.hostname) ||
+    origin.username !== "" || origin.password !== "" || origin.pathname !== "/" ||
+    origin.search !== "" || origin.hash !== "") {
+    throw new Error("WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN must be a compose-private HTTP origin");
+  }
+  return origin;
+}
+
+// read the database-authenticated rolling horizon through the private api listener
+async function readAdjustmentMaintenanceScheduleSlots() {
+  // fail closed when the private schedule reader is not configured
+  if (adjustmentMaintenanceApiOrigin === null) {
+    throw new Error("adjustment maintenance api origin is unavailable");
+  }
+  const target = new URL("/internal/adjustment-maintenance/schedule-slots", adjustmentMaintenanceApiOrigin);
+  const response = await fetch(target, {
+    headers: { Accept: "application/json" },
+    method: "GET",
+    redirect: "manual",
+    signal: AbortSignal.timeout(5_000),
+  });
+  // accept only one bounded successful private response
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error("adjustment maintenance schedule read failed");
+  }
+  const body = await readBoundedBody(response, 8 * 1_024, "adjustment maintenance schedule");
+  return JSON.parse(body.toString("utf8"));
+}
+
 // validate the Xweather map origin
 function parseXweatherOrigin(value) {
   const origin = new URL(value);
@@ -1076,6 +1241,15 @@ function parsePort(value) {
   }
 
   return parsed;
+}
+
+// disable the private listener when its compose-only port is absent
+function parseOptionalPort(value) {
+  // keep local public-server tests free of an additional listener
+  if (value === undefined) {
+    return null;
+  }
+  return parsePort(value);
 }
 
 // issue one process-tracked loopback request through the public forecast handler
@@ -1950,8 +2124,11 @@ function sendRedirect(response, status, location, headers = {}) {
 
 // close without accepting new work
 async function shutdown() {
-  await new Promise((resolveShutdown, rejectShutdown) => {
-    server.close((error) => {
+  const servers = [server, adjustmentMaintenanceInternalServer]
+    .filter((candidate) => candidate !== null);
+  // close both public and private listeners before process exit
+  await Promise.all(servers.map((candidate) => new Promise((resolveShutdown, rejectShutdown) => {
+    candidate.close((error) => {
       // surface unexpected close failures
       if (error) {
         rejectShutdown(error);
@@ -1959,7 +2136,7 @@ async function shutdown() {
         resolveShutdown();
       }
     });
-  });
+  })));
 }
 
 process.once("SIGINT", () => {

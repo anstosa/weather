@@ -55,7 +55,17 @@ test("rain serving is an immutable bounded projection with private inputs", { ti
       inputSha256: "b".repeat(64), forecastClaimId: claim,
       hours: [{ validAt: new Date(initialized.getTime() + 9 * 3_600_000).toISOString(), modelLeadHours: 9,
         rawPrecipitationMm: 0.5, correctedPrecipitationMm: 0.25, applied: true, reasonCode: null }] };
-    assert.equal(await appendRainAdjustmentRun(ingest, run), true);
+    let archivedRevision;
+    const expectedStoredContentSha256 = (await owner.query(`SELECT encode(sha256(
+      convert_to($1::jsonb::text, 'UTF8')), 'hex') AS value`, [JSON.stringify(run.hours)]))
+      .rows[0].value;
+    assert.equal(await appendRainAdjustmentRun(ingest, run,
+      // capture only the public immutable revision returned by PostgreSQL
+      async (_queryable, revision) => {
+        archivedRevision = revision;
+        return null;
+      }), true);
+    assert.equal(archivedRevision.storedContentSha256, expectedStoredContentSha256);
     assert.equal(await appendRainAdjustmentRun(ingest, run), false);
     assert.deepEqual(await readPendingRainAdjustmentCaptures(ingest, model), []);
     const readAt = (await owner.query("SELECT clock_timestamp() AS now")).rows[0].now.toISOString();

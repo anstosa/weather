@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -14,6 +15,10 @@ const deployRoot = join(repoRoot, "deploy");
 const runIntegration = process.env.WEATHER_RUN_DEPLOY_INTEGRATION === "1";
 const baselineServerRelease = "2026.09.01-9";
 const fixedV13SourceRevision = "072af3f880431ff9020a2ec2ada222210e45f00b";
+// retain the exact immutable published source-one commit
+const fixedV13TargetRevision = "56b327d9c750946f6f6963b6fe1fa5c9bba791ca";
+// isolate the historical positive lifecycle from full history
+const historicalLifecycleDatabase = "weather_historical_lifecycle_test";
 // retain the exact migration-only 0017 prefix authority
 const expectedTrainingExportAuthorityV1 = {
   databasePrivileges: ["CONNECT", "TEMP"],
@@ -40,6 +45,17 @@ const expectedTrainingExportAuthorityV1 = {
   sequencePrivileges: [],
 };
 const expectedTrainingExportAuthority = {
+  ...expectedTrainingExportAuthorityV1,
+  databasePrivileges: ["CONNECT"],
+  executableFunctions: [
+    "adjustment_confirmation_availability_v2(text)",
+    "adjustment_confirmation_export_v2(text,text,smallint)",
+    "adjustment_revision_frontier_v1()",
+    "adjustment_revision_serving_snapshot_v1(timestamp with time zone,bigint)",
+    "adjustment_shadow_registration_slot_v3(text)",
+  ],
+};
+const expectedTrainingExportAuthorityV2 = {
   ...expectedTrainingExportAuthorityV1,
   databasePrivileges: ["CONNECT"],
   executableFunctions: [
@@ -301,6 +317,28 @@ async function trainingExportAuthority(environment, override, databaseName) {
   return JSON.parse(snapshot.stdout.trim());
 }
 
+// hash one exact migration ledger
+async function migrationHistorySha256(environment, override, databaseName) {
+  const history = await compose(
+    environment,
+    override,
+    "exec",
+    "-T",
+    "postgres",
+    "psql",
+    "--username",
+    "postgres",
+    "--dbname",
+    databaseName,
+    "--tuples-only",
+    "--no-align",
+    "--field-separator=:",
+    "--command",
+    "SELECT name, checksum FROM schema_migrations ORDER BY name",
+  );
+  return createHash("sha256").update(history.stdout).digest("hex");
+}
+
 // execute one protocol-specific container probe
 async function executeProbe(environment, override, service, kind, ...values) {
   // use tools available in PostgreSQL
@@ -436,11 +474,16 @@ async function writeOverride(path, secretsRoot) {
       timeout: 2s
       retries: 15
   worker:
+    # remove future-only state from this legacy lifecycle rehearsal
+    volumes: !reset []
     environment:
       WEATHER_OPEN_METEO_COMPATIBILITY_ORIGIN: http://compatibility-provider:3002
     depends_on:
       compatibility-provider:
         condition: service_started
+  api:
+    # remove future-only state from this legacy lifecycle rehearsal
+    volumes: !reset []
 secrets:
   ${secret("weather_postgres_admin_password")}  ${secret("weather_postgres_owner_password")}  ${secret("weather_migration_owner_password")}  ${secret("weather_postgres_api_password")}  ${secret("weather_api_password")}  ${secret("weather_postgres_ingest_password")}  ${secret("weather_postgres_training_export_password")}  ${secret("weather_worker_ingest_password")}  ${secret("weather_tempest_api_key")}  ${secret("weather_xweather_client_id")}  ${secret("weather_xweather_client_secret")}  ${secret("cloudflare_tunnel_token")}`,
   );
@@ -476,6 +519,7 @@ test(
       WEATHER_LOCAL_WEB_IMAGE: `${projectName}-web:local`,
     };
     const fixedV13SourceServerImage = `${projectName}-server:2026.10.07-3`;
+    const fixedV13TargetServerImage = `${projectName}-server:2026.10.09-1`;
     const previousServerImage = `${projectName}-server:2026.08.22-1`;
     const targetServerImage = `${projectName}-server:2026.08.22-3`;
     const previousWebImage = `${projectName}-web:2026.08.22-1`;
@@ -488,6 +532,7 @@ test(
       environment.WEATHER_LOCAL_SERVER_IMAGE,
       environment.WEATHER_LOCAL_WEB_IMAGE,
       fixedV13SourceServerImage,
+      fixedV13TargetServerImage,
       previousServerImage,
       targetServerImage,
       previousWebImage,
@@ -510,6 +555,11 @@ test(
     try {
       await provisionSecrets(secretsRoot);
       await writeOverride(override, secretsRoot);
+      const legacyConfig = JSON.parse(
+        (await compose(environment, override, "config", "--format", "json")).stdout,
+      );
+      assert.deepEqual(legacyConfig.services.api.volumes ?? [], []);
+      assert.deepEqual(legacyConfig.services.worker.volumes ?? [], []);
       await compose(environment, override, "up", "--detach", "--build", "--wait");
       const baselineRevision = await buildBaselineServerImage(directory, previousServerImage);
       const fixedV13Revision = await buildCommittedServerImage(
@@ -518,9 +568,17 @@ test(
         fixedV13SourceRevision,
         "fixed-v13-source",
       );
+      const fixedV13TargetCommit = await buildCommittedServerImage(
+        directory,
+        fixedV13TargetServerImage,
+        fixedV13TargetRevision,
+        "fixed-v13-target",
+      );
+      assert.equal(fixedV13TargetCommit, fixedV13TargetRevision);
+      // keep generic compatibility below the private-pointer migration boundary
       await buildReleaseImage(
         directory,
-        environment.WEATHER_LOCAL_SERVER_IMAGE,
+        fixedV13TargetServerImage,
         targetServerImage,
         "2026.08.22-3",
         "SELECT 1;\n",
@@ -570,6 +628,10 @@ test(
         await imageLabel(fixedV13SourceServerImage, "weather.test.fixed-v13-source"),
         fixedV13Revision,
       );
+      assert.equal(
+        await imageLabel(fixedV13TargetServerImage, "weather.test.fixed-v13-target"),
+        fixedV13TargetCommit,
+      );
       // prove every current migration is absent from the predecessor
       await executeFile("docker", [
         "run",
@@ -588,7 +650,7 @@ test(
         "sh",
         targetServerImage,
         "-c",
-        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test -f /opt/weather/packages/database/migrations/0014_rain_collection.sql && test -f /opt/weather/packages/database/migrations/0015_rain_station_access.sql && test -f /opt/weather/packages/database/migrations/0016_rain_adjustment.sql && test -f /opt/weather/packages/database/migrations/0017_adjustment_evaluation_export.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
+        "test -f /opt/weather/packages/database/migrations/0009_forecast_anchor_records.sql && test -f /opt/weather/packages/database/migrations/0010_forecast_training_export.sql && test -f /opt/weather/packages/database/migrations/0011_forecast_runtime_provenance.sql && test -f /opt/weather/packages/database/migrations/0012_hide_archive_only_forecasts_from_live_reads.sql && test -f /opt/weather/packages/database/migrations/0013_ecmwf_temperature_canary.sql && test -f /opt/weather/packages/database/migrations/0014_rain_collection.sql && test -f /opt/weather/packages/database/migrations/0015_rain_station_access.sql && test -f /opt/weather/packages/database/migrations/0016_rain_adjustment.sql && test -f /opt/weather/packages/database/migrations/0017_adjustment_evaluation_export.sql && test -f /opt/weather/packages/database/migrations/0018_adjustment_maintenance_v2.sql && test ! -f /opt/weather/packages/database/migrations/0019_adjustment_maintenance_recurring.sql && test ! -f /opt/weather/packages/database/migrations/0020_adjustment_revision_frontier.sql && test ! -f /opt/weather/packages/database/migrations/0021_adjustment_rolling_registration.sql && test -f /opt/weather/packages/database/migrations/9999_candidate_contract.sql",
       ]);
       const firstSites = await fetch(`http://127.0.0.1:${webPort}/api/v1/sites`);
       assert.equal(firstSites.status, 200);
@@ -1002,20 +1064,33 @@ test(
         compatibilityEnv,
         (await readFile(envFile, "utf8"))
           .replace(/^WEATHER_RELEASE=.*$/mu, "WEATHER_RELEASE=2026.08.22-3")
-          .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${targetServerImage}`),
+          .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${targetServerImage}`)
+          .replace(
+            /^WEATHER_DATABASE_NAME=.*$/mu,
+            `WEATHER_DATABASE_NAME=${historicalLifecycleDatabase}`,
+          ),
       );
       await writeFile(
         codeOnlyCompatibilityEnv,
         (await readFile(envFile, "utf8"))
           .replace(/^WEATHER_RELEASE=.*$/mu, "WEATHER_RELEASE=2026.08.22-2")
-          .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${previousServerImage}`),
+          .replace(/^WEATHER_SERVER_IMAGE=.*$/mu, `WEATHER_SERVER_IMAGE=${previousServerImage}`)
+          .replace(
+            /^WEATHER_DATABASE_NAME=.*$/mu,
+            `WEATHER_DATABASE_NAME=${historicalLifecycleDatabase}`,
+          ),
       );
       await writeFile(
         previousCompatibilityEnv,
-        (await readFile(envFile, "utf8")).replace(
-          /^WEATHER_SERVER_IMAGE=.*$/mu,
-          `WEATHER_SERVER_IMAGE=${previousServerImage}`,
-        ),
+        (await readFile(envFile, "utf8"))
+          .replace(
+            /^WEATHER_SERVER_IMAGE=.*$/mu,
+            `WEATHER_SERVER_IMAGE=${previousServerImage}`,
+          )
+          .replace(
+            /^WEATHER_DATABASE_NAME=.*$/mu,
+            `WEATHER_DATABASE_NAME=${historicalLifecycleDatabase}`,
+          ),
       );
       // render one exact fixed-bridge environment
       const fixedEnvironment = (release, server, web, controlVersion, controlDigest) =>
@@ -1183,7 +1258,7 @@ verify_fixed_v13_source_compatibility "$target_env" "$source_env" "$authorizatio
           compatibilityReleases,
           fixedV13Authorization,
           fixedV13SourceServerImage,
-          environment.WEATHER_LOCAL_SERVER_IMAGE,
+          fixedV13TargetServerImage,
           directory,
         ],
         { cwd: repoRoot, env: environment, timeout: 600_000 },
@@ -1218,6 +1293,76 @@ verify_fixed_v13_source_compatibility "$target_env" "$source_env" "$authorizatio
         "SELECT count(*) FROM pg_database WHERE datname LIKE 'weather_v13_compat_%'",
       );
       assert.equal(leakedFixedFixture.stdout.trim(), "0");
+
+      // preserve the current full-history lane independently
+      const mainMigrationBefore = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT string_agg(name || ':' || checksum, ',' ORDER BY name) FROM schema_migrations",
+        )
+      ).stdout.trim();
+      assert.match(mainMigrationBefore, /(?:^|,)0021_adjustment_rolling_registration\.sql:[a-f0-9]{64}$/u);
+      assert.doesNotMatch(mainMigrationBefore, /(?:^|,)9999_candidate_contract\.sql:/u);
+
+      // initialize one persistent historical lifecycle database
+      await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "createdb",
+        "--username",
+        "postgres",
+        "--owner",
+        "weather_owner",
+        "--template",
+        "template0",
+        historicalLifecycleDatabase,
+      );
+      await compose(
+        {
+          ...environment,
+          WEATHER_ENV_FILE: compatibilityEnv,
+          WEATHER_LOCAL_SERVER_IMAGE: fixedV13TargetServerImage,
+        },
+        override,
+        "run",
+        "--rm",
+        "--no-deps",
+        "migration",
+      );
+      const historicalBaselineState = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          historicalLifecycleDatabase,
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT count(*)::text || ':' || max(name) FROM schema_migrations",
+        )
+      ).stdout.trim();
+      assert.equal(historicalBaselineState, "18:0018_adjustment_maintenance_v2.sql");
 
       // run one release compatibility gate
       const verifyCompatibility = async (candidateEnv, candidateAuthorization) =>
@@ -1279,6 +1424,47 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
         "--rm",
         "migration",
       );
+      await compose(
+        {
+          ...environment,
+          WEATHER_ENV_FILE: compatibilityEnv,
+          WEATHER_LOCAL_SERVER_IMAGE: targetServerImage,
+        },
+        override,
+        "up",
+        "--detach",
+        "--no-deps",
+        "--force-recreate",
+        "--wait",
+        "postgres",
+      );
+      const historicalTargetState = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          historicalLifecycleDatabase,
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT count(*)::text || ':' || count(*) FILTER (WHERE name = '0018_adjustment_maintenance_v2.sql')::text || ':' || count(*) FILTER (WHERE name IN ('0019_adjustment_maintenance_recurring.sql', '0020_adjustment_revision_frontier.sql', '0021_adjustment_rolling_registration.sql'))::text || ':' || count(*) FILTER (WHERE name = '9999_candidate_contract.sql')::text FROM schema_migrations",
+        )
+      ).stdout.trim();
+      assert.equal(historicalTargetState, "19:1:0:1");
+      assert.deepEqual(
+        await trainingExportAuthority(
+          environment,
+          override,
+          historicalLifecycleDatabase,
+        ),
+        expectedTrainingExportAuthorityV2,
+      );
 
       const previousWorkerHealthEnvironment = {
         ...environment,
@@ -1288,6 +1474,18 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           authorizationHistorySha256,
         WEATHER_MIGRATION_AUTHORIZATION_RELEASE: "2026.08.22-1",
       };
+      // create one genuine historical worker heartbeat
+      await compose(
+        previousWorkerHealthEnvironment,
+        override,
+        "run",
+        "--rm",
+        "--no-deps",
+        "worker",
+        "node",
+        "apps/worker/dist/worker.js",
+        "--once",
+      );
       // run the deployed previous-image health command
       const runPreviousWorkerHealth = async () =>
         await compose(
@@ -1302,6 +1500,62 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
         );
       const trailingMigrationHealth = await runPreviousWorkerHealth();
       assert.equal(JSON.parse(trailingMigrationHealth.stdout.trim()).ready, true);
+
+      // reject the historical API against the independent full-history lane
+      const unsafeApiContainer = `${projectName}-unsafe-full21-api`;
+      const mainHistorySha256 = await migrationHistorySha256(
+        environment,
+        override,
+        "weather_deploy_test",
+      );
+      await compose(
+        {
+          ...previousWorkerHealthEnvironment,
+          WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256: mainHistorySha256,
+        },
+        override,
+        "run",
+        "--detach",
+        "--name",
+        unsafeApiContainer,
+        "--no-deps",
+        "--env",
+        "WEATHER_DATABASE_NAME=weather_deploy_test",
+        "api",
+        "node",
+        "apps/api/dist/main.js",
+      );
+      try {
+        let unsafeReadStatuses = null;
+
+        // wait for the authenticated old API to become reachable
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          try {
+            const probe = await executeFile(
+              "docker",
+              [
+                "exec",
+                unsafeApiContainer,
+                "node",
+                "-e",
+                "const origin='http://127.0.0.1:3001';const paths=['/api/v1/sites/ballydidean/current','/api/v1/sites/ballydidean/history?limit=1','/api/v1/sites/ballydidean/forecast'];fetch(origin+'/api/v1/health').then(async health=>{if(!health.ok)process.exit(1);const responses=await Promise.all(paths.map(path=>fetch(origin+path)));console.log(JSON.stringify(responses.map(response=>response.status)))})",
+              ],
+              { timeout: 30_000 },
+            );
+            unsafeReadStatuses = JSON.parse(probe.stdout.trim());
+            break;
+          } catch {
+            // retry only while the old API starts
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000));
+          }
+        }
+        assert.ok(unsafeReadStatuses);
+        assert.equal(unsafeReadStatuses.includes(500), true);
+      } finally {
+        await executeFile("docker", ["rm", "--force", unsafeApiContainer]).catch(
+          () => undefined,
+        );
+      }
       const knownMigrationChecksum = (
         await compose(
           environment,
@@ -1313,7 +1567,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           "--username",
           "postgres",
           "--dbname",
-          "weather_deploy_test",
+          historicalLifecycleDatabase,
           "--tuples-only",
           "--no-align",
           "--command",
@@ -1334,7 +1588,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           "--username",
           "postgres",
           "--dbname",
-          "weather_deploy_test",
+          historicalLifecycleDatabase,
           "--command",
           "UPDATE schema_migrations SET checksum = repeat('0', 64) WHERE name = '0001_initial_weather.sql'",
         );
@@ -1361,7 +1615,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           "--username",
           "postgres",
           "--dbname",
-          "weather_deploy_test",
+          historicalLifecycleDatabase,
           "--command",
           `UPDATE schema_migrations SET checksum = '${knownMigrationChecksum}' WHERE name = '0001_initial_weather.sql'`,
         );
@@ -1378,7 +1632,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
           "--username",
           "postgres",
           "--dbname",
-          "weather_deploy_test",
+          historicalLifecycleDatabase,
           "--tuples-only",
           "--no-align",
           "--command",
@@ -1398,7 +1652,7 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
       const rollbackTranscript = join(releaseRoot, "rollback-transcript");
       await executeFile("mkdir", ["-p", releases, releaseState]);
 
-      // create three immutable version-twelve lifecycle states
+      // create three immutable current-control lifecycle states
       for (const release of ["2026.08.22-1", "2026.08.22-2", "2026.08.22-3"]) {
         // select lifecycle image digests
         const digestKeys = release.endsWith("-3")
@@ -1412,12 +1666,12 @@ verify_previous_image_compatibility "$compatibility_env" "$previous_compatibilit
             `WEATHER_WEB_IMAGE=registry.example/weather-web@sha256:${digestKeys.web.repeat(64)}`,
             `POSTGRES_IMAGE=postgres@sha256:${digestKeys.postgres.repeat(64)}`,
             `CLOUDFLARED_IMAGE=cloudflare/cloudflared@sha256:${digestKeys.cloudflared.repeat(64)}`,
-            "WEATHER_DATABASE_NAME=weather_deploy_test",
+            `WEATHER_DATABASE_NAME=${historicalLifecycleDatabase}`,
             "WEATHER_POSTGRES_DIR=/var/lib/weather/postgres",
             "WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=0",
             "WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH=1",
             `WEATHER_CONTROL_PLANE_SHA256=${controlPlane}`,
-            "WEATHER_CONTROL_PLANE_VERSION=13",
+            "WEATHER_CONTROL_PLANE_VERSION=14",
             "",
           ].join("\n"),
           { mode: 0o600 },
@@ -1456,6 +1710,7 @@ previous_postgres=\${13}
 current_postgres=\${14}
 previous_cloudflared=\${15}
 current_cloudflared=\${16}
+historical_database=\${17}
 # bypass host secret ownership
 require_deployment_secrets() { :; }
 # bypass host runtime ownership
@@ -1506,7 +1761,7 @@ record_service_image before "$current_env" cloudflared
 printf 'release-before:%s\\n' "$(WEATHER_ENV_FILE=$current_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"
 rollback_release
 previous_env="$releases_dir/2026.08.22-1.env"
-verify_runtime_database_acl "$previous_env" weather_deploy_test
+verify_runtime_database_acl "$previous_env" "$historical_database"
 printf 'acl-after-rollback:verified\\n' >>"$transcript"
 record_service_image after "$previous_env" postgres
 record_service_image after "$previous_env" api
@@ -1521,7 +1776,7 @@ fi
 printf 'stale-activate-after\\n' >>"$transcript"
 WEATHER_ENV_FILE=$previous_env compose down --remove-orphans
 main recover
-verify_runtime_database_acl "$previous_env" weather_deploy_test
+verify_runtime_database_acl "$previous_env" "$historical_database"
 printf 'acl-after-recover:verified\\n' >>"$transcript"
 printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec -T api node -e "fetch('http://127.0.0.1:3001/api/v1/health').then(async response=>process.stdout.write((await response.json()).data.version))")" >>"$transcript"`,
           "weather-rollback-integration",
@@ -1529,7 +1784,7 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
           releases,
           releaseState,
           override,
-          envFile,
+          compatibilityEnv,
           join(deployRoot, "compose.yaml"),
           join(deployRoot, "compose.local.yaml"),
           rollbackTranscript,
@@ -1541,6 +1796,7 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
           targetPostgresImage,
           previousCloudflaredImage,
           targetCloudflaredImage,
+          historicalLifecycleDatabase,
         ],
         { cwd: repoRoot, env: environment, timeout: 300_000 },
       );
@@ -1591,7 +1847,7 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
           "--username",
           "postgres",
           "--dbname",
-          "weather_deploy_test",
+          historicalLifecycleDatabase,
           "--tuples-only",
           "--no-align",
           "--command",
@@ -1603,10 +1859,75 @@ printf 'release-recovered:%s\\n' "$(WEATHER_ENV_FILE=$previous_env compose exec 
         await trainingExportAuthority(
           environment,
           override,
+          historicalLifecycleDatabase,
+        ),
+        expectedTrainingExportAuthorityV2,
+      );
+
+      // restore the independent current full-history runtime
+      await compose(
+        environment,
+        override,
+        "up",
+        "--detach",
+        "--force-recreate",
+        "--wait",
+      );
+      const mainMigrationAfter = (
+        await compose(
+          environment,
+          override,
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "--username",
+          "postgres",
+          "--dbname",
+          "weather_deploy_test",
+          "--tuples-only",
+          "--no-align",
+          "--command",
+          "SELECT string_agg(name || ':' || checksum, ',' ORDER BY name) FROM schema_migrations",
+        )
+      ).stdout.trim();
+      assert.equal(mainMigrationAfter, mainMigrationBefore);
+      assert.deepEqual(
+        await trainingExportAuthority(
+          environment,
+          override,
           "weather_deploy_test",
         ),
         expectedTrainingExportAuthority,
       );
+      await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "dropdb",
+        "--username",
+        "postgres",
+        historicalLifecycleDatabase,
+      );
+      const leakedHistoricalFixture = await compose(
+        environment,
+        override,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "--username",
+        "postgres",
+        "--dbname",
+        "weather_deploy_test",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        `SELECT count(*) FROM pg_database WHERE datname = '${historicalLifecycleDatabase}'`,
+      );
+      assert.equal(leakedHistoricalFixture.stdout.trim(), "0");
 
       // prove consumer secret isolation
       await compose(

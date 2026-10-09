@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { buildWorkspaces, discoverWorkspaces, orderWorkspaces } from "./build-workspaces.mjs";
+import {
+  buildWorkspaces,
+  copyWorkspaceRuntimeAssets,
+  discoverWorkspaces,
+  orderWorkspaces,
+} from "./build-workspaces.mjs";
 
 const workspaces = [
   { name: "@weather/api", path: "apps/api", dependencies: ["@weather/database", "@weather/domain"] },
@@ -43,6 +51,26 @@ test("workspace build does not continue after a compiler failure", async () => {
     /typescript failed/u,
   );
   assert.deepEqual(built, ["@weather/domain", "@weather/database"]);
+});
+
+// retain the reviewed public module in clean root builds
+test("workspace build copies the web runtime contract after compilation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-workspace-assets-"));
+  try {
+    await mkdir(join(root, "apps/web/src"), { recursive: true });
+    await mkdir(join(root, "apps/web/dist"), { recursive: true });
+    await writeFile(
+      join(root, "apps/web/src/adjustment-maintenance-contract.mjs"),
+      "export const contract = true;\n",
+    );
+    copyWorkspaceRuntimeAssets(workspaces.at(-1), root);
+    assert.equal(
+      await readFile(join(root, "apps/web/dist/adjustment-maintenance-contract.mjs"), "utf8"),
+      "export const contract = true;\n",
+    );
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
 });
 
 // reject malformed workspace graphs

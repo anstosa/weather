@@ -27,6 +27,7 @@ RUN npm run build
 FROM scratch AS image-check-files
 COPY --from=build /opt/weather/packages/forecast-adjustment/dist /forecast-adjustment/dist
 COPY --from=build /opt/weather/packages/forecast-adjustment/package.json /forecast-adjustment/package.json
+COPY --from=build /opt/weather/apps/web/dist/adjustment-maintenance-contract.mjs /web/adjustment-maintenance-contract.mjs
 
 FROM dependencies AS production-dependencies
 RUN npm prune --omit=dev --ignore-scripts

@@ -124,6 +124,54 @@ with tempfile.TemporaryDirectory(dir='/dev/shm') as directory:
   assert.ok(Object.values(result.heads).every((head) => head.reason === "fitted"));
 });
 
+test("rain v3 validates and screens one annual source population without legacy padding", numericalRuntimeRequired, () => {
+  const result = run(`
+import datetime as dt,hashlib,json,numpy as np
+import rain_refresh as refresh
+stamp=lambda value:value.isoformat(timespec='milliseconds').replace('+00:00','Z')
+start=dt.datetime(2025,11,24,tzinfo=dt.timezone.utc);end=dt.datetime(2026,11,24,tzinfo=dt.timezone.utc)
+first=int((start.timestamp()/3600-31)//6*6);members=[]
+# enumerate the target-valid issuance halo
+for run_hour in range(first,int(end.timestamp()//3600)-9+1,6):
+ run=dt.datetime.fromtimestamp(run_hour*3600,dt.timezone.utc);issued=run+dt.timedelta(hours=8)
+ # retain every original source lead
+ for lead in range(9,32):
+  valid=run+dt.timedelta(hours=lead)
+  # omit only targets outside the annual interval
+  if not start<=valid<end: continue
+  index=len(members);members.append({'issuedAt':stamp(issued),'key':stamp(run)+'/'+stamp(valid),
+   'modelLeadHours':lead,'operationalHorizonHours':lead-8,'phaseEligible':index==0,
+   'sourceMemberSha256':'a'*64,'sourceReceiptSha256':'b'*64,
+   'targetAvailable':index==0,'validAt':stamp(valid)})
+proof={'contractVersion':'rain-maintenance-development-population/v3','cycleHours':[0,6,12,18],
+ 'developmentEndAt':stamp(end),'developmentStartAt':stamp(start),'eligibleRowCount':1,
+ 'excludedColdRowCount':len(members)-1,'expectedRowCount':len(members),'missingSourceRowCount':0,
+ 'missingTargetRowCount':0,'observedRowCount':len(members),'operationalHorizonHours':list(range(1,24)),
+ 'populationMemberRootSha256':refresh.canonical_hash(sorted([item['sourceMemberSha256'] for item in members])),
+ 'populationReceiptRootSha256':refresh.canonical_hash(['b'*64]),
+ 'populationSha256':refresh.canonical_hash(members),'sourceModelLeadHours':list(range(9,32)),
+ 'sourcePopulation':members}
+refresh.validate_development_population(proof,[{'key':members[0]['key']}])
+rejected=False
+try: refresh.validate_development_population({**proof,'missingSourceRowCount':1},[{'key':members[0]['key']}])
+except ValueError: rejected=True
+selected=members[0];raw=.5
+row={'actual':.4,'raw':raw,'rawTargetHourTemperatureC':10.,'operationalHorizonHours':selected['operationalHorizonHours'],
+ 'key':selected['key'],'runInitializedAt':selected['key'].split('/')[0],'validAt':selected['validAt'],
+ 'persistencePrediction':None,'sourceRowSha256':'a'*64,'targetRowSha256':'c'*64,'gaugeCount':12}
+row['evaluationRow']=refresh.historical_evaluation_row(row,.45,np.asarray([.8,.5,.2]),
+ {'legacy':1.,'recent':1.,'sameWindow':1.})
+projected={name:(np.asarray([.45]),np.asarray([[.8,.5,.2]])) for name in refresh.GRID}
+screen=refresh.screen_grid([row],projected,proof)
+print(json.dumps({'count':len(members),'developmentRows':screen[refresh.GRID[0]]['gateReport']['developmentRows'],
+ 'productionEligible':screen[refresh.GRID[0]]['gateReport']['productionEligible'],'rejected':rejected}))
+`);
+  assert.equal(result.count, 365 * 4 * 23);
+  assert.equal(result.developmentRows, 1);
+  assert.equal(result.productionEligible, false);
+  assert.equal(result.rejected, true);
+});
+
 // a shorter observed calibration population must not weaken the sixty-date minimum
 test("rain refit refuses fifty-nine calibration dates even with enough hourly labels", numericalRuntimeRequired, () => {
   const result = run(`
@@ -198,4 +246,14 @@ print(json.dumps({'grid':list(refresh.GRID),'policy':refresh.POLICY}))`);
   assert.deepEqual(result.grid, ["R0_exact_refit", "R1_winter_scale_0_90", "R2_winter_scale_0_95",
     "R3_spring_wet_logit_plus_0_20", "R4_summer_wet_logit_plus_0_20", "R5_nested_cumulative_min", "R6_heavy_raw_blend_0_25"]);
   assert.equal(result.policy.confirmationOpened, false);
+});
+
+// the selected arm cannot weaken the original wet and heavy event safety
+test("rain grid guard preserves heavy amounts and wet calls before scoring", numericalRuntimeRequired, () => {
+  const result = run(`
+import json,numpy as np,rain_refresh as refresh
+raw=np.asarray([50.,.5,.05,0.])
+projected=np.asarray([2.,0.,.2,0.])
+print(json.dumps(refresh.guard_projection(raw,projected).tolist()))`);
+  assert.deepEqual(result, [50, 0.1, 0.2, 0]);
 });
