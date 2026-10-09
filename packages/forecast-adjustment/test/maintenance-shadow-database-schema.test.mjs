@@ -8,9 +8,9 @@ import { MAINTENANCE_SHADOW_SCHEMA_SHA256 } from "../dist/index.js";
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
 // bind database admission to the built public wire schemas
-test("migration 0018 admits only the built maintenance shadow schemas", async () => {
+test("migration 0019 admits only the built maintenance shadow schemas", async () => {
   const migration = await readFile(
-    resolve(repositoryRoot, "packages/database/migrations/0018_adjustment_maintenance_v2.sql"),
+    resolve(repositoryRoot, "packages/database/migrations/0019_adjustment_maintenance_recurring.sql"),
     "utf8",
   );
   const repository = await readFile(

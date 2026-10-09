@@ -3,6 +3,7 @@ import {
   FORECAST_ADJUSTMENT_WIND_CANARY_METRICS,
   type CanonicalWeatherMetrics,
   type ForecastAdjustmentActiveDecision,
+  type ForecastAdjustmentCandidateV2,
   type ForecastAdjustmentDecision,
   type ForecastAdjustmentMetric,
   type ForecastAdjustmentRawForecastProvenance,
@@ -25,12 +26,16 @@ import {
   runtimeCalendarFingerprint,
   type RuntimeCalendarFingerprint,
 } from "./calendar.js";
-import { deepFreeze, metricBandKey } from "./candidate.js";
+import { deepFreeze, metricBandKey, verifyForecastAdjustmentCandidate } from "./candidate.js";
 import type {
   LoadedForecastAdjustmentRuntimeV1,
   LoadedForecastAdjustmentWindCanaryRuntime,
 } from "./runtime-loader.js";
-import { FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2 } from "./wind-canary.js";
+import {
+  FORECAST_ADJUSTMENT_WIND_CANARY_RUNTIME_BUNDLE_CONTRACT_VERSION_V2,
+  verifyForecastAdjustmentWindCanaryRuntimeBundle,
+  type ForecastAdjustmentWindCanaryRuntimeBundle,
+} from "./wind-canary.js";
 
 // accept one unchanged raw v4 forecast row
 export interface ApplyForecastAdjustmentInputV1 {
@@ -40,13 +45,98 @@ export interface ApplyForecastAdjustmentInputV1 {
   readonly runtimeFingerprint?: RuntimeCalendarFingerprint;
 }
 
+export interface ForecastAdjustmentWindMaintenanceDecision {
+  readonly adjustedMetrics: Partial<Record<ForecastAdjustmentMetric, number>>;
+  readonly appliedMetrics: readonly (typeof FORECAST_ADJUSTMENT_WIND_CANARY_METRICS)[number][];
+  readonly bundleSha256: string;
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: "forecast-adjustment-maintenance-decision/v1";
+  readonly leadBand: ReturnType<typeof forecastLeadBandFor>;
+  readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
+  readonly reasonCode: null;
+  readonly state: "active";
+}
+
+export interface ForecastAdjustmentWindQualifiedMaintenanceDecision {
+  readonly actionSha256: string;
+  readonly activationKind: "maintenance_qualified";
+  readonly adjustedMetrics: Partial<Record<ForecastAdjustmentMetric, number>>;
+  readonly algorithmContractVersion: "robust-hierarchical-median/v1";
+  readonly appliedMetrics: readonly (typeof FORECAST_ADJUSTMENT_WIND_CANARY_METRICS)[number][];
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: "forecast-adjustment-decision/v1";
+  readonly fullMemberRootSha256: string;
+  readonly leadBand: ReturnType<typeof forecastLeadBandFor>;
+  readonly policyReportSha256: string;
+  readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
+  readonly reasonCode: null;
+  readonly state: "active";
+}
+
+type ForecastAdjustmentWindMaintenanceRuntime = Readonly<{
+  bundle: Readonly<{
+    candidate: ForecastAdjustmentCandidateV2;
+    maintenanceAuthority: Readonly<{
+      actionSha256: string;
+      fullMemberRootSha256: string;
+      policyReportSha256: string;
+    }> | null;
+    maintenanceBundleSha256: string;
+  }>;
+  reasonCode: null;
+  state: "active";
+}>;
+
 // apply only exact enabled and in-distribution metrics
 export function applyForecastAdjustment(
   runtime:
     | LoadedForecastAdjustmentRuntimeV1
     | LoadedForecastAdjustmentWindCanaryRuntime,
   input: ApplyForecastAdjustmentInputV1,
+): ForecastAdjustmentDecision | ForecastAdjustmentWindQualifiedMaintenanceDecision {
+  return applyForecastAdjustmentRuntime(runtime, input, true) as
+    ForecastAdjustmentDecision | ForecastAdjustmentWindQualifiedMaintenanceDecision;
+}
+
+// evaluate one verified inactive wind candidate without activation authority
+export function applyForecastAdjustmentWindShadowCandidate(
+  bundle: ForecastAdjustmentWindCanaryRuntimeBundle,
+  input: ApplyForecastAdjustmentInputV1,
 ): ForecastAdjustmentDecision {
+  verifyForecastAdjustmentWindCanaryRuntimeBundle(bundle);
+  return applyForecastAdjustmentRuntime(
+    { bundle, reasonCode: null, state: "active" },
+    input,
+    false,
+  ) as ForecastAdjustmentDecision;
+}
+
+// evaluate one authority-free monthly wind package
+export function applyForecastAdjustmentWindMaintenanceCandidate(
+  bundleSha256: string,
+  candidate: ForecastAdjustmentCandidateV2,
+  input: ApplyForecastAdjustmentInputV1,
+  authority: ForecastAdjustmentWindMaintenanceRuntime["bundle"]["maintenanceAuthority"] = null,
+): ForecastAdjustmentDecision | ForecastAdjustmentWindMaintenanceDecision |
+  ForecastAdjustmentWindQualifiedMaintenanceDecision {
+  verifyForecastAdjustmentCandidate(candidate);
+  return applyForecastAdjustmentRuntime({
+    bundle: { candidate, maintenanceAuthority: authority, maintenanceBundleSha256: bundleSha256 },
+    reasonCode: null,
+    state: "active",
+  }, input, false);
+}
+
+// share numerical evaluation while keeping activation checks explicit
+function applyForecastAdjustmentRuntime(
+  runtime:
+    | LoadedForecastAdjustmentRuntimeV1
+    | LoadedForecastAdjustmentWindCanaryRuntime
+    | ForecastAdjustmentWindMaintenanceRuntime,
+  input: ApplyForecastAdjustmentInputV1,
+  enforceAuthorization: boolean,
+): ForecastAdjustmentDecision | ForecastAdjustmentWindMaintenanceDecision |
+  ForecastAdjustmentWindQualifiedMaintenanceDecision {
   // preserve raw service when startup loading was disabled
   if (runtime.state === "disabled") {
     return createForecastAdjustmentFailRawDecision(
@@ -58,9 +148,10 @@ export function applyForecastAdjustment(
   const bundle = runtime.bundle;
   const candidate = bundle.candidate;
   const windCanary = "artifactKind" in bundle;
+  const maintenance = "maintenanceBundleSha256" in bundle;
 
   // enforce canary authorization for every application after startup
-  if (windCanary) {
+  if (windCanary && enforceAuthorization) {
     const evaluatedAt = Date.parse(input.evaluatedAt ?? new Date().toISOString());
     const activatedAt = Date.parse(bundle.authorization.activatedAt);
     const expiresAt =
@@ -118,7 +209,7 @@ export function applyForecastAdjustment(
   const appliedMetrics: ForecastAdjustmentMetric[] = [];
   const failures: CoreAdjustmentApplicationResult["reason"][] = [];
 
-  const adjustableMetrics = windCanary
+  const adjustableMetrics = windCanary || maintenance
     ? FORECAST_ADJUSTMENT_WIND_CANARY_METRICS
     : FORECAST_ADJUSTMENT_METRICS;
 
@@ -189,6 +280,48 @@ export function applyForecastAdjustment(
       "not_applicable",
       mapCoreFailure(firstFailure),
     );
+  }
+
+  // emit only runtime identities for the authority-free maintenance package
+  if (maintenance) {
+    const maintenanceAppliedMetrics = appliedMetrics.filter(
+      // retain only the fitted wind allowlist
+      (metric): metric is (typeof FORECAST_ADJUSTMENT_WIND_CANARY_METRICS)[number] =>
+        metric === "windDirectionDegrees" || metric === "windGustMps" || metric === "windSpeedMps",
+    );
+    // reject impossible non-wind accumulation before response creation
+    if (maintenanceAppliedMetrics.length !== appliedMetrics.length) {
+      return createForecastAdjustmentFailRawDecision("not_applicable", "metric_not_enabled");
+    }
+    // keep inactive shadow evaluation free of serving authority
+    if (bundle.maintenanceAuthority === null) {
+      return deepFreeze({
+        adjustedMetrics,
+        appliedMetrics: maintenanceAppliedMetrics,
+        bundleSha256: bundle.maintenanceBundleSha256,
+        candidateArtifactSha256: candidate.candidateArtifactSha256,
+        contractVersion: "forecast-adjustment-maintenance-decision/v1" as const,
+        leadBand,
+        rawForecastProvenance: input.rawForecastProvenance,
+        reasonCode: null,
+        state: "active" as const,
+      });
+    }
+    return deepFreeze({
+      actionSha256: bundle.maintenanceAuthority.actionSha256,
+      activationKind: "maintenance_qualified" as const,
+      adjustedMetrics,
+      algorithmContractVersion: candidate.algorithmContractVersion,
+      appliedMetrics: maintenanceAppliedMetrics,
+      candidateArtifactSha256: candidate.candidateArtifactSha256,
+      contractVersion: "forecast-adjustment-decision/v1" as const,
+      fullMemberRootSha256: bundle.maintenanceAuthority.fullMemberRootSha256,
+      leadBand,
+      policyReportSha256: bundle.maintenanceAuthority.policyReportSha256,
+      rawForecastProvenance: input.rawForecastProvenance,
+      reasonCode: null,
+      state: "active" as const,
+    });
   }
 
   // emit honest canary evidence identities without a qualification receipt

@@ -106,6 +106,9 @@ test(
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
         "0018_adjustment_maintenance_v2.sql",
+        "0019_adjustment_maintenance_recurring.sql",
+        "0020_adjustment_revision_frontier.sql",
+        "0021_adjustment_rolling_registration.sql",
       ]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
@@ -178,12 +181,15 @@ test(
         status: null,
       });
       const replayed = await runMigrations(pool, migrationDirectory);
-      assert.deepEqual(replayed.applied.slice(-5), [
+      assert.deepEqual(replayed.applied.slice(-8), [
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
         "0018_adjustment_maintenance_v2.sql",
+        "0019_adjustment_maintenance_recurring.sql",
+        "0020_adjustment_revision_frontier.sql",
+        "0021_adjustment_rolling_registration.sql",
       ]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);

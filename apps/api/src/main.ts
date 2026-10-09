@@ -1,5 +1,7 @@
 import {
   createDatabasePool,
+  getEcmwfTemperatureCanarySidecar,
+  getWeatherForecast,
   loadDatabaseConfiguration,
   readMigrationReadinessAuthorization,
 } from "@weather/database";
@@ -8,6 +10,9 @@ import {
   createForecastAdjustmentRainRuntimeRegistryLoader,
   createForecastAdjustmentTemperatureCanaryRuntimeLoader,
   createForecastAdjustmentWindCanaryRuntimeLoader,
+  loadAdjustmentRevisionCaptureEpochWitness,
+  loadInstalledMaintenanceShadowCandidate,
+  type InstalledMaintenanceShadowCandidate,
   type LoadedForecastAdjustmentRuntimeV1,
   type LoadedForecastAdjustmentRainRuntimeRegistryV1,
   type LoadedForecastAdjustmentTemperatureCanaryRuntime,
@@ -18,7 +23,12 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  createAdjustmentMaintenanceInternalServer,
+  captureApiAdjustmentMaintenanceShadow,
+  captureApiTemperatureMaintenanceShadow,
   createDatabaseWeatherReadStore,
+  evaluateWindMaintenanceCandidate,
+  createHttpAdjustmentMaintenanceArchiveRelay,
   createWeatherApi,
   createWeatherApiServer,
   readApiRelease,
@@ -58,7 +68,12 @@ export interface WeatherApiStartupDependencies {
     adjustment: ForecastAdjustmentStartupSnapshot,
     temperatureAdjustment: ForecastTemperatureAdjustmentStartupSnapshot,
     rainAdjustment: ForecastRainAdjustmentStartupSnapshot,
-  ) => Promise<Readonly<{ port: number; server: Server }>>;
+  ) => Promise<Readonly<{
+    maintenancePort?: number;
+    maintenanceServer?: Server;
+    port: number;
+    server: Server;
+  }>>;
 }
 
 // share an immutable fail-raw loader result
@@ -73,6 +88,7 @@ export async function startWeatherApi(
   dependencies: WeatherApiStartupDependencies = {},
 ): Promise<Readonly<{
   adjustment: ForecastAdjustmentStartupSnapshot;
+  maintenanceServer: Server | null;
   rainAdjustment: ForecastRainAdjustmentStartupSnapshot;
   server: Server;
   temperatureAdjustment: ForecastTemperatureAdjustmentStartupSnapshot;
@@ -151,8 +167,13 @@ export async function startWeatherApi(
     rainAdjustment,
   );
   prepared.server.listen(prepared.port, "0.0.0.0");
+  // listen separately only when the private maintenance relay is configured
+  if (prepared.maintenanceServer !== undefined && prepared.maintenancePort !== undefined) {
+    prepared.maintenanceServer.listen(prepared.maintenancePort, "0.0.0.0");
+  }
   return {
     adjustment,
+    maintenanceServer: prepared.maintenanceServer ?? null,
     rainAdjustment,
     server: prepared.server,
     temperatureAdjustment,
@@ -195,7 +216,12 @@ async function prepareProductionServer(
   adjustment: ForecastAdjustmentStartupSnapshot,
   temperatureAdjustment: ForecastTemperatureAdjustmentStartupSnapshot,
   rainAdjustment: ForecastRainAdjustmentStartupSnapshot,
-): Promise<Readonly<{ port: number; server: Server }>> {
+): Promise<Readonly<{
+  maintenancePort?: number;
+  maintenanceServer?: Server;
+  port: number;
+  server: Server;
+}>> {
   const configuration = await loadDatabaseConfiguration({
     ...process.env,
     WEATHER_DATABASE_APPLICATION_NAME:
@@ -221,7 +247,109 @@ async function prepareProductionServer(
     logDiagnostic: writeApiDiagnostic,
   });
   const port = parsePort(process.env.WEATHER_API_PORT ?? "8080");
-  return { port, server };
+  const maintenancePortValue = process.env.WEATHER_ADJUSTMENT_MAINTENANCE_INTERNAL_PORT;
+  const archiveOrigin = process.env.WEATHER_ADJUSTMENT_MAINTENANCE_ARCHIVE_ORIGIN;
+  // fail closed for shadow capture while preserving the public weather api
+  if (maintenancePortValue === undefined || archiveOrigin === undefined) {
+    return { port, server };
+  }
+  let captureEpoch;
+  // keep every producer inactive until the root-installed zero-frontier witness exists
+  try {
+    captureEpoch = await loadAdjustmentRevisionCaptureEpochWitness();
+  } catch {
+    return { port, server };
+  }
+  const maintenancePort = parsePort(maintenancePortValue);
+  const relay = createHttpAdjustmentMaintenanceArchiveRelay(archiveOrigin);
+  const [temperatureCandidate, windCandidate] = await Promise.all([
+    loadInstalledCandidateSafely("temperature"),
+    loadInstalledCandidateSafely("wind"),
+  ]);
+  const maintenanceServer = createAdjustmentMaintenanceInternalServer({
+    captureEpoch,
+    // capture from retained database sources only after the worker schedules one cycle
+    async capture(request) {
+      const firstValidAt = new Date(
+        Math.ceil(Date.parse(request.issuedAt) / 3_600_000) * 3_600_000,
+      ).toISOString();
+      const temperatureEnd = new Date(Date.parse(firstValidAt) + 12 * 3_600_000).toISOString();
+      const captures: Promise<unknown>[] = [];
+      // omit an uninstalled family without fabricating a registration identity
+      if (temperatureCandidate !== null) {
+        const [bestMatchRows, sidecar] = await Promise.all([
+          getWeatherForecast(pool, {
+            asOf: request.issuedAt,
+            hours: 12,
+            siteSlug: "ballydidean",
+          }),
+          getEcmwfTemperatureCanarySidecar(pool, {
+            asOf: request.issuedAt,
+            from: firstValidAt,
+            siteSlug: "ballydidean",
+            to: temperatureEnd,
+          }),
+        ]);
+        // treat an absent sidecar as a source gap under the real registration
+        if (sidecar === null) {
+          await relay.recordGap({
+            dueKey: request.dueKey,
+            family: "temperature",
+            reason: "source_incomplete",
+            registrationSha256: temperatureCandidate.registration.registrationSha256,
+          });
+        } else {
+          captures.push(captureApiTemperatureMaintenanceShadow({
+            bestMatchRows,
+            candidate: temperatureCandidate,
+            captureEpoch,
+            dueKey: request.dueKey,
+            incumbentRuntime: temperatureAdjustment.runtime,
+            issuedAt: request.issuedAt,
+            queryable: pool,
+            relay,
+            sidecar,
+          }));
+        }
+      }
+      // evaluate the complete 168-hour Best Match halo without another provider request
+      if (windCandidate !== null) {
+        const rows = await getWeatherForecast(pool, {
+          asOf: request.issuedAt,
+          hours: 168,
+          siteSlug: "ballydidean",
+        });
+        captures.push(captureApiAdjustmentMaintenanceShadow({
+          candidate: windCandidate,
+          captureEpoch,
+          dueKey: request.dueKey,
+          evaluate: (source) => Promise.resolve(
+            evaluateWindMaintenanceCandidate(windCandidate, source),
+          ),
+          issuedAt: request.issuedAt,
+          incumbentRuntime: adjustment.runtime,
+          queryable: pool,
+          relay,
+          rows,
+        }));
+      }
+      await Promise.all(captures);
+    },
+    queryable: pool,
+    relay,
+  });
+  return { maintenancePort, maintenanceServer, port, server };
+}
+
+// load one root-installed inactive candidate without affecting public startup
+async function loadInstalledCandidateSafely<F extends "temperature" | "wind">(
+  family: F,
+): Promise<InstalledMaintenanceShadowCandidate<F> | null> {
+  try {
+    return await loadInstalledMaintenanceShadowCandidate({ family });
+  } catch {
+    return null;
+  }
 }
 
 // read the startup wall clock once

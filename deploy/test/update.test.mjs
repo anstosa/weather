@@ -34,6 +34,90 @@ test("control-plane digest is locale independent", () => {
   assert.equal(forwardedLocale.stdout.trim(), cLocale.stdout.trim());
 });
 
+// make release markers durable before callers cross their commit boundary
+test("private state and active symlink sync their final directory entries", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-durable-release-state-"));
+  const state = join(directory, "state");
+  const releases = join(directory, "releases");
+  const transcript = join(directory, "transcript");
+  try {
+    await mkdir(state);
+    await mkdir(releases);
+    await writeFile(join(releases, "2026.10.09-2.env"), "fixture\n");
+    const result = runBash(
+      `source "$1"
+deploy_dir=$2
+transcript=$3
+sync() { printf 'sync:%s\\n' "$*" >>"$transcript"; }
+mv() { printf 'mv:%s\\n' "$*" >>"$transcript"; command mv "$@"; }
+rmdir() { printf 'rmdir:%s\\n' "$*" >>"$transcript"; command rmdir "$@"; }
+write_private_state "$deploy_dir/state/schema-release" 2026.10.09-2
+write_active_symlink 2026.10.09-2`,
+      [directory, transcript],
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(await readFile(join(state, "schema-release"), "utf8"), "2026.10.09-2\n");
+    assert.equal((await readFile(join(state, "active.env"), "utf8")), "fixture\n");
+    const operations = await readFile(transcript, "utf8");
+    assert.match(operations,
+      /sync:-f .*schema-release\.[^\n]+\nmv:.*schema-release\.[^\n]+ .*schema-release\nsync:-f .*\/state\n/u);
+    assert.match(operations,
+      /mv:-Tf .*\/active\.env .*\/state\/active\.env\nsync:-f .*\/state\nrmdir:.*\.active\.env\.[^\n]+\nsync:-f .*\/state\n/u);
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
+// preserve the one-operand owner bridge dispatch after main shifts the action
+test("metadata custody finalization forwards one exact proof identity", () => {
+  const proofSha256 = "a".repeat(64);
+  const accepted = runBash(
+    `source "$1"
+finalize_adjustment_shadow_metadata_custody_v1() { printf '%s\\n' "$1"; }
+main adjustment-shadow-metadata-custody-finalize-v1 "$2"`,
+    [proofSha256],
+  );
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(accepted.stdout, `${proofSha256}\n`);
+
+  // reject missing or surplus proof operands before the owner bridge
+  for (const argumentsList of [[], [proofSha256, proofSha256]]) {
+    const rejected = runBash(
+      `source "$1"
+finalize_adjustment_shadow_metadata_custody_v1() { printf 'unexpected\\n'; }
+main adjustment-shadow-metadata-custody-finalize-v1 "\${@:2}"`,
+      argumentsList,
+    );
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /requires one identity/u);
+    assert.equal(rejected.stdout, "");
+  }
+});
+
+// preserve foreign transaction-root metadata instead of repairing it
+test("family transaction root rejects existing ownership and mode drift", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weather-family-state-root-"));
+  const root = join(directory, "adjustment-release-state");
+
+  try {
+    await mkdir(root, { mode: 0o755 });
+    const before = await stat(root);
+    const result = runBash(
+      'source "$1"; ensure_adjustment_family_private_state_root "$2"',
+      [root],
+    );
+    const after = await stat(root);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /adjustment family transaction root is unsafe/u);
+    assert.deepEqual(
+      { gid: after.gid, mode: after.mode & 0o777, uid: after.uid },
+      { gid: before.gid, mode: before.mode & 0o777, uid: before.uid },
+    );
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
+
 // verify retained credential handoff
 test("restore recreates PostgreSQL before starting runtime images", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-postgres-restore-"));
@@ -118,10 +202,11 @@ publish_migration_authorization "$3" "$4"`,
   }
 });
 
-test("restore injects authorization only for an older compatible release", async () => {
+test("restore paths replace hostile inherited authorization with exact persisted values", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-authorized-restore-"));
   const releases = join(directory, "releases");
   const authorization = join(releases, "2026.08.22-2.migration-authorization");
+  const v14Authorization = join(releases, "2026.10.09-3.migration-authorization");
   const transcript = join(directory, "transcript");
 
   try {
@@ -131,24 +216,35 @@ test("restore injects authorization only for an older compatible release", async
 releases_dir=$2
 transcript=$3
 write_migration_authorization "$4" "2026.08.22-1" "2026.08.22-2" "${"a".repeat(64)}"
+write_migration_authorization "$5" "2026.10.09-2" "2026.10.09-3" "${"b".repeat(64)}"
 start_postgres() { :; }
 compose() { printf '%s|%s\n' "\${WEATHER_MIGRATION_AUTHORIZATION_RELEASE-unset}" "\${WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256-unset}" >>"$transcript"; }
+start_v14_compatibility_bridge_runtime() { printf '%s|%s\n' "\${WEATHER_MIGRATION_AUTHORIZATION_RELEASE-unset}" "\${WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256-unset}" >>"$transcript"; }
 prepare_xweather_usage_directory() { :; }
 env_value() {
   if [[ "$2" == WEATHER_DATABASE_NAME ]]; then printf 'weather_test\n'; else awk -F= -v key="$2" '$1 == key { print substr($0, length(key) + 2) }' "$1"; fi
 }
 apply_runtime_database_acl() { :; }
 verify_runtime_database_acl() { :; }
+export WEATHER_MIGRATION_AUTHORIZATION_RELEASE=untrusted
+export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=untrusted
 restore_images /releases/previous.env 2026.08.22-1 2026.08.22-2
 export WEATHER_MIGRATION_AUTHORIZATION_RELEASE=untrusted
 export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=untrusted
-restore_images /releases/current.env 2026.08.22-2 2026.08.22-2`,
-      [releases, transcript, authorization],
+restore_images /releases/current.env 2026.08.22-2 2026.08.22-2
+export WEATHER_MIGRATION_AUTHORIZATION_RELEASE=untrusted
+export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=untrusted
+restore_v14_compatibility_bridge_images /releases/bridge.env 2026.10.09-2 2026.10.09-2
+export WEATHER_MIGRATION_AUTHORIZATION_RELEASE=untrusted
+export WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256=untrusted
+restore_v14_compatibility_bridge_images /releases/bridge.env 2026.10.09-2 2026.10.09-3`,
+      [releases, transcript, authorization, v14Authorization],
     );
     assert.equal(result.status, 0, result.stderr);
     assert.equal(
       await readFile(transcript, "utf8"),
-      `2026.08.22-1|${"a".repeat(64)}\nunset|unset\n`,
+      `2026.08.22-1|${"a".repeat(64)}\nunset|unset\nunset|unset\n` +
+        `2026.10.09-2|${"b".repeat(64)}\n`,
     );
   } finally {
     await rm(directory, { force: true, recursive: true });
@@ -424,12 +520,37 @@ test("persistent authorization is written only after API and worker compatibilit
   assert.match(stage, /trap 'rm -f[^']*published_authorization/u);
 });
 
+test("inert v14 provisions fixed rain target sources before producer activation", async () => {
+  const update = await readFile(updateScript, "utf8");
+  const activation = update
+    .split("inert_v14_release() (")[1]
+    .split("\n)\n\n# activate one forward release")[0];
+  const epoch = activation.indexOf("--revision-capture-epoch-init-v1");
+  const sources = activation.indexOf(
+    "initialize_adjustment_rain_fixed_gauge_target_sources_v1 \"$target\"",
+  );
+  const start = activation.indexOf("start_exact_release \"$target\"");
+
+  assert.equal(epoch >= 0, true);
+  assert.equal(sources > epoch, true);
+  assert.equal(start > sources, true);
+  assert.match(update, /adjustment-rain-fixed-gauge-target-sources-initialize-v1\)/u);
+  assert.match(update, /rain target source initialization takes no arguments/u);
+});
+
 // pin the backward-compatible migration boundary
-test("compatibility clone removes private evidence before replaying migrations through 0018", async () => {
+test("compatibility clone removes private evidence before replaying migrations through 0021", async () => {
   const update = await readFile(updateScript, "utf8");
   const compatibility = update
     .split("verify_previous_image_compatibility() (")[1]
     .split("\n)\n\n# reconcile retained PostgreSQL administrator authority")[0];
+  assert.match(compatibility, /DROP TABLE IF EXISTS adjustment_revision_frontier_v1/u);
+  assert.match(compatibility, /DROP FUNCTION IF EXISTS weather_append_adjustment_shadow_v4/u);
+  assert.match(compatibility, /ALTER TABLE weather_records DROP COLUMN IF EXISTS adjustment_revision_receipt/u);
+  assert.match(compatibility, /0020_adjustment_revision_frontier\.sql/u);
+  assert.match(compatibility, /0021_adjustment_rolling_registration\.sql/u);
+  assert.ok(compatibility.indexOf("ALTER TABLE ecmwf_temperature_canary_runs DROP COLUMN") <
+    compatibility.indexOf("DROP FUNCTION IF EXISTS weather_adjustment_revision_receipt_valid_v1"));
   const maintenanceTablesDrop = compatibility.indexOf("DROP TABLE IF EXISTS adjustment_shadow_predictions_v2");
   const maintenanceFunctionDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_adjustment_shadow_registration_v2()");
   const exportManifestDrop = compatibility.indexOf("DROP VIEW IF EXISTS adjustment_evaluation_export_manifest_v1");
@@ -442,7 +563,7 @@ test("compatibility clone removes private evidence before replaying migrations t
   const claimGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_capture_claim()");
   const receiptGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_guard_rain_capture_receipt()");
   const mutationGuardDrop = compatibility.indexOf("DROP FUNCTION IF EXISTS weather_reject_rain_capture_mutation()");
-  const ledgerReset = compatibility.indexOf("'0017_adjustment_evaluation_export.sql', '0018_adjustment_maintenance_v2.sql')");
+  const ledgerReset = compatibility.indexOf("'0017_adjustment_evaluation_export.sql', '0018_adjustment_maintenance_v2.sql', '0019_adjustment_maintenance_recurring.sql', '0020_adjustment_revision_frontier.sql', '0021_adjustment_rolling_registration.sql')");
   const replay = compatibility.indexOf("compose run --rm --no-deps");
   const replayProof = compatibility.indexOf("rain_collection_migration_count=$(WEATHER_ENV_FILE=");
   const stationReplayProof = compatibility.indexOf("station_access_migration_count=$(WEATHER_ENV_FILE=");
@@ -818,7 +939,7 @@ start_release 2026.08.22-1`,
   }
 });
 
-test("release operations accept only current v13 and the exact reviewed predecessor", async () => {
+test("release operations accept only current v14 and the exact reviewed predecessor", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-control-plane-"));
   const release = join(directory, "release.env");
 
@@ -829,7 +950,7 @@ test("release operations accept only current v13 and the exact reviewed predeces
       [
         "WEATHER_RELEASE=2026.10.08-1",
         `WEATHER_CONTROL_PLANE_SHA256=${digest}`,
-        "WEATHER_CONTROL_PLANE_VERSION=13",
+        "WEATHER_CONTROL_PLANE_VERSION=14",
         "",
       ].join("\n"),
     );
@@ -842,9 +963,9 @@ test("release operations accept only current v13 and the exact reviewed predeces
     await writeFile(
       release,
       [
-        "WEATHER_RELEASE=2026.10.07-3",
-        "WEATHER_CONTROL_PLANE_SHA256=16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d",
-        "WEATHER_CONTROL_PLANE_VERSION=12",
+        "WEATHER_RELEASE=2026.10.09-1",
+        "WEATHER_CONTROL_PLANE_SHA256=603eb8f488ba78be3d7ecf76b0d587346d1c36432255d390d86d2b768c8fecba",
+        "WEATHER_CONTROL_PLANE_VERSION=13",
         "",
       ].join("\n"),
     );
@@ -896,7 +1017,7 @@ test("release operations accept only current v13 and the exact reviewed predeces
       );
     }
 
-    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=13\n");
+    await writeFile(release, "WEATHER_CONTROL_PLANE_VERSION=14\n");
     const incomplete = runBash(
       'source "$1"; require_control_plane_compatibility "$2"',
       [release],

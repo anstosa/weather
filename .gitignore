@@ -1,5 +1,13 @@
 node_modules/
 dist/
+
+# exact committed maintenance runner runtime closure
+!scripts/research/adjustment-maintenance-runtime/node_modules/
+!scripts/research/adjustment-maintenance-runtime/node_modules/@weather/
+!scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/
+!scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/package.json
+!scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/
+!scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist/*.js
 coverage/
 *.log
 *.tsbuildinfo

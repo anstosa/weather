@@ -506,6 +506,10 @@ test("container commands match the API, worker, and web runtime contracts", () =
     compose.services.worker.environment.WEATHER_SITE_CONFIG_PATH,
     "/opt/weather/config/sites/ballydidean.json",
   );
+  assert.equal(
+    compose.services.web.environment.WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN,
+    "http://api:3003",
+  );
   assert.equal(compose.services.migration.volumes, undefined);
   const dockerfile = read("Dockerfile");
   const webServer = read("deploy/scripts/web-server.mjs");
