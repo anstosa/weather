@@ -129,7 +129,7 @@ export type ForecastAdjustmentMetric =
   | "windSpeedMps";
 
 // name one reviewed runtime activation mode
-export type ForecastAdjustmentActivationMode = "qualified" | "wind_canary";
+export type ForecastAdjustmentActivationMode = "maintenance_qualified" | "qualified" | "wind_canary";
 
 // name one bounded adjustment failure
 export type ForecastAdjustmentReasonCode =
@@ -212,9 +212,27 @@ export interface ForecastAdjustmentWindCanaryActiveDecision {
   readonly transferReportSha256: string;
 }
 
+// describe one root-qualified recurring maintenance adjustment
+export interface ForecastAdjustmentMaintenanceActiveDecision {
+  readonly actionSha256: string;
+  readonly activationKind: "maintenance_qualified";
+  readonly adjustedMetrics: Readonly<Partial<Record<ForecastAdjustmentMetric, number>>>;
+  readonly algorithmContractVersion: "robust-hierarchical-median/v1";
+  readonly appliedMetrics: readonly ForecastAdjustmentMetric[];
+  readonly candidateArtifactSha256: string;
+  readonly contractVersion: "forecast-adjustment-decision/v1";
+  readonly fullMemberRootSha256: string;
+  readonly leadBand: ForecastAdjustmentLeadBand;
+  readonly policyReportSha256: string;
+  readonly rawForecastProvenance: ForecastAdjustmentRawForecastProvenance;
+  readonly reasonCode: null;
+  readonly state: "active";
+}
+
 // unite active adjustment modes
 export type ForecastAdjustmentActiveDecision =
   | ForecastAdjustmentQualifiedActiveDecision
+  | ForecastAdjustmentMaintenanceActiveDecision
   | ForecastAdjustmentWindCanaryActiveDecision;
 
 // unite API decision states
@@ -234,6 +252,7 @@ export type ForecastAdjustmentLeadBand =
 
 // describe the bounded runtime summary
 export interface ForecastAdjustmentRuntimeStatus {
+  readonly actionSha256?: string | null;
   readonly activationMode: ForecastAdjustmentActivationMode | null;
   readonly activeBundle: string | null;
   readonly authorizationSha256: string | null;
@@ -241,10 +260,12 @@ export interface ForecastAdjustmentRuntimeStatus {
   readonly enabledMetrics: readonly ForecastAdjustmentMetric[];
   readonly evaluationReportSha256: string | null;
   readonly expiresAt: string | null;
+  readonly fullMemberRootSha256?: string | null;
   readonly loadedAt: string | null;
   readonly qualificationReceiptSha256: string | null;
   readonly reasonCode: ForecastAdjustmentReasonCode | null;
   readonly state: "active" | "disabled";
+  readonly policyReportSha256?: string | null;
   readonly transferReportSha256: string | null;
 }
 
@@ -315,10 +336,14 @@ interface ForecastTemperatureCanaryDecision {
 
 // describe bounded temperature runtime monitoring
 interface ForecastTemperatureAdjustmentRuntimeStatus {
+  readonly actionSha256: string | null;
+  readonly activationMode: "maintenance_qualified" | "temperature_canary" | null;
   readonly activeBundle: string | null;
   readonly authorizationSha256: string | null;
   readonly expiresAt: string | null;
+  readonly fullMemberRootSha256: string | null;
   readonly loadedAt: string | null;
+  readonly policyReportSha256: string | null;
   readonly reasonCode: ForecastTemperatureCanaryReasonCode | null;
   readonly source: null | {
     readonly adaptiveReady: boolean;
@@ -976,6 +1001,23 @@ const FORECAST_ADJUSTMENT_REASON_CODE_KEYS = new Set<ForecastAdjustmentReasonCod
   "wrong_cohort",
 ]);
 const FORECAST_ADJUSTMENT_RUNTIME_KEYS = new Set([
+  "actionSha256",
+  "activationMode",
+  "activeBundle",
+  "authorizationSha256",
+  "candidateArtifactSha256",
+  "enabledMetrics",
+  "evaluationReportSha256",
+  "expiresAt",
+  "fullMemberRootSha256",
+  "loadedAt",
+  "qualificationReceiptSha256",
+  "reasonCode",
+  "state",
+  "policyReportSha256",
+  "transferReportSha256",
+]);
+const FORECAST_ADJUSTMENT_RUNTIME_LEGACY_KEYS = new Set([
   "activationMode",
   "activeBundle",
   "authorizationSha256",
@@ -1022,6 +1064,21 @@ const FORECAST_ADJUSTMENT_WIND_CANARY_ACTIVE_KEYS = new Set([
   "reasonCode",
   "state",
   "transferReportSha256",
+]);
+const FORECAST_ADJUSTMENT_MAINTENANCE_ACTIVE_KEYS = new Set([
+  "actionSha256",
+  "activationKind",
+  "adjustedMetrics",
+  "algorithmContractVersion",
+  "appliedMetrics",
+  "candidateArtifactSha256",
+  "contractVersion",
+  "fullMemberRootSha256",
+  "leadBand",
+  "policyReportSha256",
+  "rawForecastProvenance",
+  "reasonCode",
+  "state",
 ]);
 const FORECAST_ADJUSTMENT_RAW_PROVENANCE_KEYS = new Set([
   "adapterVersion",
@@ -1083,6 +1140,19 @@ const FORECAST_TEMPERATURE_REASON_CODE_KEYS =
     "unsupported_cohort",
   ]);
 const FORECAST_TEMPERATURE_RUNTIME_KEYS = new Set([
+  "actionSha256",
+  "activationMode",
+  "activeBundle",
+  "authorizationSha256",
+  "expiresAt",
+  "fullMemberRootSha256",
+  "loadedAt",
+  "policyReportSha256",
+  "reasonCode",
+  "source",
+  "state",
+]);
+const FORECAST_TEMPERATURE_RUNTIME_LEGACY_KEYS = new Set([
   "activeBundle",
   "authorizationSha256",
   "expiresAt",
@@ -1413,10 +1483,14 @@ function invalidForecastAdjustmentRuntime(): ForecastAdjustmentRuntimeStatus {
 // create one isolated invalid temperature fallback
 function invalidForecastTemperatureAdjustmentRuntime(): ForecastTemperatureAdjustmentRuntimeStatus {
   return {
+    actionSha256: null,
+    activationMode: null,
     activeBundle: null,
     authorizationSha256: null,
     expiresAt: null,
+    fullMemberRootSha256: null,
     loadedAt: null,
+    policyReportSha256: null,
     reasonCode: "adjustment_error",
     source: null,
     state: "disabled",
@@ -1738,7 +1812,16 @@ function parseForecastAdjustmentReasonCode(
 function parseForecastAdjustmentRuntime(
   value: unknown,
 ): ForecastAdjustmentRuntimeStatus | null {
-  const runtime = forecastAdjustmentObject(value);
+  const decoded = forecastAdjustmentObject(value);
+  const runtime = decoded !== null &&
+      hasExactForecastAdjustmentKeys(decoded, FORECAST_ADJUSTMENT_RUNTIME_LEGACY_KEYS)
+    ? {
+        ...decoded,
+        actionSha256: null,
+        fullMemberRootSha256: null,
+        policyReportSha256: null,
+      }
+    : decoded;
   const enabledMetrics = Array.isArray(runtime?.enabledMetrics)
     ? runtime.enabledMetrics
     : [];
@@ -1762,13 +1845,14 @@ function parseForecastAdjustmentRuntime(
   // accept one complete active identity
   if (
     runtime.state === "active" &&
-    (runtime.activationMode === "qualified" || runtime.activationMode === "wind_canary") &&
+    (runtime.activationMode === "maintenance_qualified" ||
+      runtime.activationMode === "qualified" || runtime.activationMode === "wind_canary") &&
     runtime.reasonCode === null &&
     isForecastAdjustmentSha256(runtime.activeBundle) &&
     isForecastAdjustmentSha256(runtime.candidateArtifactSha256) &&
     enabledMetrics.length > 0 &&
     (runtime.expiresAt === null || isForecastAdjustmentInstant(runtime.expiresAt)) &&
-    (runtime.activationMode !== "wind_canary" || (
+    (runtime.activationMode === "qualified" || (
       enabledMetrics.every(
         // confine a permanent or bounded activation to wind metrics
         (metric) => metric === "windDirectionDegrees" ||
@@ -1780,11 +1864,20 @@ function parseForecastAdjustmentRuntime(
       ? runtime.evaluationReportSha256 === null &&
         runtime.qualificationReceiptSha256 === null &&
         isForecastAdjustmentSha256(runtime.authorizationSha256) &&
-        isForecastAdjustmentSha256(runtime.transferReportSha256)
-      : isForecastAdjustmentSha256(runtime.evaluationReportSha256) &&
+        isForecastAdjustmentSha256(runtime.transferReportSha256) &&
+        runtime.actionSha256 === null && runtime.fullMemberRootSha256 === null &&
+        runtime.policyReportSha256 === null
+      : runtime.activationMode === "maintenance_qualified"
+        ? runtime.evaluationReportSha256 === null && runtime.qualificationReceiptSha256 === null &&
+          runtime.authorizationSha256 === null && runtime.transferReportSha256 === null &&
+          isForecastAdjustmentSha256(runtime.actionSha256) &&
+          isForecastAdjustmentSha256(runtime.fullMemberRootSha256) &&
+          isForecastAdjustmentSha256(runtime.policyReportSha256)
+        : isForecastAdjustmentSha256(runtime.evaluationReportSha256) &&
         isForecastAdjustmentSha256(runtime.qualificationReceiptSha256) &&
         runtime.authorizationSha256 === null &&
-        runtime.transferReportSha256 === null)
+        runtime.transferReportSha256 === null && runtime.actionSha256 === null &&
+        runtime.fullMemberRootSha256 === null && runtime.policyReportSha256 === null)
   ) {
     return {
       ...runtime,
@@ -1797,6 +1890,7 @@ function parseForecastAdjustmentRuntime(
   // accept one complete disabled identity
   if (
     runtime.state === "disabled" &&
+    runtime.actionSha256 === null &&
     runtime.activationMode === null &&
     reasonCode !== null &&
     runtime.activeBundle === null &&
@@ -1805,7 +1899,9 @@ function parseForecastAdjustmentRuntime(
     enabledMetrics.length === 0 &&
     runtime.evaluationReportSha256 === null &&
     runtime.expiresAt === null &&
+    runtime.fullMemberRootSha256 === null &&
     runtime.qualificationReceiptSha256 === null
+    && runtime.policyReportSha256 === null
     && runtime.transferReportSha256 === null
   ) {
     return { ...runtime, reasonCode } as ForecastAdjustmentRuntimeStatus;
@@ -1868,7 +1964,17 @@ function parseForecastTemperatureRuntimeSource(
 function parseForecastTemperatureAdjustmentRuntime(
   value: unknown,
 ): ForecastTemperatureAdjustmentRuntimeStatus | null {
-  const runtime = forecastAdjustmentObject(value);
+  const parsed = forecastAdjustmentObject(value);
+  const runtime = parsed !== null && hasExactForecastAdjustmentKeys(
+    parsed,
+    FORECAST_TEMPERATURE_RUNTIME_LEGACY_KEYS,
+  ) ? {
+      ...parsed,
+      actionSha256: null,
+      activationMode: parsed.state === "active" ? "temperature_canary" : null,
+      fullMemberRootSha256: null,
+      policyReportSha256: null,
+    } : parsed;
 
   // require one exact runtime envelope
   if (
@@ -1891,7 +1997,14 @@ function parseForecastTemperatureAdjustmentRuntime(
     runtime.state === "active" &&
     runtime.reasonCode === null &&
     isForecastAdjustmentSha256(runtime.activeBundle) &&
-    isForecastAdjustmentSha256(runtime.authorizationSha256) &&
+    (runtime.activationMode === "temperature_canary"
+      ? isForecastAdjustmentSha256(runtime.authorizationSha256) &&
+        runtime.actionSha256 === null && runtime.fullMemberRootSha256 === null &&
+        runtime.policyReportSha256 === null
+      : runtime.activationMode === "maintenance_qualified" && runtime.authorizationSha256 === null &&
+        isForecastAdjustmentSha256(runtime.actionSha256) &&
+        isForecastAdjustmentSha256(runtime.fullMemberRootSha256) &&
+        isForecastAdjustmentSha256(runtime.policyReportSha256)) &&
     (runtime.expiresAt === null || isForecastAdjustmentInstant(runtime.expiresAt))
   ) {
     return { ...runtime, source } as ForecastTemperatureAdjustmentRuntimeStatus;
@@ -1902,10 +2015,14 @@ function parseForecastTemperatureAdjustmentRuntime(
   // accept one fully redacted disabled selection
   if (
     runtime.state === "disabled" &&
+    runtime.actionSha256 === null &&
+    runtime.activationMode === null &&
     reasonCode !== null &&
     runtime.activeBundle === null &&
     runtime.authorizationSha256 === null &&
     runtime.expiresAt === null &&
+    runtime.fullMemberRootSha256 === null &&
+    runtime.policyReportSha256 === null &&
     source === null
   ) {
     return { ...runtime, reasonCode, source } as ForecastTemperatureAdjustmentRuntimeStatus;
@@ -2078,6 +2195,7 @@ function parseForecastAdjustmentActiveDecision(
     ? value.appliedMetrics
     : [];
   const canary = runtime.activationMode === "wind_canary";
+  const maintenance = runtime.activationMode === "maintenance_qualified";
 
   // require the exact active envelope and runtime cross-links
   if (
@@ -2085,7 +2203,9 @@ function parseForecastAdjustmentActiveDecision(
       value,
       canary
         ? FORECAST_ADJUSTMENT_WIND_CANARY_ACTIVE_KEYS
-        : FORECAST_ADJUSTMENT_ACTIVE_KEYS,
+        : maintenance
+          ? FORECAST_ADJUSTMENT_MAINTENANCE_ACTIVE_KEYS
+          : FORECAST_ADJUSTMENT_ACTIVE_KEYS,
     ) ||
     value.contractVersion !== "forecast-adjustment-decision/v1" ||
     value.algorithmContractVersion !== "robust-hierarchical-median/v1" ||
@@ -2097,8 +2217,13 @@ function parseForecastAdjustmentActiveDecision(
       ? value.activationKind !== "wind_transfer_canary" ||
         value.authorizationSha256 !== runtime.authorizationSha256 ||
         value.transferReportSha256 !== runtime.transferReportSha256
-      : value.evaluationReportSha256 !== runtime.evaluationReportSha256 ||
-        value.qualificationReceiptSha256 !== runtime.qualificationReceiptSha256) ||
+      : maintenance
+        ? value.activationKind !== "maintenance_qualified" ||
+          value.actionSha256 !== runtime.actionSha256 ||
+          value.fullMemberRootSha256 !== runtime.fullMemberRootSha256 ||
+          value.policyReportSha256 !== runtime.policyReportSha256
+        : value.evaluationReportSha256 !== runtime.evaluationReportSha256 ||
+          value.qualificationReceiptSha256 !== runtime.qualificationReceiptSha256) ||
     adjustedMetrics === null ||
     provenance === null ||
     !hasExactForecastAdjustmentKeys(provenance, FORECAST_ADJUSTMENT_RAW_PROVENANCE_KEYS)
@@ -2148,7 +2273,7 @@ function parseForecastAdjustmentActiveDecision(
       typeof metric !== "string" ||
       !FORECAST_ADJUSTMENT_METRIC_KEYS.has(metric as ForecastAdjustmentMetric) ||
       !runtime.enabledMetrics.includes(metric as ForecastAdjustmentMetric) ||
-      (canary &&
+      ((canary || maintenance) &&
         metric !== "windDirectionDegrees" &&
         metric !== "windGustMps" &&
         metric !== "windSpeedMps") ||

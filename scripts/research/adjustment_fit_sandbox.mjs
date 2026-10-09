@@ -150,6 +150,7 @@ export async function captureAdjustmentFitRuntimeReadiness(
     versions,
   };
   await validateNumericalPackageMarkers(numericalRuntimeRoot);
+  await validateNumericalRuntimeImports(numericalRuntimeRoot);
   return Object.freeze(manifest);
 }
 
@@ -986,6 +987,40 @@ async function validateNumericalPackageMarkers(root) {
       throw error;
     }
     throw sandboxError("runtime_invalid", "numerical runtime markers are missing");
+  }
+}
+
+// import the exact numerical packages with the pinned production interpreter
+async function validateNumericalRuntimeImports(root) {
+  const source = [
+    "import sys",
+    `sys.path.insert(0, ${JSON.stringify(root)})`,
+    "import numpy,xgboost",
+    "print(numpy.__version__ + '\\n' + xgboost.__version__)",
+  ].join(";");
+  let versions;
+
+  // execute without ambient site or user configuration
+  try {
+    versions = await execFileAsync(PYTHON_PATH, ["-I", "-S", "-c", source], {
+      encoding: "utf8",
+      env: {
+        HOME: "/home/sandbox",
+        LC_ALL: "C.UTF-8",
+        PATH: "/usr/bin:/bin",
+        PYTHONDONTWRITEBYTECODE: "1",
+        TZ: "UTC",
+      },
+      maxBuffer: 16 * 1_024,
+      timeout: 30_000,
+    });
+  } catch {
+    throw sandboxError("runtime_invalid", "fit numerical runtime import failed");
+  }
+
+  // reject marker-only or import-shadowed numerical packages
+  if (versions.stdout !== "2.5.3\n3.4.1\n") {
+    throw sandboxError("runtime_invalid", "fit numerical runtime import differs");
   }
 }
 

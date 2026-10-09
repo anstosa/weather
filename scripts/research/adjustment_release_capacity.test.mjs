@@ -8,6 +8,8 @@ import { ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES,
   ADJUSTMENT_RELEASE_FUTURE_STATE_BYTES,
   BLUEBERRY_PROTECTED_FREE_BYTES, BLUEBERRY_NEXT_CAPTURE_BYTES,
   collectAdjustmentReleaseCapacityInventory, dockerChainIdentity, evaluateAdjustmentReleaseCapacity,
+  evaluateAdjustmentFamilyReleaseCapacity, evaluateAdjustmentFullV14ReleaseCapacity,
+  evaluateAdjustmentInertV14ReleaseCapacity,
   measureReleaseLayer, measureReleasePathEntry,
   weatherRegistryBlobRedirectUrl } from "./adjustment_release_capacity.mjs";
 
@@ -177,16 +179,54 @@ function collectedImage(role, runtime, marker) {
   };
 }
 
+// account for a new family-only compensation instead of reusing source images
+test("family capacity binds all six literal images without weakening the inert v13 contract", () => {
+  const input = {
+    ...collectedFixture(),
+    actionSha256: "a".repeat(64),
+    compensationScope: "family-only-new-release-compensation",
+    family: "wind",
+    images: ["source", "target", "compensating"].flatMap(
+      // distinguish the real immutable server and web image identities
+      (role, index) => ["server", "web"].map(
+        // preserve parent-chain accounting across all ownership roles
+        (runtime, offset) => collectedImage(role, runtime, String(index * 2 + offset + 1)),
+      ),
+    ),
+    sourceRelease: "2026.10.09-1",
+    version: "adjustment-family-release-inventory/v1",
+  };
+  const result = evaluateAdjustmentFamilyReleaseCapacity(input);
+  assert.equal(result.state, "capacity_ready");
+  assert.equal(result.contractVersion, "adjustment-family-release-capacity/v1");
+  assert.equal(result.sourceRelease, input.sourceRelease);
+  assert.equal(result.actionSha256, input.actionSha256);
+  assert.equal(result.family, "wind");
+  assert.equal(result.compensationScope, input.compensationScope);
+  assert.equal(result.imageDigests.length, 6);
+  assert.equal(result.retirementCreditBytes, 0);
+  assert.throws(() => collectAdjustmentReleaseCapacityInventory(input));
+  assert.throws(() => evaluateAdjustmentFamilyReleaseCapacity({ ...input, sourceRelease: "latest" }));
+  assert.throws(() => evaluateAdjustmentFamilyReleaseCapacity({ ...input, family: "direction" }));
+  const images = structuredClone(input.images);
+  images[4] = { ...structuredClone(images[0]), role: "compensating" };
+  assert.throws(() => evaluateAdjustmentFamilyReleaseCapacity({ ...input, images }), /new immutable server/u);
+  const floor = result.requiredFreeBytes;
+  assert.equal(evaluateAdjustmentFamilyReleaseCapacity({ ...input, freeBytes: floor }).state, "capacity_ready");
+  assert.equal(evaluateAdjustmentFamilyReleaseCapacity({ ...input, freeBytes: floor - 4096 }).state, "capacity_blocked");
+  assert.throws(() => evaluateAdjustmentFamilyReleaseCapacity({ ...input, assumedCompensationBytes: 0 }));
+});
+
 // load the exact reviewed public source image bytes
-function reviewedSourceImage(role, runtime) {
+function reviewedSourceImage(role, runtime, prefix = "") {
   const root = new URL("./fixtures/adjustment-release-capacity/", import.meta.url);
   const manifestBytes = Buffer.from(
-    readFileSync(new URL(`source-${runtime}.manifest.json.b64`, root), "utf8")
+    readFileSync(new URL(`${prefix}source-${runtime}.manifest.json.b64`, root), "utf8")
       .replace(/\s/gu, ""),
     "base64",
   ).toString("utf8");
   const configBytes = Buffer.from(
-    readFileSync(new URL(`source-${runtime}.config.json.b64`, root), "utf8")
+    readFileSync(new URL(`${prefix}source-${runtime}.config.json.b64`, root), "utf8")
       .replace(/\s/gu, ""),
     "base64",
   ).toString("utf8");
@@ -483,4 +523,58 @@ test("registry redirect policy permits only the exact signed blob handoff", () =
     "weather-server",
     digest,
   ), /outside the closed policy/u);
+});
+
+// preserve separate literal predecessor and compensation scopes for each inert bridge
+test("inert v14 capacity admits only exact deployed v13 source restoration", () => {
+  const input = collectedFixture();
+  const server = reviewedSourceImage("source", "server", "v13-");
+  const web = reviewedSourceImage("source", "web", "v13-");
+  input.images = [server, web, ...input.images.slice(2, 4),
+    { ...structuredClone(server), role: "compensating" },
+    { ...structuredClone(web), role: "compensating" }];
+  input.version = "adjustment-inert-v14-release-inventory/v1";
+  input.sourceRelease = "2026.10.09-1";
+  input.compensationScope = "fixed-inert-v14-whole-release-source-restore";
+  const result = evaluateAdjustmentInertV14ReleaseCapacity(input);
+  assert.equal(result.state, "capacity_ready");
+  assert.equal(result.contractVersion, "adjustment-inert-v14-release-capacity/v1");
+  assert.equal(result.sourceRelease, "2026.10.09-1");
+  assert.equal(result.retirementCreditBytes, 0);
+  assert.throws(() => collectAdjustmentReleaseCapacityInventory(input));
+  assert.throws(() => evaluateAdjustmentInertV14ReleaseCapacity(collectedFixture()));
+  assert.throws(() => evaluateAdjustmentInertV14ReleaseCapacity({ ...input,
+    sourceRelease: "2026.10.07-3" }));
+  const compensation = structuredClone(input);
+  compensation.images[4] = collectedImage("compensating", "server", "e");
+  assert.throws(() => evaluateAdjustmentInertV14ReleaseCapacity(compensation), /exact reviewed source/u);
+  const exact = result.requiredFreeBytes;
+  assert.equal(evaluateAdjustmentInertV14ReleaseCapacity({ ...input, freeBytes: exact }).state, "capacity_ready");
+  assert.equal(evaluateAdjustmentInertV14ReleaseCapacity({ ...input, freeBytes: exact - 4_096 }).state, "capacity_blocked");
+});
+
+// full handoff binds the separately published bridge images in both retained roles
+test("full v14 capacity admits only exact published bridge restoration", () => {
+  const input = collectedFixture();
+  const server = reviewedSourceImage("source", "server", "v14-bridge-");
+  const web = reviewedSourceImage("source", "web", "v14-bridge-");
+  input.images = [server, web, ...input.images.slice(2, 4),
+    { ...structuredClone(server), role: "compensating" },
+    { ...structuredClone(web), role: "compensating" }];
+  input.version = "adjustment-full-v14-release-inventory/v1";
+  input.sourceRelease = "2026.10.09-2";
+  input.compensationScope = "fixed-full-v14-whole-release-source-restore";
+  const result = evaluateAdjustmentFullV14ReleaseCapacity(input);
+  assert.equal(result.state, "capacity_ready");
+  assert.equal(result.contractVersion, "adjustment-full-v14-release-capacity/v1");
+  assert.equal(result.sourceRelease, "2026.10.09-2");
+  assert.equal(result.retirementCreditBytes, 0);
+  const floor = result.requiredFreeBytes;
+  assert.equal(evaluateAdjustmentFullV14ReleaseCapacity({ ...input, freeBytes: floor }).state,
+    "capacity_ready");
+  assert.equal(evaluateAdjustmentFullV14ReleaseCapacity({ ...input, freeBytes: floor - 4_096 }).state,
+    "capacity_blocked");
+  const drift = structuredClone(input);
+  drift.images[4] = collectedImage("compensating", "server", "e");
+  assert.throws(() => evaluateAdjustmentFullV14ReleaseCapacity(drift), /reviewed bridge image/u);
 });

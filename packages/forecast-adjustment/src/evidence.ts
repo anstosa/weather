@@ -448,6 +448,34 @@ interface SnapshotManifestV1 {
   };
 }
 
+// describe one future-only archive-derived wind population without legacy export claims
+interface ArchiveWindFitManifestV2 {
+  readonly aggregationContractSha256: string;
+  readonly contractVersion: "adjustment-wind-archive-fit-manifest/v2";
+  readonly coordinateManifestSha256: string;
+  readonly epochWitnessSha256: string;
+  readonly fromLocalDate: string;
+  readonly historyRootSha256: string;
+  readonly members: readonly SnapshotMemberV1[];
+  readonly metricEligibilitySha256: string;
+  readonly sourceLineageSha256: string;
+  readonly spatialWeightsSha256: string;
+  readonly stationManifestSha256: string;
+  readonly toLocalDate: string;
+  readonly totalRowCount: number;
+}
+
+// bound future-only archive member metadata without reducing numerical support
+export const ADJUSTMENT_ARCHIVE_WIND_FIT_MAXIMUM_MEMBERS = 1_000_000;
+
+type WindMaintenanceFitManifest = SnapshotManifestV1 | ArchiveWindFitManifestV2;
+const ARCHIVE_WIND_FIT_MANIFEST_KEYS = [
+  "aggregationContractSha256", "contractVersion", "coordinateManifestSha256",
+  "epochWitnessSha256", "fromLocalDate", "historyRootSha256", "members",
+  "metricEligibilitySha256", "sourceLineageSha256", "spatialWeightsSha256",
+  "stationManifestSha256", "toLocalDate", "totalRowCount",
+] as const;
+
 // describe sanitized metric-date upper bounds
 interface SnapshotStationMetricCoverageV1 {
   readonly eligibleMetricNonNullLocalDates: {
@@ -3614,6 +3642,50 @@ async function requireFixedLocalRoot(
   return canonical;
 }
 
+// validate one archive-derived wind manifest without accepting legacy export assertions
+function validateArchiveWindFitManifest(manifest: ArchiveWindFitManifestV2): void {
+  requireExactKeys(manifest, ARCHIVE_WIND_FIT_MANIFEST_KEYS,
+    "archive wind fit manifest");
+  // require every root identity and one bounded exact member population
+  for (const field of [
+    "aggregationContractSha256", "coordinateManifestSha256", "epochWitnessSha256",
+    "historyRootSha256", "metricEligibilitySha256", "sourceLineageSha256",
+    "spatialWeightsSha256", "stationManifestSha256",
+  ] as const) {
+    validateHash(manifest[field], `archive wind fit manifest ${field}`);
+  }
+  validateLocalDateRange(manifest.fromLocalDate, manifest.toLocalDate);
+  if (!Array.isArray(manifest.members) || manifest.members.length < 1 ||
+    manifest.members.length > ADJUSTMENT_ARCHIVE_WIND_FIT_MAXIMUM_MEMBERS ||
+    !Number.isSafeInteger(manifest.totalRowCount) || manifest.totalRowCount < 1 ||
+    manifest.totalRowCount > 4_000_000 ||
+    manifest.members.reduce((total, member) => total + member.rowCount, 0) !==
+      manifest.totalRowCount) {
+    throw new RangeError("archive wind fit manifest population is invalid");
+  }
+  let previousPath: string | null = null;
+  // validate exact archive-member metadata without claiming exported files exist
+  for (const member of manifest.members) {
+    requireExactKeys(member, SNAPSHOT_MEMBER_KEYS, "archive wind fit member");
+    validateHash(member.sha256, "archive wind fit member identity");
+    validateLocalDateRange(member.localDate, member.localDate);
+    if (!/^archive-members\/\d{4}-\d{2}-\d{2}\/(?:forecast|target)\/[a-f0-9]{64}$/u
+        .test(member.path) || !member.path.startsWith(`archive-members/${member.localDate}/`) ||
+      !Number.isSafeInteger(member.rowCount) || member.rowCount !== 1 ||
+      !Number.isSafeInteger(member.sizeBytes) || member.sizeBytes < 1 ||
+      !Number.isSafeInteger(member.plaintextBytes) || member.plaintextBytes < 1 ||
+      !windMaintenanceInstant(member.minValidAt) ||
+      !windMaintenanceInstant(member.maxValidAt) ||
+      member.minValidAt !== member.maxValidAt ||
+      !["actual_best_match", "target_revision"].includes(member.recordKind) ||
+      (member.recordKind === "target_revision") !== (member.stationKey !== null) ||
+      (previousPath !== null && previousPath >= member.path)) {
+      throw new RangeError("archive wind fit member is invalid");
+    }
+    previousPath = member.path;
+  }
+}
+
 // validate the sanitized package boundary before member reads
 function validateSnapshotManifestBoundary(manifest: SnapshotManifestV1): void {
   requireExactKeys(manifest, SNAPSHOT_MANIFEST_KEYS, "snapshot manifest");
@@ -3822,7 +3894,7 @@ function inferManifestInsufficiency(manifest: SnapshotManifestV1): readonly stri
 
 // fit the shared robust hierarchy without accessing confirmation targets
 async function fitRetainedDevelopmentCore(input: {
-  readonly manifest: Readonly<SnapshotManifestV1>;
+  readonly manifest: Readonly<WindMaintenanceFitManifest>;
   readonly preHoldoutRows: readonly SanitizedTrainingExportRow[];
   readonly snapshotManifestSha256: string;
   readonly maintenanceWindOnly?: boolean;
@@ -4024,7 +4096,7 @@ function windMaintenanceInstant(value: string): boolean {
 
 // fit all thirteen existing wind pairs on the original monthly cutoff
 export async function fitWindMaintenanceDevelopment(input: {
-  readonly manifest: Readonly<SnapshotManifestV1>;
+  readonly manifest: Readonly<WindMaintenanceFitManifest>;
   readonly rows: readonly SanitizedTrainingExportRow[];
   readonly snapshotManifestSha256: string;
   readonly dueMonth: string;
@@ -4042,7 +4114,13 @@ export async function fitWindMaintenanceDevelopment(input: {
       !/^[a-f0-9]{64}$/u.test(input.snapshotManifestSha256)) {
     throw new RangeError("invalid wind maintenance identity");
   }
-  validateSnapshotManifestBoundary(input.manifest);
+  // accept the legacy export only disjointly from the authenticated archive manifest
+  if ("epochWitnessSha256" in input.manifest &&
+    input.manifest.contractVersion === "adjustment-wind-archive-fit-manifest/v2") {
+    validateArchiveWindFitManifest(input.manifest);
+  } else {
+    validateSnapshotManifestBoundary(input.manifest);
+  }
   // bind the exact manifest instead of accepting a claimed content address
   if (canonicalSha256(input.manifest as unknown as JsonValue) !== input.snapshotManifestSha256) {
     throw new RangeError("wind maintenance manifest identity differs");

@@ -7,11 +7,11 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 const root = resolve(import.meta.dirname, "../..");
-const predecessorDigest = "16d871c7aebb3a34097af219fd5c76a93b3ff1be3af521643dbf3a4d2041c61d";
+const predecessorDigest = "603eb8f488ba78be3d7ecf76b0d587346d1c36432255d390d86d2b768c8fecba";
 const installedDigest = "a".repeat(64);
 
 // test the production handoff function without starting a release
-test("v13 accepts only its exact installed contract or pinned v12 predecessor", async () => {
+test("v14 accepts only its exact installed contract or pinned v13 predecessor", async () => {
   const directory = await mkdtemp(join(tmpdir(), "weather-v13-handoff-"));
   const envFile = join(directory, "release.env");
   const harness = `
@@ -35,9 +35,11 @@ require_control_plane_compatibility "$2"
   };
 
   try {
-    const installed = await check(13, installedDigest, "2026.10.08-1");
+    const installed = await check(14, installedDigest, "2026.10.09-2");
     assert.equal(installed.status, 0, installed.stderr);
-    const predecessor = await check(12, predecessorDigest, "2026.10.07-3");
+    const full = await check(14, installedDigest, "2026.10.09-3");
+    assert.equal(full.status, 0, full.stderr);
+    const predecessor = await check(13, predecessorDigest, "2026.10.09-1");
     assert.equal(predecessor.status, 0, predecessor.stderr);
 
     // refuse incorrect release labels, versions and immutable byte identities
@@ -46,7 +48,7 @@ require_control_plane_compatibility "$2"
       [11, predecessorDigest, "2026.10.07-3"],
       [13, predecessorDigest, "2026.10.07-3"],
       [12, installedDigest, "2026.10.07-3"],
-      [13, "b".repeat(64), "2026.10.08-1"],
+      [14, "b".repeat(64), "2026.10.09-2"],
       [12, "5685ead4440468ecdb58402fbe14e76ce63ed03a018b9b4724fa24ffef4eb3c8", "2026.10.07-2"],
     ]) {
       const result = await check(version, digest, release);
@@ -86,6 +88,27 @@ test("v13 forced dispatch forwards only canonical bounded v2 operands", async ()
     // preserve canonical v1 commands alongside each exact v2 surface
     for (const command of [
       "adjustment-maintenance-anchor-status-v2",
+      "adjustment-development-custody-anchor-current-v1",
+      "adjustment-rain-control-custody-anchor-current-v1",
+      "adjustment-unsupported-terminal-proof-current-v1",
+      "adjustment-future-input-seal-current-v2",
+      "adjustment-maintenance-anchor-current-v3",
+      "adjustment-registration-lifecycle-status-v4",
+      "adjustment-shadow-metadata-custody-status-v1",
+      `adjustment-shadow-metadata-custody-finalize-v1 ${sha}`,
+      `adjustment-confirmation-access-burn-v3 ${sha}`,
+      `adjustment-shadow-terminal-record-v3 ${sha}`,
+      `adjustment-shadow-terminal-retire-v3 ${sha}`,
+      `adjustment-shadow-unsupported-terminal-record-v1 ${sha}`,
+      `adjustment-shadow-unsupported-terminal-retire-v1 ${sha}`,
+      `adjustment-development-custody-anchor-install-v1 ${sha}`,
+      `adjustment-rain-control-custody-anchor-install-v1 ${sha}`,
+      `adjustment-unsupported-terminal-proof-install-v1 ${sha}`,
+      `adjustment-future-input-seal-install-v2 ${sha}`,
+      `adjustment-maintenance-anchor-install-v2 ${sha}`,
+      `adjustment-maintenance-anchor-install-v3 ${sha}`,
+      `adjustment-maintenance-anchor-finalize-v2 ${sha}`,
+      `adjustment-maintenance-anchor-finalize-v3 ${sha}`,
       `install-adjustment-scorecard ${sha}`,
       `install-adjustment-scorecard-v2 ${sha}`,
       "adjustment-evaluation-export-v2 2026-10-01 2026-10-08",
@@ -103,6 +126,40 @@ test("v13 forced dispatch forwards only canonical bounded v2 operands", async ()
     // reject alternate framing, hashes, indices and shell payloads
     for (const command of [
       "adjustment-maintenance-anchor-status-v2 /tmp/input",
+      "adjustment-development-custody-anchor-current-v1 extra",
+      "adjustment-rain-control-custody-anchor-current-v1 extra",
+      "adjustment-unsupported-terminal-proof-current-v1 extra",
+      "adjustment-future-input-seal-current-v2 extra",
+      "adjustment-maintenance-anchor-current-v3 extra",
+      "adjustment-registration-lifecycle-status-v4 extra",
+      "adjustment-shadow-metadata-custody-status-v1 extra",
+      `adjustment-shadow-metadata-custody-finalize-v1 ${sha.toUpperCase()}`,
+      `adjustment-shadow-metadata-custody-finalize-v1 ${sha} extra`,
+      `adjustment-confirmation-access-burn-v3 ${sha.toUpperCase()}`,
+      `adjustment-confirmation-access-burn-v3 ${sha} extra`,
+      `adjustment-shadow-terminal-record-v3 ${sha.toUpperCase()}`,
+      `adjustment-shadow-terminal-record-v3 ${sha} extra`,
+      `adjustment-shadow-terminal-retire-v3 ${sha.toUpperCase()}`,
+      `adjustment-shadow-terminal-retire-v3 ${sha} extra`,
+      `adjustment-shadow-unsupported-terminal-record-v1 ${sha.toUpperCase()}`,
+      `adjustment-shadow-unsupported-terminal-record-v1 ${sha} extra`,
+      `adjustment-shadow-unsupported-terminal-retire-v1 ${sha.toUpperCase()}`,
+      `adjustment-shadow-unsupported-terminal-retire-v1 ${sha} extra`,
+      `adjustment-development-custody-anchor-install-v1 ${sha.toUpperCase()}`,
+      `adjustment-development-custody-anchor-install-v1 ${sha} extra`,
+      `adjustment-rain-control-custody-anchor-install-v1 ${sha.toUpperCase()}`,
+      `adjustment-rain-control-custody-anchor-install-v1 ${sha} extra`,
+      `adjustment-unsupported-terminal-proof-install-v1 ${sha.toUpperCase()}`,
+      `adjustment-unsupported-terminal-proof-install-v1 ${sha} extra`,
+      `adjustment-future-input-seal-install-v2 ${sha.toUpperCase()}`,
+      `adjustment-future-input-seal-install-v2 ${sha} extra`,
+      `adjustment-maintenance-anchor-install-v2 ${sha.toUpperCase()}`,
+      `adjustment-maintenance-anchor-install-v2 ${sha} extra`,
+      `adjustment-maintenance-anchor-install-v3 ${sha.toUpperCase()}`,
+      `adjustment-maintenance-anchor-install-v3 ${sha} extra`,
+      `adjustment-maintenance-anchor-finalize-v2 ${sha.toUpperCase()}`,
+      `adjustment-maintenance-anchor-finalize-v3 ${sha.toUpperCase()}`,
+      `adjustment-maintenance-anchor-finalize-v3 ${sha} extra`,
       `install-adjustment-scorecard-v2 ${sha} extra`,
       `install-adjustment-scorecard-v2 ${sha.toUpperCase()}`,
       `adjustment-confirmation-export-v2 ${sha} ${access} 27`,

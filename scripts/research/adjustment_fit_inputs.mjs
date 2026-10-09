@@ -23,6 +23,12 @@ export const ADJUSTMENT_FIT_INPUTS_CONTRACT_VERSION =
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../..");
 const TMPFS_ROOT = "/dev/shm";
 const CODE_MAXIMUM_BYTES = 64 * 1_024 * 1_024;
+const FORECAST_SNAPSHOT_ROOT =
+  "scripts/research/adjustment-maintenance-runtime/forecast";
+const DOMAIN_SNAPSHOT_ROOT =
+  "scripts/research/adjustment-maintenance-runtime/node_modules/@weather/domain/dist";
+const WORKER_SNAPSHOT_ROOT =
+  "scripts/research/adjustment-maintenance-runtime/worker";
 const SAFE_RELATIVE_PATH = /^(?:[A-Za-z0-9@._-]+\/)*[A-Za-z0-9@._-]+$/u;
 const PRIVATE_KEY_PATTERN =
   /(?:password|secret|credential|private.?key|access.?token|refresh.?token|ssh.?(?:auth|agent|key)|dbus|archive.?root|repository.?root)/iu;
@@ -40,11 +46,18 @@ const FORECAST_ADJUSTMENT_JAVASCRIPT = Object.freeze([
   "evidence.js",
   "holdout-ledger.js",
   "index.js",
+  "maintenance-capture-epoch.js",
   "maintenance-policy.js",
+  "maintenance-revision-projection.js",
+  "maintenance-runtime-package.js",
+  "maintenance-shadow-catalog.js",
+  "maintenance-shadow-comparator.js",
   "maintenance-shadow-values.js",
   "performance-scorecard.js",
   "rain-hurdle-wind-artifact.js",
   "rain-hurdle-wind.js",
+  "rain-maintenance-controls.js",
+  "rain-fixed-gauge-target.js",
   "rain-runtime-registry.js",
   "runtime-bundle.js",
   "runtime-loader.js",
@@ -104,12 +117,12 @@ function codeFile(source, destination = source) {
   return Object.freeze({ destination, source });
 }
 
-// map one built package into an ordinary regular-file package tree
-function packageFiles(sourceRoot, destinationRoot, files) {
+// map one committed snapshot into an ordinary regular-file package tree
+function packageFiles(packageRoot, snapshotRoot, destinationRoot, files) {
   return [
-    codeFile(`${sourceRoot}/package.json`, `${destinationRoot}/package.json`),
+    codeFile(`${packageRoot}/package.json`, `${destinationRoot}/package.json`),
     ...files.map((name) =>
-      codeFile(`${sourceRoot}/dist/${name}`, `${destinationRoot}/dist/${name}`)),
+      codeFile(`${snapshotRoot}/${name}`, `${destinationRoot}/dist/${name}`)),
   ];
 }
 
@@ -119,6 +132,7 @@ const TEMPERATURE_CODE_FILES = Object.freeze([
   codeFile("scripts/research/temperature_seasonal_ridge.py"),
   ...packageFiles(
     "packages/forecast-adjustment",
+    FORECAST_SNAPSHOT_ROOT,
     "packages/forecast-adjustment",
     ["calendar.js", "temperature-mos-runtime.js"],
   ),
@@ -128,11 +142,13 @@ const RAIN_CODE_FILES = Object.freeze([
   ...RAIN_PYTHON.map((name) => codeFile(`scripts/research/${name}`)),
   ...packageFiles(
     "packages/forecast-adjustment",
+    FORECAST_SNAPSHOT_ROOT,
     "packages/forecast-adjustment",
     FORECAST_ADJUSTMENT_JAVASCRIPT,
   ),
   ...packageFiles(
     "packages/domain",
+    DOMAIN_SNAPSHOT_ROOT,
     "node_modules/@weather/domain",
     DOMAIN_JAVASCRIPT,
   ),
@@ -140,14 +156,17 @@ const RAIN_CODE_FILES = Object.freeze([
 
 const WIND_CODE_FILES = Object.freeze([
   codeFile("apps/worker/package.json"),
-  codeFile("apps/worker/dist/forecast-adjustment-wind-refresh-cli.js"),
+  codeFile(`${WORKER_SNAPSHOT_ROOT}/forecast-adjustment-wind-refresh-cli.js`,
+    "apps/worker/dist/forecast-adjustment-wind-refresh-cli.js"),
   ...packageFiles(
     "packages/forecast-adjustment",
+    FORECAST_SNAPSHOT_ROOT,
     "node_modules/@weather/forecast-adjustment",
     FORECAST_ADJUSTMENT_JAVASCRIPT,
   ),
   ...packageFiles(
     "packages/domain",
+    DOMAIN_SNAPSHOT_ROOT,
     "node_modules/@weather/domain",
     DOMAIN_JAVASCRIPT,
   ),

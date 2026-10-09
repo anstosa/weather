@@ -10,7 +10,10 @@ import { backfillChunkKey } from "@weather/domain";
 
 import {
   assertWorkerDatabaseReadiness,
+  adjustmentMaintenanceCaptureDueAt,
   boundedWorkerError,
+  createEcmwfTemperatureRevisionArchiver,
+  createWeatherAdjustmentRevisionArchiver,
   createNonOverlappingScheduler,
   executeBackfill,
   executeTempestBulkBackfill,
@@ -27,6 +30,7 @@ import {
 const sitePath = new URL("../../../config/sites/ballydidean.json", import.meta.url).pathname;
 const tempestPath = new URL("../../../config/tempest/stations.json", import.meta.url).pathname;
 const fingerprint = "a".repeat(64);
+const captureEpoch = Object.freeze({ epochAt: "2000-01-01T00:00:00.000Z" });
 const source = {
   id: "00000000-0000-4000-8000-000000000001",
   key: "open-meteo-reanalysis-v1",
@@ -34,6 +38,258 @@ const source = {
   longitude: -122.42797012608193,
   timezone: "America/Los_Angeles",
 };
+
+test("maintenance capture scheduling uses stable six-hour due clocks", () => {
+  assert.deepEqual(
+    adjustmentMaintenanceCaptureDueAt(new Date("2026-10-08T06:34:59.999Z")),
+    {
+      dueKey: "capture/2026-10-08T00:35:00.000Z",
+      issuedAt: "2026-10-08T00:35:00.000Z",
+    },
+  );
+  assert.deepEqual(
+    adjustmentMaintenanceCaptureDueAt(new Date("2026-10-08T06:35:00.000Z")),
+    {
+      dueKey: "capture/2026-10-08T06:35:00.000Z",
+      issuedAt: "2026-10-08T06:35:00.000Z",
+    },
+  );
+});
+
+test("temperature native revision stages all eighteen hours before its transactional bind", async () => {
+  const events = [];
+  let stageAttempts = 0;
+  let stageReceipt;
+  const client = {
+    async publishRevision(projection, receivedStage, revisionReceipt) {
+      events.push("publish-revision");
+      assert.equal(receivedStage, stageReceipt);
+      assert.equal(revisionReceipt.stageReceiptSha256, stageReceipt.stageReceiptSha256);
+      assert.ok(Buffer.from(projection).length > 0);
+    },
+    async recordRevisionGap(gap) { events.push(`revision-gap:${gap.reason}`); },
+    async stageRevision(projection) {
+      events.push("stage-revision");
+      stageAttempts += 1;
+      // retain the native run until one simulated full spool drains
+      if (stageAttempts === 1) {
+        const error = new Error("full");
+        error.code = "adjustment_revision_spool_refused";
+        throw error;
+      }
+      const document = JSON.parse(Buffer.from(projection).toString("utf8"));
+      assert.equal(document.rows[5].bestMatchContentSha256, null);
+      assert.equal(document.rows[6].bestMatchContentSha256,
+        createHash("sha256").update("best-match-0").digest("hex"));
+      assert.equal(document.rows[6].modelCycle, "50r1");
+      const identity = createHash("sha256").update(projection).digest("hex");
+      const unsigned = {
+        contractVersion: "adjustment-revision-stage-receipt/v1",
+        durable: true,
+        durableAt: "2026-10-08T00:06:00.000Z",
+        projectionIdentitySha256: identity,
+        projectionKind: "native_source",
+        projectionSha256: identity,
+      };
+      stageReceipt = { ...unsigned,
+        stageReceiptSha256: createHash("sha256").update(`${JSON.stringify(unsigned)}\n`).digest("hex") };
+      return stageReceipt;
+    },
+  };
+  const queryable = {
+    async query(sql, values) {
+      assert.match(sql, /weather_bind_ecmwf_temperature_revision_v1/u);
+      events.push("bind-revision");
+      const pointer = JSON.parse(values[0]);
+      return { rows: [{ value: {
+        contractVersion: "adjustment-revision-row-receipt/v1",
+        revisionReceipt: {
+          archiveCommitOrdinal: "13",
+          archiveCommittedAt: "2026-10-08T00:06:01.000Z",
+          contractVersion: "adjustment-revision-commit-receipt/v1",
+          frontierSha256: "a".repeat(64),
+          predecessorFrontierSha256: "b".repeat(64),
+          projectionIdentitySha256: pointer.projectionIdentitySha256,
+          projectionKind: "native_source",
+          projectionSha256: pointer.projectionSha256,
+          receiptSha256: "c".repeat(64),
+          stageReceiptSha256: pointer.stageReceiptSha256,
+        },
+      } }] };
+    },
+  };
+  const revision = {
+    adapterVersion: "open-meteo-ecmwf-single-run/v1",
+    bestMatchRows: Array.from({ length: 12 }, (_, index) => ({
+      contentHash: createHash("sha256").update(`best-match-${index}`).digest("hex"),
+      productRunAt: "2026-10-08T00:00:00.000Z",
+      providerMetadata: { dataset: "best_match" },
+      sourceId: "7",
+      temperatureC: 9 + index,
+      upstreamModel: "best_match",
+      validAt: new Date(Date.parse("2026-10-08T07:00:00.000Z") +
+        index * 3_600_000).toISOString(),
+    })),
+    contentHash: createHash("sha256").update("temperature-run").digest("hex"),
+    hours: Array.from({ length: 18 }, (_, index) => ({
+      contentHash: createHash("sha256").update(`temperature-hour-${index}`).digest("hex"),
+      modelLeadHours: index + 1,
+      rawRelativeHumidityPercent: 80,
+      rawTemperatureC: 10 + index,
+      rawWindSpeedMps: 5,
+      validAt: new Date(Date.parse("2026-10-08T01:00:00.000Z") + index * 3_600_000).toISOString(),
+    })),
+    logicalReceivedAt: "2026-10-08T00:05:00.000Z",
+    modelCycle: "50r1",
+    providerResponseSha256: createHash("sha256").update("temperature-response").digest("hex"),
+    recentErrorState: {
+      b24C: null,
+      b72C: null,
+      cohort: "ecmwf_single_run_hindcast",
+      localDates: 0,
+      mad72C: null,
+      maximumSourceRunInitializedAt: null,
+      maximumSourceValidAt: null,
+      n24: 0,
+      n72: 0,
+      sourceKeys: [],
+      supported: false,
+      targetRunInitializedAt: "2026-10-08T00:00:00.000Z",
+      windowEndValidAt: "2026-10-07T17:00:00.000Z",
+    },
+    recentErrorStateSha256: "",
+    runInitializedAt: "2026-10-08T00:00:00.000Z",
+    siteId: "3",
+    siteLatitude: 47.95043,
+    siteLongitude: -122.42797,
+    siteSlug: "ballydidean",
+    upstreamModel: "ecmwf_ifs",
+  };
+  revision.recentErrorStateSha256 = createHash("sha256")
+    .update(JSON.stringify(revision.recentErrorState)).digest("hex");
+  const publication = await createEcmwfTemperatureRevisionArchiver(
+    queryable,
+    client,
+    captureEpoch,
+    // release the simulated spool without delaying the focused test
+    async () => { events.push("stage-wait"); },
+  )(
+    queryable,
+    revision,
+  );
+  assert.deepEqual(events, ["stage-revision", "stage-wait", "stage-revision", "bind-revision"]);
+  await publication.publish();
+  assert.deepEqual(events, ["stage-revision", "stage-wait", "stage-revision", "bind-revision",
+    "publish-revision"]);
+});
+
+test("complete Best Match run uses one stage and one ordered 168-receipt publication", async () => {
+  const events = [];
+  let stageAttempts = 0;
+  let stageReceipt;
+  const client = {
+    async publishRevisionBatch(_projection, receivedStage, receipts) {
+      events.push("publish-revision-batch");
+      assert.equal(receivedStage, stageReceipt);
+      assert.equal(receipts.length, 168);
+    },
+    async recordRevisionGap(gap) { events.push(`revision-gap:${gap.reason}`); },
+    async stageRevision(projection) {
+      events.push("stage-revision");
+      stageAttempts += 1;
+      // retain the grouped run until one simulated full spool drains
+      if (stageAttempts === 1) {
+        const error = new Error("full");
+        error.code = "adjustment_revision_spool_refused";
+        throw error;
+      }
+      const identity = createHash("sha256").update(projection).digest("hex");
+      const unsigned = {
+        contractVersion: "adjustment-revision-stage-receipt/v1",
+        durable: true,
+        durableAt: "2026-10-08T00:06:00.000Z",
+        projectionIdentitySha256: identity,
+        projectionKind: "actual_best_match",
+        projectionSha256: identity,
+      };
+      stageReceipt = { ...unsigned,
+        stageReceiptSha256: createHash("sha256").update(`${JSON.stringify(unsigned)}\n`).digest("hex") };
+      return stageReceipt;
+    },
+  };
+  const queryable = {
+    async query(sql, values) {
+      assert.match(sql, /weather_bind_weather_record_revisions_v1/u);
+      events.push("bind-revision-batch");
+      const pointers = JSON.parse(values[0]);
+      return { rows: [{ value: {
+        contractVersion: "adjustment-revision-batch-receipt/v1",
+        receipts: pointers.map((pointer, index) => ({
+          projectionKind: "actual_best_match",
+          revisionReceipt: {
+            archiveCommitOrdinal: String(index + 14),
+            archiveCommittedAt: "2026-10-08T00:06:01.000Z",
+            contractVersion: "adjustment-revision-commit-receipt/v1",
+            frontierSha256: createHash("sha256").update(`frontier-${index}`).digest("hex"),
+            predecessorFrontierSha256: createHash("sha256")
+              .update(`frontier-${index - 1}`).digest("hex"),
+            projectionIdentitySha256: pointer.projectionIdentitySha256,
+            projectionKind: "actual_best_match",
+            projectionSha256: pointer.projectionSha256,
+            receiptSha256: createHash("sha256").update(`receipt-${index}`).digest("hex"),
+            stageReceiptSha256: pointer.stageReceiptSha256,
+          },
+          sourceId: "7",
+          storedContentSha256: pointer.storedContentSha256,
+          validAt: pointer.validAt,
+        })),
+      } }] };
+    },
+  };
+  const metrics = Object.fromEntries([
+    "apparentTemperatureC", "blackGlobeTemperatureC", "cloudCoverPercent",
+    "pm25MicrogramsPerCubicMeter", "precipitationMm", "precipitationRateMmPerHour",
+    "pressureHpa", "relativeHumidityPercent", "soilElectricalConductivityMicrosiemensPerCm",
+    "soilMoisturePercent", "solarRadiationWm2", "temperatureC", "uvIndex", "waterLevelM",
+    "wetBulbGlobeTemperatureC", "windDirectionDegrees", "windGustMps", "windSpeedMps",
+  ].map((key) => [key, null]));
+  metrics.temperatureC = 11;
+  metrics.windSpeedMps = 5;
+  metrics.windGustMps = 8;
+  const revisions = Array.from({ length: 168 }, (_unused, index) => ({
+    adapterVersion: "open-meteo/v4",
+    contentHash: createHash("sha256").update(`weather-${index}`).digest("hex"),
+    logicalReceivedAt: "2026-10-08T00:05:00.000Z",
+    providerKey: "open-meteo",
+    record: {
+      metadata: { device: null, model: "best_match", provider: { dataset: "best_match" },
+        quality: null, upstreamTimezone: "UTC" },
+      metrics,
+      productRunAt: "2026-10-08T00:00:00.000Z",
+      receivedAt: "2026-10-08T00:04:00.000Z",
+      sourceId: "7",
+      sourceKind: "forecast",
+      validAt: new Date(Date.parse("2026-10-08T01:00:00.000Z") + index * 3_600_000).toISOString(),
+    },
+    sourceConfigFingerprint: "f".repeat(64),
+    sourceKey: "open-meteo-forecast-v4",
+  }));
+  const publication = await createWeatherAdjustmentRevisionArchiver(
+    queryable,
+    client,
+    captureEpoch,
+    // release the simulated spool without delaying the focused test
+    async () => { events.push("stage-wait"); },
+  )(
+    queryable,
+    revisions,
+  );
+  assert.ok(publication);
+  assert.deepEqual(events, ["stage-revision", "stage-wait", "stage-revision", "bind-revision-batch"]);
+  await publication.publish();
+  assert.deepEqual(events, ["stage-revision", "stage-wait", "stage-revision", "bind-revision-batch",
+    "publish-revision-batch"]);
+});
 
 test("scheduled windows cap stale checkpoints to provider limits", () => {
   const window = scheduledWindow(
