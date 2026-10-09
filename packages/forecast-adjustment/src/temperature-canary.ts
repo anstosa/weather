@@ -189,6 +189,18 @@ export type ForecastAdjustmentTemperatureCanaryRuntimeBundle =
   | ForecastAdjustmentTemperatureCanaryRuntimeBundleV1
   | ForecastAdjustmentTemperatureCanaryRuntimeBundleV2;
 
+export interface ForecastAdjustmentTemperatureMaintenanceMaterial {
+  readonly bundleSha256: string;
+  readonly maintenanceAuthority: Readonly<{
+    readonly actionSha256: string;
+    readonly fullMemberRootSha256: string;
+    readonly policyReportSha256: string;
+  }> | null;
+  readonly model: TemperatureMosPermanentRuntimeModel;
+  readonly servedForecastIdentity: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1["servedForecastIdentity"];
+  readonly trainingForecastIdentity: ForecastAdjustmentTemperatureCanaryRuntimeBundleV1["trainingForecastIdentity"];
+}
+
 export interface ForecastAdjustmentTemperatureCanaryRegistryV1 {
   readonly activeBundle: null | {
     readonly authorizationSha256: string;
@@ -579,8 +591,55 @@ export function applyForecastAdjustmentTemperatureCanary(
     readonly bundle: null;
     readonly reasonCode: "policy_raw";
     readonly state: "disabled";
+  } | {
+    readonly bundle: ForecastAdjustmentTemperatureMaintenanceMaterial;
+    readonly reasonCode: null;
+    readonly state: "active";
   },
   input: ApplyTemperatureCanaryInputV1,
+): ForecastTemperatureCanaryDecisionV1 {
+  return applyTemperatureCanaryRuntime(runtime, input, true);
+}
+
+// evaluate one verified inactive temperature candidate without activation authority
+export function applyForecastAdjustmentTemperatureShadowCandidate(
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
+  input: ApplyTemperatureCanaryInputV1,
+): ForecastTemperatureCanaryDecisionV1 {
+  verifyForecastAdjustmentTemperatureCanaryRuntimeBundle(bundle);
+  return applyTemperatureCanaryRuntime(
+    { bundle, reasonCode: null, state: "active" },
+    input,
+    false,
+  );
+}
+
+// evaluate one authority-free monthly temperature package
+export function applyForecastAdjustmentTemperatureMaintenanceCandidate(
+  material: ForecastAdjustmentTemperatureMaintenanceMaterial,
+  input: ApplyTemperatureCanaryInputV1,
+): ForecastTemperatureCanaryDecisionV1 {
+  validateHash(material.bundleSha256, "bundleSha256");
+  return applyTemperatureCanaryRuntime(
+    { bundle: material, reasonCode: null, state: "active" },
+    input,
+    false,
+  );
+}
+
+// share source validation and numerical evaluation across active and shadow paths
+function applyTemperatureCanaryRuntime(
+  runtime: LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 | {
+    readonly bundle: null;
+    readonly reasonCode: "policy_raw";
+    readonly state: "disabled";
+  } | {
+    readonly bundle: ForecastAdjustmentTemperatureMaintenanceMaterial;
+    readonly reasonCode: null;
+    readonly state: "active";
+  },
+  input: ApplyTemperatureCanaryInputV1,
+  enforceAuthorization: boolean,
 ): ForecastTemperatureCanaryDecisionV1 {
   // keep loader failures separate from forecast availability
   if (runtime.state === "disabled") {
@@ -603,12 +662,15 @@ export function applyForecastAdjustmentTemperatureCanary(
     validateUtcInstant(input.evaluatedAt, "evaluatedAt");
     validateUtcInstant(input.validAt, "validAt");
 
-    // recheck authorization per request after startup caching
-    if (!forecastAdjustmentTemperatureCanaryIsActiveAt(runtime.bundle, input.evaluatedAt)) {
+    const maintenance = "maintenanceAuthority" in runtime.bundle;
+    // recheck the applicable root or legacy authorization after startup caching
+    if (enforceAuthorization && (maintenance
+      ? runtime.bundle.maintenanceAuthority === null
+      : !forecastAdjustmentTemperatureCanaryIsActiveAt(runtime.bundle, input.evaluatedAt))) {
       return fallbackDecision(
         input.rawBestMatchTemperatureC,
         "disabled",
-        "canary_expired",
+        maintenance ? "registry_invalid" : "canary_expired",
       );
     }
 
@@ -676,7 +738,7 @@ export function applyForecastAdjustmentTemperatureCanary(
 
 // validate one truthful live source receipt
 function validateSourceForecast(
-  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle,
+  bundle: ForecastAdjustmentTemperatureCanaryRuntimeBundle | ForecastAdjustmentTemperatureMaintenanceMaterial,
   source: TemperatureCanarySourceForecast,
   input: ApplyTemperatureCanaryInputV1,
 ): void {

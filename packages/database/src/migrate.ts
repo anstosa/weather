@@ -45,12 +45,15 @@ const MIGRATION_AUTHORIZATION_HISTORY_SHA256 =
   "WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256";
 const RELEASE_PATTERN = /^\d{4}\.\d{2}\.\d{2}-[1-9]\d?$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+const MAINTENANCE_V14_HISTORY_SHA256 =
+  "adb2aade2b019eb0e7a4df5b5bda38017ecbe143613df79cd873f67659068c93";
 
 // apply checked migrations serially
 export async function runMigrations(
   pool: Pool,
   migrationDirectory: string,
   options: Readonly<{
+    atomicMaintenanceV14?: boolean;
     lockTimeoutMs?: number;
     statementTimeoutMs?: number;
   }> = {},
@@ -75,22 +78,42 @@ export async function runMigrations(
     const applied: string[] = [];
     const current: string[] = [];
 
-    // apply files in lexical order
-    for (const [index, migration] of migrations.entries()) {
-      // retain the verified prefix
-      if (index < appliedCount) {
-        current.push(migration.name);
-        continue;
+    // close the inactive bridge to its exact reviewed source and target
+    if (options.atomicMaintenanceV14 === true) {
+      // reject partial tails and any unreviewed migration bytes
+      if (
+        migrations.length !== 21 ||
+        (appliedCount !== 18 && appliedCount !== 21) ||
+        migrationHistorySha256(migrations) !== MAINTENANCE_V14_HISTORY_SHA256
+      ) {
+        throw new Error("atomic maintenance v14 requires the exact 18-to-21 migration bridge");
       }
 
-      await withTransaction(client, async () => {
-        await client.query(migration.sql);
-        await client.query(
-          "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
-          [migration.name, migration.checksum],
-        );
-      });
-      applied.push(migration.name);
+      current.push(...migrations.slice(0, appliedCount).map((migration) => migration.name));
+      // retain the source ledger if any part of the three-file tail fails
+      if (appliedCount === 18) {
+        await withTransaction(client, async () => {
+          // apply the frozen maintenance tail under one database transaction
+          for (const migration of migrations.slice(appliedCount)) {
+            await applyMigration(client, migration);
+            applied.push(migration.name);
+          }
+        });
+      }
+    } else {
+      // preserve the ordinary per-file migration transaction contract
+      for (const [index, migration] of migrations.entries()) {
+        // retain the verified prefix
+        if (index < appliedCount) {
+          current.push(migration.name);
+          continue;
+        }
+
+        await withTransaction(client, async () => {
+          await applyMigration(client, migration);
+        });
+        applied.push(migration.name);
+      }
     }
 
     return { applied, current, serverVersionNum };
@@ -104,6 +127,15 @@ export async function runMigrations(
 
     client.release();
   }
+}
+
+// record exact file bytes within the caller's transaction
+async function applyMigration(client: PoolClient, migration: MigrationFile): Promise<void> {
+  await client.query(migration.sql);
+  await client.query(
+    "INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)",
+    [migration.name, migration.checksum],
+  );
 }
 
 // verify the complete ledger without mutation

@@ -14,6 +14,17 @@ import {
 
 import { canonicalJsonBytes, canonicalSha256, deepFreeze } from "./candidate.js";
 import { runtimeCalendarFingerprintMatches } from "./calendar.js";
+import {
+  loadInstalledMaintenanceServingCandidate,
+} from "./maintenance-shadow-catalog.js";
+import {
+  createMaintenanceShadowServingAuthority,
+  type MaintenanceShadowServingAuthority,
+} from "./maintenance-shadow-comparator.js";
+import type {
+  ForecastAdjustmentTemperatureMaintenanceRuntimePackage,
+  ForecastAdjustmentWindMaintenanceRuntimePackage,
+} from "./maintenance-runtime-package.js";
 import { verifyForecastAdjustmentRuntimeBundle } from "./runtime-bundle.js";
 import {
   forecastAdjustmentTemperatureCanaryIsActiveAt,
@@ -82,10 +93,25 @@ export interface ForecastAdjustmentWindCanaryRegistryV2 {
   readonly siteKey: "ballydidean";
 }
 
+interface ForecastAdjustmentMaintenanceRegistryV1 {
+  readonly activePackage: Readonly<{
+    readonly actionSha256: string;
+    readonly artifactSha256: string;
+    readonly candidateSha256: string;
+    readonly path: string;
+  }> | null;
+  readonly contractVersion:
+    | "forecast-adjustment-temperature-maintenance-registry/v1"
+    | "forecast-adjustment-wind-maintenance-registry/v1";
+  readonly rawReason: "policy_raw" | null;
+  readonly siteKey: "ballydidean";
+}
+
 // cache one startup adjustment provider state
 export type LoadedForecastAdjustmentRuntimeV1 =
   | {
       readonly bundle: ForecastAdjustmentRuntimeBundleV2;
+      readonly comparatorAuthority?: MaintenanceShadowServingAuthority;
       readonly reasonCode: null;
       readonly state: "active";
     }
@@ -126,9 +152,27 @@ export type LoadedForecastAdjustmentWindCanaryRuntimeV1 =
 
 // extend the old startup result without reinterpreting v1 registries
 export type LoadedForecastAdjustmentWindCanaryRuntime =
-  | LoadedForecastAdjustmentWindCanaryRuntimeV1
+  | (LoadedForecastAdjustmentWindCanaryRuntimeV1 & {
+      readonly comparatorAuthority?: MaintenanceShadowServingAuthority;
+    })
+  | {
+      readonly bundle: {
+        readonly bundleSha256: string;
+        readonly candidate: ForecastAdjustmentWindMaintenanceRuntimePackage["candidate"];
+        readonly maintenanceAuthority: Readonly<{
+          readonly actionSha256: string;
+          readonly fullMemberRootSha256: string;
+          readonly policyReportSha256: string;
+        }>;
+        readonly maintenanceBundleSha256: string;
+      };
+      readonly comparatorAuthority: MaintenanceShadowServingAuthority;
+      readonly reasonCode: null;
+      readonly state: "active";
+    }
   | {
       readonly bundle: null;
+      readonly comparatorAuthority: MaintenanceShadowServingAuthority;
       readonly reasonCode: "policy_raw";
       readonly state: "disabled";
     };
@@ -151,9 +195,39 @@ export interface ForecastAdjustmentTemperatureCanaryRuntimeLoaderV1 {
 
 // extend the old startup result without reinterpreting v1 registries
 export type LoadedForecastAdjustmentTemperatureCanaryRuntime =
-  | LoadedForecastAdjustmentTemperatureCanaryRuntimeV1
+  | (LoadedForecastAdjustmentTemperatureCanaryRuntimeV1 & {
+      readonly comparatorAuthority?: MaintenanceShadowServingAuthority;
+    })
+  | {
+      readonly bundle: {
+        readonly bundleSha256: string;
+        readonly maintenanceAuthority: Readonly<{
+          readonly actionSha256: string;
+          readonly fullMemberRootSha256: string;
+          readonly policyReportSha256: string;
+        }>;
+        readonly maintenancePackage: true;
+        readonly model: ForecastAdjustmentTemperatureMaintenanceRuntimePackage["model"];
+        readonly servedForecastIdentity: {
+          readonly adapterVersion: "open-meteo-ecmwf-single-run/v1";
+          readonly dataset: "single_run";
+          readonly maximumReceiptAgeHours: 12;
+          readonly providerKey: "open-meteo";
+          readonly sourceDelayHours: 6;
+          readonly upstreamModel: "ecmwf_ifs";
+        };
+        readonly trainingForecastIdentity: {
+          readonly cohort: "ecmwf_single_run_hindcast";
+          readonly scope: "assumed_delay6_next12";
+        };
+      };
+      readonly comparatorAuthority: MaintenanceShadowServingAuthority;
+      readonly reasonCode: null;
+      readonly state: "active";
+    }
   | {
       readonly bundle: null;
+      readonly comparatorAuthority: MaintenanceShadowServingAuthority;
       readonly reasonCode: "policy_raw";
       readonly state: "disabled";
     };
@@ -310,7 +384,18 @@ async function loadRuntimeFromRoot(
       throw new RangeError("runtime calendar fingerprint does not match candidate");
     }
 
-    return deepFreeze({ bundle: deepFreeze(bundle), reasonCode: null, state: "active" });
+    return deepFreeze({
+      bundle: deepFreeze(bundle),
+      comparatorAuthority: createMaintenanceShadowServingAuthority({
+        artifactBytes: Buffer.from(canonicalJsonBytes(bundle as unknown as JsonValue)),
+        artifactIdentitySha256: bundle.bundleSha256,
+        authorityKind: "legacy_active",
+        family: "wind",
+        receiptBytes: Buffer.from(canonicalJsonBytes(bundle.qualificationReceipt as unknown as JsonValue)),
+      }),
+      reasonCode: null,
+      state: "active",
+    });
   } catch (error: unknown) {
     const code =
       error !== null &&
@@ -355,16 +440,74 @@ async function loadWindCanaryRuntimeFromRoot(
     }
 
     const parsed = await readRegularJson<
-      ForecastAdjustmentWindCanaryRegistryV1 | ForecastAdjustmentWindCanaryRegistryV2
+      ForecastAdjustmentWindCanaryRegistryV1 | ForecastAdjustmentWindCanaryRegistryV2 |
+      ForecastAdjustmentMaintenanceRegistryV1
     >(
       join(absoluteRoot, FORECAST_ADJUSTMENT_WIND_CANARY_REGISTRY_FILENAME),
       absoluteRoot,
     );
 
+    // require root-installed qualification before selecting a maintenance package
+    if (parsed.contractVersion === "forecast-adjustment-wind-maintenance-registry/v1") {
+      if (parsed.activePackage === null) {
+        validateMaintenanceRawRegistry(parsed, "wind");
+        return disabledWindCanary("policy_raw", createMaintenanceShadowServingAuthority({
+          artifactBytes: null,
+          artifactIdentitySha256: null,
+          authorityKind: "policy_raw",
+          family: "wind",
+          receiptBytes: Buffer.from(canonicalJsonBytes(parsed as unknown as JsonValue)),
+        }));
+      }
+      const installed = await loadInstalledMaintenanceServingCandidate({
+        family: "wind",
+        sourceRoot: resolve(absoluteRoot, "..", ".."),
+      });
+      if (installed === null) {
+        throw new RangeError("wind maintenance serving authority is missing");
+      }
+      const runtimePackage = installed.bundle as unknown as ForecastAdjustmentWindMaintenanceRuntimePackage;
+      // require the fitted calendar runtime before executing the selected package
+      if (!runtimeCalendarFingerprintMatches(runtimePackage.candidate.runtimeFingerprint)) {
+        throw new RangeError("wind maintenance runtime fingerprint does not match candidate");
+      }
+      return deepFreeze({
+        bundle: {
+          bundleSha256: runtimePackage.bundleSha256,
+          candidate: runtimePackage.candidate,
+          maintenanceAuthority: {
+            actionSha256: installed.receipt.actionSha256,
+            fullMemberRootSha256: installed.receipt.fullMemberRootSha256!,
+            policyReportSha256: installed.receipt.policyReportSha256,
+          },
+          maintenanceBundleSha256: runtimePackage.bundleSha256,
+        },
+        comparatorAuthority: createMaintenanceShadowServingAuthority({
+          artifactBytes: Buffer.from(canonicalJsonBytes(installed.bundle as unknown as JsonValue)),
+          artifactIdentitySha256: installed.receipt.bundleSha256,
+          authorityKind: "maintenance_qualified",
+          family: "wind",
+          receiptBytes: Buffer.from(canonicalJsonBytes(installed.receipt as unknown as JsonValue)),
+        }),
+        reasonCode: null,
+        state: "active",
+      });
+    }
+    // reject a maintenance registry for the wrong family
+    if ("activePackage" in parsed) {
+      throw new RangeError("wind maintenance registry family differs");
+    }
+
     // accept only the exact nullable v2 bytes and fixed thirteen-pair mask
     if (parsed.contractVersion === "forecast-adjustment-wind-canary-registry/v2") {
       validateForecastAdjustmentWindCanaryRegistryV2(parsed);
-      return disabledWindCanary("policy_raw");
+      return disabledWindCanary("policy_raw", createMaintenanceShadowServingAuthority({
+        artifactBytes: null,
+        artifactIdentitySha256: null,
+        authorityKind: "policy_raw",
+        family: "wind",
+        receiptBytes: Buffer.from(canonicalJsonBytes(parsed as unknown as JsonValue)),
+      }));
     }
 
     validateForecastAdjustmentWindCanaryRegistry(parsed);
@@ -418,7 +561,18 @@ async function loadWindCanaryRuntimeFromRoot(
       return disabledWindCanary("canary_expired");
     }
 
-    return deepFreeze({ bundle: deepFreeze(bundle), reasonCode: null, state: "active" });
+    return deepFreeze({
+      bundle: deepFreeze(bundle),
+      comparatorAuthority: createMaintenanceShadowServingAuthority({
+        artifactBytes: Buffer.from(canonicalJsonBytes(bundle as unknown as JsonValue)),
+        artifactIdentitySha256: bundle.bundleSha256,
+        authorityKind: "legacy_active",
+        family: "wind",
+        receiptBytes: Buffer.from(canonicalJsonBytes(bundle.authorization as unknown as JsonValue)),
+      }),
+      reasonCode: null,
+      state: "active",
+    });
   } catch (error: unknown) {
     const code =
       error !== null &&
@@ -464,11 +618,71 @@ async function loadTemperatureCanaryRuntimeFromRoot(
 
     const parsed = await readRegularJson<
       ForecastAdjustmentTemperatureCanaryRegistryV1 |
-      ForecastAdjustmentTemperatureCanaryRegistryV2
+      ForecastAdjustmentTemperatureCanaryRegistryV2 |
+      ForecastAdjustmentMaintenanceRegistryV1
     >(
       join(absoluteRoot, FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_REGISTRY_FILENAME),
       absoluteRoot,
     );
+
+    // require root-installed qualification before selecting a maintenance package
+    if (parsed.contractVersion === "forecast-adjustment-temperature-maintenance-registry/v1") {
+      if (parsed.activePackage === null) {
+        validateMaintenanceRawRegistry(parsed, "temperature");
+        return disabledTemperatureCanary("policy_raw", createMaintenanceShadowServingAuthority({
+          artifactBytes: null,
+          artifactIdentitySha256: null,
+          authorityKind: "policy_raw",
+          family: "temperature",
+          receiptBytes: Buffer.from(canonicalJsonBytes(parsed as unknown as JsonValue)),
+        }));
+      }
+      const installed = await loadInstalledMaintenanceServingCandidate({
+        family: "temperature",
+        sourceRoot: resolve(absoluteRoot, "..", ".."),
+      });
+      if (installed === null) {
+        throw new RangeError("temperature maintenance serving authority is missing");
+      }
+      const runtimePackage = installed.bundle as unknown as ForecastAdjustmentTemperatureMaintenanceRuntimePackage;
+      return deepFreeze({
+        bundle: {
+          bundleSha256: runtimePackage.bundleSha256,
+          maintenanceAuthority: {
+            actionSha256: installed.receipt.actionSha256,
+            fullMemberRootSha256: installed.receipt.fullMemberRootSha256!,
+            policyReportSha256: installed.receipt.policyReportSha256,
+          },
+          maintenancePackage: true,
+          model: runtimePackage.model,
+          servedForecastIdentity: {
+            adapterVersion: runtimePackage.source.adapterVersion,
+            dataset: runtimePackage.source.dataset,
+            maximumReceiptAgeHours: runtimePackage.source.maximumReceiptAgeHours,
+            providerKey: runtimePackage.source.providerKey,
+            sourceDelayHours: runtimePackage.source.sourceDelayHours,
+            upstreamModel: runtimePackage.source.upstreamModel,
+          },
+          trainingForecastIdentity: {
+            cohort: runtimePackage.source.cohort,
+            scope: runtimePackage.source.scope,
+          },
+        },
+        comparatorAuthority: createMaintenanceShadowServingAuthority({
+          artifactBytes: Buffer.from(canonicalJsonBytes(installed.bundle as unknown as JsonValue)),
+          artifactIdentitySha256: installed.receipt.bundleSha256,
+          authorityKind: "maintenance_qualified",
+          family: "temperature",
+          receiptBytes: Buffer.from(canonicalJsonBytes(installed.receipt as unknown as JsonValue)),
+        }),
+        reasonCode: null,
+        state: "active",
+      });
+    }
+    // reject a maintenance registry for the wrong family
+    if ("activePackage" in parsed) {
+      throw new RangeError("temperature maintenance registry family differs");
+    }
 
     // accept only the exact nullable v2 bytes
     if (
@@ -476,7 +690,13 @@ async function loadTemperatureCanaryRuntimeFromRoot(
       "forecast-adjustment-temperature-canary-registry/v2"
     ) {
       validateForecastAdjustmentTemperatureCanaryRegistryV2(parsed);
-      return disabledTemperatureCanary("policy_raw");
+      return disabledTemperatureCanary("policy_raw", createMaintenanceShadowServingAuthority({
+        artifactBytes: null,
+        artifactIdentitySha256: null,
+        authorityKind: "policy_raw",
+        family: "temperature",
+        receiptBytes: Buffer.from(canonicalJsonBytes(parsed as unknown as JsonValue)),
+      }));
     }
 
     validateForecastAdjustmentTemperatureCanaryRegistry(parsed);
@@ -531,7 +751,18 @@ async function loadTemperatureCanaryRuntimeFromRoot(
       return disabledTemperatureCanary("canary_expired");
     }
 
-    return deepFreeze({ bundle: deepFreeze(bundle), reasonCode: null, state: "active" });
+    return deepFreeze({
+      bundle: deepFreeze(bundle),
+      comparatorAuthority: createMaintenanceShadowServingAuthority({
+        artifactBytes: Buffer.from(canonicalJsonBytes(bundle as unknown as JsonValue)),
+        artifactIdentitySha256: bundle.bundleSha256,
+        authorityKind: "legacy_active",
+        family: "temperature",
+        receiptBytes: Buffer.from(canonicalJsonBytes(bundle.authorization as unknown as JsonValue)),
+      }),
+      reasonCode: null,
+      state: "active",
+    });
   } catch (error: unknown) {
     const code =
       error !== null &&
@@ -685,6 +916,20 @@ function validateForecastAdjustmentTemperatureCanaryRegistryV2(
   }
 }
 
+// validate one actionless raw maintenance registry
+function validateMaintenanceRawRegistry(
+  registry: ForecastAdjustmentMaintenanceRegistryV1,
+  family: "temperature" | "wind",
+): void {
+  // reject every active selector and extension field on the raw branch
+  if (Object.keys(registry).join(",") !== "activePackage,contractVersion,rawReason,siteKey" ||
+      registry.activePackage !== null || registry.rawReason !== "policy_raw" ||
+      registry.siteKey !== "ballydidean" ||
+      registry.contractVersion !== `forecast-adjustment-${family}-maintenance-registry/v1`) {
+    throw new RangeError(`${family} maintenance raw registry is invalid`);
+  }
+}
+
 // validate the closed nullable wind registry and exact mask
 function validateForecastAdjustmentWindCanaryRegistryV2(
   registry: ForecastAdjustmentWindCanaryRegistryV2,
@@ -725,8 +970,14 @@ function disabledWindCanary(
     LoadedForecastAdjustmentWindCanaryRuntime["reasonCode"],
     null
   >,
+  comparatorAuthority?: MaintenanceShadowServingAuthority,
 ): LoadedForecastAdjustmentWindCanaryRuntime {
-  return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
+  return deepFreeze({
+    bundle: null,
+    ...(comparatorAuthority === undefined ? {} : { comparatorAuthority }),
+    reasonCode,
+    state: "disabled",
+  }) as LoadedForecastAdjustmentWindCanaryRuntime;
 }
 
 // create one deeply frozen disabled temperature canary
@@ -735,6 +986,12 @@ function disabledTemperatureCanary(
     LoadedForecastAdjustmentTemperatureCanaryRuntime["reasonCode"],
     null
   >,
+  comparatorAuthority?: MaintenanceShadowServingAuthority,
 ): LoadedForecastAdjustmentTemperatureCanaryRuntime {
-  return deepFreeze({ bundle: null, reasonCode, state: "disabled" });
+  return deepFreeze({
+    bundle: null,
+    ...(comparatorAuthority === undefined ? {} : { comparatorAuthority }),
+    reasonCode,
+    state: "disabled",
+  }) as LoadedForecastAdjustmentTemperatureCanaryRuntime;
 }

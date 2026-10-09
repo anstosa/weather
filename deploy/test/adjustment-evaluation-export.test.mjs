@@ -21,6 +21,9 @@ import {
   verifyAdjustmentEvaluationPackage,
   verifyAdjustmentEvaluationV2EnvelopePackage,
   verifyAdjustmentEvaluationV2Stream,
+  validateAdjustmentV14DatabaseManifest,
+  validateAdjustmentV14RollingDatabaseManifest,
+  projectAdjustmentMaintenanceDatabaseLedgerV3,
 } from "../scripts/adjustment-evaluation-package.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -102,6 +105,47 @@ function transactionManifest(
     },
   };
 }
+
+// keep frozen frontier and rolling deployment ledger authority disjoint
+test("v14 ledger gates accept only their exact reviewed complete schema", () => {
+  const rolling = transactionManifest().payload;
+  const frontier = transactionManifest(migrationLedger(
+    completeMigrationNames.slice(0, 20), completeMigrationChecksums.slice(0, 20),
+  )).payload;
+  assert.equal(validateAdjustmentV14RollingDatabaseManifest(rolling), rolling);
+  assert.equal(validateAdjustmentV14DatabaseManifest(frontier), frontier);
+  assert.throws(() => validateAdjustmentV14DatabaseManifest(rolling));
+  assert.throws(() => validateAdjustmentV14RollingDatabaseManifest(frontier));
+  const changed = structuredClone(rolling);
+  changed.migration_checksums[20] = hashA;
+  assert.throws(() => validateAdjustmentV14RollingDatabaseManifest(changed));
+});
+
+// bind the typed ledger to its real read-only transaction without leaking function values
+test("database ledger projection closes the transaction envelope and CLI response", async () => {
+  const envelope = maintenanceResponse(null);
+  const projected = projectAdjustmentMaintenanceDatabaseLedgerV3(envelope);
+  assert.deepEqual(projected, {
+    contractVersion: "adjustment-database-ledger/v3",
+    databaseManifest: envelope.databaseManifest,
+    snapshotAt: "2026-10-08T12:00:00.000Z",
+  });
+  assert.throws(() => projectAdjustmentMaintenanceDatabaseLedgerV3({ ...envelope, payload: {} }));
+  assert.throws(() => projectAdjustmentMaintenanceDatabaseLedgerV3({ ...envelope, extra: true }));
+  assert.throws(() => projectAdjustmentMaintenanceDatabaseLedgerV3({
+    ...envelope, transaction: { ...envelope.transaction, read_only: "off" },
+  }));
+  const child = spawn(process.execPath, [
+    join(repoRoot, "deploy/scripts/adjustment-evaluation-package.mjs"),
+    "project-maintenance-ledger-v3",
+  ], { stdio: ["pipe", "pipe", "pipe"] });
+  const chunks = [];
+  child.stdout.on("data", (chunk) => chunks.push(chunk));
+  child.stdin.end(JSON.stringify(envelope));
+  const status = await new Promise((resolveClose) => child.once("close", resolveClose));
+  assert.equal(status, 0);
+  assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString("utf8")), projected);
+});
 
 // create one function-only maintenance response
 function maintenanceResponse(payload, ledger = completeMigrationLedger) {
@@ -390,14 +434,38 @@ test("package accepts the exact legacy 0017 ledger for the v1 read-only query", 
   }
 });
 
+// preserve the exact deployed v13 ledger without treating it as recurring action authority
+test("package still accepts complete 0018 and rejects partial 0019", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weather-adjustment-export-ledger-"));
+  try {
+    const snapshotPath = await createEdgeSnapshot(root);
+    const previous = migrationLedger(completeMigrationNames.slice(0, 18),
+      completeMigrationChecksums.slice(0, 18));
+    await buildAdjustmentEvaluationPackage({ edgeSnapshotPath: snapshotPath,
+      fromLocalDate: "2026-10-01", toLocalDate: "2026-10-01",
+      input: databaseStream([temperatureRow()], previous), packageRoot: join(root, "previous") });
+    const partialNames = [...legacyMigrationNames, "0019_adjustment_maintenance_recurring.sql"];
+    const partial = migrationLedger(partialNames,
+      [...legacyMigrationChecksums, completeMigrationChecksums[18]]);
+    await assert.rejects(buildAdjustmentEvaluationPackage({ edgeSnapshotPath: snapshotPath,
+      fromLocalDate: "2026-10-01", toLocalDate: "2026-10-01",
+      input: databaseStream([temperatureRow()], partial), packageRoot: join(root, "partial") }));
+  } finally {
+    await rm(root, { force: true, recursive: true });
+  }
+});
+
 // accept the exact additive maintenance ledger without widening the export query
-test("package accepts the complete 0018 ledger for the unchanged v1 query", async () => {
+test("package accepts the complete 0021 ledger for the unchanged v1 query", async () => {
   const root = await mkdtemp(join(tmpdir(), "weather-adjustment-export-"));
   const packageRoot = join(root, "package");
 
   try {
     assert.deepEqual(completeMigrationNames.slice(17), [
       "0018_adjustment_maintenance_v2.sql",
+      "0019_adjustment_maintenance_recurring.sql",
+      "0020_adjustment_revision_frontier.sql",
+      "0021_adjustment_rolling_registration.sql",
     ]);
     const snapshotPath = await createEdgeSnapshot(root);
     const rainRow = rainReceiptRow();
@@ -493,8 +561,8 @@ test("v2 function envelopes require the complete ledger and remain value-free", 
       /maintenance database ledger is not exact/u,
     );
     const partialLedger = migrationLedger(
-      completeMigrationNames.slice(0, -1),
-      completeMigrationChecksums.slice(0, -1),
+      [...legacyMigrationNames, completeMigrationNames.at(-1)],
+      [...legacyMigrationChecksums, completeMigrationChecksums.at(-1)],
     );
     await assert.rejects(
       frameAdjustmentConfirmationAuthorizationV2({
@@ -817,6 +885,7 @@ test("server export mutex refuses a concurrent reservation before capacity accou
 test("forced operation surfaces expose only closed adjustment verbs", async () => {
   const dispatch = await readFile(join(repoRoot, "deploy/scripts/ssh-dispatch.sh"), "utf8");
   const remote = await readFile(join(repoRoot, "deploy/scripts/remote-ops.sh"), "utf8");
+  const sshRun = await readFile(join(repoRoot, "deploy/scripts/ssh-run.sh"), "utf8");
   const installer = await readFile(join(repoRoot, "deploy/scripts/install-adjustment-scorecard.sh"), "utf8");
   const exporter = await readFile(
     join(repoRoot, "deploy/scripts/adjustment-evaluation-export.sh"),
@@ -830,21 +899,62 @@ test("forced operation surfaces expose only closed adjustment verbs", async () =
   const status = await readFile(statusPath, "utf8");
   assert.match(dispatch, /adjustment-evaluation-export/u);
   assert.match(dispatch, /adjustment-maintenance-anchor-status-v2/u);
+  assert.match(dispatch, /adjustment-future-input-seal-install-v2/u);
+  assert.match(dispatch, /adjustment-maintenance-anchor-install-v3/u);
+  assert.match(dispatch, /adjustment-maintenance-anchor-finalize-v3/u);
   assert.match(dispatch, /install-adjustment-scorecard/u);
   assert.match(remote, /validate_calendar_date_range "\$1" "\$2" 14/u);
   assert.match(
     remote,
     /adjustment-maintenance-anchor-status-v2\)[\s\S]*status\.sh" --adjustment-maintenance-v2/u,
   );
+  assert.match(remote,
+    /adjustment-future-input-seal-install-v2\)[\s\S]*future-input-seal-install-v2/u);
+  assert.match(remote,
+    /adjustment-maintenance-anchor-install-v3\)[\s\S]*maintenance-anchor-install-v3/u);
+  assert.match(remote,
+    /adjustment-maintenance-anchor-finalize-v3\)[\s\S]*maintenance-anchor-finalize-v3/u);
+  assert.match(sshRun, /adjustment-future-input-seal-install-v2/u);
+  assert.match(sshRun, /adjustment-maintenance-anchor-install-v3/u);
+  assert.match(sshRun, /adjustment-maintenance-anchor-finalize-v3/u);
   assert.match(installer, /forecast-adjustment-scorecard-contract\.mjs/u);
   assert.equal(
     exporter.match(/node --max-old-space-size=48 --max-semi-space-size=1/gu)?.length,
-    8,
+    12,
   );
   assert.match(exporter, /--availability-v2/u);
   assert.match(exporter, /adjustment_confirmation_availability_v2/u);
   assert.match(exporter, /--confirmation-v2/u);
   assert.match(exporter, /adjustment_confirmation_export_v2/u);
+  assert.match(exporter, /--revision-catalog-start-v1/u);
+  assert.match(exporter, /revision-cold-start-v1/u);
+  assert.match(exporter, /--revision-catalog-current-start-v1/u);
+  assert.match(exporter, /adjustment_revision_frontier_v1\(\)/u);
+  assert.match(exporter, /--revision-catalog-page-v1/u);
+  assert.match(exporter, /revision-cold-page-v1/u);
+  assert.match(exporter, /--revision-gap-start-v1/u);
+  assert.match(exporter, /revision-gap-start-v1/u);
+  assert.match(exporter, /--revision-gap-page-v1/u);
+  assert.match(exporter, /revision-gap-page-v1/u);
+  assert.match(exporter, /--revision-gap-ack-v1/u);
+  assert.match(exporter, /revision-gap-ack-v1/u);
+  assert.match(exporter, /--revision-capture-epoch-init-v1/u);
+  assert.match(exporter, /revision-capture-epoch-init-v1/u);
+  assert.match(exporter, /--revision-capture-epoch-v1/u);
+  assert.match(exporter, /revision-capture-epoch-read-v1/u);
+  assert.match(exporter, /--revision-capture-epoch-snapshot-v1/u);
+  assert.match(exporter, /revision-capture-epoch-snapshot-read-v1/u);
+  assert.match(exporter, /--database-ledger-v3/u);
+  assert.match(exporter, /project-maintenance-ledger-v3/u);
+  assert.match(dispatch, /adjustment-database-ledger-v3/u);
+  assert.match(remote,
+    /adjustment-database-ledger-v3\)[\s\S]*adjustment-evaluation-export\.sh" --database-ledger-v3/u);
+  assert.match(remote,
+    /adjustment-revision-custody-ack-v1\|adjustment-revision-custody-ack-v2\)[\s\S]*revision_custody_action=\$\{action\/adjustment-revision\/revision-cold\}/u);
+  assert.match(remote, /"\$\{10\}" =~ \^\(none\|\[a-f0-9\]\{64\}\)\$/u);
+  assert.match(sshRun, /"\$\{10\}" =~ \^\(none\|\[a-f0-9\]\{64\}\)\$/u);
+  assert.doesNotMatch(remote, /"\$10"/u);
+  assert.doesNotMatch(sshRun, /"\$10"/u);
   assert.match(exporter, /--username weather_training_export/u);
   assert.doesNotMatch(exporter, /--username weather_owner/u);
   assert.doesNotMatch(exporter, /FROM adjustment_shadow_/u);
@@ -852,8 +962,7 @@ test("forced operation surfaces expose only closed adjustment verbs", async () =
   assert.match(pull, /adjustment-confirmation-availability-v2/u);
   assert.match(pull, /adjustment-confirmation-export-v2/u);
   assert.match(status, /--adjustment-maintenance-v2/u);
-  assert.match(status, /actionEligible: false/u);
-  assert.match(status, /schemaReadiness: "not_established"/u);
+  assert.match(status, /maintenance-anchor-status-v2/u);
   assert.match(
     pull,
     /node --max-old-space-size=48 --max-semi-space-size=1[\s\S]*adjustment-evaluation-package\.mjs" verify/u,

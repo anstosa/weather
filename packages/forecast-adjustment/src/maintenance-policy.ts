@@ -1,4 +1,7 @@
-import { FORECAST_OBSERVATION_PROVIDER_FAMILIES } from "@weather/domain";
+import {
+  FORECAST_OBSERVATION_PROVIDER_FAMILIES,
+  type JsonValue,
+} from "@weather/domain";
 
 import { corePairedSkill } from "./algorithm-v1.js";
 import {
@@ -9,7 +12,7 @@ import {
   createSingleWindowBootstrapStartPlan,
   expandNonCircularBlockStarts,
 } from "./bootstrap-v1.js";
-import { canonicalObjectSha256, deepFreeze } from "./candidate.js";
+import { canonicalObjectSha256, canonicalSha256, deepFreeze } from "./candidate.js";
 import {
   localCalendarFeaturesFor,
   type LocalDaypart,
@@ -27,6 +30,8 @@ export const MAINTENANCE_POLICY_REPORT_EXPIRY_MILLISECONDS =
   7 * 24 * 60 * 60 * 1_000;
 export const MAINTENANCE_EVALUATION_ROW_VERSION =
   "maintenance-evaluation-row/v1" as const;
+export const RAIN_MAINTENANCE_DEVELOPMENT_POPULATION_VERSION =
+  "rain-maintenance-development-population/v3" as const;
 
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const TEMPERATURE_HORIZONS = ["1-6", "7-12"] as const;
@@ -258,6 +263,51 @@ export interface MaintenancePolicyEvaluation {
 export interface RainMaintenanceDevelopmentEvaluation {
   readonly contractVersion: typeof RAIN_MAINTENANCE_POLICY_VERSION;
   readonly developmentRows: 32_896;
+  readonly gates: readonly MaintenancePolicyGate[];
+  readonly passed: boolean;
+  readonly populationSha256: string;
+  readonly productionEligible: false;
+  readonly state: MaintenancePolicyState;
+}
+
+// retain one value-blind annual source member
+export interface RainMaintenanceDevelopmentPopulationMemberV3 {
+  readonly issuedAt: string;
+  readonly key: string;
+  readonly modelLeadHours: number;
+  readonly operationalHorizonHours: number;
+  readonly phaseEligible: boolean;
+  readonly sourceMemberSha256: string;
+  readonly sourceReceiptSha256: string;
+  readonly targetAvailable: boolean;
+  readonly validAt: string;
+}
+
+// bind the complete future-only annual development source population
+export interface RainMaintenanceDevelopmentPopulationV3 {
+  readonly contractVersion: typeof RAIN_MAINTENANCE_DEVELOPMENT_POPULATION_VERSION;
+  readonly cycleHours: readonly [0, 6, 12, 18];
+  readonly developmentEndAt: string;
+  readonly developmentStartAt: string;
+  readonly eligibleRowCount: number;
+  readonly excludedColdRowCount: number;
+  readonly expectedRowCount: number;
+  readonly missingSourceRowCount: number;
+  readonly missingTargetRowCount: number;
+  readonly observedRowCount: number;
+  readonly operationalHorizonHours: readonly number[];
+  readonly populationMemberRootSha256: string;
+  readonly populationReceiptRootSha256: string;
+  readonly populationSha256: string;
+  readonly sourceModelLeadHours: readonly number[];
+  readonly sourcePopulation: readonly RainMaintenanceDevelopmentPopulationMemberV3[];
+}
+
+// report a nonactionable annual future-only development screen
+export interface RainMaintenanceDevelopmentEvaluationV3 {
+  readonly contractVersion: typeof RAIN_MAINTENANCE_POLICY_VERSION;
+  readonly developmentPopulationSha256: string;
+  readonly developmentRows: number;
   readonly gates: readonly MaintenancePolicyGate[];
   readonly passed: boolean;
   readonly populationSha256: string;
@@ -565,6 +615,37 @@ export function evaluateRainMaintenanceDevelopment(
   });
 }
 
+// evaluate one complete future-only annual development population without action authority
+export function evaluateRainMaintenanceDevelopmentV3(
+  rows: readonly RainMaintenanceEvaluationRow[],
+  population: RainMaintenanceDevelopmentPopulationV3,
+): RainMaintenanceDevelopmentEvaluationV3 {
+  validateRainPopulation(rows, null);
+  validateRainDevelopmentPopulationV3(population, rows);
+
+  // forbid prospective receipts from entering the historical screen
+  if (!rows.every((row) => row.evidenceClass === "historical_development")) {
+    throw new RangeError("rain development evaluation requires historical rows");
+  }
+  const gates = rainStableGates(rows);
+  const state: MaintenancePolicyState = gates.some((gate) => gate.state === "fail")
+    ? "fail"
+    : gates.some((gate) => gate.state === "pending") ? "pending" : "pass";
+  return deepFreeze({
+    contractVersion: RAIN_MAINTENANCE_POLICY_VERSION,
+    developmentPopulationSha256: population.populationSha256,
+    developmentRows: rows.length,
+    gates,
+    passed: state === "pass",
+    populationSha256: canonicalObjectSha256(
+      { rows: rows.map((row) => row.rowSha256), populationSha256: "" },
+      "populationSha256",
+    ),
+    productionEligible: false as const,
+    state,
+  });
+}
+
 // evaluate the one authorized rain regression member
 export function evaluateRainMaintenanceRegression(
   rows: readonly RainMaintenanceEvaluationRow[],
@@ -743,6 +824,7 @@ function validatePopulation(
 // validate one rain-only population
 function validateRainPopulation(
   rows: readonly RainMaintenanceEvaluationRow[],
+  historicalRowCount: number | null = 32_896,
 ): void {
   validatePopulation(rows, "rain");
 
@@ -755,8 +837,123 @@ function validateRainPopulation(
     row.evidenceClass === "historical_development");
 
   // preserve the frozen development population without calling it fresh
-  if (historical && rows.length !== 32_896) {
+  if (historical && historicalRowCount !== null && rows.length !== historicalRowCount) {
     throw new RangeError("rain historical development population must contain 32896 rows");
+  }
+}
+
+// validate one exact full-year value-blind development population
+function validateRainDevelopmentPopulationV3(
+  value: RainMaintenanceDevelopmentPopulationV3,
+  rows: readonly RainMaintenanceEvaluationRow[],
+): void {
+  requireExactKeys(value, [
+    "contractVersion", "cycleHours", "developmentEndAt", "developmentStartAt",
+    "eligibleRowCount", "excludedColdRowCount", "expectedRowCount",
+    "missingSourceRowCount", "missingTargetRowCount", "observedRowCount",
+    "operationalHorizonHours", "populationMemberRootSha256",
+    "populationReceiptRootSha256", "populationSha256", "sourceModelLeadHours",
+    "sourcePopulation",
+  ], "rain development population");
+  const start = Date.parse(value.developmentStartAt);
+  const end = Date.parse(value.developmentEndAt);
+  const prior = new Date(end);
+  prior.setUTCFullYear(prior.getUTCFullYear() - 1);
+  const modelLeads = Array.from({ length: 23 }, (_unused, index) => index + 9);
+  const operationalHorizons = Array.from({ length: 23 }, (_unused, index) => index + 1);
+  // require one complete calendar year and the unchanged four-cycle geometry
+  if (value.contractVersion !== RAIN_MAINTENANCE_DEVELOPMENT_POPULATION_VERSION ||
+    !Number.isFinite(start) || !Number.isFinite(end) || start >= end ||
+    prior.getTime() !== start || new Date(start).toISOString() !== value.developmentStartAt ||
+    new Date(end).toISOString() !== value.developmentEndAt ||
+    JSON.stringify(value.cycleHours) !== JSON.stringify([0, 6, 12, 18]) ||
+    JSON.stringify(value.sourceModelLeadHours) !== JSON.stringify(modelLeads) ||
+    JSON.stringify(value.operationalHorizonHours) !== JSON.stringify(operationalHorizons) ||
+    !Array.isArray(value.sourcePopulation)) {
+    throw new RangeError("rain development interval differs");
+  }
+  const expected = new Map<string, Readonly<{
+    issuedAt: string;
+    modelLeadHours: number;
+    operationalHorizonHours: number;
+    validAt: string;
+  }>>();
+  const hour = 3_600_000;
+  const firstRun = Math.floor((start - 31 * hour) / (6 * hour)) * 6 * hour;
+
+  // enumerate the issuance halo for every target-valid row in the annual interval
+  for (let run = firstRun; run <= end - 9 * hour; run += 6 * hour) {
+    const runInitializedAt = new Date(run).toISOString();
+    const issuedAt = new Date(run + 8 * hour).toISOString();
+    // preserve source leads nine through thirty-one as operational horizons one through twenty-three
+    for (const modelLeadHours of modelLeads) {
+      const valid = run + modelLeadHours * hour;
+      // omit only targets outside the half-open development interval
+      if (valid < start || valid >= end) {
+        continue;
+      }
+      const validAt = new Date(valid).toISOString();
+      expected.set(`${runInitializedAt}/${validAt}`, Object.freeze({
+        issuedAt,
+        modelLeadHours,
+        operationalHorizonHours: modelLeadHours - 8,
+        validAt,
+      }));
+    }
+  }
+  const sourceKeys = new Set<string>();
+  let eligible = 0;
+  let excludedCold = 0;
+
+  // validate every archived source identity without reading target values
+  for (const member of value.sourcePopulation) {
+    requireExactKeys(member, [
+      "issuedAt", "key", "modelLeadHours", "operationalHorizonHours", "phaseEligible",
+      "sourceMemberSha256", "sourceReceiptSha256", "targetAvailable", "validAt",
+    ], "rain development population member");
+    const geometry = expected.get(member.key);
+    // require exact key coverage, geometry and immutable source identities
+    if (geometry === undefined || sourceKeys.has(member.key) ||
+      geometry.issuedAt !== member.issuedAt || geometry.validAt !== member.validAt ||
+      geometry.modelLeadHours !== member.modelLeadHours ||
+      geometry.operationalHorizonHours !== member.operationalHorizonHours ||
+      typeof member.phaseEligible !== "boolean" || typeof member.targetAvailable !== "boolean" ||
+      !HASH_PATTERN.test(member.sourceMemberSha256) ||
+      !HASH_PATTERN.test(member.sourceReceiptSha256)) {
+      throw new RangeError("rain development source member differs");
+    }
+    sourceKeys.add(member.key);
+    // count only source-temperature eligibility, never target outcomes
+    if (member.phaseEligible) {
+      eligible += 1;
+    } else {
+      excludedCold += 1;
+    }
+  }
+  const integers = [value.eligibleRowCount, value.excludedColdRowCount,
+    value.expectedRowCount, value.missingSourceRowCount, value.missingTargetRowCount,
+    value.observedRowCount];
+  // reject incomplete or internally inconsistent annual source custody
+  if (integers.some((count) => !Number.isSafeInteger(count) || count < 0) ||
+    value.expectedRowCount !== expected.size || value.observedRowCount !== expected.size ||
+    value.sourcePopulation.length !== expected.size || sourceKeys.size !== expected.size ||
+    value.missingSourceRowCount !== 0 || value.missingTargetRowCount !== 0 ||
+    value.eligibleRowCount !== eligible || value.excludedColdRowCount !== excludedCold ||
+    eligible + excludedCold !== expected.size ||
+    value.sourcePopulation.some((member) => member.phaseEligible && !member.targetAvailable) ||
+    value.populationMemberRootSha256 !== canonicalSha256(
+      value.sourcePopulation.map((member) => member.sourceMemberSha256).sort()) ||
+    value.populationReceiptRootSha256 !== canonicalSha256(
+      [...new Set(value.sourcePopulation.map((member) => member.sourceReceiptSha256))].sort()) ||
+    value.populationSha256 !== canonicalSha256(value.sourcePopulation as unknown as JsonValue)) {
+    throw new RangeError("rain development population proof differs");
+  }
+  const eligibleKeys = value.sourcePopulation.filter((member) => member.phaseEligible)
+    .map((member) => member.key).sort();
+  const rowKeys = rows.map((row) => row.key).sort();
+  // require the evaluator rows to equal the source-eligible target population exactly
+  if (JSON.stringify(eligibleKeys) !== JSON.stringify(rowKeys)) {
+    throw new RangeError("rain development evaluation population differs");
   }
 }
 
