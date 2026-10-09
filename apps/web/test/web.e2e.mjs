@@ -1898,8 +1898,14 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
     }
 
     const currentReadsBeforeBoundary = fixture.state.requests.filter(
-      // count current data independently of clock-only artwork changes
+      // count current-only refreshes at the daylight boundary
       (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    const otherWeatherReadsBeforeBoundary = fixture.state.requests.filter(
+      // exclude current polling and optional private layout reads
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
     ).length;
     await page.clock.fastForward(10 * 60_000 + 2_000);
     await page.waitForFunction(
@@ -1909,17 +1915,32 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
     );
     assert.equal((await captureHeaderAndNow()).alt, "Current weather: Partly cloudy night");
     assert.equal(fixture.state.requests.filter(
-      // keep the sunset boundary data-free
+      // refresh only current sunlight inputs at the boundary
       (entry) => entry === "GET /api/v1/sites/ballydidean/current",
-    ).length, currentReadsBeforeBoundary);
+    ).length, currentReadsBeforeBoundary + 1);
+    assert.equal(fixture.state.requests.filter(
+      // keep forecasts tides and daily products unchanged
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length, otherWeatherReadsBeforeBoundary);
 
+    const currentReadsBeforeVisibility = fixture.state.requests.filter(
+      // capture current-only polling before two rapid resumes
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
     await page.clock.setSystemTime(new Date(sunset.getTime() - 1_000));
+    const resumedCurrent = page.waitForResponse(
+      // require at least one current-only resume response
+      (response) => new URL(response.url()).pathname === "/api/v1/sites/ballydidean/current",
+    );
     await page.evaluate(
       // simulate a foreground resume immediately before sunset
       () => document.dispatchEvent(new Event("visibilitychange")),
     );
+    await resumedCurrent;
     await page.waitForFunction(
-      // restore the daylight artwork without a weather request
+      // restore daylight artwork after the current-only resume
       () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
         "/weather-icons/03-partly-cloudy.svg",
     );
@@ -1929,14 +1950,22 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
       () => document.dispatchEvent(new Event("visibilitychange")),
     );
     await page.waitForFunction(
-      // restore the night artwork from retained conditions
+      // restore night artwork without a full weather reload
       () => document.querySelector(".section-nav-weather-icon")?.getAttribute("src") ===
         "/weather-icons/15-partly-cloudy-night.svg",
     );
-    assert.equal(fixture.state.requests.filter(
-      // keep both visibility refreshes data-free
+    const currentReadsAfterVisibility = fixture.state.requests.filter(
+      // allow overlap deduplication across the rapid visibility events
       (entry) => entry === "GET /api/v1/sites/ballydidean/current",
-    ).length, currentReadsBeforeBoundary);
+    ).length;
+    assert.equal(currentReadsAfterVisibility > currentReadsBeforeVisibility, true);
+    assert.equal(currentReadsAfterVisibility <= currentReadsBeforeVisibility + 2, true);
+    assert.equal(fixture.state.requests.filter(
+      // keep every non-current weather product stable on resume
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length, otherWeatherReadsBeforeBoundary);
 
     await page.setViewportSize({ height: 900, width: 320 });
     const originalIcon = await page.locator("img.section-nav-weather-icon").elementHandle();
@@ -5056,26 +5085,42 @@ test("anonymous home-network viewers see indoor and soil panels only while allow
     assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout").length, 1);
     assert.equal(fixture.state.requests.some((entry) => entry.includes("/api/v1/admin/")), false);
 
-    const weatherReads = fixture.state.requests.filter(
-      // exclude the display-only context and optional layout reads
-      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
+    const currentReads = fixture.state.requests.filter(
+      // count current-only visibility refreshes independently
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    const otherWeatherReads = fixture.state.requests.filter(
+      // exclude current polling and optional layout reads
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
     ).length;
     fixture.state.viewerContext = { data: { homeNetwork: false } };
     const denied = page.waitForResponse(
       // await the uncached location claim before changing the fixture again
       (response) => new URL(response.url()).pathname === "/api/v1/viewer-context",
     );
+    const deniedCurrent = page.waitForResponse(
+      // await the independent current-only resume read
+      (response) => new URL(response.url()).pathname === "/api/v1/sites/ballydidean/current",
+    );
     await page.evaluate(
       // simulate a tab resuming away from home Wi-Fi
       () => document.dispatchEvent(new Event("visibilitychange")),
     );
-    await denied;
+    await Promise.all([denied, deniedCurrent]);
     await page.locator("[data-indoor-house]").waitFor({ state: "detached" });
     assert.equal(await page.locator("[data-admin-soil-map]").count(), 0);
     assert.equal(fixture.state.requests.filter(
-      // recheck location without reloading weather
-      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
-    ).length, weatherReads);
+      // refresh current sunlight inputs on foreground resume
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length > currentReads, true);
+    assert.equal(fixture.state.requests.filter(
+      // avoid reloading forecasts tides or daily products
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length, otherWeatherReads);
     assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout").length, 1);
 
     fixture.state.viewerContext = { data: { homeNetwork: true } };
@@ -5279,8 +5324,8 @@ test("indoor temperatures use discrete comfort colors across loading, units, and
   }
 });
 
-// recheck visible home access on a bounded timer without polling weather
-test("home-network timer revokes access without rereading weather on other routes", { timeout: 60_000 }, async () => {
+// recheck visible home access while refreshing only current sunlight inputs
+test("home-network timer revokes access without rereading full weather products", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -5295,9 +5340,23 @@ test("home-network timer revokes access without rereading weather on other route
       // count private-context checks only
       (entry) => entry === "GET /api/v1/viewer-context",
     ).length;
-    const weatherReads = fixture.state.requests.filter(
-      // exclude the context and optional positions from weather reads
-      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
+    const currentReads = fixture.state.requests.filter(
+      // count the bounded current-only polling stream
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    const otherWeatherReads = fixture.state.requests.filter(
+      // exclude current polling and optional private positions
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length;
+    const layoutReads = fixture.state.requests.filter(
+      // track optional private layout reads exactly
+      (entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout",
+    ).length;
+    const adminReads = fixture.state.requests.filter(
+      // track every protected api request exactly
+      (entry) => entry.includes("/api/v1/admin/"),
     ).length;
 
     fixture.state.viewerContext = { data: { homeNetwork: false } };
@@ -5305,20 +5364,80 @@ test("home-network timer revokes access without rereading weather on other route
       // wait for the interval check to finish
       (response) => new URL(response.url()).pathname === "/api/v1/viewer-context",
     );
+    const refreshedCurrent = page.waitForResponse(
+      // await the current-only minute refresh
+      (response) => new URL(response.url()).pathname === "/api/v1/sites/ballydidean/current",
+    );
     await page.clock.fastForward(60_100);
-    await expired;
+    await Promise.all([expired, refreshedCurrent]);
     await page.locator("[data-indoor-house]").waitFor({ state: "detached" });
     assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/viewer-context").length, contextReads + 1);
     assert.equal(fixture.state.requests.filter(
-      // preserve weather-read volume during the timer check
-      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") && !entry.endsWith("/property-sensor-layout"),
-    ).length, weatherReads);
+      // run exactly one current refresh for the elapsed minute
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length, currentReads + 1);
+    assert.equal(fixture.state.requests.filter(
+      // preserve full weather-product volume during the timer check
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length, otherWeatherReads);
+    assert.equal(fixture.state.requests.filter(
+      // avoid repeating the retained private layout
+      (entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout",
+    ).length, layoutReads);
+    assert.equal(fixture.state.requests.filter(
+      // never cross into administrator endpoints
+      (entry) => entry.includes("/api/v1/admin/"),
+    ).length, adminReads);
 
     await page.getByRole("link", { name: "Forecast" }).click();
     await page.waitForURL(`${fixture.origin}/forecast`);
+    await page.locator("[data-forecast-charts]").waitFor();
     const routeContextReads = fixture.state.requests.filter((entry) => entry === "GET /api/v1/viewer-context").length;
+    const routeCurrentReads = fixture.state.requests.filter(
+      // capture forecast-route current polling independently
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length;
+    const routeOtherWeatherReads = fixture.state.requests.filter(
+      // capture full products after the intentional route load
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length;
+    const routeLayoutReads = fixture.state.requests.filter(
+      // retain the route's settled private-layout count
+      (entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout",
+    ).length;
+    const routeAdminReads = fixture.state.requests.filter(
+      // retain the route's settled protected-api count
+      (entry) => entry.includes("/api/v1/admin/"),
+    ).length;
+    const forecastCurrent = page.waitForResponse(
+      // await one forecast-route current-only interval read
+      (response) => new URL(response.url()).pathname === "/api/v1/sites/ballydidean/current",
+    );
     await page.clock.fastForward(60_100);
+    await forecastCurrent;
     assert.equal(fixture.state.requests.filter((entry) => entry === "GET /api/v1/viewer-context").length, routeContextReads);
+    assert.equal(fixture.state.requests.filter(
+      // retain minute current refreshes on the forecast route
+      (entry) => entry === "GET /api/v1/sites/ballydidean/current",
+    ).length, routeCurrentReads + 1);
+    assert.equal(fixture.state.requests.filter(
+      // avoid forecast tide daily layout or admin reloads on the interval
+      (entry) => entry.startsWith("GET /api/v1/sites/ballydidean/") &&
+        entry !== "GET /api/v1/sites/ballydidean/current" &&
+        !entry.endsWith("/property-sensor-layout"),
+    ).length, routeOtherWeatherReads);
+    assert.equal(fixture.state.requests.filter(
+      // keep private layouts off the forecast timer
+      (entry) => entry === "GET /api/v1/sites/ballydidean/property-sensor-layout",
+    ).length, routeLayoutReads);
+    assert.equal(fixture.state.requests.filter(
+      // keep protected apis off the forecast timer
+      (entry) => entry.includes("/api/v1/admin/"),
+    ).length, routeAdminReads);
   } finally {
     await browser?.close();
     fixture.server.close();
@@ -5374,7 +5493,7 @@ test("admin login and logout work inside an iframe", { timeout: 60_000 }, async 
   }
 });
 
-test("admin forecast switches persist independently and hide the public toggle when all off", { timeout: 60_000 }, async () => {
+test("admin forecast switches persist independently while the public cloud toggle remains", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -5406,7 +5525,7 @@ test("admin forecast switches persist independently and hide the public toggle w
     });
 
     await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
-    assert.equal(await page.locator("[data-forecast-adjustment-toggle]").count(), 0);
+    assert.equal(await page.locator("[data-forecast-adjustment-toggle]").count(), 1);
     await page.goto(`${fixture.origin}/admin`, { waitUntil: "networkidle" });
     await page.getByRole("heading", { name: "Forecast adjustments" }).waitFor();
     const reopened = page.locator("[data-admin-forecast-adjustments]");
