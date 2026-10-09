@@ -8,8 +8,8 @@ import { promisify } from "node:util";
 
 import { runMigrations } from "../../packages/database/dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "../../packages/database/test/postgres-harness.mjs";
@@ -78,13 +78,14 @@ test(
   async () => {
     const prefixDirectory = await mkdtemp(join(tmpdir(), "weather-rain-collection-upgrade-"));
     const server = await startPostgres(17, "rain-collection-upgrade");
-    const pool = createTestPool(server);
+    const adminPool = createTestPool(server);
+    const pool = createTestPool(server, "weather_test", "weather_owner", "owner-test");
     const apiPool = createTestPool(server, "weather_test", "weather_api", "api-test");
     const ingestPool = createTestPool(server, "weather_test", "weather_ingest", "ingest-test");
     const exportPool = createTestPool(server, "weather_test", "weather_training_export", "training-export-test");
 
     try {
-      await createRuntimeRoles(pool);
+      await prepareRuntimeRoles(adminPool);
       const prefix = await copyMigrationPrefix(prefixDirectory);
       assert.equal(prefix.at(-1), "0013_ecmwf_temperature_canary.sql");
       assert.deepEqual((await runMigrations(pool, prefixDirectory)).applied, prefix);
@@ -104,6 +105,7 @@ test(
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
+        "0018_adjustment_maintenance_v2.sql",
       ]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
@@ -135,13 +137,13 @@ test(
         ["GRANT SELECT (hours) ON rain_adjustment_runs TO weather_training_export", "REVOKE SELECT (hours) ON rain_adjustment_runs FROM weather_training_export"],
         ["GRANT weather_owner TO weather_api", "REVOKE weather_owner FROM weather_api"],
       ]) {
-        await pool.query(drift);
+        await adminPool.query(drift);
         await assert.rejects(verifyRuntimeAcl(server), (error) =>
           error?.stderr?.includes("runtime database ACL verification failed"));
 
         // remove explicit column drift before replaying table ACLs
         if (undo !== null) {
-          await pool.query(undo);
+          await adminPool.query(undo);
         }
         await applyRuntimeAcl(server);
       }
@@ -176,18 +178,19 @@ test(
         status: null,
       });
       const replayed = await runMigrations(pool, migrationDirectory);
-      assert.deepEqual(replayed.applied.slice(-4), [
+      assert.deepEqual(replayed.applied.slice(-5), [
         "0014_rain_collection.sql",
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
+        "0018_adjustment_maintenance_v2.sql",
       ]);
       await applyRuntimeAcl(server);
       await verifyRuntimeAcl(server);
     } finally {
       // clean disposable database resources
       // close every disposable connection
-      await Promise.all([apiPool, ingestPool, exportPool, pool].map((connection) =>
+      await Promise.all([apiPool, ingestPool, exportPool, pool, adminPool].map((connection) =>
         connection.end().catch(() => undefined)));
       await stopPostgres(server);
       await rm(prefixDirectory, { force: true, recursive: true });

@@ -103,11 +103,14 @@ const exportAuthoritySnapshotSql = `
     ) AS database_settings
 `;
 
-// retain the exact four-view read-only export authority
+// retain the exact read-only export authority
 const expectedExportAuthoritySnapshot = {
   database_privileges: ["CONNECT"],
   database_settings: [],
-  executable_functions: [],
+  executable_functions: [
+    "adjustment_confirmation_availability_v2(text)",
+    "adjustment_confirmation_export_v2(text,text,smallint)",
+  ],
   relation_privileges: [
     "public.adjustment_evaluation_export_manifest_v1:SELECT",
     "public.adjustment_evaluation_export_rows_v1:SELECT",
@@ -327,7 +330,7 @@ test(
       const secondEvent = JSON.parse(second.stdout.trim());
 
       assert.equal(firstEvent.event, "migrations_complete");
-      // require the complete immutable 0017 ledger
+      // require the complete immutable 0018 ledger
       assert.deepEqual(firstEvent.applied, [
         "0001_initial_weather.sql",
         "0002_worker_migration_readiness.sql",
@@ -346,6 +349,7 @@ test(
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
+        "0018_adjustment_maintenance_v2.sql",
       ]);
       assert.deepEqual(firstEvent.current, []);
       assert.equal(secondEvent.event, "migrations_complete");
@@ -368,6 +372,7 @@ test(
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
+        "0018_adjustment_maintenance_v2.sql",
       ]);
       assert.deepEqual(secondEvent.bootstrap, firstEvent.bootstrap);
       assert.deepEqual(secondEvent.ecowittBootstrap, firstEvent.ecowittBootstrap);
@@ -401,6 +406,7 @@ test(
         { name: "0015_rain_station_access.sql" },
         { name: "0016_rain_adjustment.sql" },
         { name: "0017_adjustment_evaluation_export.sql" },
+        { name: "0018_adjustment_maintenance_v2.sql" },
       ]);
       assert.deepEqual(firstSnapshot.owners, [
         { tableowner: "weather_owner", tablename: "providers" },
@@ -968,6 +974,7 @@ test(
         { name: "0015_rain_station_access.sql" },
         { name: "0016_rain_adjustment.sql" },
         { name: "0017_adjustment_evaluation_export.sql" },
+        { name: "0018_adjustment_maintenance_v2.sql" },
       ]);
       // retain all normalized metric update grants
       const metricUpdatePrivileges = await ingestPool.query(

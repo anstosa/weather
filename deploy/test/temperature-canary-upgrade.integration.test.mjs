@@ -8,8 +8,8 @@ import { promisify } from "node:util";
 
 import { runMigrations } from "../../packages/database/dist/index.js";
 import {
-  createRuntimeRoles,
   createTestPool,
+  prepareRuntimeRoles,
   startPostgres,
   stopPostgres,
 } from "../../packages/database/test/postgres-harness.mjs";
@@ -80,10 +80,11 @@ test(
       join(tmpdir(), "weather-canary-upgrade-migrations-"),
     );
     const server = await startPostgres(17, "temperature-canary-upgrade");
-    const pool = createTestPool(server);
+    const adminPool = createTestPool(server);
+    const pool = createTestPool(server, "weather_test", "weather_owner", "owner-test");
 
     try {
-      await createRuntimeRoles(pool);
+      await prepareRuntimeRoles(adminPool);
       const prefix = await copyMigrationPrefix(prefixDirectory, 12);
       const initial = await runMigrations(pool, prefixDirectory);
 
@@ -115,6 +116,7 @@ test(
         "0015_rain_station_access.sql",
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
+        "0018_adjustment_maintenance_v2.sql",
       ]);
       await applyRuntimeAcl(server, runtimeAclPath, "runtime-acl-v2-upgraded.sql");
 
@@ -168,6 +170,8 @@ test(
         // preserve the primary test outcome
         return undefined;
       });
+      // close the privileged setup connection
+      await adminPool.end().catch(() => undefined);
       await stopPostgres(server);
       await rm(prefixDirectory, { force: true, recursive: true });
     }
