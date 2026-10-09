@@ -1164,6 +1164,8 @@ function assertProspectiveArchiveCapacity(capacity, prospective) {
 export const adjustmentArchiveJobTestOnly = Object.freeze({
   // inspect only caller-owned readonly fixture paths
   inspectArchiveEnvelope: async (options) => await inspectArchiveEnvelopeAtRoot(options),
+  // exercise bounded backing-c framing without claiming native workstation authority
+  measureBackingCCapacity,
 });
 
 // count only private adjustment-maintenance inodes without following links

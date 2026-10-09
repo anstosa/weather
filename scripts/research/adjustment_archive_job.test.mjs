@@ -11,7 +11,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
@@ -1030,19 +1030,44 @@ test("genesis admission preserves exact byte and inode floors", async () => {
 });
 
 test("ext4-only capacity output cannot impersonate backing c evidence", async () => {
-  const home = await lstat("/home/ubuntu", { bigint: true });
-  const ext4Only = Buffer.from(JSON.stringify({
-    freeBytes: (64n * 1_024n ** 3n).toString(),
-    rootKind: "home_native_ext4_primary",
-  }));
-  const outputs = [Buffer.from(`${home.dev}|${home.ino}\n`), ext4Only];
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "weather-backing-c-framing-"));
+  // isolate response framing from the production-only native home admission
+  try {
+    const home = await lstat(fixtureRoot, { bigint: true });
+    const ext4Only = Buffer.from(JSON.stringify({
+      freeBytes: (64n * 1_024n ** 3n).toString(),
+      rootKind: "home_native_ext4_primary",
+    }));
+    const outputs = [Buffer.from(`${home.dev}|${home.ino}\n`), ext4Only];
+    await assert.rejects(
+      adjustmentArchiveJobTestOnly.measureBackingCCapacity(
+        // satisfy only the injected identity before substituting ext4 data
+        () => fakeChild(outputs.shift()),
+        home,
+      ),
+      /backing_c_probe_invalid/u,
+    );
+  } finally {
+    await rm(fixtureRoot, { force: true, recursive: true });
+  }
+});
+
+// unsupported runner homes must not receive physical workstation authority
+test("backing capacity rejects a non-workstation home before spawning", {
+  skip: homedir() === "/home/ubuntu" ? "requires a non-workstation home" : false,
+}, async () => {
+  let spawned = 0;
   await assert.rejects(
     measureAdjustmentArchiveBackingCapacity({
-      // satisfy only the literal wsl identity before substituting ext4 data
-      spawnImpl: () => fakeChild(outputs.shift()),
+      // detect any unauthorized probe before native admission
+      spawnImpl: () => {
+        spawned += 1;
+        throw new Error("unexpected backing probe");
+      },
     }),
-    /backing_c_probe_invalid/u,
+    /archive backing filesystem is invalid/u,
   );
+  assert.equal(spawned, 0);
 });
 
 test("legacy census counts a symlink inode without following its target", async () => {
