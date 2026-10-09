@@ -545,17 +545,16 @@ test("v13 refuses predecessor drift before creating a recovery backup", async ()
   }
 });
 
-test("v13 rereads all identities after its final quiet-window check", async () => {
+test("v13 final quiet-window recheck preserves foreign control drift without replacement", async () => {
   const fixture = await createFixture();
   try {
     const result = spawnSync("bash", [
       "-c",
       `source "$1"
-quiet_count=0
 test_destination=$2
 require_quiet_weather() {
-  quiet_count=$((quiet_count + 1))
-  if ((quiet_count == 3)); then
+  # inject an unrelated write after sealing but before replacement
+  if [[ -n "\${backup:-}" && -f "$backup/sealed-transaction.manifest" ]]; then
     printf 'drifted\\n' >"$test_destination/deploy/scripts/common.sh"
   fi
 }
@@ -573,7 +572,15 @@ install_v13_control_plane "$2" "$3" "$4" "$5" "$6" "$7" 0 "$8" "$9" "$8" "$9"`,
     ], { cwd: repoRoot, encoding: "utf8" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /predecessor identity differs: deploy\/scripts\/common\.sh/u);
-    assertPredecessor(fixture);
+    assert.equal(
+      await readFile(join(fixture.installed, "deploy/scripts/common.sh"), "utf8"),
+      "drifted\n",
+    );
+    // no other control member may be replaced or adopted after foreign drift
+    for (const identity of identities.filter((entry) => entry.relativePath !== "deploy/scripts/common.sh")) {
+      assert.equal(await fileHash(join(fixture.installed, identity.relativePath)), identity.sha256);
+    }
+    assert.doesNotMatch(result.stdout, /Installed inert maintenance v13 control plane/u);
     await assertRuntimeState(fixture);
   } finally {
     await rm(fixture.root, { force: true, recursive: true });

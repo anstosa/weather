@@ -129,8 +129,8 @@ test("v13 derives source settings from retained state and rejects bootstrap subs
   await mkdir(join(directory, "state"));
   await mkdir(join(directory, "releases"));
   const source = join(directory, "releases/2026.10.07-3.env");
-  await writeFile(source, "WEATHER_RELEASE=2026.10.07-3\n");
-  await writeFile(join(directory, "state/current-release"), "2026.10.07-3\n");
+  await writeFile(source, "WEATHER_RELEASE=2026.10.07-3\n", { mode: 0o600 });
+  await writeFile(join(directory, "state/current-release"), "2026.10.07-3\n", { mode: 0o600 });
   const harness = `source "$1"
 state_dir="$2/state"
 releases_dir="$2/releases"
@@ -140,7 +140,8 @@ require_retained_maintenance_source "$3"`;
     "-c", harness, "v13-source", join(root, "deploy/scripts/update.sh"), directory, path,
   ], { encoding: "utf8" });
   try {
-    assert.equal(check(source).status, 0);
+    const accepted = check(source);
+    assert.equal(accepted.status, 0, accepted.stderr);
     assert.notEqual(check(join(directory, ".env")).status, 0);
     await writeFile(join(directory, "state/current-release"), "2026.10.07-2\n");
     assert.notEqual(check(source).status, 0);
