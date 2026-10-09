@@ -9,6 +9,7 @@ import { chromium } from "playwright";
 import {
   eveningSunTimes,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+  parseForecastRecordsResponse,
   UNIT_PREFERENCE_STORAGE_KEY,
 } from "../dist/index.js";
 
@@ -677,6 +678,48 @@ function windCanaryForecastAdjustment(record, targetLeadHours) {
   };
 }
 
+// create one active causal rain decision
+function activeRainAdjustment(record) {
+  const validAtMs = Date.parse(record.validAt);
+  const runInitializedAt = new Date(validAtMs - 12 * 3_600_000).toISOString();
+  const firstReceivedAt = new Date(validAtMs - 11 * 3_600_000).toISOString();
+  const decisionAt = new Date(validAtMs - 4 * 3_600_000).toISOString();
+  return {
+    bundleSha256: "4".repeat(64),
+    contractVersion: "forecast-rain-adjustment-decision/v1",
+    correctedPrecipitationMm: record.metrics.precipitationMm,
+    rawBestMatchPrecipitationMm: record.metrics.precipitationMm,
+    reasonCode: null,
+    sourceForecast: {
+      decisionAt,
+      firstReceivedAt,
+      modelLeadHours: 12,
+      providerKey: "open-meteo",
+      rawPrecipitationMm: record.metrics.precipitationMm,
+      runInitializedAt,
+      upstreamModel: "ecmwf_ifs",
+      validAt: record.validAt,
+    },
+    state: "active",
+  };
+}
+
+// create one active rain runtime
+function activeRainRuntime() {
+  return {
+    activeBundle: "4".repeat(64),
+    loadedAt: "2026-08-22T03:00:00.000Z",
+    reasonCode: null,
+    source: {
+      decisionAt: "2026-08-22T02:00:00.000Z",
+      firstReceivedAt: "2026-08-22T00:05:00.000Z",
+      hourCount: 23,
+      runInitializedAt: "2026-08-21T18:00:00.000Z",
+    },
+    state: "active",
+  };
+}
+
 // create one exact raw decision
 function rawForecastAdjustment(state, reasonCode) {
   return {
@@ -727,11 +770,15 @@ function forecastAdjustmentRuntime(mode) {
 }
 
 // create one complete adjusted forecast response
-function forecastResponse(mode, settings = { version: 1, temperature: true, wind: true, rain: true }) {
+function forecastResponse(
+  mode,
+  settings = { version: 1, temperature: true, wind: true, rain: true },
+  records = forecast,
+) {
   return {
     adjustmentSettings: settings,
     adjustmentRuntime: forecastAdjustmentRuntime(mode),
-    data: forecast.map(
+    data: records.map(
       // attach one exact per-row decision
       (record, index) => ({
         ...record,
@@ -804,6 +851,85 @@ async function createFixturePage(browser, options) {
     });
   });
   return page;
+}
+
+// measure rendered alert colors and their WCAG contrast
+async function captureAlertContrast(page, label) {
+  return await page.locator(".local-alert").filter({ hasText: label }).evaluate(
+    // calculate contrast from final browser colors
+    (alert) => {
+      // parse one computed rgb color
+      const channels = (color) => (color.match(/[\d.]+/gu) ?? [])
+        .slice(0, 3)
+        .map(Number);
+      // linearize one srgb channel
+      const linear = (channel) => {
+        const normalized = channel / 255;
+        return normalized <= 0.04045
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      };
+      // calculate one relative luminance
+      const luminance = (color) => {
+        const [red = 0, green = 0, blue = 0] = channels(color).map(linear);
+        return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+      };
+      // compare two opaque rendered colors
+      const contrast = (first, second) => {
+        const lighter = Math.max(luminance(first), luminance(second));
+        const darker = Math.min(luminance(first), luminance(second));
+        return (lighter + 0.05) / (darker + 0.05);
+      };
+      const heading = alert.querySelector("strong");
+      const detail = alert.querySelector("span");
+
+      // require the complete visible alert
+      if (!(heading instanceof HTMLElement) || !(detail instanceof HTMLElement)) {
+        throw new Error("alert content is incomplete");
+      }
+
+      const backgroundColor = getComputedStyle(alert).backgroundColor;
+      const detailColor = getComputedStyle(detail).color;
+      const headingColor = getComputedStyle(heading).color;
+      return {
+        backgroundColor,
+        detailColor,
+        detailContrast: contrast(detailColor, backgroundColor),
+        headingColor,
+        headingContrast: contrast(headingColor, backgroundColor),
+      };
+    },
+  );
+}
+
+// capture rendered adjustment-family icon colors and classes
+async function captureFamilyIcons(page, view) {
+  const selectors = view === "home"
+    ? {
+      rain: "[data-condition='rain'] .condition-label > .material-symbols-rounded",
+      temperature: "[data-condition='temperature'] .condition-label > .material-symbols-rounded",
+      wind: "[data-condition='wind'] .condition-label > .material-symbols-rounded",
+    }
+    : {
+      rain: "[data-forecast-chart='rain-rate'] .forecast-chart-heading .material-symbols-rounded",
+      temperature: "[data-forecast-chart='temperature'] .forecast-chart-heading .material-symbols-rounded",
+      wind: "[data-forecast-chart='wind'] .forecast-chart-heading .material-symbols-rounded",
+    };
+  const icons = {};
+
+  // inspect each adjusted family independently
+  for (const [family, selector] of Object.entries(selectors)) {
+    const icon = page.locator(selector);
+    icons[family] = {
+      className: await icon.getAttribute("class"),
+      color: await icon.evaluate(
+        // read the final inherited icon color
+        (element) => getComputedStyle(element).color,
+      ),
+    };
+  }
+
+  return icons;
 }
 
 // capture stable document-space section geometry
@@ -896,7 +1022,11 @@ async function startFixtureServer() {
     adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
     adjustmentSettingsUpdates: 0,
     adminUpdates: 0,
+    currentRecords: [current, physicalCurrent],
+    dailyPrecipitation,
     failReads: false,
+    forecastPayload: null,
+    forecastRecords: forecast,
     mutations: 0,
     requests: [],
     propertySensorLayout: propertySensorLayout.map(
@@ -1107,7 +1237,7 @@ async function startFixtureServer() {
 
     // serve filtered current data
     if (url.pathname === "/api/v1/sites/ballydidean/current") {
-      sendJson(response, { data: [current, physicalCurrent], site });
+      sendJson(response, { data: state.currentRecords, site });
       return;
     }
 
@@ -1120,7 +1250,7 @@ async function startFixtureServer() {
     // serve today's nearest-gauge rain accumulation
     if (url.pathname === "/api/v1/sites/ballydidean/daily-precipitation") {
       sendJson(response, {
-        data: dailyPrecipitation,
+        data: state.dailyPrecipitation,
         generatedAt: "2026-08-22T05:00:00.000Z",
         site,
       });
@@ -1129,7 +1259,14 @@ async function startFixtureServer() {
 
     // serve normalized forecast hours
     if (url.pathname === "/api/v1/sites/ballydidean/forecast") {
-      sendJson(response, forecastResponse(state.adjustmentMode, state.adjustmentSettings));
+      sendJson(
+        response,
+        state.forecastPayload ?? forecastResponse(
+          state.adjustmentMode,
+          state.adjustmentSettings,
+          state.forecastRecords,
+        ),
+      );
       return;
     }
 
@@ -1452,10 +1589,10 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
     );
 
     const baselineHeights = new Map([
-      [320, 51.96875],
-      [360, 51.96875],
-      [412, 51.96875],
-      [768, 58.390625],
+      [320, 61.96875],
+      [360, 61.96875],
+      [412, 61.96875],
+      [768, 65.984375],
       [1280, 74.390625],
     ]);
     const baselineTitleSizes = new Map([
@@ -1580,18 +1717,27 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
         async () => await document.fonts.ready,
       );
       await page.waitForFunction(
-        // wait for the resize observer to pair the switch with the fitted title
+        // wait for the fitted title and css-sized switch to settle
         () => {
           const masthead = document.querySelector(".home-masthead");
           const heading = masthead?.querySelector("h1");
+          const text = heading?.querySelector(".masthead-title-text");
+          const toggle = masthead?.querySelector("[data-forecast-adjustment-toggle]");
+          const track = toggle?.querySelector(".forecast-adjustment-toggle-track");
 
           // require the complete responsive header
-          if (!(masthead instanceof HTMLElement) || !(heading instanceof HTMLElement)) {
+          if (
+            !(masthead instanceof HTMLElement) ||
+            !(heading instanceof HTMLElement) ||
+            !(text instanceof HTMLElement) ||
+            !(toggle instanceof HTMLElement) ||
+            !(track instanceof HTMLElement)
+          ) {
             return false;
           }
 
-          return masthead.style.getPropertyValue("--adjustment-switch-height") ===
-            getComputedStyle(heading).fontSize;
+          return text.scrollWidth <= text.clientWidth + 1 &&
+            Math.abs(toggle.getBoundingClientRect().height - track.getBoundingClientRect().height) < 0.25;
         },
         undefined,
         { polling: 10 },
@@ -1707,8 +1853,10 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
       [originalIcon, previousToggleState],
     );
     const rerenderedLayout = await captureHeaderAndNow();
-    assert.equal(Math.abs(rerenderedLayout.header.height - 51.96875) < 1, true);
-    assert.equal(rerenderedLayout.alt, "Current weather: Partly cloudy night");
+    assert.equal(Math.abs(rerenderedLayout.header.height - 61.96875) < 1, true);
+    // keep raw artwork unavailable when modeled rain is unknown
+    assert.equal(rerenderedLayout.alt, "Current weather: Conditions unavailable");
+    assert.equal(rerenderedLayout.source, "/weather-icons/12-unavailable.svg");
     assert.equal(rerenderedLayout.lineCount, 1);
     assert.equal(rerenderedLayout.mastheadImageCount, 0);
     assert.equal(rerenderedLayout.titleClippedHorizontally, false);
@@ -1723,8 +1871,8 @@ test("homepage keeps weather in Now navigation and a one-line title through resp
     assert.equal(await page.locator(".masthead h1").innerText(), "Ballydídean Weather");
     assert.equal(await nowLink.getAttribute("href"), "/");
     assert.equal(await nowLink.getAttribute("aria-current"), null);
-    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("alt"), "Current weather: Partly cloudy night");
-    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("src"), "/weather-icons/15-partly-cloudy-night.svg");
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("alt"), "Current weather: Conditions unavailable");
+    assert.equal(await nowLink.locator("img.section-nav-weather-icon").getAttribute("src"), "/weather-icons/12-unavailable.svg");
     assert.equal(await nowLink.locator('svg[data-nav-icon="dashboard"]').count(), 0);
     await nowLink.click();
     await page.waitForURL(`${fixture.origin}/`);
@@ -2031,6 +2179,7 @@ test("Now weather artwork restores a safe cache and settles cold skeletons hones
     assert.deepEqual(await readCache(), {
       cachedAt: now.getTime(),
       cloud: 42,
+      forecastAdjustmentMode: "adjusted",
       rain: 0,
       windy: false,
     });
@@ -2066,6 +2215,7 @@ test("Now weather artwork restores a safe cache and settles cold skeletons hones
     assert.deepEqual(await readCache(), {
       cachedAt: now.getTime(),
       cloud: 42,
+      forecastAdjustmentMode: "adjusted",
       rain: 3,
       windy: false,
     });
@@ -2097,6 +2247,7 @@ test("Now weather artwork restores a safe cache and settles cold skeletons hones
     assert.deepEqual(await readCache(), {
       cachedAt: now.getTime(),
       cloud: 42,
+      forecastAdjustmentMode: "adjusted",
       rain: 0,
       windy: false,
     });
@@ -2183,8 +2334,8 @@ test("Now weather artwork restores a safe cache and settles cold skeletons hones
   }
 });
 
-// scale one standalone switch with the visible title while preserving its complete interaction contract
-test("adjustment switch scales with the title and moves a solid muted-gold or gray sparkle", { timeout: 60_000 }, async () => {
+// match the forecast-range height while preserving the complete switch interaction contract
+test("adjustment switch matches the forecast range and moves a solid muted-gold or gray sparkle", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
   let browser;
 
@@ -2249,7 +2400,6 @@ test("adjustment switch scales with the title and moves a solid muted-gold or gr
         );
 
         return {
-          adjustmentHeight: Number.parseFloat(getComputedStyle(masthead).getPropertyValue("--adjustment-switch-height")),
           ariaChecked: button.getAttribute("aria-checked"),
           ariaLabel: button.getAttribute("aria-label"),
           button: buttonBounds,
@@ -2309,11 +2459,10 @@ test("adjustment switch scales with the title and moves a solid muted-gold or gr
       },
     );
 
+    // enforce the standalone switch geometry
     const assertSwitchGeometry = (snapshot) => {
       const inset = (snapshot.track.height - snapshot.thumb.height) / 2;
       const expectedSparkleSize = Math.min(18, snapshot.thumb.width * 0.7);
-      assert.equal(Math.abs(snapshot.adjustmentHeight - snapshot.titleFontSize) < 0.25, true, JSON.stringify(snapshot));
-      assert.equal(Math.abs(snapshot.track.height - snapshot.titleFontSize) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.track.width - snapshot.track.height * 1.75) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.track.height - snapshot.thumb.height - 4) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.thumb.width - snapshot.thumb.height) < 0.25, true, JSON.stringify(snapshot));
@@ -2321,8 +2470,8 @@ test("adjustment switch scales with the title and moves a solid muted-gold or gr
       assert.equal(Math.abs(snapshot.sparkle.width - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.sparkle.height - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(snapshot.sparkle.width <= 18, true);
-      assert.equal(snapshot.button.width >= Math.max(44, snapshot.track.width) - 0.25, true);
-      assert.equal(snapshot.button.height >= snapshot.track.height - 0.25, true);
+      assert.equal(Math.abs(snapshot.button.width - Math.max(44, snapshot.track.width)) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(snapshot.button.height - snapshot.track.height) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(snapshot.buttonBackground, "rgba(0, 0, 0, 0)");
       assert.deepEqual(snapshot.buttonBorderWidths, ["0px", "0px", "0px", "0px"]);
       assert.equal(snapshot.buttonBoxShadow, "none");
@@ -2338,16 +2487,10 @@ test("adjustment switch scales with the title and moves a solid muted-gold or gr
       assert.equal(snapshot.titleClipped, false, JSON.stringify(snapshot));
       assert.equal(snapshot.titleLines, 1, JSON.stringify(snapshot));
     };
-    const preferredTitleSizes = new Map([
-      [320, 20],
-      [412, 25.75],
-      [768, 38.4],
-      [1280, 56],
-    ]);
     const baselineHeaderHeights = new Map([
-      [320, 51.96875],
-      [412, 51.96875],
-      [768, 58.390625],
+      [320, 61.96875],
+      [412, 61.96875],
+      [768, 65.984375],
       [1280, 74.390625],
     ]);
 
@@ -2359,63 +2502,71 @@ test("adjustment switch scales with the title and moves a solid muted-gold or gr
         async () => await document.fonts.ready,
       );
       await page.waitForFunction(
-        // await the fitted title variable after each resize
+        // await the fitted title and css-sized switch after each resize
         () => {
           const title = document.querySelector(".home-masthead h1");
+          const titleText = title?.querySelector(".masthead-title-text");
+          const button = document.querySelector("[data-forecast-adjustment-toggle]");
           const track = document.querySelector(".forecast-adjustment-toggle-track");
-          return title instanceof HTMLElement && track instanceof HTMLElement &&
-            Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+          return title instanceof HTMLElement && titleText instanceof HTMLElement &&
+            button instanceof HTMLElement && track instanceof HTMLElement &&
+            titleText.scrollWidth <= titleText.clientWidth + 1 &&
+            Math.abs(button.getBoundingClientRect().height - track.getBoundingClientRect().height) < 0.25;
         },
       );
       const responsive = await captureSwitch();
-      const preferredTitleSize = preferredTitleSizes.get(width);
       const baselineHeaderHeight = baselineHeaderHeights.get(width);
 
       // require one explicit baseline for every viewport
-      if (preferredTitleSize === undefined || baselineHeaderHeight === undefined) {
+      if (baselineHeaderHeight === undefined) {
         throw new Error(`missing switch baseline for ${String(width)}px`);
       }
 
       assertSwitchGeometry(responsive);
       assert.equal(responsive.ariaChecked, "true");
-      assert.equal(Math.abs(responsive.button.width - Math.max(44, preferredTitleSize * 1.75)) < 0.5, true, JSON.stringify(responsive));
-      assert.equal(Math.abs(responsive.button.height - Math.max(width <= 672 ? 37.6 : 40, preferredTitleSize)) < 0.5, true, JSON.stringify(responsive));
+      assert.equal(Math.abs(responsive.track.height - 47.6) < 0.25, true, JSON.stringify(responsive));
       assert.equal(Math.abs(responsive.masthead.height - baselineHeaderHeight) < 1, true, JSON.stringify(responsive));
       assert.equal(Math.abs(responsive.thumbRightInset - (responsive.track.height - responsive.thumb.height) / 2) < 0.25, true);
     }
 
     await page.setViewportSize({ height: 900, width: 320 });
-    const scaledTitleSizes = [];
-    // prove reduced and enlarged browser text still drive the visible track
+    const scaledTrackHeights = [];
+    // prove reduced and enlarged browser text scale the shared control height
     for (const rootSize of [12, 20]) {
       await page.evaluate((size) => {
         document.documentElement.style.fontSize = `${String(size)}px`;
       }, rootSize);
       await page.waitForFunction(
-        // await the resize observer's fitted switch variable
+        // await the fitted title and scaled switch geometry
         () => {
           const title = document.querySelector(".home-masthead h1");
+          const titleText = title?.querySelector(".masthead-title-text");
+          const button = document.querySelector("[data-forecast-adjustment-toggle]");
           const track = document.querySelector(".forecast-adjustment-toggle-track");
-          return title instanceof HTMLElement && track instanceof HTMLElement &&
-            Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+          return title instanceof HTMLElement && titleText instanceof HTMLElement &&
+            button instanceof HTMLElement && track instanceof HTMLElement &&
+            titleText.scrollWidth <= titleText.clientWidth + 1 &&
+            Math.abs(button.getBoundingClientRect().height - track.getBoundingClientRect().height) < 0.25;
         },
       );
       const scaled = await captureSwitch();
       assertSwitchGeometry(scaled);
-      scaledTitleSizes.push(scaled.titleFontSize);
+      scaledTrackHeights.push(scaled.track.height);
     }
-    assert.equal((scaledTitleSizes[0] ?? 0) < (scaledTitleSizes[1] ?? 0), true, JSON.stringify(scaledTitleSizes));
+    assert.equal(Math.abs((scaledTrackHeights[0] ?? 0) - 36.2) < 0.25, true, JSON.stringify(scaledTrackHeights));
+    assert.equal(Math.abs((scaledTrackHeights[1] ?? 0) - 59) < 0.25, true, JSON.stringify(scaledTrackHeights));
     await page.evaluate(
       // restore the default browser text scale before interaction checks
       () => document.documentElement.style.removeProperty("font-size"),
     );
     await page.waitForFunction(
-      // await the default fitted switch variable
+      // await the restored switch geometry
       () => {
-        const title = document.querySelector(".home-masthead h1");
+        const button = document.querySelector("[data-forecast-adjustment-toggle]");
         const track = document.querySelector(".forecast-adjustment-toggle-track");
-        return title instanceof HTMLElement && track instanceof HTMLElement &&
-          Math.abs(Number.parseFloat(getComputedStyle(title).fontSize) - track.getBoundingClientRect().height) < 0.25;
+        return button instanceof HTMLElement && track instanceof HTMLElement &&
+          Math.abs(button.getBoundingClientRect().height - track.getBoundingClientRect().height) < 0.25 &&
+          Math.abs(track.getBoundingClientRect().height - 47.6) < 0.25;
       },
     );
 
@@ -2497,6 +2648,386 @@ test("adjustment switch scales with the title and moves a solid muted-gold or gr
 
     await page.reload({ waitUntil: "networkidle" });
     assert.equal(await page.getByRole("switch", { name: "Adjusted", exact: true }).getAttribute("aria-checked"), "true");
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// keep selected forecast watches readable across desktop and mobile layouts
+test("adjustment switch rerenders high-contrast wind and frost watches", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+
+    // verify both representative responsive layouts
+    for (const viewport of [
+      { height: 900, width: 1440 },
+      { height: 844, width: 390 },
+    ]) {
+      const windForecast = {
+        ...forecast[0],
+        metrics: { ...forecast[0].metrics, windGustMps: 15 },
+      };
+      fixture.state.adjustmentMode = "canary";
+      fixture.state.forecastRecords = [windForecast];
+      const windPage = await createFixturePage(browser, {
+        timezoneId: "America/Los_Angeles",
+        viewport,
+      });
+      await windPage.goto(fixture.origin, { waitUntil: "networkidle" });
+      const windAlert = windPage.locator(".local-alert.danger", { hasText: "High wind" });
+      await windAlert.waitFor();
+      assert.equal(await windAlert.textContent(), "High windGusts reaching 35.3 mph");
+      const windContrast = await captureAlertContrast(windPage, "High wind");
+      assert.deepEqual(
+        {
+          backgroundColor: windContrast.backgroundColor,
+          detailColor: windContrast.detailColor,
+          headingColor: windContrast.headingColor,
+        },
+        {
+          backgroundColor: "rgb(127, 29, 29)",
+          detailColor: "rgb(255, 255, 255)",
+          headingColor: "rgb(255, 255, 255)",
+        },
+      );
+      assert.equal(windContrast.headingContrast >= 7, true, JSON.stringify(windContrast));
+      assert.equal(windContrast.detailContrast >= 7, true, JSON.stringify(windContrast));
+      assert.equal((await windPage.screenshot()).byteLength > 1_000, true);
+      await windPage.getByRole("switch", { name: "Adjusted", exact: true }).click();
+      await windPage.waitForFunction(
+        // await the raw forecast watch redraw
+        () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false" &&
+          document.querySelector(".alert-list") === null,
+      );
+      assert.equal(await windPage.getByText("High wind", { exact: true }).count(), 0);
+      await windPage.close();
+
+      const frostForecast = {
+        ...forecast[0],
+        metrics: { ...forecast[0].metrics, temperatureC: -1, windGustMps: 4 },
+      };
+      fixture.state.adjustmentMode = "active";
+      fixture.state.forecastRecords = [frostForecast];
+      const frostPage = await createFixturePage(browser, {
+        timezoneId: "America/Los_Angeles",
+        viewport,
+      });
+      await frostPage.goto(fixture.origin, { waitUntil: "networkidle" });
+      assert.equal(await frostPage.getByText("Frost possible", { exact: true }).count(), 0);
+      await frostPage.getByRole("switch", { name: "Adjusted", exact: true }).click();
+      const frostAlert = frostPage.locator(".local-alert.caution", { hasText: "Frost possible" });
+      await frostAlert.waitFor();
+      assert.equal(await frostAlert.textContent(), "Frost possibleForecast low 30.2°F");
+      const frostContrast = await captureAlertContrast(frostPage, "Frost possible");
+      assert.deepEqual(
+        {
+          backgroundColor: frostContrast.backgroundColor,
+          detailColor: frostContrast.detailColor,
+          headingColor: frostContrast.headingColor,
+        },
+        {
+          backgroundColor: "rgb(74, 53, 0)",
+          detailColor: "rgb(255, 255, 255)",
+          headingColor: "rgb(255, 255, 255)",
+        },
+      );
+      assert.equal(frostContrast.headingContrast >= 7, true, JSON.stringify(frostContrast));
+      assert.equal(frostContrast.detailContrast >= 7, true, JSON.stringify(frostContrast));
+      assert.equal((await frostPage.screenshot()).byteLength > 1_000, true);
+      await frostPage.close();
+    }
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// expose selected active adjustment families without changing their readings
+test("adjusted temperature wind and rain icons turn gold on both forecast-bearing routes", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const gold = "rgb(197, 138, 16)";
+  const normal = "rgb(33, 26, 31)";
+  // build one valid independently configurable browser payload
+  const activePayload = (settings) => {
+    const payload = forecastResponse("active", settings, forecast.slice(0, 24));
+    const response = {
+      ...payload,
+      data: payload.data.map(
+        // attach active rain evidence to every displayed member
+        (record) => ({ ...record, rainAdjustment: activeRainAdjustment(record) }),
+      ),
+      rainAdjustmentRuntime: activeRainRuntime(),
+    };
+    const parsed = parseForecastRecordsResponse(response);
+    assert.equal(parsed.rainAdjustmentRuntime.state, "active");
+    assert.equal(
+      parsed.data.every(
+        // retain rain decisions only when independently enabled
+        (record) => (record.rainAdjustment?.state === "active") === settings.rain,
+      ),
+      true,
+    );
+    return response;
+  };
+
+  try {
+    browser = await launchBrowser();
+
+    // verify desktop and mobile computed colors
+    for (const viewport of [
+      { height: 900, width: 960 },
+      { height: 844, width: 390 },
+    ]) {
+      fixture.state.forecastPayload = activePayload({
+        version: 1,
+        temperature: true,
+        wind: true,
+        rain: true,
+      });
+      const page = await createFixturePage(browser, { viewport });
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      const adjustedHome = await captureFamilyIcons(page, "home");
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(adjustedHome).map(([family, icon]) => [family, icon.color])),
+        { rain: gold, temperature: gold, wind: gold },
+      );
+      assert.equal(
+        Object.values(adjustedHome).every(
+          // require the explicit adjusted marker class
+          (icon) => icon.className === "material-symbols-rounded forecast-adjusted-icon",
+        ),
+        true,
+      );
+      assert.equal(
+        await page.locator("[data-condition='humidity'] .condition-label > .material-symbols-rounded").evaluate(
+          // keep unrelated condition icons unchanged
+          (element) => getComputedStyle(element).color,
+        ),
+        normal,
+      );
+
+      await page.getByRole("link", { name: "Forecast" }).click();
+      await page.locator("[data-forecast-charts]").waitFor();
+      const adjustedForecast = await captureFamilyIcons(page, "forecast");
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(adjustedForecast).map(([family, icon]) => [family, icon.color])),
+        { rain: gold, temperature: gold, wind: gold },
+      );
+      await page.getByRole("switch", { name: "Adjusted", exact: true }).click();
+      await page.waitForFunction(
+        // await raw icon rerendering
+        () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+      );
+      const regional = await captureFamilyIcons(page, "forecast");
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(regional).map(([family, icon]) => [family, icon.color])),
+        { rain: normal, temperature: normal, wind: normal },
+      );
+      assert.equal(
+        Object.values(regional).every(
+          // remove the marker in raw mode
+          (icon) => icon.className === "material-symbols-rounded",
+        ),
+        true,
+      );
+      await page.getByRole("switch", { name: "Adjusted", exact: true }).click();
+      await page.waitForFunction(
+        // await adjusted icon rerendering
+        () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true",
+      );
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(await captureFamilyIcons(page, "forecast")).map(([family, icon]) => [family, icon.color])),
+        { rain: gold, temperature: gold, wind: gold },
+      );
+
+      // disable each family without muting its independent neighbors
+      for (const disabled of ["temperature", "wind", "rain"]) {
+        fixture.state.forecastPayload = activePayload({
+          version: 1,
+          temperature: disabled !== "temperature",
+          wind: disabled !== "wind",
+          rain: disabled !== "rain",
+        });
+        await page.reload({ waitUntil: "networkidle" });
+        const icons = await captureFamilyIcons(page, "forecast");
+
+        // compare every family with its persisted setting
+        for (const [family, icon] of Object.entries(icons)) {
+          assert.equal(icon.color, family === disabled ? normal : gold, `${disabled} disables ${family}`);
+        }
+      }
+
+      fixture.state.forecastPayload = forecastResponse(
+        "fault",
+        { version: 1, temperature: true, wind: true, rain: true },
+        forecast.slice(0, 24),
+      );
+      await page.reload({ waitUntil: "networkidle" });
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(await captureFamilyIcons(page, "forecast")).map(([family, icon]) => [family, icon.color])),
+        { rain: normal, temperature: normal, wind: normal },
+      );
+      await page.close();
+    }
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// keep raw dashboard weather strictly model-sourced across rerenders and cache use
+test("raw current conditions never borrow local station readings or artwork", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const quietModel = {
+    ...current,
+    pressureChange3hHpa: -1,
+    metrics: {
+      ...current.metrics,
+      apparentTemperatureC: 10,
+      cloudCoverPercent: 90,
+      pm25MicrogramsPerCubicMeter: 5,
+      precipitationRateMmPerHour: 0,
+      pressureHpa: 1_009,
+      temperatureC: 11,
+      windGustMps: 2,
+      windSpeedMps: 1,
+      wetBulbGlobeTemperatureC: 9,
+    },
+  };
+  const hazardousLocal = {
+    ...physicalCurrent,
+    pressureChange3hHpa: 9,
+    metrics: {
+      ...physicalCurrent.metrics,
+      apparentTemperatureC: 35,
+      pm25MicrogramsPerCubicMeter: 50,
+      precipitationRateMmPerHour: 8,
+      pressureHpa: 1_024,
+      temperatureC: 34,
+      windGustMps: 20,
+      windSpeedMps: 10,
+      wetBulbGlobeTemperatureC: 30,
+    },
+    provenance: {
+      ...physicalCurrent.provenance,
+      label: "first-party physical station",
+      providerKey: "ecowitt-local",
+      sourceId: "14",
+      sourceKey: "ecowitt-local-live-v1",
+      stationSlug: "ballydidean-ecowitt",
+    },
+  };
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.currentRecords = [quietModel, hazardousLocal];
+    fixture.state.viewerContext = { data: { homeNetwork: true } };
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 960 },
+    });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await page.locator("[data-indoor-house]").waitFor();
+    assert.match(await page.locator("[data-condition='temperature'] .condition-primary").textContent() ?? "", /95°F/u);
+    assert.match(await page.locator("[data-condition='wind'] .condition-primary").textContent() ?? "", /22mph/u);
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").textContent() ?? "", /0\.31in\/h/u);
+    assert.match(await page.locator("[data-condition='pressure'] .condition-primary").textContent() ?? "", /\+9\.0/u);
+    assert.equal(await page.locator(".local-alert").count(), 4);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /10-heavy-rain-wind\.svg$/u);
+    assert.equal(await page.locator("[data-admin-soil-map]").count(), 1);
+
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    await toggle.click();
+    await page.waitForFunction(
+      // await the complete model-only redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false" &&
+        document.querySelector("[data-indoor-house]") === null,
+    );
+    assert.match(await page.locator("[data-condition='temperature'] .condition-primary").textContent() ?? "", /50°F/u);
+    assert.match(await page.locator("[data-condition='wind'] .condition-primary").textContent() ?? "", /2mph/u);
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").textContent() ?? "", /0in\/h/u);
+    assert.match(await page.locator("[data-condition='rain'] .condition-secondary").textContent() ?? "", /Accumulation\s*—/u);
+    assert.match(await page.locator("[data-condition='pressure'] .condition-primary").textContent() ?? "", /-1\.0/u);
+    assert.equal(await page.locator(".local-alert").count(), 0);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+    assert.equal(await page.locator("[data-admin-soil-map]").count(), 0);
+
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+    await page.getByRole("link", { name: "Forecast" }).click();
+    await page.getByRole("link", { name: "Now" }).click();
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+
+    fixture.state.failReads = true;
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+    assert.doesNotMatch(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /10-heavy-rain-wind/u);
+    fixture.state.failReads = false;
+    await page.reload({ waitUntil: "networkidle" });
+    await toggle.click();
+    await page.locator("[data-indoor-house]").waitFor();
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /10-heavy-rain-wind\.svg$/u);
+
+    const hazardousModel = {
+      ...quietModel,
+      metrics: {
+        ...quietModel.metrics,
+        apparentTemperatureC: 35,
+        cloudCoverPercent: 5,
+        pm25MicrogramsPerCubicMeter: 50,
+        precipitationRateMmPerHour: 8,
+        windGustMps: 20,
+        windSpeedMps: 10,
+        wetBulbGlobeTemperatureC: 30,
+      },
+    };
+    const quietLocal = {
+      ...hazardousLocal,
+      metrics: {
+        ...hazardousLocal.metrics,
+        apparentTemperatureC: 12,
+        pm25MicrogramsPerCubicMeter: 4,
+        precipitationRateMmPerHour: 0,
+        temperatureC: 13,
+        windGustMps: 2,
+        windSpeedMps: 1,
+        wetBulbGlobeTemperatureC: 10,
+      },
+    };
+    fixture.state.currentRecords = [hazardousModel, quietLocal];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await page.locator("[data-condition='temperature'] .condition-primary").textContent() ?? "", /54°F/u);
+    assert.doesNotMatch(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /10-heavy-rain-wind/u);
+    await toggle.click();
+    assert.match(await page.locator("[data-condition='temperature'] .condition-primary").textContent() ?? "", /95°F/u);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /10-heavy-rain-wind\.svg$/u);
+    assert.equal(await page.locator(".local-alert").count(), 4);
+
+    const emptyMetrics = Object.fromEntries(Object.keys(quietModel.metrics).map(
+      // remove every model field without exposing local fallback
+      (metric) => [metric, null],
+    ));
+    fixture.state.currentRecords = [{ ...quietModel, metrics: emptyMetrics }, hazardousLocal];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await page.locator("[data-condition='temperature'] .condition-primary").textContent() ?? "", /—/u);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /12-unavailable\.svg$/u);
+    fixture.state.currentRecords = [hazardousLocal];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.getByText("No current weather value is available yet.", { exact: true }).count(), 1);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /12-unavailable\.svg$/u);
   } finally {
     // close disposable fixture resources
     await browser?.close();
@@ -2825,20 +3356,23 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
       assert.equal(await page.locator(".forecast-range-selector").count(), 1);
       assert.equal(await page.locator(".forecast-controls").count(), 0);
       assert.deepEqual(await range.locator("button").allTextContents(), ["Today", "5 days", "10 days"]);
-      const layout = await page.locator(".masthead").evaluate(
+      // capture the current rendered masthead after each rerender
+      const captureLayout = async () => await page.locator(".masthead").evaluate(
         // measure the rendered masthead without relying on css declarations alone
         (masthead) => {
           const heading = masthead.querySelector("h1");
           const selector = masthead.querySelector(".forecast-range-selector");
           const actions = masthead.querySelector(".masthead-actions");
           const adjustment = masthead.querySelector("[data-forecast-adjustment-toggle]");
+          const adjustmentTrack = adjustment?.querySelector(".forecast-adjustment-toggle-track");
 
           // require every forecast header control
           if (
             !(heading instanceof HTMLElement) ||
             !(selector instanceof HTMLElement) ||
             !(actions instanceof HTMLElement) ||
-            !(adjustment instanceof HTMLElement)
+            !(adjustment instanceof HTMLElement) ||
+            !(adjustmentTrack instanceof HTMLElement)
           ) {
             throw new Error("forecast masthead controls are incomplete");
           }
@@ -2848,6 +3382,7 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
           const selectorBounds = selector.getBoundingClientRect();
           const actionsBounds = actions.getBoundingClientRect();
           const adjustmentBounds = adjustment.getBoundingClientRect();
+          const adjustmentTrackBounds = adjustmentTrack.getBoundingClientRect();
           const buttons = [...selector.querySelectorAll("button")];
           const buttonBounds = buttons.map(
             // measure each range button row
@@ -2870,6 +3405,7 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
             actionContained: actionsBounds.right <= mastheadBounds.right + 1 &&
               actionsBounds.top >= mastheadBounds.top - 1 &&
               actionsBounds.bottom <= mastheadBounds.bottom + 1,
+            adjustmentHeight: adjustmentBounds.height,
             buttonRowSpread: Math.max(...buttonTops) - Math.min(...buttonTops),
             buttonTextLines: textLineCounts,
             directChild: selector.parentElement === masthead,
@@ -2887,14 +3423,31 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
               selectorBounds.right <= mastheadBounds.right + 1 &&
               selectorBounds.top >= mastheadBounds.top - 1 &&
               selectorBounds.bottom <= mastheadBounds.bottom + 1,
+            rangeHeight: selectorBounds.height,
             rangeLeft: selectorBounds.left,
             rangeRight: selectorBounds.right,
+            trackHeight: adjustmentTrackBounds.height,
             toggleCenter: adjustmentBounds.top + adjustmentBounds.height / 2,
             toggleLeft: adjustmentBounds.left,
             topRowSeparated: headingBounds.right <= actionsBounds.left,
           };
         },
       );
+      // enforce identical visible control heights
+      const assertMatchedControlHeights = (currentLayout) => {
+        assert.equal(
+          Math.abs(currentLayout.adjustmentHeight - currentLayout.rangeHeight) < 0.25,
+          true,
+          JSON.stringify({ viewport, currentLayout }),
+        );
+        assert.equal(
+          Math.abs(currentLayout.trackHeight - currentLayout.rangeHeight) < 0.25,
+          true,
+          JSON.stringify({ viewport, currentLayout }),
+        );
+      };
+      const layout = await captureLayout();
+      assertMatchedControlHeights(layout);
       assert.equal(layout.directChild, true);
       assert.equal(layout.nextSiblingIsActions, true);
       assert.equal(layout.forecastClass, true);
@@ -2931,12 +3484,39 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
           await page.getByRole("button", { name: label, exact: true }).getAttribute("aria-pressed"),
           "true",
         );
+        assertMatchedControlHeights(await captureLayout());
       }
       assert.equal(await toggle.getAttribute("aria-checked"), "true");
       await toggle.click();
       assert.equal(await toggle.getAttribute("aria-checked"), "false");
+      assertMatchedControlHeights(await captureLayout());
       await toggle.click();
       assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      assertMatchedControlHeights(await captureLayout());
+
+      // retain the shared height under browser text scaling
+      if (viewport.width === 1_440) {
+        // compare reduced and enlarged root text
+        for (const rootSize of [12, 20]) {
+          await page.evaluate(
+            // apply one browser text scale
+            (size) => {
+              document.documentElement.style.fontSize = `${String(size)}px`;
+            },
+            rootSize,
+          );
+          await page.evaluate(
+            // settle the bundled fonts at the new root size
+            async () => await document.fonts.ready,
+          );
+          assertMatchedControlHeights(await captureLayout());
+        }
+        await page.evaluate(
+          // restore the default root size for disposal
+          () => document.documentElement.style.removeProperty("font-size"),
+        );
+        assertMatchedControlHeights(await captureLayout());
+      }
       assert.deepEqual(pageErrors, []);
       await page.close();
     }

@@ -658,6 +658,7 @@ interface NowIconInputs {
 
 interface CachedNowIcon extends NowIconInputs {
   readonly cachedAt: number;
+  readonly forecastAdjustmentMode?: ForecastAdjustmentMode;
 }
 
 export interface DashboardState {
@@ -898,11 +899,15 @@ function loadNowIconCache(storage: UnitPreferenceStorage | null): CachedNowIcon 
     const value: unknown = JSON.parse(storage?.getItem(NOW_ICON_STORAGE_KEY) ?? "null");
     const inputs = parseNowIconInputs(value);
     const cachedAt = (value as Partial<CachedNowIcon> | null)?.cachedAt;
+    const forecastAdjustmentMode = (value as Partial<CachedNowIcon> | null)?.forecastAdjustmentMode;
     // ignore invalid storage without preventing the page from opening
-    if (inputs === null || typeof cachedAt !== "number" || !Number.isFinite(cachedAt)) {
+    if (
+      inputs === null || typeof cachedAt !== "number" || !Number.isFinite(cachedAt) ||
+      (forecastAdjustmentMode !== undefined && forecastAdjustmentMode !== "adjusted" && forecastAdjustmentMode !== "raw")
+    ) {
       return null;
     }
-    const cache = { ...inputs, cachedAt };
+    const cache = { ...inputs, cachedAt, forecastAdjustmentMode: forecastAdjustmentMode ?? "adjusted" };
     return isNowIconCacheFresh(cache, Date.now()) ? cache : null;
   } catch {
     return null;
@@ -3342,14 +3347,17 @@ export class WeatherDashboardController {
     this.patch({ units });
   }
 
-  // switch and persist the forecast display source
+  // switch and persist the current and forecast display source
   toggleForecastAdjustmentMode(): void {
-    const forecastAdjustmentMode = this.#state.forecastAdjustmentMode === "raw"
+    const forecastAdjustmentMode: ForecastAdjustmentMode = this.#state.forecastAdjustmentMode === "raw"
       ? "adjusted"
       : "raw";
 
     persistForecastAdjustmentMode(this.#storage, forecastAdjustmentMode);
-    this.patch({ forecastAdjustmentMode });
+    const inputs = currentWeatherIconInputs(this.#state.current, forecastAdjustmentMode);
+    const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
+    persistNowIconCache(this.#storage, cachedNowIcon);
+    this.patch({ cachedNowIcon, forecastAdjustmentMode });
   }
 
   // load the newly selected public application route
@@ -3801,15 +3809,16 @@ export class WeatherDashboardController {
         this.#view === "map" ||
         this.#view === "admin" ||
         (this.#view === "home" && this.#isAdmin);
-      // accept current artwork independently of unrelated forecast or layout failures
+      // isolate current products from history filters and sibling read failures
       pendingCurrent = needsCurrent
         ? getJson<RecordsResponse>(
           this.#fetcher,
-          buildCurrentUrl(this.#apiBaseUrl, site.slug, this.#state.filters),
+          buildCurrentUrl(this.#apiBaseUrl, site.slug, {}),
         ).then((response) => {
           const responseSite = requireProductSite(response.site);
-          const inputs = currentWeatherIconInputs(response.data);
-          const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now() };
+          const forecastAdjustmentMode = this.#state.forecastAdjustmentMode;
+          const inputs = currentWeatherIconInputs(response.data, forecastAdjustmentMode);
+          const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
           persistNowIconCache(this.#storage, cachedNowIcon);
           this.patch({ current: response.data, cachedNowIcon, selectedSite: responseSite, sites: [responseSite] });
           return response;
@@ -4201,8 +4210,6 @@ function fitHomepageTitle(root: HTMLElement): void {
     const size = Number.parseFloat(getComputedStyle(heading).fontSize);
     heading.style.fontSize = `${size * (text.clientWidth - 1) / text.scrollWidth}px`;
   }
-  // match the visible switch to the fitted text without changing its reserved width
-  heading.parentElement?.style.setProperty("--adjustment-switch-height", getComputedStyle(heading).fontSize);
 }
 
 // revalidate a visible homepage without refreshing weather data
@@ -4328,15 +4335,18 @@ export function renderWeatherDashboard(
 
 // select the approved artwork from the same current metrics as the homepage cards
 export function currentWeatherIcon(
-  state: Pick<DashboardState, "current" | "selectedSite">,
+  state: Pick<DashboardState, "current" | "selectedSite"> & Partial<Pick<DashboardState, "forecastAdjustmentMode">>,
   now = new Date(),
 ): Readonly<{ name: string; label: string }> {
-  return selectCurrentWeatherIcon(currentWeatherIconInputs(state.current), state.selectedSite ?? PRODUCT_SITE, now);
+  return selectCurrentWeatherIcon(currentWeatherIconInputs(state.current, state.forecastAdjustmentMode), state.selectedSite ?? PRODUCT_SITE, now);
 }
 
-// share sensor priority and cloud provenance between live and cached artwork
-function currentWeatherIconInputs(records: readonly WeatherRecord[]): NowIconInputs | null {
-  const current = preferredCurrentRecords(records);
+// share selected source priority and cloud provenance between live and cached artwork
+function currentWeatherIconInputs(
+  records: readonly WeatherRecord[],
+  mode: ForecastAdjustmentMode = "adjusted",
+): NowIconInputs | null {
+  const current = preferredCurrentRecords(records, mode);
   const rain = findMetric(current, "precipitationRateMmPerHour");
   const windy = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
   const cloud = findMetric(current.filter(
@@ -4386,8 +4396,12 @@ function selectCurrentWeatherIcon(
 
 // keep known artwork through navigation and reserve its space while first loading
 function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): string {
-  const cached = isNowIconCacheFresh(state.cachedNowIcon, now.getTime()) ? state.cachedNowIcon : null;
-  const inputs = currentWeatherIconInputs(state.current) ?? cached;
+  const mode = state.forecastAdjustmentMode ?? "adjusted";
+  const cached = isNowIconCacheFresh(state.cachedNowIcon, now.getTime()) &&
+    (state.cachedNowIcon.forecastAdjustmentMode ?? "adjusted") === mode
+    ? state.cachedNowIcon
+    : null;
+  const inputs = currentWeatherIconInputs(state.current, mode) ?? cached;
   // loading is not an unavailable weather condition
   if (inputs === null && state.loading) {
     return `<span class="section-nav-weather-icon section-nav-weather-skeleton skeleton-line" role="img" aria-label="Loading current weather" aria-busy="true"></span>`;
@@ -4504,7 +4518,7 @@ function renderHomepage(state: DashboardState, isAdmin: boolean): string {
   return `
     ${renderAlerts(state)}
     ${renderCurrent(state)}
-    ${isAdmin || state.homeNetwork ? `${renderIndoorHouse(state)}${renderAdminSoilMoistureMap(state)}` : ""}
+    ${state.forecastAdjustmentMode !== "raw" && (isAdmin || state.homeNetwork) ? `${renderIndoorHouse(state)}${renderAdminSoilMoistureMap(state)}` : ""}
   `;
 }
 
@@ -4665,7 +4679,7 @@ function renderCurrent(state: DashboardState): string {
     return renderCurrentSkeleton();
   }
 
-  const currentRecords = preferredCurrentRecords(state.current);
+  const currentRecords = preferredCurrentRecords(state.current, state.forecastAdjustmentMode);
   const current = currentRecords[0];
 
   // render an honest empty state
@@ -4674,7 +4688,7 @@ function renderCurrent(state: DashboardState): string {
   }
 
   const airQuality = findMetric(currentRecords, "pm25MicrogramsPerCubicMeter");
-  const dailyRain = state.dailyPrecipitation?.accumulationMm ?? null;
+  const dailyRain = state.forecastAdjustmentMode === "raw" ? null : state.dailyPrecipitation?.accumulationMm ?? null;
   const rainRate = findMetric(currentRecords, "precipitationRateMmPerHour");
   const uvIndex = findMetric(currentRecords, "uvIndex");
   const windGust = findMetric(currentRecords, "windGustMps");
@@ -4694,6 +4708,7 @@ function renderCurrent(state: DashboardState): string {
   return `
     <section class="current-conditions" aria-label="Current conditions">
       ${renderConditionCard({
+          adjusted: forecastValuesAreAdjusted(forecast, ["temperatureC"], useForecastAdjustments),
           band: temperatureBand(current.metrics.apparentTemperatureC),
           className: "temperature-condition",
           icon: "device_thermostat",
@@ -4706,6 +4721,7 @@ function renderCurrent(state: DashboardState): string {
           },
         })}
       ${renderConditionCard({
+          adjusted: forecastValuesAreAdjusted(forecast, ["windSpeedMps", "windGustMps"], useForecastAdjustments),
           band: windBand(current.metrics.windSpeedMps, windGust, state.units),
           className: "wind-condition",
           icon: "air",
@@ -4718,6 +4734,7 @@ function renderCurrent(state: DashboardState): string {
           },
         })}
       ${renderConditionCard({
+          adjusted: forecastValuesAreAdjusted(forecast, ["precipitationMm", "precipitationRateMmPerHour"], useForecastAdjustments),
           band: rainBand(rainRate),
           className: "rain-condition",
           icon: "rainy",
@@ -4794,10 +4811,19 @@ function renderIndoorHouse(state: DashboardState): string {
   `;
 }
 
-// order current readings around the on-site gateway
+// select regional-only or local-first current readings
 function preferredCurrentRecords(
   records: readonly WeatherRecord[],
+  mode: ForecastAdjustmentMode = "adjusted",
 ): readonly WeatherRecord[] {
+  // never fill regional gaps with physical station readings
+  if (mode === "raw") {
+    return records.filter(
+      // retain only the current regional product
+      (record) => record.provenance.sourceKind === "model_current",
+    );
+  }
+
   return [...records].sort(
     // preserve API order within each source priority
     (left, right) => currentRecordPriority(left) - currentRecordPriority(right),
@@ -4876,7 +4902,7 @@ function renderCurrentSkeleton(): string {
 
 // show observed pressure movement beside the day's strongest change and its time
 function renderPressureCondition(state: DashboardState): string {
-  const current = preferredCurrentRecords(state.current).find(
+  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode).find(
     // keep pressure and its tendency attached to one station
     (record) => record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
   );
@@ -5415,6 +5441,7 @@ interface ConditionBand {
 
 // configure one friendly current-condition card
 interface ConditionCardOptions {
+  readonly adjusted?: boolean;
   readonly band: ConditionBand;
   readonly className: string;
   readonly forecast: ForecastCardValue;
@@ -5463,6 +5490,7 @@ const WIND_CARDINAL_DIRECTIONS = [
 
 // describe one synchronized forecast chart
 interface ForecastChartDefinition {
+  readonly adjusted?: boolean;
   readonly domain?: Readonly<{ maximum: number; minimum: number }>;
   readonly format: ForecastChartFormat;
   readonly icon: MaterialIconName;
@@ -5531,20 +5559,19 @@ function renderAlerts(state: DashboardState): string {
   `;
 }
 
-// derive bounded operational watches from normalized values
+// derive watches and displayed readings from the selected forecast values
 function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   const alerts: LocalWeatherAlert[] = [];
+  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode);
   const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
   const forecastLow = minimumMetric(state.forecast, "temperatureC", useForecastAdjustments);
-  const apparentHigh = maximumMetric(state.current, "apparentTemperatureC");
-  const wetBulbHigh = maximumMetric(state.current, "wetBulbGlobeTemperatureC");
-  const windRecords = [...state.current, ...state.forecast];
-  const rawWindHigh = maximumMetric(windRecords, "windGustMps");
-  const adjustedWindHigh = maximumMetric(windRecords, "windGustMps", true);
-  const windHigh = maximumAvailableMetricValues(rawWindHigh, adjustedWindHigh);
-  const rainRate = maximumMetric(state.current, "precipitationRateMmPerHour");
+  const apparentHigh = maximumMetric(current, "apparentTemperatureC");
+  const wetBulbHigh = maximumMetric(current, "wetBulbGlobeTemperatureC");
+  const windRecords = [...current, ...state.forecast];
+  const windHigh = maximumMetric(windRecords, "windGustMps", useForecastAdjustments);
+  const rainRate = maximumMetric(current, "precipitationRateMmPerHour");
   const forecastRain = maximumMetric(state.forecast, "precipitationMm", useForecastAdjustments);
-  const pm25 = maximumMetric(state.current, "pm25MicrogramsPerCubicMeter");
+  const pm25 = maximumMetric(current, "pm25MicrogramsPerCubicMeter");
 
   // flag forecast frost
   if (forecastLow !== null && forecastLow <= 0) {
@@ -5561,8 +5588,19 @@ function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
     (apparentHigh !== null && apparentHigh >= 32.2) ||
     (wetBulbHigh !== null && wetBulbHigh >= 29)
   ) {
+    const details: string[] = [];
+    // display the apparent temperature that crossed its threshold
+    if (apparentHigh !== null && apparentHigh >= 32.2) {
+      const measurement = formatMeasurement(apparentHigh, "temperature", state.units);
+      details.push(`Apparent temperature ${measurement.value}${measurement.unit}`);
+    }
+    // include the independent wet-bulb threshold when exceeded
+    if (wetBulbHigh !== null && wetBulbHigh >= 29) {
+      const measurement = formatMeasurement(wetBulbHigh, "temperature", state.units);
+      details.push(`Wet-bulb globe temperature ${measurement.value}${measurement.unit}`);
+    }
     alerts.push({
-      detail: "Apparent temperature or wet-bulb globe temperature is elevated",
+      detail: details.join("; "),
       label: "Heat stress",
       tone: "danger",
     });
@@ -5583,8 +5621,19 @@ function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
     (rainRate !== null && rainRate >= 7.62) ||
     (forecastRain !== null && forecastRain >= 6.35)
   ) {
+    const details: string[] = [];
+    // display the current hourly rate that crossed its threshold
+    if (rainRate !== null && rainRate >= 7.62) {
+      const measurement = formatPrecipitationRate(rainRate, state.units);
+      details.push(`Current rain ${measurement.value} ${measurement.unit}`);
+    }
+    // display the selected forecast amount that crossed its threshold
+    if (forecastRain !== null && forecastRain >= 6.35) {
+      const measurement = formatMeasurement(forecastRain, "precipitation", state.units);
+      details.push(`Forecast hourly rain ${measurement.value} ${measurement.unit}`);
+    }
     alerts.push({
-      detail: "Heavy hourly rainfall is observed or forecast",
+      detail: details.join("; "),
       label: "Heavy rain",
       tone: "caution",
     });
@@ -5600,15 +5649,6 @@ function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   }
 
   return alerts;
-}
-
-// retain the stronger available safety value
-function maximumAvailableMetricValues(
-  first: number | null,
-  second: number | null,
-): number | null {
-  const values = [first, second].filter((value): value is number => value !== null);
-  return values.length === 0 ? null : Math.max(...values);
 }
 
 // render the site-local forecast day
@@ -6057,6 +6097,7 @@ function buildForecastCharts(
 
   return [
     {
+      adjusted: forecastValuesAreAdjusted(hours, ["temperatureC"], useAdjustments),
       domain: { maximum: 26.666_666_666_7, minimum: -1.111_111_111_1 },
       format: "temperature",
       icon: "device_thermostat",
@@ -6067,6 +6108,7 @@ function buildForecastCharts(
       ],
     },
     {
+      adjusted: forecastValuesAreAdjusted(hours, ["windSpeedMps", "windGustMps"], useAdjustments),
       domain: { maximum: 22.351_999_999_5, minimum: 0 },
       format: "windSpeed",
       icon: "air",
@@ -6078,6 +6120,7 @@ function buildForecastCharts(
       ],
     },
     {
+      adjusted: forecastValuesAreAdjusted(hours, ["precipitationMm", "precipitationRateMmPerHour"], useAdjustments),
       domain: { maximum: 25.4, minimum: 0 },
       format: "precipitationRate",
       icon: "rainy",
@@ -6179,7 +6222,7 @@ function renderForecastChart(
       data-forecast-max="${String(domain.maximum)}"
       data-forecast-series="${escapeHtml(JSON.stringify(chart.series))}"
     >
-      <div class="forecast-chart-heading forecast-chart-heading-top"><h3>${renderMaterialIcon(chart.icon)}<span>${escapeHtml(chart.label)}</span></h3></div>
+      <div class="forecast-chart-heading forecast-chart-heading-top"><h3>${renderMaterialIcon(chart.icon, chart.adjusted)}<span>${escapeHtml(chart.label)}</span></h3></div>
       <div class="forecast-chart-plot">
         ${daylightBands}
         ${dayMarkers}
@@ -9919,7 +9962,7 @@ function renderConditionCard(options: ConditionCardOptions): string {
       ${renderConditionColor(options.band.color)}
       <div class="condition-card-content">
         <div class="condition-card-heading">
-          <span class="condition-label">${renderMaterialIcon(options.icon)}<span>${renderConditionLabel(options.label)}</span></span>
+          <span class="condition-label">${renderMaterialIcon(options.icon, options.adjusted)}<span>${renderConditionLabel(options.label)}</span></span>
           ${renderConditionStatus(options.band)}
         </div>
         <div class="condition-body${options.secondary === undefined ? "" : " condition-body-secondary"}">
@@ -10003,9 +10046,9 @@ function linearizeColorChannel(channel: string | undefined): number {
     : ((normalized + 0.055) / 1.055) ** 2.4;
 }
 
-// render one decorative Material symbol
-function renderMaterialIcon(name: MaterialIconName): string {
-  return `<span class="material-symbols-rounded" aria-hidden="true">${name}</span>`;
+// render one decorative symbol with an optional active-adjustment marker
+function renderMaterialIcon(name: MaterialIconName, adjusted = false): string {
+  return `<span class="material-symbols-rounded${adjusted ? " forecast-adjusted-icon" : ""}" aria-hidden="true">${name}</span>`;
 }
 
 // render the Material save shape without a font dependency
@@ -13021,6 +13064,28 @@ export function forecastMetricValue(
   }
 
   return record.metrics[metric];
+}
+
+// identify active corrections within the forecast hours actually shown
+function forecastValuesAreAdjusted(
+  records: readonly WeatherRecord[],
+  metrics: readonly WeatherMetricKey[],
+  useAdjustments: boolean,
+): boolean {
+  return useAdjustments && records.some(
+    // retain gold when any displayed hour has a usable active family output
+    (record) => metrics.some(
+      // distinguish active corrections from equal-valued or missing raw fallbacks
+      (metric) => {
+        const active = (metric === "temperatureC" && record.temperatureAdjustment?.state === "active") ||
+          ((metric === "precipitationMm" || metric === "precipitationRateMmPerHour") && record.rainAdjustment?.state === "active") ||
+          (record.adjustment?.state === "active" &&
+            record.adjustment.appliedMetrics.includes(metric as ForecastAdjustmentMetric));
+        const value = forecastMetricValue(record, metric, true);
+        return active && value !== null && Number.isFinite(value);
+      },
+    ),
+  );
 }
 
 // find the largest available metric value

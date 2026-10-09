@@ -21,6 +21,7 @@
   --brand-lavender: #7c5174;
   --brand-orange: #ef7e1f;
   --brand-white: #ffffff;
+  --forecast-adjusted-color: #c58a10;
   --forecast-day-shade: rgba(240, 218, 89, 0.2);
   --forecast-night-shade: rgba(84, 68, 96, 0.14);
   --md-sys-color-primary: #75536e;
@@ -310,7 +311,10 @@ a {
 
 .masthead {
   --masthead-title-size: clamp(2.2rem, 5vw, 3.5rem);
-  --adjustment-switch-height: var(--masthead-title-size);
+  /* match the complete forecast range including its padding and border */
+  --forecast-range-button-height: 2.35rem;
+  --forecast-range-padding: 0.25rem;
+  --adjustment-switch-height: calc(var(--forecast-range-button-height) + var(--forecast-range-padding) * 2 + 2px);
 
   display: flex;
   grid-column: 1 / -1;
@@ -334,7 +338,7 @@ a {
   gap: 0.5rem;
 }
 
-/* preserve the existing header height while fitting the title on one line */
+/* fit the title independently of the shared control height */
 .home-masthead {
   --masthead-content-height: max(2.5rem, var(--masthead-title-size));
 }
@@ -371,15 +375,15 @@ a {
   text-overflow: ellipsis;
 }
 
-/* reserve a stable hit area while the visible switch follows the fitted title */
+/* keep the hit area and visible switch at the forecast range height */
 .forecast-adjustment-toggle {
   --adjustment-thumb-size: calc(var(--adjustment-switch-height) - 4px);
 
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: max(44px, calc(var(--masthead-title-size) * 1.75));
-  min-height: max(40px, var(--masthead-title-size));
+  width: max(44px, calc(var(--adjustment-switch-height) * 1.75));
+  min-height: var(--adjustment-switch-height);
   padding: 0;
   border: 0;
   color: var(--md-sys-color-on-surface);
@@ -431,7 +435,7 @@ a {
 
 /* keep the sparkle solid against the muted gold highlight */
 .forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-sparkle {
-  color: #c58a10;
+  color: var(--forecast-adjusted-color);
 }
 
 .forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-thumb {
@@ -1396,21 +1400,24 @@ h2 {
   margin-top: 1rem;
 }
 
+/* keep every alert label and reading light against its dark severity color */
 .local-alert {
   display: grid;
   gap: 0.2rem;
   padding: 0.75rem;
   border-left: 0.35rem solid var(--brand-citron);
   border-radius: var(--md-sys-shape-medium);
-  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--brand-white);
+  background: #4a3500;
 }
 
 .local-alert.danger {
-  border-color: var(--brand-lavender);
+  border-color: var(--brand-orange);
+  background: #7f1d1d;
 }
 
 .local-alert span {
-  color: var(--md-sys-color-on-surface-variant);
+  color: inherit;
   font-size: 0.75rem;
   line-height: 1.45;
 }
@@ -1421,7 +1428,7 @@ h2 {
   align-items: center;
   flex-wrap: nowrap;
   gap: 0.25rem;
-  padding: 0.25rem;
+  padding: var(--forecast-range-padding);
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-full);
   background: var(--md-sys-color-surface-container-high);
@@ -1430,7 +1437,7 @@ h2 {
 .forecast-range-selector button {
   flex: 1 0 auto;
   min-width: 4rem;
-  min-height: 2.35rem;
+  min-height: var(--forecast-range-button-height);
   padding: 0.45rem 0.85rem;
   border-color: transparent;
   color: var(--md-sys-color-on-surface-variant);
@@ -1642,6 +1649,12 @@ h2 {
 .forecast-chart-heading .material-symbols-rounded {
   color: currentColor;
   font-size: 1.1rem;
+}
+
+/* mark only selected active adjustment families with the switch's gold */
+.condition-label .forecast-adjusted-icon,
+.forecast-chart-heading .forecast-adjusted-icon {
+  color: var(--forecast-adjusted-color);
 }
 
 .forecast-chart-plot {
@@ -4597,10 +4610,6 @@ td small {
     font-size: var(--masthead-title-size);
     line-height: 1;
     text-overflow: ellipsis;
-  }
-
-  .forecast-adjustment-toggle {
-    min-height: 37.6px;
   }
 
   h2 {

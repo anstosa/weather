@@ -276,6 +276,21 @@ function forecastChartHtml(html, key) {
   return html.slice(start, end + "</article>".length);
 }
 
+// isolate one current-condition card
+function conditionCardHtml(html, key) {
+  const card = html.match(new RegExp(`<article[^>]*data-condition="${key}"[\\s\\S]*?<\\/article>`, "u"))?.[0];
+  assert.ok(card);
+  return card;
+}
+
+// read one family icon's adjusted marker
+function familyIconIsAdjusted(html, view, key) {
+  const family = view === "home"
+    ? conditionCardHtml(html, key === "rain-rate" ? "rain" : key)
+    : forecastChartHtml(html, key);
+  return /class="material-symbols-rounded forecast-adjusted-icon"/u.test(family);
+}
+
 // decode the serialized chart lines
 function forecastChartSeries(html, key) {
   const chart = forecastChartHtml(html, key);
@@ -753,6 +768,28 @@ function forecastState(records, runtime, forecastDays = 1) {
   };
 }
 
+// render one focused home-alert state
+function renderAlertState({
+  current = [record],
+  forecast = [],
+  mode = "adjusted",
+  rainRuntime = null,
+  runtime = null,
+  settings = null,
+  temperatureRuntime = null,
+  units = DEFAULT_UNIT_PREFERENCES,
+}) {
+  return renderWeatherDashboard({
+    ...forecastState(forecast, runtime),
+    current,
+    forecastAdjustmentMode: mode,
+    forecastAdjustmentSettings: settings,
+    forecastRainAdjustmentRuntime: rainRuntime,
+    forecastTemperatureAdjustmentRuntime: temperatureRuntime,
+    units,
+  });
+}
+
 // create one complete aggregate-only administrator scorecard
 function adjustmentScorecard() {
   const support = {
@@ -1059,6 +1096,152 @@ test("Now navigation owns the current weather icon on every route", () => {
   }
 });
 
+// isolate raw current weather from every physical station reading
+test("raw mode uses model current values without sensor fallback or homepage supplements", () => {
+  const quietModel = {
+    ...record,
+    pressureChange3hHpa: -1,
+    metrics: {
+      ...record.metrics,
+      apparentTemperatureC: 10,
+      cloudCoverPercent: 90,
+      pm25MicrogramsPerCubicMeter: 5,
+      precipitationRateMmPerHour: 0,
+      pressureHpa: 1_009,
+      temperatureC: 11,
+      windGustMps: 2,
+      windSpeedMps: 1,
+      wetBulbGlobeTemperatureC: 9,
+    },
+  };
+  const hazardousLocal = {
+    ...ecowittRecord,
+    pressureChange3hHpa: 9,
+    metrics: {
+      ...ecowittRecord.metrics,
+      apparentTemperatureC: 35,
+      pm25MicrogramsPerCubicMeter: 50,
+      precipitationRateMmPerHour: 8,
+      pressureHpa: 1_024,
+      temperatureC: 34,
+      windGustMps: 20,
+      windSpeedMps: 10,
+      wetBulbGlobeTemperatureC: 30,
+    },
+  };
+  const baseState = {
+    ...forecastState([], null),
+    current: [quietModel, hazardousLocal],
+    dailyPrecipitation,
+    history: [hazardousLocal],
+    homeNetwork: true,
+    propertySensorLayout: [{
+      displayName: "Orchard soil",
+      icon: "rain",
+      latitude: 47.9505,
+      longitude: -122.4281,
+      sensorKey: "soil-1",
+      updatedAt: "2026-08-22T04:59:00.000Z",
+    }],
+    trends: trendHistory,
+  };
+  const adjusted = renderWeatherDashboard(baseState, "home", true);
+  const rawState = { ...baseState, forecastAdjustmentMode: "raw" };
+  const raw = renderWeatherDashboard(rawState, "home", true);
+
+  assert.match(conditionCardHtml(adjusted, "temperature"), /class="condition-primary"><strong>95<small>°F/u);
+  assert.match(conditionCardHtml(adjusted, "wind"), /class="condition-primary"><strong>22<small>mph SW/u);
+  assert.match(conditionCardHtml(adjusted, "rain"), /class="condition-primary"><strong>0\.31<small>in\/h/u);
+  assert.match(conditionCardHtml(adjusted, "rain"), /Accumulation[\s\S]*?0\.1<small>in/u);
+  assert.match(conditionCardHtml(adjusted, "air-quality"), /class="condition-primary"><strong>50/u);
+  assert.match(conditionCardHtml(adjusted, "pressure"), /class="condition-primary"><strong>\+9\.0/u);
+  assert.match(adjusted, /Heat stress[\s\S]*High wind[\s\S]*Heavy rain[\s\S]*Air quality/u);
+  assert.match(adjusted, /\/weather-icons\/10-heavy-rain-wind\.svg/u);
+  assert.match(adjusted, /data-indoor-house[\s\S]*data-admin-soil-map/u);
+
+  assert.match(conditionCardHtml(raw, "temperature"), /class="condition-primary"><strong>50<small>°F/u);
+  assert.match(conditionCardHtml(raw, "wind"), /class="condition-primary"><strong>2<small>mph SW/u);
+  assert.match(conditionCardHtml(raw, "rain"), /class="condition-primary"><strong>0<small>in\/h/u);
+  assert.match(conditionCardHtml(raw, "rain"), /Accumulation[\s\S]*?<strong>—<\/strong>/u);
+  assert.match(conditionCardHtml(raw, "air-quality"), /class="condition-primary"><strong>5/u);
+  assert.match(conditionCardHtml(raw, "pressure"), /class="condition-primary"><strong>-1\.0/u);
+  assert.doesNotMatch(raw, /class="alert-list"/u);
+  assert.match(raw, /\/weather-icons\/05-cloudy\.svg/u);
+  assert.doesNotMatch(raw, /data-indoor-house|data-admin-soil-map/u);
+
+  const hazardousModel = {
+    ...quietModel,
+    pressureChange3hHpa: -4,
+    metrics: {
+      ...quietModel.metrics,
+      apparentTemperatureC: 35,
+      cloudCoverPercent: 5,
+      pm25MicrogramsPerCubicMeter: 50,
+      precipitationRateMmPerHour: 8,
+      windGustMps: 20,
+      windSpeedMps: 10,
+      wetBulbGlobeTemperatureC: 30,
+    },
+  };
+  const quietLocal = {
+    ...hazardousLocal,
+    pressureChange3hHpa: 1,
+    metrics: {
+      ...hazardousLocal.metrics,
+      apparentTemperatureC: 12,
+      pm25MicrogramsPerCubicMeter: 4,
+      precipitationRateMmPerHour: 0,
+      temperatureC: 13,
+      windGustMps: 2,
+      windSpeedMps: 1,
+      wetBulbGlobeTemperatureC: 10,
+    },
+  };
+  const reverseState = {
+    ...baseState,
+    current: [hazardousModel, quietLocal],
+    forecastAdjustmentMode: "raw",
+  };
+  const reverseRaw = renderWeatherDashboard(reverseState, "home", true);
+  const reverseAdjusted = renderWeatherDashboard({
+    ...reverseState,
+    forecastAdjustmentMode: "adjusted",
+  }, "home", true);
+  assert.match(reverseRaw, /Heat stress[\s\S]*High wind[\s\S]*Heavy rain[\s\S]*Air quality/u);
+  assert.match(reverseRaw, /\/weather-icons\/10-heavy-rain-wind\.svg/u);
+  assert.match(conditionCardHtml(reverseAdjusted, "temperature"), /class="condition-primary"><strong>54<small>°F/u);
+  assert.doesNotMatch(reverseAdjusted, /\/weather-icons\/10-heavy-rain-wind\.svg/u);
+
+  const missingMetrics = Object.fromEntries(Object.keys(record.metrics).map(
+    // remove every modeled metric without borrowing a station value
+    (metric) => [metric, null],
+  ));
+  const nullModel = { ...quietModel, metrics: missingMetrics, pressureChange3hHpa: null };
+  const nullRaw = renderWeatherDashboard({
+    ...rawState,
+    current: [nullModel, hazardousLocal],
+  }, "home", true);
+  assert.match(conditionCardHtml(nullRaw, "temperature"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(conditionCardHtml(nullRaw, "wind"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(conditionCardHtml(nullRaw, "rain"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(conditionCardHtml(nullRaw, "pressure"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(nullRaw, /\/weather-icons\/12-unavailable\.svg/u);
+  assert.doesNotMatch(nullRaw, /class="alert-list"/u);
+
+  const missingModelRaw = renderWeatherDashboard({
+    ...rawState,
+    current: [hazardousLocal],
+  }, "home", true);
+  assert.match(missingModelRaw, /No current weather value is available yet\./u);
+  assert.match(missingModelRaw, /\/weather-icons\/12-unavailable\.svg/u);
+  assert.doesNotMatch(missingModelRaw, /class="current-conditions"|data-indoor-house|data-admin-soil-map/u);
+
+  assert.match(renderWeatherDashboard(rawState, "map", true), /data-property-sensor-view="soil-1"/u);
+  assert.match(renderWeatherDashboard(rawState, "admin", true), /data-property-sensor-form/u);
+  assert.match(renderWeatherDashboard(rawState, "logs", true), /Past conditions/u);
+  assert.match(renderWeatherDashboard(rawState, "trends", true), /data-trend-metric-control/u);
+});
+
 // keep ECMWF temperature explicit, opt-in, and independent from wind metadata
 test("temperature canary overrides only adjusted temperature with truthful provenance", () => {
   const raw = {
@@ -1136,7 +1319,7 @@ test("temperature canary overrides only adjusted temperature with truthful prove
 });
 
 // retain canary safeguards behind the concise adjustment label
-test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning", () => {
+test("wind canary is explicit, wind-only, and follows the selected gust value", () => {
   const raw = {
     ...forecastRecord,
     metadata: {
@@ -1162,7 +1345,7 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
       ...forecastState(parsed.data, parsed.adjustmentRuntime),
       forecastAdjustmentMode: "raw",
     },
-    "forecast",
+    "home",
   );
 
   assert.equal(forecastMetricValue(parsed.data[0], "temperatureC"), raw.metrics.temperatureC);
@@ -1170,9 +1353,13 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
   assert.notEqual(forecastMetricValue(parsed.data[0], "windSpeedMps"), raw.metrics.windSpeedMps);
   assert.match(adjustedHtml, /aria-checked="true"\s+aria-label="Adjusted"/u);
   assert.match(adjustedHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gold"/u);
-  assert.match(adjustedHtml, /High wind/u);
+  assert.doesNotMatch(adjustedHtml, /High wind/u);
   assert.match(regionalHtml, /aria-checked="false"\s+aria-label="Adjusted"/u);
   assert.match(regionalHtml, /class="forecast-adjustment-sparkle" data-sparkle-tone="gray"/u);
+  assert.match(
+    regionalHtml,
+    /<article class="local-alert danger"><strong>High wind<\/strong><span>Gusts reaching 35\.8 mph<\/span><\/article>/u,
+  );
   assert.doesNotMatch(regionalHtml, /data-forecast-adjustment-status|Canary expires|Wind canary turned off/u);
 
   const invalid = parseForecastRecordsResponse({
@@ -1183,6 +1370,236 @@ test("wind canary is explicit, wind-only, and cannot suppress a raw gust warning
   assert.equal(invalid.adjustmentRuntime.state, "disabled");
   assert.equal(invalid.adjustmentRuntime.reasonCode, "adjustment_error");
   assert.equal(invalid.data[0].adjustment, undefined);
+});
+
+// bind forecast watches to the value selected by the shared adjustment switch
+test("forecast watches cross thresholds in both directions with selected adjusted values", () => {
+  const metricUnits = {
+    ...DEFAULT_UNIT_PREFERENCES,
+    precipitation: "millimeters",
+    temperature: "celsius",
+    windSpeed: "meters_per_second",
+  };
+  const windRaised = {
+    ...forecastRecord,
+    metrics: { ...forecastRecord.metrics, windGustMps: 14 },
+  };
+  const frostRaised = {
+    ...forecastRecord,
+    metrics: { ...forecastRecord.metrics, temperatureC: 1 },
+  };
+  const rainRaised = {
+    ...forecastRecord,
+    metrics: {
+      ...forecastRecord.metrics,
+      precipitationMm: 6,
+      precipitationRateMmPerHour: 6,
+    },
+  };
+  const frostLowered = {
+    ...forecastRecord,
+    metrics: { ...forecastRecord.metrics, temperatureC: -1 },
+  };
+  const rainLowered = {
+    ...forecastRecord,
+    metrics: {
+      ...forecastRecord.metrics,
+      precipitationMm: 7,
+      precipitationRateMmPerHour: 7,
+    },
+  };
+  const cases = [
+    {
+      adjustedDetail: "Gusts reaching 16 m/s",
+      label: "High wind",
+      rawDetail: null,
+      record: {
+        ...windRaised,
+        adjustment: {
+          ...windCanaryAdjustment(windRaised),
+          adjustedMetrics: { windGustMps: 16, windSpeedMps: windRaised.metrics.windSpeedMps + 0.4 },
+        },
+      },
+    },
+    {
+      adjustedDetail: null,
+      label: "High wind",
+      rawDetail: "Gusts reaching 16 m/s",
+      record: {
+        ...forecastRecord,
+        metrics: { ...forecastRecord.metrics, windGustMps: 16 },
+        adjustment: windCanaryAdjustment({
+          ...forecastRecord,
+          metrics: { ...forecastRecord.metrics, windGustMps: 16 },
+        }),
+      },
+    },
+    {
+      adjustedDetail: "Forecast low -1°C",
+      label: "Frost possible",
+      rawDetail: null,
+      record: {
+        ...frostRaised,
+        temperatureAdjustment: { ...temperatureCanaryDecision(frostRaised), correctedTemperatureC: -1 },
+      },
+    },
+    {
+      adjustedDetail: null,
+      label: "Frost possible",
+      rawDetail: "Forecast low -1°C",
+      record: {
+        ...frostLowered,
+        temperatureAdjustment: { ...temperatureCanaryDecision(frostLowered), correctedTemperatureC: 1 },
+      },
+    },
+    {
+      adjustedDetail: "Forecast hourly rain 7.2 mm",
+      label: "Heavy rain",
+      rawDetail: null,
+      record: {
+        ...rainRaised,
+        rainAdjustment: { ...rainAdjustmentDecision(rainRaised), correctedPrecipitationMm: 7.2 },
+      },
+    },
+    {
+      adjustedDetail: null,
+      label: "Heavy rain",
+      rawDetail: "Forecast hourly rain 7 mm",
+      record: {
+        ...rainLowered,
+        rainAdjustment: { ...rainAdjustmentDecision(rainLowered), correctedPrecipitationMm: 6 },
+      },
+    },
+  ];
+
+  // verify each family on both sides of its unchanged threshold
+  for (const alertCase of cases) {
+    const adjusted = renderAlertState({ forecast: [alertCase.record], units: metricUnits });
+    const raw = renderAlertState({ forecast: [alertCase.record], mode: "raw", units: metricUnits });
+    assert.equal(adjusted.includes(`<strong>${alertCase.label}</strong>`), alertCase.adjustedDetail !== null);
+    assert.equal(raw.includes(`<strong>${alertCase.label}</strong>`), alertCase.rawDetail !== null);
+    assert.equal(alertCase.adjustedDetail === null || adjusted.includes(`<span>${alertCase.adjustedDetail}</span>`), true);
+    assert.equal(alertCase.rawDetail === null || raw.includes(`<span>${alertCase.rawDetail}</span>`), true);
+  }
+});
+
+// preserve current alerts while formatting every qualifying reading
+test("current heat rain and wind watches retain real readings in metric and US units", () => {
+  const hazardousCurrent = {
+    ...record,
+    metrics: {
+      ...record.metrics,
+      apparentTemperatureC: 33,
+      precipitationRateMmPerHour: 8,
+      wetBulbGlobeTemperatureC: 30,
+      windGustMps: 16,
+    },
+  };
+  const quietForecast = {
+    ...forecastRecord,
+    metrics: {
+      ...forecastRecord.metrics,
+      precipitationMm: 0,
+      precipitationRateMmPerHour: 0,
+      temperatureC: 12,
+      windGustMps: 4,
+    },
+  };
+
+  // keep current observations independent from forecast display mode
+  for (const forecastAdjustmentMode of ["adjusted", "raw"]) {
+    const metricHtml = renderAlertState({
+      current: [hazardousCurrent],
+      forecast: [quietForecast],
+      mode: forecastAdjustmentMode,
+      settings: { version: 1, temperature: false, wind: false, rain: false },
+      units: {
+        ...DEFAULT_UNIT_PREFERENCES,
+        precipitation: "millimeters",
+        temperature: "celsius",
+        windSpeed: "meters_per_second",
+      },
+    });
+    const usHtml = renderAlertState({
+      current: [hazardousCurrent],
+      forecast: [quietForecast],
+      mode: forecastAdjustmentMode,
+      settings: { version: 1, temperature: false, wind: false, rain: false },
+    });
+    assert.match(metricHtml, /Heat stress[\s\S]*?Apparent temperature 33°C; Wet-bulb globe temperature 30°C/u);
+    assert.match(metricHtml, /High wind[\s\S]*?Gusts reaching 16 m\/s/u);
+    assert.match(metricHtml, /Heavy rain[\s\S]*?Current rain 8 mm\/h/u);
+    assert.match(usHtml, /Heat stress[\s\S]*?Apparent temperature 91\.4°F; Wet-bulb globe temperature 86°F/u);
+    assert.match(usHtml, /High wind[\s\S]*?Gusts reaching 35\.8 mph/u);
+    assert.match(usHtml, /Heavy rain[\s\S]*?Current rain 0\.31 in\/h/u);
+  }
+
+  const wetForecast = {
+    ...quietForecast,
+    metrics: {
+      ...quietForecast.metrics,
+      precipitationMm: 7,
+      precipitationRateMmPerHour: 7,
+    },
+  };
+  const combinedRainHtml = renderAlertState({
+    current: [hazardousCurrent],
+    forecast: [wetForecast],
+    units: {
+      ...DEFAULT_UNIT_PREFERENCES,
+      precipitation: "millimeters",
+    },
+  });
+  assert.match(
+    combinedRainHtml,
+    /Heavy rain[\s\S]*?Current rain 8 mm\/h; Forecast hourly rain 7 mm/u,
+  );
+});
+
+// fail individual adjustment families back to their usable raw forecast
+test("forecast watches use raw fallback for disabled settings and invalid metadata", () => {
+  const windy = {
+    ...forecastRecord,
+    metrics: { ...forecastRecord.metrics, windGustMps: 16 },
+  };
+  const disabledWind = parseForecastRecordsResponse({
+    adjustmentSettings: { version: 1, temperature: true, wind: false, rain: true },
+    adjustmentRuntime: windCanaryRuntime(),
+    data: [{ ...windy, adjustment: windCanaryAdjustment(windy) }],
+    site,
+  });
+  const disabledWindHtml = renderAlertState({
+    forecast: disabledWind.data,
+    runtime: disabledWind.adjustmentRuntime,
+    settings: disabledWind.adjustmentSettings,
+  });
+  assert.equal(disabledWind.data[0].adjustment, undefined);
+  assert.match(disabledWindHtml, /High wind[\s\S]*?Gusts reaching 35\.8 mph/u);
+
+  const invalidWind = parseForecastRecordsResponse({
+    adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
+    adjustmentRuntime: windCanaryRuntime(),
+    data: [{ ...windy, adjustment: activeAdjustment(windy) }],
+    site,
+  });
+  const invalidWindHtml = renderAlertState({
+    forecast: invalidWind.data,
+    runtime: invalidWind.adjustmentRuntime,
+    settings: invalidWind.adjustmentSettings,
+  });
+  assert.equal(invalidWind.adjustmentRuntime.state, "disabled");
+  assert.equal(invalidWind.data[0].adjustment, undefined);
+  assert.match(invalidWindHtml, /High wind[\s\S]*?Gusts reaching 35\.8 mph/u);
+
+  const inactiveWind = parseForecastRecordsResponse({
+    adjustmentRuntime: adjustmentRuntime("disabled", "registry_inactive"),
+    data: [{ ...windy, adjustment: failRawAdjustment("disabled", "registry_inactive") }],
+    site,
+  });
+  assert.match(renderAlertState({
+    forecast: inactiveWind.data,
+    runtime: inactiveWind.adjustmentRuntime,
+  }), /High wind[\s\S]*?Gusts reaching 35\.8 mph/u);
 });
 
 // attribute temperature only when its independent setting is enabled
@@ -1378,6 +1795,164 @@ test("temperature wind and rain settings gate their own adjusted values", () => 
     assert.doesNotMatch(html, /experimental/i);
     assert.equal(html.includes("2.5 mm"), settings.rain);
   }
+});
+
+// mark only active displayed adjustment families in adjusted mode
+test("temperature wind and rain icons identify selected active forecast adjustments", () => {
+  const raw = {
+    ...forecastRecord,
+    metadata: {
+      ...forecastRecord.metadata,
+      provider: { ...forecastRecord.metadata.provider, dataset: "forecast" },
+    },
+    metrics: {
+      ...forecastRecord.metrics,
+      precipitationRateMmPerHour: forecastRecord.metrics.precipitationMm,
+    },
+  };
+  const equalWind = {
+    ...windCanaryAdjustment(raw),
+    adjustedMetrics: {
+      windGustMps: raw.metrics.windGustMps,
+      windSpeedMps: raw.metrics.windSpeedMps,
+    },
+  };
+  const input = {
+    adjustmentRuntime: windCanaryRuntime(),
+    data: [{
+      ...raw,
+      adjustment: equalWind,
+      rainAdjustment: {
+        ...rainAdjustmentDecision(raw),
+        correctedPrecipitationMm: raw.metrics.precipitationMm,
+      },
+      temperatureAdjustment: {
+        ...temperatureCanaryDecision(raw),
+        correctedTemperatureC: raw.metrics.temperatureC,
+      },
+    }],
+    rainAdjustmentRuntime: rainAdjustmentRuntime(),
+    site,
+    temperatureAdjustmentRuntime: temperatureCanaryRuntime(),
+  };
+  // parse one independently configured family combination
+  const parseFamilies = (settings) => parseForecastRecordsResponse({
+    ...input,
+    adjustmentSettings: settings,
+  });
+  // render both forecast-bearing routes from one parsed response
+  const renderViews = (parsed, mode = "adjusted", forecast = parsed.data) => {
+    const state = {
+      ...forecastState(forecast, parsed.adjustmentRuntime),
+      forecastAdjustmentMode: mode,
+      forecastAdjustmentSettings: parsed.adjustmentSettings,
+      forecastRainAdjustmentRuntime: parsed.rainAdjustmentRuntime,
+      forecastTemperatureAdjustmentRuntime: parsed.temperatureAdjustmentRuntime,
+    };
+    return {
+      forecast: renderWeatherDashboard(state, "forecast"),
+      home: renderWeatherDashboard(state, "home"),
+    };
+  };
+  const families = ["temperature", "wind", "rain-rate"];
+  const enabled = parseFamilies({ version: 1, temperature: true, wind: true, rain: true });
+  const adjusted = renderViews(enabled);
+  const regional = renderViews(enabled, "raw");
+
+  // identify every active family without changing its equal-value output
+  for (const view of ["home", "forecast"]) {
+    for (const family of families) {
+      assert.equal(familyIconIsAdjusted(adjusted[view], view, family), true, `${view} ${family}`);
+      assert.equal(familyIconIsAdjusted(regional[view], view, family), false, `${view} raw ${family}`);
+    }
+  }
+  assert.equal((adjusted.home.match(/forecast-adjusted-icon/gu) ?? []).length, 3);
+  assert.equal((adjusted.forecast.match(/forecast-adjusted-icon/gu) ?? []).length, 3);
+
+  // keep readings and serialized chart values unchanged for zero corrections
+  for (const family of families) {
+    assert.equal(
+      conditionCardHtml(adjusted.home, family === "rain-rate" ? "rain" : family)
+        .replace('material-symbols-rounded forecast-adjusted-icon', 'material-symbols-rounded'),
+      conditionCardHtml(regional.home, family === "rain-rate" ? "rain" : family),
+    );
+    assert.deepEqual(
+      forecastChartSeries(adjusted.forecast, family),
+      forecastChartSeries(regional.forecast, family),
+    );
+  }
+
+  // keep each persisted family setting independent
+  for (const disabled of families) {
+    const parsed = parseFamilies({
+      version: 1,
+      temperature: disabled !== "temperature",
+      wind: disabled !== "wind",
+      rain: disabled !== "rain-rate",
+    });
+    const views = renderViews(parsed);
+
+    // check both presentations against the disabled family
+    for (const view of ["home", "forecast"]) {
+      for (const family of families) {
+        assert.equal(
+          familyIconIsAdjusted(views[view], view, family),
+          family !== disabled,
+          `${view} ${disabled} disables ${family}`,
+        );
+      }
+    }
+  }
+
+  const missing = parseForecastRecordsResponse({ data: [raw], site });
+  const missingViews = renderViews(missing);
+  const invalid = parseForecastRecordsResponse({
+    ...input,
+    adjustmentSettings: { version: 1, temperature: true, wind: true, rain: true },
+    data: [{
+      ...input.data[0],
+      adjustment: { ...equalWind, candidateArtifactSha256: "f".repeat(64) },
+    }],
+  });
+  const invalidViews = renderViews(invalid);
+  const unsupported = parseForecastRecordsResponse({
+    adjustmentRuntime: windCanaryRuntime(),
+    data: [{ ...raw, adjustment: failRawAdjustment("not_applicable", "unsupported_lead") }],
+    site,
+  });
+  const unsupportedViews = renderViews(unsupported);
+
+  // reject missing invalid and unsupported family metadata
+  for (const view of ["home", "forecast"]) {
+    for (const family of families) {
+      assert.equal(familyIconIsAdjusted(missingViews[view], view, family), false);
+      assert.equal(familyIconIsAdjusted(unsupportedViews[view], view, family), false);
+      assert.equal(
+        familyIconIsAdjusted(invalidViews[view], view, family),
+        family !== "wind",
+      );
+    }
+  }
+
+  const rawDisplayed = { ...raw, validAt: "2026-08-22T05:30:00.000Z" };
+  const mixedViews = renderViews(enabled, "adjusted", [rawDisplayed, enabled.data[0]]);
+  const outside = {
+    ...enabled.data[0],
+    validAt: "2026-08-23T08:00:00.000Z",
+  };
+  const outsideViews = renderViews(missing, "adjusted", [rawDisplayed, outside]);
+
+  // inspect only members included in the displayed day
+  for (const view of ["home", "forecast"]) {
+    for (const family of families) {
+      assert.equal(familyIconIsAdjusted(mixedViews[view], view, family), true);
+      assert.equal(familyIconIsAdjusted(outsideViews[view], view, family), false);
+    }
+  }
+
+  const loadingState = { ...forecastState([], null), loading: true };
+  assert.doesNotMatch(renderWeatherDashboard(loadingState, "home"), /forecast-adjusted-icon/u);
+  assert.doesNotMatch(renderWeatherDashboard(loadingState, "forecast"), /forecast-adjusted-icon/u);
 });
 
 test("malformed settings and rain evidence fall back to unchanged raw values", () => {
@@ -3652,7 +4227,7 @@ test("history wall clocks use the selected site timezone instead of the browser 
   }
 });
 
-test("logs controller filters history without loading current conditions", async () => {
+test("logs controller preserves history filters while raw home loads unfiltered model current", async () => {
   const requested = [];
 
   // serve deterministic browser contracts
@@ -3712,9 +4287,9 @@ test("logs controller filters history without loading current conditions", async
   });
   await controller.initialize();
   await controller.setFilters({
-    sourceId: "11",
-    sourceKind: "reanalysis",
-    stationSlug: "open-meteo-virtual",
+    sourceId: "13",
+    sourceKind: "physical_sensor",
+    stationSlug: "tempest-38270",
   });
   await controller.nextPage();
 
@@ -3728,10 +4303,25 @@ test("logs controller filters history without loading current conditions", async
     requested.some(
       // require history selection filters
       (url) =>
-        url.includes("sourceKind=reanalysis") &&
+        url.includes("sourceKind=physical_sensor") &&
         url.includes("cursor=page-two"),
     ),
   );
+
+  controller.toggleForecastAdjustmentMode();
+  await controller.setView("home");
+  const currentRequest = requested.filter((url) => url.includes("/current")).at(-1);
+  assert.ok(currentRequest);
+  assert.equal(new URL(currentRequest, "http://weather.test").search, "");
+  assert.equal(controller.state.forecastAdjustmentMode, "raw");
+  assert.equal(controller.state.current.length, 1);
+  assert.equal(controller.state.current[0]?.provenance.sourceKind, "model_current");
+  assert.deepEqual(controller.state.filters, {
+    sourceId: "13",
+    sourceKind: "physical_sensor",
+    stationSlug: "tempest-38270",
+  });
+  assert.match(renderWeatherDashboard(controller.state, "home"), /Air Temp[\s\S]*?<strong>61<small>°F<\/small>/u);
 });
 
 test("settings controller loads browser preferences without weather requests", async () => {

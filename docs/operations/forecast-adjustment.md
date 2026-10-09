@@ -176,11 +176,29 @@ WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH=1
 
 Only `1` activates the kill switch; `0` permits normal operation. Rollback may also
 set the canary registry's `activeBundle` to `null` in a reviewed image. Do not
-edit an existing content-addressed bundle. When a canary is active, the UI starts
-new sessions with the **Adjusted** switch off; enabling it explicitly opts in.
-The switch keeps the same label in both states, and Forecast has no adjustment infobox. High wind
-alerts always use the greater of raw and adjusted gust so a negative
-correction cannot suppress a regional warning.
+edit an existing content-addressed bundle. New UI sessions default to **Adjusted**;
+an explicitly saved raw preference is retained. The switch keeps the same label
+in both states, and Forecast has no adjustment infobox. Forecast alert thresholds
+and displayed readings use the selected adjusted or raw values, including wind
+gusts. A negative adjustment can clear a forecast warning. With Adjusted on,
+current conditions retain the on-site-first source priority. With the switch off
+(raw mode), current cards, pressure tendency, alerts, and the Now artwork use only
+regional `model_current` records. Missing regional records or metrics remain
+unavailable; local and nearby station readings never fill regional gaps. Artwork
+caches are mode-scoped so saved local conditions cannot leak into raw mode.
+The observed daily rain accumulation is unavailable in raw mode, and the
+homepage's indoor and soil panels are hidden. Dedicated Map, Trends, Logs, and
+Admin sensor views are unchanged. Current readings from the selected source can
+still trigger their own warnings. Missing, disabled, or invalid forecast
+adjustments fall back to raw forecast values without changing the selected
+current-source mode.
+
+Temperature, wind, and rain icons turn gold when the selected Adjusted mode has
+active corrections for that family within the displayed forecast hours. Raw,
+unavailable, disabled, and loading families retain their normal icon color.
+Gold marks the selected adjustment family; it does not correct current readings
+or change the metrics plotted in a chart. Switching the mode also selects the
+current source as described above.
 
 ## Bounded production snapshot
 

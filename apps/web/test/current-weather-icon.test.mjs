@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   currentWeatherIcon,
   eveningSunTimes,
+  FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   NOW_ICON_STORAGE_KEY,
   renderWeatherDashboard,
   WeatherDashboardController,
@@ -94,8 +95,12 @@ test("current weather icons change exactly at sunrise and sunset", () => {
 });
 
 // emulate device storage without sharing state between test cases
-function iconStorage(value = null) {
+function iconStorage(value = null, forecastAdjustmentMode = null) {
   const values = new Map([[NOW_ICON_STORAGE_KEY, value]]);
+  // seed the selected display mode only when requested
+  if (forecastAdjustmentMode !== null) {
+    values.set(FORECAST_ADJUSTMENT_MODE_STORAGE_KEY, forecastAdjustmentMode);
+  }
   return {
     // expose only explicitly persisted keys
     getItem(key) {
@@ -136,13 +141,46 @@ test("recent Now cache survives a new controller and strips unrelated fields", a
     // fail if restoring artwork widens the local-only route contract
     fetcher: async () => assert.fail("settings must not fetch weather for its icon"),
   });
-  assert.deepEqual(controller.state.cachedNowIcon, cache);
+  assert.deepEqual(controller.state.cachedNowIcon, { ...cache, forecastAdjustmentMode: "adjusted" });
   assert.deepEqual(controller.state.current, []);
   assert.match(nowMarkup(controller.state), /04-partly-cloudy-wind\.svg/u);
   assert.doesNotMatch(nowMarkup(controller.state), /skeleton|12-unavailable/u);
   await controller.initialize();
   assert.equal(controller.state.loading, false);
   assert.match(nowMarkup(controller.state), /04-partly-cloudy-wind\.svg/u);
+});
+
+// keep cached artwork isolated to its recorded adjustment mode
+test("Now cache rejects cross-mode and invalid artwork while retaining tagged raw artwork", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: daytime });
+  const inputs = { rain: 0, cloud: 50, windy: true, cachedAt: Date.now() - 1_000 };
+  const legacy = new WeatherDashboardController({
+    storage: iconStorage(JSON.stringify(inputs), "raw"),
+    view: "settings",
+  });
+  assert.deepEqual(legacy.state.cachedNowIcon, { ...inputs, forecastAdjustmentMode: "adjusted" });
+  assert.equal(legacy.state.forecastAdjustmentMode, "raw");
+  assert.match(nowMarkup(legacy.state), /section-nav-weather-skeleton/u);
+  assert.doesNotMatch(nowMarkup(legacy.state), /04-partly-cloudy-wind|12-unavailable/u);
+  await legacy.initialize();
+  assert.match(nowMarkup(legacy.state), /12-unavailable\.svg/u);
+
+  const rawCache = { ...inputs, forecastAdjustmentMode: "raw" };
+  const raw = new WeatherDashboardController({
+    storage: iconStorage(JSON.stringify(rawCache), "raw"),
+    view: "settings",
+  });
+  assert.deepEqual(raw.state.cachedNowIcon, rawCache);
+  assert.match(nowMarkup(raw.state), /04-partly-cloudy-wind\.svg/u);
+  await raw.initialize();
+  assert.match(nowMarkup(raw.state), /04-partly-cloudy-wind\.svg/u);
+
+  const invalid = new WeatherDashboardController({
+    storage: iconStorage(JSON.stringify({ ...inputs, forecastAdjustmentMode: "invalid" }), "raw"),
+    view: "settings",
+  });
+  assert.equal(invalid.state.cachedNowIcon, null);
+  assert.match(nowMarkup(invalid.state), /section-nav-weather-skeleton/u);
 });
 
 // ignore malformed storage rather than presenting invented or indefinitely stale weather
@@ -222,7 +260,13 @@ test("successful current reads replace or clear Now cache without storing record
     },
   });
   await controller.initialize();
-  const expected = { rain: 3, cloud: null, windy: true, cachedAt: Date.now() };
+  const expected = {
+    rain: 3,
+    cloud: null,
+    windy: true,
+    cachedAt: Date.now(),
+    forecastAdjustmentMode: "adjusted",
+  };
   assert.equal(controller.state.error, null);
   assert.deepEqual(JSON.parse(storage.getItem(NOW_ICON_STORAGE_KEY)), expected);
   assert.deepEqual(controller.state.cachedNowIcon, expected);
@@ -286,7 +330,13 @@ test("current responses replace or clear the cache despite a sibling request fai
     assert.match(controller.state.error, /503/u);
     assert.deepEqual(controller.state.current, records);
     assert.deepEqual(JSON.parse(storage.getItem(NOW_ICON_STORAGE_KEY)), hasRain
-      ? { rain: 3, cloud: null, windy: false, cachedAt: Date.now() }
+      ? {
+          rain: 3,
+          cloud: null,
+          windy: false,
+          cachedAt: Date.now(),
+          forecastAdjustmentMode: "adjusted",
+        }
       : null);
     assert.match(nowMarkup(controller.state), hasRain ? /09-heavy-rain\.svg/u : /12-unavailable\.svg/u);
   }
