@@ -159,6 +159,32 @@ test("ECMWF temperature sidecar is immutable private and single-run", async () =
     assert.equal(auditRows[0].run.id, persisted.id);
     assert.equal(auditRows[0].hour.modelLeadHours, 1);
 
+    let archivedRevision = null;
+    const nextInitializedAt = "2026-09-07T18:00:00.000Z";
+    await persistEcmwfTemperatureCanaryRun(ingestPool, {
+      ...input,
+      hours: input.hours.map(
+        // preserve exact lead geometry for the next initialization
+        (hour) => ({
+          ...hour,
+          validAt: new Date(Date.parse(hour.validAt) + 6 * 3_600_000).toISOString(),
+        }),
+      ),
+      providerResponseSha256: "b".repeat(64),
+      receivedAt: "2026-09-08T00:03:00.000Z",
+      recentErrorState: {
+        ...input.recentErrorState,
+        targetRunInitializedAt: nextInitializedAt,
+        windowEndValidAt: "2026-09-07T11:00:00.000Z",
+      },
+      runInitializedAt: nextInitializedAt,
+    }, async (_queryable, revision) => {
+      archivedRevision = revision;
+      return null;
+    });
+    assert.equal(archivedRevision.modelCycle, "50r1");
+    assert.deepEqual(archivedRevision.bestMatchRows, []);
+
     await persistEcmwfTemperatureCanaryRun(ingestPool, {
       ...input,
       receivedAt: "2026-09-07T18:05:00.000Z",

@@ -23,6 +23,7 @@ import {
 } from "@weather/providers";
 
 export interface WorkerConfiguration {
+  readonly adjustmentMaintenanceApiOrigin: string | null;
   readonly database: DatabaseConfiguration;
   readonly ecowitt: EcowittConfiguration | null;
   readonly instance: string;
@@ -78,6 +79,10 @@ export async function loadWorkerConfiguration(
   }
 
   return {
+    adjustmentMaintenanceApiOrigin: optionalEnvironment(
+      environment.WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN,
+      "WEATHER_ADJUSTMENT_MAINTENANCE_API_ORIGIN",
+    ),
     database: await loadDatabaseConfiguration(environment),
     ecowitt:
       ecowittConfigurationPath === null

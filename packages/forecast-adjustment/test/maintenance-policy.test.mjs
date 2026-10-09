@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { addLocalCalendarDays, localCalendarFeaturesFor } from "../dist/calendar.js";
+import { canonicalSha256 } from "../dist/candidate.js";
 import {
   createMaintenanceEvaluationRow,
   createRainMaintenanceEvaluationRow,
   evaluateRainMaintenanceDevelopment,
+  evaluateRainMaintenanceDevelopmentV3,
   evaluateRainMaintenancePromotion,
   evaluateTemperatureMaintenancePromotion,
   evaluateWindMaintenancePromotion,
@@ -220,6 +222,83 @@ test("rain development screen is frozen and cannot authorize production", () => 
     )),
     /requires historical rows/,
   );
+});
+
+// build one complete annual value-blind source proof with one eligible target row
+function annualRainDevelopmentPopulation() {
+  const start = Date.parse("2025-11-24T00:00:00.000Z");
+  const end = Date.parse("2026-11-24T00:00:00.000Z");
+  const hour = 3_600_000;
+  const firstRun = Math.floor((start - 31 * hour) / (6 * hour)) * 6 * hour;
+  const sourcePopulation = [];
+
+  // preserve every four-cycle issuance-halo member whose target lies in the year
+  for (let run = firstRun; run <= end - 9 * hour; run += 6 * hour) {
+    const runInitializedAt = new Date(run).toISOString();
+    const issuedAt = new Date(run + 8 * hour).toISOString();
+    // map source leads nine through thirty-one to operational horizons one through twenty-three
+    for (let modelLeadHours = 9; modelLeadHours <= 31; modelLeadHours += 1) {
+      const valid = run + modelLeadHours * hour;
+      // omit only target clocks outside the frozen annual interval
+      if (valid < start || valid >= end) {
+        continue;
+      }
+      const validAt = new Date(valid).toISOString();
+      const index = sourcePopulation.length;
+      sourcePopulation.push({
+        issuedAt,
+        key: `${runInitializedAt}/${validAt}`,
+        modelLeadHours,
+        operationalHorizonHours: modelLeadHours - 8,
+        phaseEligible: index === 0,
+        sourceMemberSha256: HASH,
+        sourceReceiptSha256: HASH,
+        targetAvailable: index === 0,
+        validAt,
+      });
+    }
+  }
+  return {
+    contractVersion: "rain-maintenance-development-population/v3",
+    cycleHours: [0, 6, 12, 18],
+    developmentEndAt: "2026-11-24T00:00:00.000Z",
+    developmentStartAt: "2025-11-24T00:00:00.000Z",
+    eligibleRowCount: 1,
+    excludedColdRowCount: sourcePopulation.length - 1,
+    expectedRowCount: sourcePopulation.length,
+    missingSourceRowCount: 0,
+    missingTargetRowCount: 0,
+    observedRowCount: sourcePopulation.length,
+    operationalHorizonHours: Array.from({ length: 23 }, (_unused, index) => index + 1),
+    populationMemberRootSha256: canonicalSha256(sourcePopulation.map(
+      (member) => member.sourceMemberSha256).sort()),
+    populationReceiptRootSha256: canonicalSha256([HASH]),
+    populationSha256: canonicalSha256(sourcePopulation),
+    sourceModelLeadHours: Array.from({ length: 23 }, (_unused, index) => index + 9),
+    sourcePopulation,
+  };
+}
+
+test("rain v3 development uses the original gates on a complete future-only year", () => {
+  const population = annualRainDevelopmentPopulation();
+  const selected = population.sourcePopulation[0];
+  const row = rainRow({
+    evidenceClass: "historical_development",
+    firstEdgeCommittedAt: null,
+    horizonHours: selected.operationalHorizonHours,
+    key: selected.key,
+    sourceReceiptAt: null,
+    validAt: selected.validAt,
+  });
+  const report = evaluateRainMaintenanceDevelopmentV3([row], population);
+  assert.equal(report.developmentRows, 1);
+  assert.equal(report.developmentPopulationSha256, population.populationSha256);
+  assert.equal(report.productionEligible, false);
+  assert.deepEqual(report.gates.map((gate) => gate.id), RAIN_ORIGINAL_STABLE_GATE_IDS);
+  assert.throws(() => evaluateRainMaintenanceDevelopmentV3([row], {
+    ...population,
+    sourcePopulation: population.sourcePopulation.slice(1),
+  }), /population proof differs|evaluation population differs/u);
 });
 
 test("rain policy rejects cold rows and probability nesting violations", () => {

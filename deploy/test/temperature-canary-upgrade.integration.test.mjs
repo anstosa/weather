@@ -117,6 +117,9 @@ test(
         "0016_rain_adjustment.sql",
         "0017_adjustment_evaluation_export.sql",
         "0018_adjustment_maintenance_v2.sql",
+        "0019_adjustment_maintenance_recurring.sql",
+        "0020_adjustment_revision_frontier.sql",
+        "0021_adjustment_rolling_registration.sql",
       ]);
       await applyRuntimeAcl(server, runtimeAclPath, "runtime-acl-v2-upgraded.sql");
 
@@ -128,6 +131,9 @@ test(
           has_table_privilege(
             'weather_api', 'ecmwf_temperature_canary_hours', 'SELECT'
           ) AS api_hours_select,
+          has_column_privilege(
+            'weather_api', 'ecmwf_temperature_canary_runs', 'run_initialized_at', 'SELECT'
+          ) AS api_run_identity_select,
           has_table_privilege(
             'weather_api', 'ecmwf_temperature_canary_runs', 'INSERT,UPDATE,DELETE'
           ) AS api_runs_write,
@@ -141,6 +147,11 @@ test(
           ) AND has_table_privilege(
             'weather_ingest', 'ecmwf_temperature_canary_hours', 'INSERT'
           ) AS ingest_hours_read_insert,
+          has_column_privilege(
+            'weather_ingest', 'ecmwf_temperature_canary_runs', 'run_initialized_at', 'SELECT'
+          ) AND has_column_privilege(
+            'weather_ingest', 'ecmwf_temperature_canary_runs', 'run_initialized_at', 'INSERT'
+          ) AS ingest_run_identity_read_insert,
           has_table_privilege(
             'weather_ingest', 'ecmwf_temperature_canary_hours', 'UPDATE,DELETE'
           ) AS ingest_hours_mutate,
@@ -156,13 +167,15 @@ test(
 
       assert.deepEqual(privileges.rows[0], {
         api_hours_select: true,
-        api_runs_select: true,
+        api_run_identity_select: true,
+        api_runs_select: false,
         api_runs_write: false,
         ingest_first_receipt_update: false,
         ingest_hours_mutate: false,
         ingest_hours_read_insert: true,
+        ingest_run_identity_read_insert: true,
         ingest_last_receipt_update: true,
-        ingest_runs_read_insert: true,
+        ingest_runs_read_insert: false,
       });
     } finally {
       // clean every disposable test resource

@@ -6,14 +6,30 @@ import {
   RAIN_HURDLE_WIND_ARTIFACT_JSON,
   RAIN_HURDLE_WIND_ARTIFACT_SHA256,
 } from "./rain-hurdle-wind-artifact.js";
+import { localCalendarFeaturesFor } from "./calendar.js";
 
 export const RAIN_HURDLE_WIND_RUNTIME_VERSION = "rain-hurdle-wind-runtime/v1" as const;
+export const RAIN_HURDLE_WIND_RUNTIME_V2_VERSION = "rain-hurdle-wind-runtime/v2" as const;
 export const RAIN_HURDLE_WIND_MODEL_SHA256 = RAIN_HURDLE_WIND_ARTIFACT_SHA256;
+export const RAIN_HURDLE_WIND_PROJECTION_IDS = [
+  "R0_exact_refit",
+  "R1_winter_scale_0_90",
+  "R2_winter_scale_0_95",
+  "R3_spring_wet_logit_plus_0_20",
+  "R4_summer_wet_logit_plus_0_20",
+  "R5_nested_cumulative_min",
+  "R6_heavy_raw_blend_0_25",
+] as const;
 
 const STATION_IDS = RAIN_COLLECTION_STATIONS.map((station) => station.locationId);
 const DECISION_DELAY_HOURS = RAIN_COLLECTION_POLICY.decisionDelayHours;
 const HOUR_MS = 3_600_000;
 const THRESHOLDS = [0.1, 1, 2.5] as const;
+const PUBLIC_ARTIFACT_V1_KEYS = ["categoryScales", "contractVersion", "featureNames", "heads", "modelMonth", "rules"] as const;
+const PUBLIC_ARTIFACT_V2_KEYS = [...PUBLIC_ARTIFACT_V1_KEYS, "projectionId"] as const;
+const LEGACY_ACTIVE_ARTIFACT_KEYS = [...PUBLIC_ARTIFACT_V1_KEYS, "nativeModelSha256", "provenanceSha256"] as const;
+export const RAIN_HURDLE_WIND_FEATURE_NAMES_SHA256 =
+  "6c8be26782bae556a152aa83ecf2f9dec2089561a635a20d6510f16a979a3650" as const;
 
 type Tree = readonly [
   readonly number[],
@@ -29,14 +45,26 @@ interface NativeHead {
   readonly trees: readonly Tree[];
 }
 
-interface RainArtifact {
+export type RainHurdleWindProjectionId = typeof RAIN_HURDLE_WIND_PROJECTION_IDS[number];
+
+export interface RainHurdleWindPortableArtifactV1 {
   readonly contractVersion: typeof RAIN_HURDLE_WIND_RUNTIME_VERSION;
-  readonly modelMonth: "2026-08";
+  readonly modelMonth: `${number}-${number}`;
   readonly featureNames: readonly string[];
   readonly rules: readonly { readonly threshold: number; readonly cutoff: number | null }[];
   readonly categoryScales: readonly number[];
   readonly heads: Readonly<Record<"0.1" | "1.0" | "2.5" | "amount", NativeHead>>;
 }
+
+export interface RainHurdleWindPortableArtifactV2
+  extends Omit<RainHurdleWindPortableArtifactV1, "contractVersion"> {
+  readonly contractVersion: typeof RAIN_HURDLE_WIND_RUNTIME_V2_VERSION;
+  readonly projectionId: RainHurdleWindProjectionId;
+}
+
+export type RainHurdleWindPortableArtifact =
+  | RainHurdleWindPortableArtifactV1
+  | RainHurdleWindPortableArtifactV2;
 
 export interface RainWindForecastHour {
   readonly leadHours: number;
@@ -80,8 +108,8 @@ export interface RainWindPredictionHour {
 }
 
 export interface RainWindPredictionResult {
-  readonly modelSha256: typeof RAIN_HURDLE_WIND_MODEL_SHA256;
-  readonly modelMonth: "2026-08";
+  readonly modelSha256: string;
+  readonly modelMonth: `${number}-${number}`;
   readonly decisionAt: string;
   readonly hours: readonly RainWindPredictionHour[];
 }
@@ -91,6 +119,7 @@ export interface RainHurdleWindFeaturePerformance {
   readonly occurrenceProbabilityAtLeast0_1: number;
   readonly occurrenceProbabilityAtLeast1_0: number;
   readonly occurrenceProbabilityAtLeast2_5: number;
+  readonly positiveAmountMm: number;
 }
 
 export interface RainWindPerformanceHour extends RainWindPredictionHour {
@@ -99,11 +128,27 @@ export interface RainWindPerformanceHour extends RainWindPredictionHour {
     readonly atLeast1_0: number;
     readonly atLeast2_5: number;
   } | null;
+  readonly positiveAmountMm: number | null;
 }
 
 export interface RainWindPerformanceResult
   extends Omit<RainWindPredictionResult, "hours"> {
   readonly hours: readonly RainWindPerformanceHour[];
+}
+
+// retain exact pre-fit feature vectors before any candidate exists
+export interface RainHurdleWindFeatureRow {
+  readonly features: Float32Array;
+  readonly modelLeadHours: number;
+  readonly rawPrecipitationMm: number;
+  readonly rawTargetHourTemperatureC: number;
+  readonly validAt: string;
+}
+
+export interface RainHurdleWindFeatureProjection {
+  readonly decisionAt: string;
+  readonly rows: readonly RainHurdleWindFeatureRow[];
+  readonly runInitializedAt: string;
 }
 
 interface PreparedRun {
@@ -118,26 +163,98 @@ interface StationObservation {
 }
 
 // bind the generated numerical trees to their frozen source digest
-function loadArtifact(): RainArtifact {
-  const digest = createHash("sha256").update(RAIN_HURDLE_WIND_ARTIFACT_JSON).digest("hex");
-  if (digest !== RAIN_HURDLE_WIND_ARTIFACT_SHA256) {
+function loadArtifact(): RainHurdleWindPortableArtifact {
+  const parsed = parseRainHurdleWindArtifact(
+    RAIN_HURDLE_WIND_ARTIFACT_JSON,
+    RAIN_HURDLE_WIND_ARTIFACT_SHA256,
+  );
+  // admit legacy provenance or one generated public serving artifact
+  if (!exactObjectKeys(parsed, LEGACY_ACTIVE_ARTIFACT_KEYS) &&
+      !exactObjectKeys(parsed, PUBLIC_ARTIFACT_V1_KEYS) &&
+      !exactObjectKeys(parsed, PUBLIC_ARTIFACT_V2_KEYS)) {
+    throw new RangeError("rain model incumbent artifact schema mismatch");
+  }
+  return validateRainHurdleWindArtifactShape(parsed);
+}
+
+// validate one exact public portable rain runtime artifact
+export function validateRainHurdleWindPortableArtifact(
+  artifactJson: string,
+  expectedSha256: string,
+): RainHurdleWindPortableArtifact {
+  const parsed = parseRainHurdleWindArtifact(artifactJson, expectedSha256);
+  // require one closed public runtime schema
+  if (parsed.contractVersion === RAIN_HURDLE_WIND_RUNTIME_VERSION
+    ? !exactObjectKeys(parsed, PUBLIC_ARTIFACT_V1_KEYS)
+    : !exactObjectKeys(parsed, PUBLIC_ARTIFACT_V2_KEYS)) {
+    throw new RangeError("rain model artifact schema mismatch");
+  }
+  return validateRainHurdleWindArtifactShape(parsed);
+}
+
+// parse one digest-bound plain artifact object
+function parseRainHurdleWindArtifact(
+  artifactJson: string,
+  expectedSha256: string,
+): Record<string, unknown> {
+  const digest = createHash("sha256").update(artifactJson).digest("hex");
+  // bind the exact selected artifact bytes
+  if (!/^[a-f0-9]{64}$/u.test(expectedSha256) || digest !== expectedSha256) {
     throw new RangeError("rain model artifact digest mismatch");
   }
-  const artifact = JSON.parse(RAIN_HURDLE_WIND_ARTIFACT_JSON) as RainArtifact;
+  const parsed = JSON.parse(artifactJson) as unknown;
+  // reject nonobject roots before schema inspection
+  if (!plainRecord(parsed)) {
+    throw new RangeError("rain model artifact schema mismatch");
+  }
+  return parsed;
+}
+
+// validate the shared numerical runtime shape after the outer schema closes
+function validateRainHurdleWindArtifactShape(
+  parsed: Record<string, unknown>,
+): RainHurdleWindPortableArtifact {
+  // require the frozen feature and output geometry
   if (
-    artifact.contractVersion !== RAIN_HURDLE_WIND_RUNTIME_VERSION ||
-    artifact.modelMonth !== "2026-08" ||
-    artifact.featureNames.length !== 107 ||
-    artifact.rules.length !== 3 ||
-    artifact.categoryScales.length !== 3
+    ![RAIN_HURDLE_WIND_RUNTIME_VERSION, RAIN_HURDLE_WIND_RUNTIME_V2_VERSION]
+      .includes(parsed.contractVersion as typeof RAIN_HURDLE_WIND_RUNTIME_VERSION) ||
+    typeof parsed.modelMonth !== "string" || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(parsed.modelMonth) ||
+    !Array.isArray(parsed.featureNames) || parsed.featureNames.length !== 107 ||
+    parsed.featureNames.some((name) => typeof name !== "string") ||
+    createHash("sha256").update(JSON.stringify(parsed.featureNames)).digest("hex") !==
+      RAIN_HURDLE_WIND_FEATURE_NAMES_SHA256 ||
+    !Array.isArray(parsed.rules) || parsed.rules.length !== THRESHOLDS.length ||
+    !Array.isArray(parsed.categoryScales) || parsed.categoryScales.length !== THRESHOLDS.length ||
+    !plainRecord(parsed.heads) || !exactObjectKeys(parsed.heads, ["0.1", "1.0", "2.5", "amount"])
   ) {
     throw new RangeError("rain model artifact schema mismatch");
   }
+  // bind v2 serving bytes to one reviewed selected arm
+  if (parsed.contractVersion === RAIN_HURDLE_WIND_RUNTIME_V2_VERSION &&
+      !RAIN_HURDLE_WIND_PROJECTION_IDS.includes(parsed.projectionId as RainHurdleWindProjectionId)) {
+    throw new RangeError("rain model artifact schema mismatch");
+  }
+  // close the three trained event rules and amount scales
+  for (let index = 0; index < THRESHOLDS.length; index += 1) {
+    const rule = parsed.rules[index];
+    const scale = parsed.categoryScales[index];
+    // reject renamed thresholds, extension fields and nonprobability cutoffs
+    if (!plainRecord(rule) || !exactObjectKeys(rule, ["cutoff", "threshold"]) ||
+        rule.threshold !== THRESHOLDS[index] ||
+        !(rule.cutoff === null || (typeof rule.cutoff === "number" && Number.isFinite(rule.cutoff) &&
+          rule.cutoff >= 0 && rule.cutoff <= 1)) ||
+        typeof scale !== "number" || !Number.isFinite(scale) || scale <= 0) {
+      throw new RangeError("rain model artifact schema mismatch");
+    }
+  }
+  const artifact = parsed as unknown as RainHurdleWindPortableArtifact;
   // reject malformed trees before any served inference
   for (const name of ["0.1", "1.0", "2.5", "amount"] as const) {
     const head = artifact.heads[name];
+    // require one closed finite head for each named output
     if (
-      !head || head.trees.length !== 160 ||
+      !plainRecord(head) || !exactObjectKeys(head, ["baseScore", "objective", "trees"]) ||
+      !Array.isArray(head.trees) || head.trees.length !== 160 ||
       head.objective !== (name === "amount" ? "reg:gamma" : "binary:logistic") ||
       !Number.isFinite(head.baseScore) || head.baseScore <= 0 ||
       (name !== "amount" && head.baseScore >= 1)
@@ -146,7 +263,13 @@ function loadArtifact(): RainArtifact {
     }
     // check every tree has only bounded numerical split paths
     for (const tree of head.trees) {
+      // require the five exact parallel numerical arrays
+      if (!Array.isArray(tree) || tree.length !== 5 || tree.some((array) =>
+        !Array.isArray(array) || array.some((value) => typeof value !== "number"))) {
+        throw new RangeError("rain model tree array mismatch");
+      }
       const length = tree[0].length;
+      // retain one aligned nonempty topology
       if (length === 0 || tree.some((array) => array.length !== length)) {
         throw new RangeError("rain model tree array mismatch");
       }
@@ -157,6 +280,7 @@ function loadArtifact(): RainArtifact {
         const feature = tree[0][node];
         const value = tree[1][node];
         const missingLeft = tree[4][node];
+        // reject invalid topology and feature indices before traversal
         if (
           left === undefined || right === undefined || feature === undefined ||
           value === undefined || missingLeft === undefined || !Number.isFinite(value) ||
@@ -172,6 +296,17 @@ function loadArtifact(): RainArtifact {
     }
   }
   return artifact;
+}
+
+// narrow one parsed plain object
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    [Object.prototype, null].includes(Object.getPrototypeOf(value));
+}
+
+// compare one object's exact public keys
+function exactObjectKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return Object.keys(value).sort().join("\n") === [...keys].sort().join("\n");
 }
 
 const ARTIFACT = loadArtifact();
@@ -467,6 +602,39 @@ function scoreHead(head: NativeHead, features: Float32Array): number {
 export function predictRainHurdleWindFeaturesWithProbabilities(
   features: Float32Array,
 ): RainHurdleWindFeaturePerformance {
+  return predictRainHurdleWindFeaturesWithArtifact(ARTIFACT, features);
+}
+
+// create a test and packaging evaluator from independently validated artifact bytes
+export function createRainHurdleWindPortableArtifactEvaluator(
+  artifactJson: string,
+  expectedSha256: string,
+): (features: Float32Array, validAt?: string) => RainHurdleWindFeaturePerformance {
+  const artifact = validateRainHurdleWindPortableArtifact(artifactJson, expectedSha256);
+  return (
+    // retain one exact validated artifact across repeated parity rows
+    (features, validAt) => predictRainHurdleWindFeaturesWithArtifact(artifact, features, validAt)
+  );
+}
+
+// create a complete performance evaluator from one inactive public artifact
+export function createRainHurdleWindPortablePerformanceEvaluator(
+  artifactJson: string,
+  expectedSha256: string,
+): (input: RainWindPredictionInput) => RainWindPerformanceResult {
+  const artifact = validateRainHurdleWindPortableArtifact(artifactJson, expectedSha256);
+  return (
+    // retain one validated inactive candidate across the complete lead body
+    (input) => predictRainHurdleWindPerformanceWithArtifact(input, artifact, expectedSha256)
+  );
+}
+
+// evaluate one feature vector against an explicit already-validated artifact
+function predictRainHurdleWindFeaturesWithArtifact(
+  artifact: RainHurdleWindPortableArtifact,
+  features: Float32Array,
+  validAt?: string,
+): RainHurdleWindFeaturePerformance {
   if (features.length !== 107 || features.some((value) => value === Infinity || value === -Infinity)) {
     throw new RangeError("rain model feature vector invalid");
   }
@@ -474,15 +642,18 @@ export function predictRainHurdleWindFeaturesWithProbabilities(
   if (!Number.isFinite(raw) || raw < 0) {
     throw new RangeError("rain model raw amount invalid");
   }
-  const scores = [
-    scoreHead(ARTIFACT.heads["0.1"], features),
-    scoreHead(ARTIFACT.heads["1.0"], features),
-    scoreHead(ARTIFACT.heads["2.5"], features),
+  const nativeScores = [
+    scoreHead(artifact.heads["0.1"], features),
+    scoreHead(artifact.heads["1.0"], features),
+    scoreHead(artifact.heads["2.5"], features),
   ];
+  const scores = artifact.contractVersion === RAIN_HURDLE_WIND_RUNTIME_V2_VERSION
+    ? projectRainOccurrenceProbabilities(nativeScores, artifact.projectionId, validAt)
+    : nativeScores;
   let category = 0;
   // highest called event wins exactly as the frozen native hurdle
   for (let index = 0; index < THRESHOLDS.length; index += 1) {
-    const cutoff = ARTIFACT.rules[index]?.cutoff;
+    const cutoff = artifact.rules[index]?.cutoff;
     const score = scores[index] ?? Number.NaN;
     if (!Number.isFinite(score) || score < 0 || score > 1) {
       throw new RangeError("rain model event probability invalid");
@@ -496,19 +667,88 @@ export function predictRainHurdleWindFeaturesWithProbabilities(
     occurrenceProbabilityAtLeast1_0: scores[1]!,
     occurrenceProbabilityAtLeast2_5: scores[2]!,
   };
+  const positiveAmountMm = Math.min(30, Math.max(0.1, scoreHead(artifact.heads.amount, features)));
+  // apply the v2 wet-call floor even when no learned category was called
   if (category === 0) {
-    return { correctedPrecipitationMm: 0, ...probabilities };
+    const correctedPrecipitationMm = artifact.contractVersion === RAIN_HURDLE_WIND_RUNTIME_V2_VERSION
+      ? applyRainSelectedProjection(raw, 0, artifact.projectionId, validAt)
+      : 0;
+    return { correctedPrecipitationMm, positiveAmountMm, ...probabilities };
   }
-  const amount = Math.min(30, Math.max(0.1, scoreHead(ARTIFACT.heads.amount, features)));
-  const base = Math.min(30, Math.max(0, 0.25 * raw + 0.75 * amount));
-  const scaled = base * (ARTIFACT.categoryScales[category - 1] ?? Number.NaN);
+  const base = Math.min(30, Math.max(0, 0.25 * raw + 0.75 * positiveAmountMm));
+  const scaled = base * (artifact.categoryScales[category - 1] ?? Number.NaN);
   const lower = THRESHOLDS[category - 1] ?? Number.NaN;
   const upper = category === 1 ? 1 - Number.EPSILON / 2 : category === 2 ? 2.5 - Number.EPSILON : 30;
   const projected = Math.min(upper, Math.max(lower, scaled));
   if (!Number.isFinite(projected) || projected < 0 || projected > 30) {
     throw new RangeError("rain model amount projection invalid");
   }
-  return { correctedPrecipitationMm: projected, ...probabilities };
+  const correctedPrecipitationMm = artifact.contractVersion === RAIN_HURDLE_WIND_RUNTIME_V2_VERSION
+    ? applyRainSelectedProjection(raw, projected, artifact.projectionId, validAt)
+    : projected;
+  return { correctedPrecipitationMm, positiveAmountMm, ...probabilities };
+}
+
+// apply one reviewed occurrence-head arm before category selection
+function projectRainOccurrenceProbabilities(
+  scores: readonly number[],
+  projectionId: RainHurdleWindProjectionId,
+  validAt: string | undefined,
+): number[] {
+  const projected = [...scores];
+  const month = rainProjectionMonth(validAt);
+  const seasonalMonths = projectionId === "R3_spring_wet_logit_plus_0_20"
+    ? [3, 4, 5]
+    : projectionId === "R4_summer_wet_logit_plus_0_20" ? [6, 7, 8] : [];
+  // adjust only the selected seasonal wet head
+  if (seasonalMonths.includes(month)) {
+    const probability = Math.min(1 - 1e-12, Math.max(1e-12, projected[0] ?? Number.NaN));
+    projected[0] = Math.fround(1 / (1 + Math.exp(-(Math.log(probability / (1 - probability)) + 0.20))));
+  }
+  // enforce nesting only for its independent arm
+  if (projectionId === "R5_nested_cumulative_min") {
+    for (let index = 1; index < projected.length; index += 1) {
+      projected[index] = Math.min(projected[index - 1] ?? Number.NaN,
+        projected[index] ?? Number.NaN);
+    }
+  }
+  return projected;
+}
+
+// apply post-calibration arm behavior and the original event guard
+function applyRainSelectedProjection(
+  raw: number,
+  calibrated: number,
+  projectionId: RainHurdleWindProjectionId,
+  validAt: string | undefined,
+): number {
+  const month = rainProjectionMonth(validAt);
+  let projected = calibrated;
+  // scale only winter hours in the selected scale arm
+  if ([12, 1, 2].includes(month) &&
+      ["R1_winter_scale_0_90", "R2_winter_scale_0_95"].includes(projectionId)) {
+    projected *= projectionId === "R1_winter_scale_0_90" ? 0.90 : 0.95;
+  }
+  // preserve the preregistered heavy blend before the overriding safety guard
+  if (projectionId === "R6_heavy_raw_blend_0_25" && raw >= 1) {
+    projected = 0.25 * raw + 0.75 * projected;
+  }
+  // preserve raw heavy amounts and every raw wet call
+  if (raw >= 1) {
+    return raw;
+  }
+  return raw >= 0.1 ? Math.max(0.1, projected) : projected;
+}
+
+// derive the same local month used by the native grid screen
+function rainProjectionMonth(validAt: string | undefined): number {
+  // require a real target clock for every v2 arm, including nonseasonal arms
+  if (validAt === undefined ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(validAt) ||
+      new Date(validAt).toISOString() !== validAt) {
+    throw new RangeError("rain model v2 validAt is required");
+  }
+  return localCalendarFeaturesFor(validAt).month;
 }
 
 // retain the serving amount-only feature interface
@@ -521,56 +761,151 @@ export function predictRainHurdleWindFeatures(features: Float32Array): number {
 export function predictRainHurdleWindPerformance(
   input: RainWindPredictionInput,
 ): RainWindPerformanceResult {
+  return predictRainHurdleWindPerformanceWithArtifact(
+    input,
+    ARTIFACT,
+    RAIN_HURDLE_WIND_MODEL_SHA256,
+  );
+}
+
+// replay one complete source body against an explicit validated artifact
+function predictRainHurdleWindPerformanceWithArtifact(
+  input: RainWindPredictionInput,
+  artifact: RainHurdleWindPortableArtifact,
+  modelSha256: string,
+): RainWindPerformanceResult {
+  return replayRainHurdleWindNativeParityPerformance(
+    input,
+    modelSha256,
+    artifact.modelMonth,
+    (features, validAt) => predictRainHurdleWindFeaturesWithArtifact(artifact, features, validAt),
+  );
+}
+
+// project the actual serving feature builder before candidate selection
+export function projectRainHurdleWindFeatures(
+  input: RainWindPredictionInput,
+): RainHurdleWindFeatureProjection {
   const nowMs = Date.parse(input.nowUtc);
   const initializedMs = exactHour(input.currentRun.runInitializedAt);
   const decisionMs = initializedMs + DECISION_DELAY_HOURS * HOUR_MS;
+  // refuse future or normalized decision inputs before preparing causal members
   if (!Number.isFinite(nowMs) || decisionMs > nowMs) {
     throw new RangeError("rain runtime decision has not matured");
   }
   const current = prepareRun(input.currentRun, decisionMs);
   const prior = new Map<number, PreparedRun>();
+  // retain only the exact earlier 6h and 12h model cycles
   for (const run of input.priorRuns) {
     const prepared = prepareRun(run, decisionMs);
-    if (
-      prepared.initializedMs >= initializedMs ||
-      ![6, 12].includes((initializedMs - prepared.initializedMs) / HOUR_MS) ||
-      prior.has(prepared.initializedMs)
-    ) {
+    if (prepared.initializedMs >= initializedMs ||
+        ![6, 12].includes((initializedMs - prepared.initializedMs) / HOUR_MS) ||
+        prior.has(prepared.initializedMs)) {
       throw new RangeError("rain runtime prior cycle invalid");
     }
     prior.set(prepared.initializedMs, prepared);
   }
   const stations = prepareStations(input.stationHours, decisionMs);
-  const hours: RainWindPerformanceHour[] = [];
-  // forecast leads 9–31 are the only trained output scope
+  const rows: RainHurdleWindFeatureRow[] = [];
+  // preserve all 23 fitted output leads, including phase-ineligible targets
   for (let modelLeadHours = 1; modelLeadHours <= 23; modelLeadHours += 1) {
     const sourceLead = DECISION_DELAY_HOURS + modelLeadHours;
     const raw = source(current, sourceLead, "precipitationMm");
     const temperature = source(current, sourceLead, "temperatureC");
+    // require actual source values before producing a fit row
     if (!Number.isFinite(raw) || raw < 0 || !Number.isFinite(temperature)) {
       throw new RangeError("rain runtime current source amount or temperature invalid");
     }
-    const validAt = new Date(initializedMs + sourceLead * HOUR_MS).toISOString();
-    if (temperature <= 2) {
-      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: raw, applied: false, reasonCode: "phase_unsupported", occurrenceProbabilities: null });
+    rows.push({
+      features: buildRainHurdleWindFeatures(current, prior, stations, modelLeadHours),
+      modelLeadHours: sourceLead,
+      rawPrecipitationMm: raw,
+      rawTargetHourTemperatureC: temperature,
+      validAt: new Date(initializedMs + sourceLead * HOUR_MS).toISOString(),
+    });
+  }
+  return {
+    decisionAt: new Date(decisionMs).toISOString(),
+    rows,
+    runInitializedAt: input.currentRun.runInitializedAt,
+  };
+}
+
+// score one already-retained native feature projection with the compiled artifact
+export function predictRainHurdleWindFeatureProjection(
+  featureProjection: RainHurdleWindFeatureProjection,
+): RainWindPerformanceResult {
+  return replayRainHurdleWindFeatureProjection(
+    featureProjection,
+    RAIN_HURDLE_WIND_MODEL_SHA256,
+    ARTIFACT.modelMonth,
+    (features) => predictRainHurdleWindFeaturesWithArtifact(ARTIFACT, features),
+  );
+}
+
+// replay complete causal inputs through one independent parity scorer
+export function replayRainHurdleWindNativeParityPerformance(
+  input: RainWindPredictionInput,
+  modelSha256: string,
+  modelMonth: `${number}-${number}`,
+  evaluateFeatures: (features: Float32Array, validAt: string) => RainHurdleWindFeaturePerformance,
+): RainWindPerformanceResult {
+  // bind parity output to one concrete portable artifact identity and month
+  if (!/^[a-f0-9]{64}$/u.test(modelSha256) || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(modelMonth) ||
+      typeof evaluateFeatures !== "function") {
+    throw new RangeError("rain parity runtime identity is invalid");
+  }
+  const featureProjection = projectRainHurdleWindFeatures(input);
+  return replayRainHurdleWindFeatureProjection(
+    featureProjection, modelSha256, modelMonth, evaluateFeatures,
+  );
+}
+
+// score one validated feature projection without rebuilding its causal rows
+function replayRainHurdleWindFeatureProjection(
+  featureProjection: RainHurdleWindFeatureProjection,
+  modelSha256: string,
+  modelMonth: `${number}-${number}`,
+  evaluateFeatures: (features: Float32Array, validAt: string) => RainHurdleWindFeaturePerformance,
+): RainWindPerformanceResult {
+  // require the fixed fitted geometry before model evaluation
+  if (featureProjection.rows.length !== 23 ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:00:00\.000Z$/u.test(featureProjection.decisionAt)) {
+    throw new RangeError("rain feature projection geometry is invalid");
+  }
+  const hours: RainWindPerformanceHour[] = [];
+  // forecast leads 9–31 are the only trained output scope
+  for (const row of featureProjection.rows) {
+    if (row.rawTargetHourTemperatureC <= 2) {
+      hours.push({ validAt: row.validAt, modelLeadHours: row.modelLeadHours,
+        rawPrecipitationMm: row.rawPrecipitationMm,
+        correctedPrecipitationMm: row.rawPrecipitationMm, applied: false,
+        reasonCode: "phase_unsupported", occurrenceProbabilities: null,
+        positiveAmountMm: null });
       continue;
     }
     try {
-      const features = buildRainHurdleWindFeatures(current, prior, stations, modelLeadHours);
-      const prediction = predictRainHurdleWindFeaturesWithProbabilities(features);
-      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: prediction.correctedPrecipitationMm, applied: true, reasonCode: null, occurrenceProbabilities: {
+      const prediction = evaluateFeatures(row.features, row.validAt);
+      hours.push({ validAt: row.validAt, modelLeadHours: row.modelLeadHours,
+        rawPrecipitationMm: row.rawPrecipitationMm,
+        correctedPrecipitationMm: prediction.correctedPrecipitationMm,
+        applied: true, reasonCode: null, occurrenceProbabilities: {
         atLeast0_1: prediction.occurrenceProbabilityAtLeast0_1,
         atLeast1_0: prediction.occurrenceProbabilityAtLeast1_0,
         atLeast2_5: prediction.occurrenceProbabilityAtLeast2_5,
-      } });
+      }, positiveAmountMm: prediction.positiveAmountMm });
     } catch {
-      hours.push({ validAt, modelLeadHours: sourceLead, rawPrecipitationMm: raw, correctedPrecipitationMm: raw, applied: false, reasonCode: "prediction_invalid", occurrenceProbabilities: null });
+      hours.push({ validAt: row.validAt, modelLeadHours: row.modelLeadHours,
+        rawPrecipitationMm: row.rawPrecipitationMm,
+        correctedPrecipitationMm: row.rawPrecipitationMm, applied: false,
+        reasonCode: "prediction_invalid", occurrenceProbabilities: null,
+        positiveAmountMm: null });
     }
   }
   return {
-    modelSha256: RAIN_HURDLE_WIND_MODEL_SHA256,
-    modelMonth: ARTIFACT.modelMonth,
-    decisionAt: new Date(decisionMs).toISOString(),
+    modelSha256,
+    modelMonth,
+    decisionAt: featureProjection.decisionAt,
     hours,
   };
 }

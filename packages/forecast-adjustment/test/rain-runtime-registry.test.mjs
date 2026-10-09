@@ -25,10 +25,13 @@ test("rain raw registry has exact bytes and ignores the compiled artifact", asyn
   assert.equal(Buffer.byteLength(bytes), FORECAST_ADJUSTMENT_RAIN_RAW_REGISTRY_BYTES);
   assert.equal(canonicalSha256(registry), FORECAST_ADJUSTMENT_RAIN_RAW_REGISTRY_SHA256);
   await writeFile(join(root, FORECAST_ADJUSTMENT_RAIN_RUNTIME_REGISTRY_FILENAME), bytes);
+  const loaded = await createForecastAdjustmentRainRuntimeRegistryLoaderForRoot(root).load();
   assert.deepEqual(
-    await createForecastAdjustmentRainRuntimeRegistryLoaderForRoot(root).load(),
+    { artifactSha256: loaded.artifactSha256, reasonCode: loaded.reasonCode, state: loaded.state },
     { artifactSha256: null, reasonCode: "policy_raw", state: "disabled" },
   );
+  assert.equal(loaded.comparatorAuthority.authorityKind, "policy_raw");
+  assert.equal(loaded.comparatorAuthority.receiptMemberSha256, FORECAST_ADJUSTMENT_RAIN_RAW_REGISTRY_SHA256);
 });
 
 test("rain active registry binds the compiled generated artifact hash", async () => {
@@ -48,11 +51,13 @@ test("rain active registry binds the compiled generated artifact hash", async ()
     return createForecastAdjustmentRainRuntimeRegistryLoaderForRoot(root).load();
   }
 
-  assert.deepEqual(await load(RAIN_HURDLE_WIND_ARTIFACT_SHA256), {
+  const loaded = await load(RAIN_HURDLE_WIND_ARTIFACT_SHA256);
+  assert.deepEqual({ artifactSha256: loaded.artifactSha256, reasonCode: loaded.reasonCode, state: loaded.state }, {
     artifactSha256: RAIN_HURDLE_WIND_ARTIFACT_SHA256,
     reasonCode: null,
     state: "active",
   });
+  assert.equal(loaded.comparatorAuthority.artifactIdentitySha256, RAIN_HURDLE_WIND_ARTIFACT_SHA256);
   assert.equal((await load("0".repeat(64))).reasonCode, "registry_invalid");
 });
 
@@ -106,12 +111,14 @@ test("public rain runtime registry is canonical and active", async () => {
     "utf8",
   );
   assert.equal(bytes, canonicalJsonBytes(JSON.parse(bytes)));
+  const loaded = await createForecastAdjustmentRainRuntimeRegistryLoaderForRoot(root).load();
   assert.deepEqual(
-    await createForecastAdjustmentRainRuntimeRegistryLoaderForRoot(root).load(),
+    { artifactSha256: loaded.artifactSha256, reasonCode: loaded.reasonCode, state: loaded.state },
     {
       artifactSha256: RAIN_HURDLE_WIND_ARTIFACT_SHA256,
       reasonCode: null,
       state: "active",
     },
   );
+  assert.equal(loaded.comparatorAuthority.authorityKind, "legacy_active");
 });

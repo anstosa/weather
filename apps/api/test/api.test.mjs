@@ -46,10 +46,14 @@ const inactiveAdjustmentRuntime = {
 };
 
 const inactiveTemperatureAdjustmentRuntime = {
+  actionSha256: null,
+  activationMode: null,
   activeBundle: null,
   authorizationSha256: null,
   expiresAt: null,
+  fullMemberRootSha256: null,
   loadedAt: "2026-08-22T05:00:00.000Z",
+  policyReportSha256: null,
   reasonCode: "registry_inactive",
   source: null,
   state: "disabled",
@@ -1107,10 +1111,14 @@ test("temperature canary exposes explicit ECMWF provenance without mutating raw"
     to: "2026-08-22T07:00:00.000Z",
   }]);
   assert.deepEqual(body.temperatureAdjustmentRuntime, {
+    actionSha256: null,
+    activationMode: "temperature_canary",
     activeBundle: runtime.bundle.bundleSha256,
     authorizationSha256: runtime.bundle.authorization.authorizationSha256,
     expiresAt: runtime.bundle.authorization.expiresAt,
+    fullMemberRootSha256: null,
     loadedAt: "2026-08-22T04:59:00.000Z",
+    policyReportSha256: null,
     reasonCode: null,
     source: {
       adaptiveReady: false,
@@ -1144,6 +1152,48 @@ test("permanent temperature runtime remains active with a null expiry", async ()
   assert.equal(body.temperatureAdjustmentRuntime.activeBundle, runtime.bundle.bundleSha256);
   assert.equal(body.temperatureAdjustmentRuntime.expiresAt, null);
   assert.equal(body.temperatureAdjustmentRuntime.reasonCode, null);
+});
+
+test("qualified temperature maintenance exposes only root receipt authority", async () => {
+  const incumbent = createPermanentTemperatureCanaryRuntime().bundle;
+  const authority = {
+    actionSha256: "a".repeat(64),
+    fullMemberRootSha256: "b".repeat(64),
+    policyReportSha256: "c".repeat(64),
+  };
+  const runtime = {
+    bundle: {
+      bundleSha256: "d".repeat(64),
+      maintenanceAuthority: authority,
+      maintenancePackage: true,
+      model: incumbent.model,
+      servedForecastIdentity: incumbent.servedForecastIdentity,
+      trainingForecastIdentity: incumbent.trainingForecastIdentity,
+    },
+    reasonCode: null,
+    state: "active",
+  };
+  const { handler } = createFixture({}, {
+    temperatureAdjustment: {
+      loadedAt: "2026-10-08T00:00:00.000Z",
+      runtime,
+    },
+  });
+  const response = await handler(
+    new Request("http://weather.test/api/v1/sites/ballydidean/forecast"),
+  );
+  const body = await response.json();
+  assert.deepEqual(body.temperatureAdjustmentRuntime, {
+    ...authority,
+    activationMode: "maintenance_qualified",
+    activeBundle: runtime.bundle.bundleSha256,
+    authorizationSha256: null,
+    expiresAt: null,
+    loadedAt: "2026-10-08T00:00:00.000Z",
+    reasonCode: null,
+    source: null,
+    state: "active",
+  });
 });
 
 // prove optional read faults remain observable without changing serving
