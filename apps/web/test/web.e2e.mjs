@@ -2578,6 +2578,8 @@ test("adjustment switch matches the forecast range and moves a solid muted-gold 
           trackBackground: getComputedStyle(track).backgroundColor,
           trackBackgroundImage: getComputedStyle(track).backgroundImage,
           trackBorderColor: getComputedStyle(track).borderTopColor,
+          trackBorderWidth: Number.parseFloat(getComputedStyle(track).borderTopWidth),
+          trackPadding: Number.parseFloat(getComputedStyle(track).paddingTop),
           titleClipped: titleWordBounds.some(
             // keep every word inside the single-line title box
             (word) => word.left < titleBounds.left - 1 || word.right > titleBounds.right + 1,
@@ -2596,7 +2598,7 @@ test("adjustment switch matches the forecast range and moves a solid muted-gold 
       const inset = (snapshot.track.height - snapshot.thumb.height) / 2;
       const expectedSparkleSize = Math.min(18, snapshot.thumb.width * 0.7);
       assert.equal(Math.abs(snapshot.track.width - snapshot.track.height * 1.75) < 0.25, true, JSON.stringify(snapshot));
-      assert.equal(Math.abs(snapshot.track.height - snapshot.thumb.height - 4) < 0.25, true, JSON.stringify(snapshot));
+      assert.equal(Math.abs(inset - snapshot.trackPadding - snapshot.trackBorderWidth) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.thumb.width - snapshot.thumb.height) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.thumbTopInset - inset) < 0.25, true, JSON.stringify(snapshot));
       assert.equal(Math.abs(snapshot.sparkle.width - expectedSparkleSize) < 0.25, true, JSON.stringify(snapshot));
@@ -2742,7 +2744,7 @@ test("adjustment switch matches the forecast range and moves a solid muted-gold 
     assert.equal(Math.abs(enabled.thumb.left - disabled.thumb.left - (enabled.track.width - enabled.track.height)) < 0.5, true);
     assert.equal(disabled.trackBackgroundImage, "none");
     assert.notEqual(enabled.trackBackground, disabled.trackBackground);
-    assert.notEqual(enabled.trackBorderColor, disabled.trackBorderColor);
+    assert.equal(enabled.trackBorderColor, disabled.trackBorderColor);
 
     await toggle.hover();
     const hovered = await captureSwitch();
@@ -3832,6 +3834,8 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
           const actions = masthead.querySelector(".masthead-actions");
           const adjustment = masthead.querySelector("[data-forecast-adjustment-toggle]");
           const adjustmentTrack = adjustment?.querySelector(".forecast-adjustment-toggle-track");
+          const adjustmentThumb = adjustmentTrack?.querySelector(".forecast-adjustment-toggle-thumb");
+          const rangeHandle = selector?.querySelector("button[aria-pressed='true']");
 
           // require every forecast header control
           if (
@@ -3839,7 +3843,9 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
             !(selector instanceof HTMLElement) ||
             !(actions instanceof HTMLElement) ||
             !(adjustment instanceof HTMLElement) ||
-            !(adjustmentTrack instanceof HTMLElement)
+            !(adjustmentTrack instanceof HTMLElement) ||
+            !(adjustmentThumb instanceof HTMLElement) ||
+            !(rangeHandle instanceof HTMLElement)
           ) {
             throw new Error("forecast masthead controls are incomplete");
           }
@@ -3850,6 +3856,8 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
           const actionsBounds = actions.getBoundingClientRect();
           const adjustmentBounds = adjustment.getBoundingClientRect();
           const adjustmentTrackBounds = adjustmentTrack.getBoundingClientRect();
+          const adjustmentThumbBounds = adjustmentThumb.getBoundingClientRect();
+          const rangeHandleBounds = rangeHandle.getBoundingClientRect();
           const buttons = [...selector.querySelectorAll("button")];
           const buttonBounds = buttons.map(
             // measure each range button row
@@ -3891,9 +3899,15 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
               selectorBounds.top >= mastheadBounds.top - 1 &&
               selectorBounds.bottom <= mastheadBounds.bottom + 1,
             rangeHeight: selectorBounds.height,
+            rangeHandleHeight: rangeHandleBounds.height,
+            rangeHandleInset: rangeHandleBounds.top - selectorBounds.top,
+            rangeBorderColor: getComputedStyle(selector).borderTopColor,
             rangeLeft: selectorBounds.left,
             rangeRight: selectorBounds.right,
             trackHeight: adjustmentTrackBounds.height,
+            thumbHeight: adjustmentThumbBounds.height,
+            thumbInset: adjustmentThumbBounds.top - adjustmentTrackBounds.top,
+            trackBorderColor: getComputedStyle(adjustmentTrack).borderTopColor,
             toggleCenter: adjustmentBounds.top + adjustmentBounds.height / 2,
             toggleLeft: adjustmentBounds.left,
             topRowSeparated: headingBounds.right <= actionsBounds.left,
@@ -3902,6 +3916,9 @@ test("forecast masthead keeps its range controls on one responsive row", { timeo
       );
       // enforce identical visible control heights
       const assertMatchedControlHeights = (currentLayout) => {
+        assert.equal(Math.abs(currentLayout.thumbHeight - currentLayout.rangeHandleHeight) < 0.25, true, JSON.stringify({ viewport, currentLayout }));
+        assert.equal(Math.abs(currentLayout.thumbInset - currentLayout.rangeHandleInset) < 0.25, true, JSON.stringify({ viewport, currentLayout }));
+        assert.equal(currentLayout.trackBorderColor, currentLayout.rangeBorderColor, JSON.stringify({ viewport, currentLayout }));
         assert.equal(
           Math.abs(currentLayout.adjustmentHeight - currentLayout.rangeHeight) < 0.25,
           true,

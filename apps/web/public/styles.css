@@ -375,9 +375,9 @@ a {
   text-overflow: ellipsis;
 }
 
-/* keep the hit area and visible switch at the forecast range height */
+/* match the forecast handle while retaining the complete control height */
 .forecast-adjustment-toggle {
-  --adjustment-thumb-size: calc(var(--adjustment-switch-height) - 4px);
+  --adjustment-thumb-size: var(--forecast-range-button-height);
 
   display: grid;
   flex: 0 0 auto;
@@ -402,8 +402,9 @@ a {
   align-items: center;
   width: calc(var(--adjustment-switch-height) * 1.75);
   height: var(--adjustment-switch-height);
-  padding: 1px;
-  border: 1px solid var(--md-sys-color-outline);
+  /* share the forecast switch inset and border in both states */
+  padding: var(--forecast-range-padding);
+  border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-full);
   background: var(--md-sys-color-surface-container-highest);
   transition: background-color 160ms ease, border-color 160ms ease;
@@ -429,7 +430,6 @@ a {
 }
 
 .forecast-adjustment-toggle[aria-checked="true"] .forecast-adjustment-toggle-track {
-  border-color: #b4923e;
   background: linear-gradient(135deg, #bd9130 0%, #d9b555 35%, #e6cd89 50%, #d4ac45 70%, #bd9130 100%);
 }
 
