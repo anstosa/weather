@@ -1243,6 +1243,220 @@ test("raw mode uses model current values without sensor fallback or homepage sup
   assert.match(renderWeatherDashboard(rawState, "trends", true), /data-trend-metric-control/u);
 });
 
+// create one nearby station with explicit source and observation identities
+function localFallbackRecord(stationSlug, metrics, overrides = {}) {
+  return {
+    ...physicalRecord,
+    id: stationSlug,
+    metrics: { ...physicalRecord.metrics, ...metrics },
+    provenance: { ...physicalRecord.provenance, stationSlug, sourceKey: `${stationSlug}-current` },
+    ...overrides,
+  };
+}
+
+// average available metrics rather than replacing an outage with one arbitrary station
+test("home current readings average non-stale local stations when the farm is absent or stale", () => {
+  const first = localFallbackRecord("nearby-a", {
+    apparentTemperatureC: 10, temperatureC: 10, relativeHumidityPercent: 40, precipitationRateMmPerHour: 0,
+    windSpeedMps: 2, windGustMps: 4, windDirectionDegrees: 350, pm25MicrogramsPerCubicMeter: null, uvIndex: 0,
+  }, { pressureChange3hHpa: -2 });
+  const second = localFallbackRecord("nearby-b", {
+    apparentTemperatureC: 20, temperatureC: 20, relativeHumidityPercent: 60, precipitationRateMmPerHour: 5.08,
+    windSpeedMps: 4, windGustMps: 8, windDirectionDegrees: 10, pm25MicrogramsPerCubicMeter: 4, uvIndex: 2,
+  }, { pressureChange3hHpa: -4, freshness: { ...physicalRecord.freshness, status: "delayed" } });
+  const stale = localFallbackRecord("offline", { apparentTemperatureC: 100, windGustMps: 100 }, {
+    freshness: { ...physicalRecord.freshness, status: "stale" },
+  });
+  // exercise a wholly missing farm and an old farm reading without changing the denominator
+  for (const farm of [[], [{ ...ecowittRecord, freshness: stale.freshness }]]) {
+    const state = { ...forecastState([], null), current: [record, stale, second, ...farm, first], dailyPrecipitation };
+    const original = structuredClone(state.current);
+    const html = renderWeatherDashboard(state);
+    assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>59<small>°F/u);
+    assert.match(conditionCardHtml(html, "temperature"), /Air Temp[\s\S]*?<strong>59<small>°F/u);
+    assert.match(conditionCardHtml(html, "humidity"), /class="condition-primary"><strong>50<small>%/u);
+    assert.match(conditionCardHtml(html, "wind"), /class="condition-primary"><strong>7<small>mph N/u);
+    assert.match(conditionCardHtml(html, "wind"), /Gusts[\s\S]*?<strong>13<small>mph/u);
+    assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0\.1<small>in\/h/u);
+    assert.match(conditionCardHtml(html, "rain"), /Accumulation[\s\S]*?<strong>0\.1<small>in/u);
+    assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>4<\/strong>/u);
+    assert.match(conditionCardHtml(html, "uv-index"), /class="condition-primary"><strong>1/u);
+    assert.match(conditionCardHtml(html, "pressure"), /class="condition-primary"><strong>-2\.0/u);
+    assert.match(conditionCardHtml(html, "clouds"), /class="condition-primary"><strong>42<small>%/u);
+    assert.equal(currentWeatherIcon(state).name, "09-heavy-rain");
+    assert.doesNotMatch(html, /class="alert-list"/u);
+    assert.deepEqual(state.current, original);
+  }
+});
+
+// retain zeros and working farm sensors during a partial outage
+test("home current readings fill only missing or non-finite farm metrics", () => {
+  const farm = { ...ecowittRecord, metrics: {
+    ...ecowittRecord.metrics, apparentTemperatureC: null, temperatureC: Number.NaN,
+    relativeHumidityPercent: 0, precipitationRateMmPerHour: 0, windSpeedMps: 0, windGustMps: 0,
+    windDirectionDegrees: null, pm25MicrogramsPerCubicMeter: 0, uvIndex: Number.POSITIVE_INFINITY,
+  } };
+  const neighbors = [10, 20].map(
+    // deliberately disagree with the farm's usable zero measurements
+    (value) => localFallbackRecord(`nearby-${value}`, {
+      apparentTemperatureC: value, temperatureC: value, windDirectionDegrees: 90, uvIndex: 2,
+    }),
+  );
+  const html = renderWeatherDashboard({ ...forecastState([], null), current: [record, ...neighbors, farm] });
+  assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>59<small>°F/u);
+  assert.match(conditionCardHtml(html, "wind"), /class="condition-primary"><strong>0<small>mph E/u);
+  assert.match(conditionCardHtml(html, "wind"), /Gusts[\s\S]*?<strong>0<small>mph/u);
+  assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0<small>in\/h/u);
+  assert.match(conditionCardHtml(html, "humidity"), /class="condition-primary"><strong>0<small>%/u);
+  assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>0/u);
+  assert.match(conditionCardHtml(html, "uv-index"), /class="condition-primary"><strong>2/u);
+  assert.doesNotMatch(html, /NaN|Infinity|class="alert-list"/u);
+});
+
+// preserve valid negative temperatures while rejecting impossible unsigned readings
+test("home local fallback rejects impossible metric domains without rejecting freezing temperatures", () => {
+  const farm = { ...ecowittRecord, metrics: {
+    ...ecowittRecord.metrics, apparentTemperatureC: -10, temperatureC: -10, relativeHumidityPercent: 101,
+    precipitationRateMmPerHour: -1, windSpeedMps: -1, windGustMps: 151, windDirectionDegrees: 361,
+    pm25MicrogramsPerCubicMeter: -1, uvIndex: -1, pressureHpa: -1,
+  } };
+  const neighbor = localFallbackRecord("available", {
+    relativeHumidityPercent: 50, precipitationRateMmPerHour: 0, windSpeedMps: 1, windGustMps: 2,
+    windDirectionDegrees: 0, pm25MicrogramsPerCubicMeter: 0, uvIndex: 0, pressureHpa: 1_013,
+  }, { pressureChange3hHpa: -1 });
+  const html = renderWeatherDashboard({ ...forecastState([], null), current: [farm, neighbor, record] });
+  assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>14<small>°F/u);
+  assert.match(conditionCardHtml(html, "wind"), /class="condition-primary"><strong>2<small>mph N/u);
+  assert.match(conditionCardHtml(html, "wind"), /Gusts[\s\S]*?<strong>4<small>mph/u);
+  assert.match(conditionCardHtml(html, "humidity"), /class="condition-primary"><strong>50<small>%/u);
+  assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0<small>in\/h/u);
+  assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>0/u);
+  assert.match(conditionCardHtml(html, "uv-index"), /class="condition-primary"><strong>0/u);
+  assert.match(conditionCardHtml(html, "pressure"), /class="condition-primary"><strong>-1\.0/u);
+});
+
+// count each station once per metric and omit an undefined circular wind direction
+test("home local averages deduplicate providers using the newest nonmissing station metric", () => {
+  const older = localFallbackRecord("nearby-a", { apparentTemperatureC: 10, temperatureC: 10, windDirectionDegrees: 90 });
+  const newer = { ...older, validAt: "2026-08-22T04:55:00Z", metrics: {
+    ...older.metrics, apparentTemperatureC: 20, temperatureC: null,
+  }, provenance: { ...older.provenance, sourceKey: "alternate-provider" } };
+  const second = localFallbackRecord("nearby-b", { apparentTemperatureC: 40, temperatureC: 30, windDirectionDegrees: 270 });
+  // never include virtual historical future or stale readings in the nearby denominator
+  const invalid = [
+    { ...older, metrics: { ...older.metrics, temperatureC: 100 }, freshness: { ...older.freshness, status: "stale" } },
+    { ...older, validAt: "2099-01-01T00:00:00Z" },
+    { ...record, provenance: { ...record.provenance, sourceKind: "reanalysis" } },
+    forecastRecord,
+  ];
+  // source ordering must not change an average
+  for (const current of [[older, second, newer, ...invalid], [...invalid, newer, second, older]]) {
+    const html = renderWeatherDashboard({ ...forecastState([], null), current });
+    assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>86<small>°F/u);
+    assert.match(conditionCardHtml(html, "temperature"), /Air Temp[\s\S]*?<strong>68<small>°F/u);
+    assert.match(conditionCardHtml(html, "wind"), /class="condition-primary"><strong>6<small>mph<\/small>/u);
+  }
+});
+
+// keep per-metric farm precedence even when parallel current sources have different sensor gaps
+test("home fallback preserves the newest usable farm source for each metric", () => {
+  const old = { ...ecowittRecord, metrics: { ...ecowittRecord.metrics, apparentTemperatureC: 12, temperatureC: 12 }, pressureChange3hHpa: 9 };
+  const newer = { ...old, validAt: "2026-08-22T04:55:00Z", metrics: {
+    ...old.metrics, apparentTemperatureC: 20, temperatureC: null,
+  }, pressureChange3hHpa: null, provenance: { ...old.provenance, sourceKey: "new-farm-source" } };
+  const neighbor = localFallbackRecord("nearby", { apparentTemperatureC: 30, temperatureC: 30 });
+  const html = renderWeatherDashboard({ ...forecastState([], null), current: [old, record, neighbor, newer] });
+  assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>68<small>°F/u);
+  assert.match(conditionCardHtml(html, "temperature"), /Air Temp[\s\S]*?<strong>54<small>°F/u);
+  assert.match(conditionCardHtml(html, "pressure"), /class="condition-primary"><strong>—<\/strong>/u);
+});
+
+// enforce observed domains before averaging so invalid stations cannot trigger bogus watches
+test("home fallback applies canonical upper bounds and preserves valid wet-bulb temperatures", () => {
+  const invalid = localFallbackRecord("out-of-domain", {
+    pm25MicrogramsPerCubicMeter: 1_000, precipitationRateMmPerHour: 10_001, pressureHpa: 1_201, uvIndex: 21,
+    apparentTemperatureC: 71, temperatureC: -101, wetBulbGlobeTemperatureC: 126, windDirectionDegrees: 360,
+  }, { pressureChange3hHpa: 20 });
+  const state = { ...forecastState([], null), current: [invalid, record] };
+  const html = renderWeatherDashboard(state);
+  assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>60<small>°F/u);
+  assert.match(conditionCardHtml(html, "temperature"), /Air Temp[\s\S]*?<strong>61<small>°F/u);
+  assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>7/u);
+  assert.match(conditionCardHtml(html, "uv-index"), /class="condition-primary"><strong>2/u);
+  assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0\.02<small>in\/h/u);
+  assert.match(conditionCardHtml(html, "pressure"), /class="condition-primary"><strong>\+1\.2/u);
+  assert.doesNotMatch(html, /class="alert-list"/u);
+  const wetBulb = { ...invalid, metrics: { ...invalid.metrics, wetBulbGlobeTemperatureC: 95 } };
+  assert.match(renderWeatherDashboard({ ...state, current: [wetBulb, record] }), /Wet-bulb globe temperature 203°F/u);
+  assert.match(renderPressureTile([{ ...invalid, metrics: { ...invalid.metrics, pressureHpa: 99 } }]), /class="condition-primary"><strong>—<\/strong>/u);
+});
+
+// use the displayed mean for current watches rather than each neighbor's maximum
+test("home outage fallback keeps forecast cards on today after local midnight", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T07:05:00Z") });
+  const neighbor = localFallbackRecord("hourly-neighbor", { apparentTemperatureC: 10 }, {
+    validAt: "2026-08-22T06:00:00Z", freshness: { ...physicalRecord.freshness, status: "delayed" },
+  });
+  const forecast = [
+    { ...forecastRecord, validAt: "2026-08-22T06:00:00Z", metrics: { ...forecastRecord.metrics, temperatureC: 40, apparentTemperatureC: 40 } },
+    { ...forecastRecord, validAt: "2026-08-22T08:00:00Z", metrics: { ...forecastRecord.metrics, temperatureC: 20, apparentTemperatureC: 20 } },
+  ];
+  const html = renderWeatherDashboard({ ...forecastState(forecast, null), current: [record, neighbor] });
+  const tile = conditionCardHtml(html, "temperature");
+  assert.match(tile, /class="condition-primary"><strong>50<small>°F/u);
+  assert.match(tile, /Max<\/span> <strong>68<small>°F/u);
+  assert.doesNotMatch(tile, /104<small>°F/u);
+});
+
+// use the displayed mean for current watches rather than each neighbor's maximum
+test("home alerts use local averages and retain forecast watches independently", () => {
+  const metrics = { apparentTemperatureC: 40, wetBulbGlobeTemperatureC: 35, windGustMps: 20,
+    precipitationRateMmPerHour: 10, pm25MicrogramsPerCubicMeter: 50 };
+  const quiet = Object.fromEntries(Object.keys(metrics).map(
+    // balance every hazardous neighbor reading below the alert threshold
+    (metric) => [metric, 0],
+  ));
+  const current = [localFallbackRecord("hazardous", metrics), localFallbackRecord("quiet", quiet)];
+  const state = { ...forecastState([], null), current };
+  assert.doesNotMatch(renderWeatherDashboard(state), /class="alert-list"/u);
+  const hazardous = renderWeatherDashboard({ ...state, current: [current[0]] });
+  assert.match(hazardous, /Heat stress[\s\S]*High wind[\s\S]*Heavy rain[\s\S]*Air quality/u);
+  const forecast = { ...forecastRecord, metrics: { ...forecastRecord.metrics, temperatureC: -1, windGustMps: 20 } };
+  assert.match(renderWeatherDashboard({ ...state, forecast: [forecast] }), /Frost possible[\s\S]*High wind/u);
+});
+
+// preserve regional fallback and honest missing states without reviving offline stations
+test("home local fallback uses regional current only when no station supplies the metric", () => {
+  const unavailable = { ...ecowittRecord, freshness: { ...ecowittRecord.freshness, status: "stale" } };
+  const html = renderWeatherDashboard({ ...forecastState([], null), current: [unavailable, record] });
+  assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>60<small>°F/u);
+  const missing = renderWeatherDashboard({ ...forecastState([], null), current: [unavailable] });
+  assert.match(missing, /No current weather value is available yet/u);
+  assert.doesNotMatch(missing, /class="alert-list"/u);
+  const empty = { ...physicalRecord, metrics: Object.fromEntries(Object.keys(physicalRecord.metrics).map(
+    // keep every absent local metric honestly unavailable
+    (metric) => [metric, null],
+  )) };
+  const emptyHtml = renderWeatherDashboard({ ...forecastState([], null), current: [empty] });
+  assert.match(conditionCardHtml(emptyHtml, "temperature"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(conditionCardHtml(emptyHtml, "rain"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.match(conditionCardHtml(emptyHtml, "pressure"), /class="condition-primary"><strong>—<\/strong>/u);
+  const emptyModel = { ...record, metrics: { ...record.metrics, pressureHpa: null } };
+  assert.match(renderPressureTile([unavailable, emptyModel]), /class="condition-primary"><strong>—<\/strong>/u);
+});
+
+// keep the local tendency tied to the same current source chosen for each station's pressure
+test("home local pressure tendency excludes old duplicate and unavailable contributor history", () => {
+  const old = localFallbackRecord("nearby-a", { pressureHpa: 1_010 }, { pressureChange3hHpa: 10 });
+  const latest = { ...old, validAt: "2026-08-22T04:55:00Z", pressureChange3hHpa: null,
+    provenance: { ...old.provenance, sourceKey: "alternate-provider" } };
+  const available = localFallbackRecord("nearby-b", { pressureHpa: 1_012 }, { pressureChange3hHpa: 2 });
+  const tile = renderPressureTile([old, record, available, latest]);
+  assert.match(tile, /class="condition-primary"><strong>\+2\.0/u);
+  const nonfinite = { ...available, pressureChange3hHpa: Number.POSITIVE_INFINITY };
+  assert.match(renderPressureTile([nonfinite, latest, old]), /class="condition-primary"><strong>—<\/strong>/u);
+});
+
 // create one regional current-hour gap and contradictory station readings
 function regionalGapState(forecastOverrides = {}) {
   const regional = {
@@ -2768,7 +2982,8 @@ test("sunset tile emphasizes today's sunset with golden hour as the secondary st
 });
 
 // retain the complete dashboard and route contracts
-test("dashboard separates current conditions from the historical logs route", () => {
+test("dashboard separates current conditions from the historical logs route", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T05:00:00Z") });
   const state = {
     current: [record, physicalRecord],
     dailyPrecipitation,
@@ -3237,8 +3452,8 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.match(html, /Air Temp/u);
   assert.match(nearFeelsHtml, /Air Temp/u);
   assert.match(html, /Gusts/u);
-  assert.match(html, /Approaching the comfort range/u);
-  assert.match(html, /Peak reading 16 mph/u);
+  assert.match(html, /Cool outdoor conditions/u);
+  assert.match(html, /Peak reading 10 mph/u);
   assert.equal((html.match(/class="condition-secondary-divider"/gu) ?? []).length, 6);
   assert.match(html, /data-condition="tide"[\s\S]*?class="condition-status condition-status-dark">[\s\S]*?<span>High<\/span>[\s\S]*?<div class="condition-primary"><strong>8\.2<small>ft<\/small><\/strong>[\s\S]*?class="condition-secondary-divider">Direction<\/span>[\s\S]*?<strong>Rising<\/strong>/u);
   assert.doesNotMatch(html, /data-condition="tide"[\s\S]*?class="condition-detail">Rising<\/p>/u);
@@ -3320,10 +3535,10 @@ test("dashboard separates current conditions from the historical logs route", ()
   assert.equal((initialLogsHtml.match(/class="history-card skeleton-history-card"/gu) ?? []).length, 25);
   assert.doesNotMatch(initialLogsHtml, /No records match these filters/u);
   assert.doesNotMatch(html, /skeleton-region|skeleton-history-row|skeleton-history-card/u);
-  assert.match(html, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>60<small>°F<\/small>/u);
-  assert.match(html, /Air Temp[\s\S]*?<strong>61<small>°F<\/small>/u);
-  assert.match(html, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>9<small>mph SW<\/small>/u);
-  assert.match(html, /Gusts[\s\S]*?<strong>16<small>mph<\/small>/u);
+  assert.match(html, /data-condition="temperature"[\s\S]*?<div class="condition-primary"><strong>54<small>°F<\/small>/u);
+  assert.match(html, /Air Temp[\s\S]*?<strong>54<small>°F<\/small>/u);
+  assert.match(html, /data-condition="wind"[\s\S]*?<div class="condition-primary"><strong>6<small>mph SW<\/small>/u);
+  assert.match(html, /Gusts[\s\S]*?<strong>10<small>mph<\/small>/u);
   assert.match(html, /data-condition="air-quality"[\s\S]*?<div class="condition-primary"><strong>7<\/strong>/u);
   const pressure = html.match(/<article[^>]*data-condition="pressure"[\s\S]*?<\/article>/u)?.[0];
   assert.ok(pressure);
@@ -4058,13 +4273,13 @@ test("humidity comfort requires hot air rather than relative humidity alone", ()
   }
 });
 
-// keep observed humidity paired with the same station's actual air temperature
-test("humidity card uses observed air temperature and retains the percentage without comfort data", () => {
-  // reject apparent-temperature and unrelated-station substitutions
+// classify humidity using the same resolved air temperature displayed on the homepage
+test("humidity card uses observed air temperature with the current fallback for missing air temperature", () => {
+  // reject apparent-temperature substitutions while preserving regional fallback
   for (const [temperatureC, apparentTemperatureC, expectedColor, expectedLabel] of [
     [16, 35, "rgb(67, 151, 86)", "Comfortable"],
     [30, 16, "rgb(207, 67, 55)", "Very humid"],
-    [null, 35, "rgb(136, 136, 130)", "Unavailable"],
+    [null, 35, "rgb(67, 151, 86)", "Comfortable"],
   ]) {
     const state = {
       ...forecastState([], null),

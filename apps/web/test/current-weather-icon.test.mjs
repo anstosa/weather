@@ -23,7 +23,9 @@ function reading(cloudCoverPercent, precipitationRateMmPerHour = 0, windSpeedMps
   return {
     freshness: { status: "fresh" },
     metrics: { cloudCoverPercent, precipitationRateMmPerHour, windSpeedMps },
-    provenance: { providerKey: "open-meteo", sourceKind: "model_current" },
+    provenance: { providerKey: "open-meteo", sourceKind: "model_current", sourceKey: "regional-current", stationSlug: "open-meteo-virtual" },
+    receivedAt: "2026-09-23T19:00:00Z",
+    validAt: "2026-09-23T19:00:00Z",
   };
 }
 
@@ -72,7 +74,7 @@ test("current weather icons use local rain and wind with model cloud fallback", 
   const model = reading(80, 0, 1);
   const sensor = {
     ...reading(0, 3, 10),
-    provenance: { providerKey: "ecowitt-local", sourceKind: "physical_sensor" },
+    provenance: { providerKey: "ecowitt-local", sourceKind: "physical_sensor", sourceKey: "farm-current", stationSlug: "ballydidean-ecowitt" },
   };
   assert.equal(currentWeatherIcon({ current: [model, sensor], selectedSite: site }, daytime).name, "10-heavy-rain-wind");
   const drySensor = { ...sensor, metrics: { ...sensor.metrics, precipitationRateMmPerHour: 0 } };

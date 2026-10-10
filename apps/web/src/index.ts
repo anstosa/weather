@@ -1181,6 +1181,19 @@ const FORECAST_ADJUSTMENT_METRIC_BOUNDS: Readonly<
   windGustMps: { maximum: 150, minimum: 0 },
   windSpeedMps: { maximum: 150, minimum: 0 },
 };
+// mirror canonical observed domains from packages/domain/src/weather-record.ts without a browser dependency
+const CURRENT_READING_METRIC_BOUNDS: Readonly<Partial<Record<
+  WeatherMetricKey,
+  Readonly<{ maximum: number; maximumExclusive?: boolean; minimum: number }>
+>>> = {
+  ...FORECAST_ADJUSTMENT_METRIC_BOUNDS,
+  apparentTemperatureC: FORECAST_ADJUSTMENT_METRIC_BOUNDS.temperatureC,
+  pm25MicrogramsPerCubicMeter: { maximum: 999, minimum: 0 },
+  precipitationRateMmPerHour: { maximum: 10_000, minimum: 0 },
+  pressureHpa: { maximum: 1_200, minimum: 100 },
+  uvIndex: { maximum: 20, minimum: 0 },
+  wetBulbGlobeTemperatureC: { maximum: 125, minimum: -100 },
+};
 const FORECAST_TEMPERATURE_REASON_CODE_KEYS =
   new Set<ForecastTemperatureCanaryReasonCode>([
     "adjustment_error",
@@ -4548,10 +4561,10 @@ function currentWeatherIconInputs(
   forecast: readonly WeatherRecord[] = [],
   now = new Date(),
 ): NowIconInputs | null {
-  const current = preferredCurrentRecords(records, mode, forecast, now);
-  const rain = findMetric(current, "precipitationRateMmPerHour");
-  const windy = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
-  const cloudRecord = current.find(
+  const current = currentWeatherReadings(records, mode, forecast, now);
+  const rain = current?.metrics.precipitationRateMmPerHour ?? null;
+  const windy = (current?.metrics.windSpeedMps ?? 0) >= 8.9408;
+  const cloudRecord = records.find(
     // cloud cover is modeled rather than measured by the on-site gateway
     (record) => record.provenance.sourceKind === "model_current" && record.metrics.cloudCoverPercent !== null,
   );
@@ -4876,19 +4889,18 @@ function renderCurrent(state: DashboardState): string {
     return renderCurrentSkeleton();
   }
 
-  const currentRecords = preferredCurrentRecords(state.current, state.forecastAdjustmentMode, state.forecast);
-  const current = currentRecords[0];
+  const current = currentWeatherReadings(state.current, state.forecastAdjustmentMode, state.forecast);
 
   // render an honest empty state
-  if (current === undefined) {
+  if (current === null) {
     return '<p class="notice">No current weather value is available yet.</p>';
   }
 
-  const airQuality = findMetric(currentRecords, "pm25MicrogramsPerCubicMeter");
+  const airQuality = current.metrics.pm25MicrogramsPerCubicMeter;
   const dailyRain = state.forecastAdjustmentMode === "raw" ? null : state.dailyPrecipitation?.accumulationMm ?? null;
-  const rainRate = findMetric(currentRecords, "precipitationRateMmPerHour");
-  const uvIndex = findMetric(currentRecords, "uvIndex");
-  const windGust = findMetric(currentRecords, "windGustMps");
+  const rainRate = current.metrics.precipitationRateMmPerHour;
+  const uvIndex = current.metrics.uvIndex;
+  const windGust = current.metrics.windGustMps;
   const windDirection = formatWindDirection(current.metrics.windDirectionDegrees);
   const windMeasurement = formatMeasurement(current.metrics.windSpeedMps, "windSpeed", state.units, 0);
   // place the direction immediately after the speed unit
@@ -4898,8 +4910,8 @@ function renderCurrent(state: DashboardState): string {
   };
   const forecast = forecastForSiteDay(
     state.forecast,
-    current.validAt,
-    state.selectedSite?.timezone ?? current.metadata.upstream.timezone,
+    current.forecastReferenceAt,
+    state.selectedSite?.timezone ?? PRODUCT_SITE.timezone,
   );
   const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
   return `
@@ -5008,28 +5020,175 @@ function renderIndoorHouse(state: DashboardState): string {
   `;
 }
 
-// select regional-only or local-first current readings
-function preferredCurrentRecords(
+// keep derived homepage values separate from any station's provenance
+interface CurrentWeatherReadings {
+  readonly forecastReferenceAt: string;
+  readonly metrics: WeatherRecord["metrics"];
+  readonly pressureChange3hHpa: number | null;
+}
+
+// share metric-specific farm and nearby fallbacks across cards alerts and artwork
+function currentWeatherReadings(
   records: readonly WeatherRecord[],
   mode: ForecastAdjustmentMode = "adjusted",
   forecast: readonly WeatherRecord[] = [],
   now = new Date(),
-): readonly WeatherRecord[] {
+): CurrentWeatherReadings | null {
+  const regional = records.filter(
+    // retain only current regional products rather than historical reanalysis
+    (record) => record.provenance.sourceKind === "model_current",
+  ).map(
+    // reuse the bounded raw-hour supplements without applying model corrections
+    (record) => regionalCurrentForecastRecord(record, forecast, now),
+  );
+  const model = regional[0];
   // never fill regional gaps with physical station readings
   if (mode === "raw") {
-    return records.filter(
-      // retain only the current regional product
-      (record) => record.provenance.sourceKind === "model_current",
-    ).map(
-      // supplement only missing current fields with the matching regional hour
-      (record) => regionalCurrentForecastRecord(record, forecast, now),
+    const pressure = regional.find(
+      // retain the existing same-source pressure tendency contract
+      (record) => usableCurrentMetric(record.metrics.pressureHpa, "pressureHpa") !== null,
     );
+    return model === undefined ? null : {
+      forecastReferenceAt: model.validAt,
+      metrics: {
+        ...model.metrics,
+        pm25MicrogramsPerCubicMeter: findMetric(regional, "pm25MicrogramsPerCubicMeter"),
+        precipitationRateMmPerHour: findMetric(regional, "precipitationRateMmPerHour"),
+        uvIndex: findMetric(regional, "uvIndex"),
+        windGustMps: findMetric(regional, "windGustMps"),
+      },
+      pressureChange3hHpa: pressure?.freshness.status === "fresh" ? usableCurrentMetric(pressure.pressureChange3hHpa ?? null) : null,
+    };
   }
 
-  return [...records].sort(
-    // preserve API order within each source priority
-    (left, right) => currentRecordPriority(left) - currentRecordPriority(right),
+  const physical = records.filter(
+    // delayed hourly stations remain available but stale and future observations do not
+    (record) => record.provenance.sourceKind === "physical_sensor" &&
+      record.freshness.status !== "stale" && Date.parse(record.validAt) <= now.getTime(),
+  ).toSorted(
+    // prefer the newest usable station source independently of API ordering
+    (left, right) => Date.parse(right.validAt) - Date.parse(left.validAt) ||
+      Date.parse(right.receivedAt) - Date.parse(left.receivedAt) || left.provenance.sourceKey.localeCompare(right.provenance.sourceKey),
   );
+  const farmRecords = physical.filter(isFarmCurrentRecord);
+  const nearby = physical.filter(
+    // exclude the farm from the fallback average rather than giving it two votes
+    (record) => !isFarmCurrentRecord(record),
+  );
+  const reference = farmRecords[0] ?? nearby[0] ?? model;
+  // never resurrect stale observations when all current sources are missing
+  if (reference === undefined) {
+    return null;
+  }
+
+  // give each physical station at most one usable value for each metric
+  const contributors = (metric: WeatherMetricKey): readonly WeatherRecord[] => {
+    const stations = new Map<string, WeatherRecord>();
+    // sorted sources allow a newer missing metric to retain an older usable source
+    for (const record of nearby) {
+      // include valid zeros without counting duplicate providers twice
+      if (!stations.has(record.provenance.stationSlug) && usableCurrentMetric(record.metrics[metric], metric) !== null) {
+        stations.set(record.provenance.stationSlug, record);
+      }
+    }
+    return [...stations.values()];
+  };
+  // use the newest nonmissing farm source separately for every metric
+  const farmReading = (metric: WeatherMetricKey): WeatherRecord | undefined => farmRecords.find(
+    // preserve farm precedence even when another current source lacks this sensor
+    (record) => usableCurrentMetric(record.metrics[metric], metric) !== null,
+  );
+  // preserve every available farm reading before consulting nearby stations or models
+  const metric = (key: WeatherMetricKey): number | null => {
+    const observed = usableCurrentMetric(farmReading(key)?.metrics[key] ?? null, key);
+    // partial sensor outages must not replace the other working farm sensors
+    if (observed !== null) {
+      return observed;
+    }
+    const values = contributors(key).map(
+      // retain equal station weighting independent of provider or source count
+      (record) => record.metrics[key]!,
+    );
+    // average only stations that actually measured this metric
+    if (values.length > 0) {
+      return key === "windDirectionDegrees" ? meanCurrentWindDirection(values) : meanCurrentValues(values);
+    }
+    return regional.map(
+      // skip an unavailable model field without consuming physical or historical sources
+      (record) => usableCurrentMetric(record.metrics[key], key),
+    ).find(
+      // retain the first available regional fallback
+      (value) => value !== null,
+    ) ?? null;
+  };
+  const pressureSources = contributors("pressureHpa");
+  const farmPressure = farmReading("pressureHpa");
+  const pressure = farmPressure !== undefined ? [farmPressure] : pressureSources.length > 0 ? pressureSources : regional.filter(
+    // never display a model tendency when its associated current pressure is missing
+    (record) => usableCurrentMetric(record.metrics.pressureHpa, "pressureHpa") !== null,
+  ).slice(0, 1);
+  const pressureChanges = pressure.flatMap(
+    // average only fresh same-source tendencies from the selected pressure contributors
+    (record) => record.freshness.status === "fresh" && usableCurrentMetric(record.pressureChange3hHpa ?? null) !== null
+      ? [record.pressureChange3hHpa!] : [],
+  );
+  return {
+    // hourly neighbors may still be dated yesterday just after farm-local midnight
+    forecastReferenceAt: farmRecords.length === 0 && nearby.length > 0 ? now.toISOString() : reference.validAt,
+    metrics: {
+      ...reference.metrics,
+      apparentTemperatureC: metric("apparentTemperatureC"),
+      pm25MicrogramsPerCubicMeter: metric("pm25MicrogramsPerCubicMeter"),
+      precipitationRateMmPerHour: metric("precipitationRateMmPerHour"),
+      pressureHpa: metric("pressureHpa"),
+      relativeHumidityPercent: metric("relativeHumidityPercent"),
+      temperatureC: metric("temperatureC"),
+      uvIndex: metric("uvIndex"),
+      windDirectionDegrees: metric("windDirectionDegrees"),
+      windGustMps: metric("windGustMps"),
+      windSpeedMps: metric("windSpeedMps"),
+      wetBulbGlobeTemperatureC: metric("wetBulbGlobeTemperatureC"),
+    },
+    pressureChange3hHpa: meanCurrentValues(pressureChanges),
+  };
+}
+
+// identify the farm gateway without promoting another ecowitt station
+function isFarmCurrentRecord(record: WeatherRecord): boolean {
+  return record.provenance.providerKey === "ecowitt-local" && record.provenance.stationSlug === "ballydidean-ecowitt";
+}
+
+// retain valid zeros and freezing temperatures while rejecting impossible readings
+function usableCurrentMetric(value: number | null, metric?: WeatherMetricKey): number | null {
+  // preserve signed pressure changes independently of the displayed weather metric bounds
+  if (value === null || !Number.isFinite(value)) {
+    return null;
+  }
+  const bounds = metric === undefined ? undefined : CURRENT_READING_METRIC_BOUNDS[metric];
+  return bounds === undefined || (value >= bounds.minimum && value <= bounds.maximum &&
+    (bounds.maximumExclusive !== true || value < bounds.maximum)) ? value : null;
+}
+
+// average only present contributors without treating missing values as zero
+function meanCurrentValues(values: readonly number[]): number | null {
+  return values.length === 0 ? null : values.reduce(
+    // divide before summing to avoid overflow from finite station readings
+    (total, value) => total + value / values.length,
+    0,
+  );
+}
+
+// average wind bearings around north without inventing a direction for opposing winds
+function meanCurrentWindDirection(values: readonly number[]): number | null {
+  const east = meanCurrentValues(values.map(
+    // project each bearing onto the east axis
+    (value) => Math.sin(value * Math.PI / 180),
+  ))!;
+  const north = meanCurrentValues(values.map(
+    // project each bearing onto the north axis
+    (value) => Math.cos(value * Math.PI / 180),
+  ))!;
+  return Math.hypot(east, north) < 0.000_001 ? null : (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
 }
 
 // fill three regional gaps without replacing current values or applying corrections
@@ -5067,29 +5226,6 @@ function regionalCurrentForecastRecord(
       uvIndex: current.metrics.uvIndex ?? usable(regional.metrics.uvIndex),
     },
   };
-}
-
-// rank a current reading for the single-location homepage
-function currentRecordPriority(record: WeatherRecord): number {
-  // prefer a usable first-party gateway reading
-  if (
-    record.provenance.providerKey === "ecowitt-local" &&
-    record.freshness.status !== "stale"
-  ) {
-    return 0;
-  }
-
-  // retain the model as the immediate fallback
-  if (record.provenance.sourceKind === "model_current") {
-    return 1;
-  }
-
-  // keep a stale first-party reading ahead of unrelated stations
-  if (record.provenance.providerKey === "ecowitt-local") {
-    return 2;
-  }
-
-  return 3;
 }
 
 // reserve the complete current-condition grid
@@ -5141,11 +5277,8 @@ function renderCurrentSkeleton(): string {
 
 // show observed pressure movement beside the day's strongest change and its time
 function renderPressureCondition(state: DashboardState): string {
-  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode, state.forecast).find(
-    // keep pressure and its tendency attached to one station
-    (record) => record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
-  );
-  const change = current?.freshness.status === "fresh" ? current.pressureChange3hHpa ?? null : null;
+  const current = currentWeatherReadings(state.current, state.forecastAdjustmentMode, state.forecast);
+  const change = current?.pressureChange3hHpa ?? null;
   const site = state.selectedSite ?? PRODUCT_SITE;
   const maximum = strongestPressureChange(state.forecast, new Date(), site.timezone);
   return renderConditionCard({
@@ -5810,16 +5943,17 @@ function renderAlerts(state: DashboardState): string {
 // derive watches and displayed readings from the selected forecast values
 function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   const alerts: LocalWeatherAlert[] = [];
-  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode, state.forecast);
+  const current = currentWeatherReadings(state.current, state.forecastAdjustmentMode, state.forecast);
   const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
   const forecastLow = minimumMetric(state.forecast, "temperatureC", useForecastAdjustments);
-  const apparentHigh = maximumMetric(current, "apparentTemperatureC");
-  const wetBulbHigh = maximumMetric(current, "wetBulbGlobeTemperatureC");
-  const windRecords = [...current, ...state.forecast];
-  const windHigh = maximumMetric(windRecords, "windGustMps", useForecastAdjustments);
-  const rainRate = maximumMetric(current, "precipitationRateMmPerHour");
+  const apparentHigh = current?.metrics.apparentTemperatureC ?? null;
+  const wetBulbHigh = current?.metrics.wetBulbGlobeTemperatureC ?? null;
+  const currentGust = current?.metrics.windGustMps ?? null;
+  const forecastGust = maximumMetric(state.forecast, "windGustMps", useForecastAdjustments);
+  const windHigh = currentGust === null ? forecastGust : Math.max(currentGust, forecastGust ?? currentGust);
+  const rainRate = current?.metrics.precipitationRateMmPerHour ?? null;
   const forecastRain = maximumMetric(state.forecast, "precipitationMm", useForecastAdjustments);
-  const pm25 = maximumMetric(current, "pm25MicrogramsPerCubicMeter");
+  const pm25 = current?.metrics.pm25MicrogramsPerCubicMeter ?? null;
 
   // flag forecast frost
   if (forecastLow !== null && forecastLow <= 0) {

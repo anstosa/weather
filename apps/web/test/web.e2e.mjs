@@ -3020,6 +3020,363 @@ test("adjusted temperature wind and rain icons turn gold on both forecast-bearin
   }
 });
 
+// average fresh nearby stations only when the farm's adjusted current reading is unavailable
+test("adjusted current conditions fall back per metric to a deduplicated local station average", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const emptyMetrics = Object.fromEntries(Object.keys(physicalCurrent.metrics).map(
+    // start every physical fixture without inherited readings
+    (metric) => [metric, null],
+  ));
+  // create one isolated physical-station current reading
+  const localRecord = ({
+    freshnessStatus = "fresh",
+    id,
+    metrics,
+    providerKey = "weatherflow-tempest",
+    sourceKey,
+    stationSlug,
+    validAt,
+  }) => ({
+    ...physicalCurrent,
+    freshness: {
+      ageSeconds: freshnessStatus === "stale" ? 90_000 : freshnessStatus === "delayed" ? 3_600 : 120,
+      label: freshnessStatus === "stale"
+        ? "Station reading may be stale"
+        : freshnessStatus === "delayed"
+          ? "Station reading is delayed"
+          : "Station reading is current",
+      status: freshnessStatus,
+    },
+    id,
+    metrics: { ...emptyMetrics, ...metrics },
+    pressureChange3hHpa: null,
+    provenance: {
+      ...physicalCurrent.provenance,
+      providerKey,
+      sourceId: id,
+      sourceKey,
+      sourceKind: "physical_sensor",
+      stationSlug,
+    },
+    receivedAt: validAt,
+    validAt,
+  });
+  const regional = {
+    ...current,
+    metrics: {
+      ...current.metrics,
+      apparentTemperatureC: 10,
+      cloudCoverPercent: 90,
+      pm25MicrogramsPerCubicMeter: 5,
+      precipitationRateMmPerHour: 0,
+      relativeHumidityPercent: 70,
+      temperatureC: 11,
+      uvIndex: 1,
+      wetBulbGlobeTemperatureC: 9,
+      windDirectionDegrees: 225,
+      windGustMps: 2,
+      windSpeedMps: 1,
+    },
+  };
+  const staleFarm = localRecord({
+    freshnessStatus: "stale",
+    id: "stale-farm",
+    metrics: {
+      apparentTemperatureC: 40,
+      pm25MicrogramsPerCubicMeter: 80,
+      precipitationRateMmPerHour: 20,
+      temperatureC: 40,
+      windDirectionDegrees: 180,
+      windGustMps: 25,
+      windSpeedMps: 20,
+    },
+    providerKey: "ecowitt-local",
+    sourceKey: "ecowitt-local-live-v1",
+    stationSlug: "ballydidean-ecowitt",
+    validAt: "2026-08-21T04:55:00.000Z",
+  });
+  const olderNeighborA = localRecord({
+    id: "neighbor-a-older",
+    metrics: {
+      apparentTemperatureC: 30,
+      pm25MicrogramsPerCubicMeter: 90,
+      precipitationRateMmPerHour: 12,
+      relativeHumidityPercent: 30,
+      temperatureC: 30,
+      uvIndex: 9,
+      wetBulbGlobeTemperatureC: 10,
+      windDirectionDegrees: 270,
+      windGustMps: 30,
+      windSpeedMps: 20,
+    },
+    sourceKey: "neighbor-a-observations-v1",
+    stationSlug: "neighbor-a",
+    validAt: "2026-08-22T04:50:00.000Z",
+  });
+  const newerNeighborA = localRecord({
+    id: "neighbor-a-newer",
+    metrics: {
+      apparentTemperatureC: null,
+      pm25MicrogramsPerCubicMeter: 50,
+      precipitationRateMmPerHour: 4,
+      relativeHumidityPercent: 40,
+      temperatureC: null,
+      uvIndex: 10,
+      wetBulbGlobeTemperatureC: null,
+      windDirectionDegrees: 350,
+      windGustMps: 20,
+      windSpeedMps: 12,
+    },
+    providerKey: "ecowitt-cloud",
+    sourceKey: "neighbor-a-cloud-v1",
+    stationSlug: "neighbor-a",
+    validAt: "2026-08-22T04:55:00.000Z",
+  });
+  const neighborB = localRecord({
+    freshnessStatus: "delayed",
+    id: "neighbor-b",
+    metrics: {
+      apparentTemperatureC: 10,
+      pm25MicrogramsPerCubicMeter: 0,
+      precipitationRateMmPerHour: 0,
+      relativeHumidityPercent: 60,
+      temperatureC: 10,
+      uvIndex: 0,
+      wetBulbGlobeTemperatureC: 10,
+      windDirectionDegrees: 10,
+      windGustMps: 0,
+      windSpeedMps: 0,
+    },
+    sourceKey: "neighbor-b-observations-v1",
+    stationSlug: "neighbor-b",
+    validAt: "2026-08-22T04:54:00.000Z",
+  });
+  const staleNeighbor = localRecord({
+    freshnessStatus: "stale",
+    id: "stale-neighbor",
+    metrics: {
+      apparentTemperatureC: 50,
+      pm25MicrogramsPerCubicMeter: 100,
+      precipitationRateMmPerHour: 30,
+      temperatureC: 50,
+      windDirectionDegrees: 180,
+      windGustMps: 30,
+      windSpeedMps: 30,
+    },
+    sourceKey: "stale-neighbor-observations-v1",
+    stationSlug: "stale-neighbor",
+    validAt: "2026-08-21T04:54:00.000Z",
+  });
+  const wrongKindNeighbor = {
+    ...neighborB,
+    id: "neighbor-reanalysis",
+    provenance: {
+      ...neighborB.provenance,
+      sourceId: "neighbor-reanalysis",
+      sourceKey: "neighbor-reanalysis-v1",
+      sourceKind: "reanalysis",
+      stationSlug: "reanalysis-neighbor",
+    },
+  };
+  const forecastNeighbor = {
+    ...neighborB,
+    id: "neighbor-forecast",
+    provenance: {
+      ...neighborB.provenance,
+      sourceId: "neighbor-forecast",
+      sourceKey: "neighbor-forecast-v1",
+      sourceKind: "forecast",
+      stationSlug: "forecast-neighbor",
+    },
+  };
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "active";
+    fixture.state.currentRecords = [
+      regional,
+      olderNeighborA,
+      newerNeighborA,
+      neighborB,
+      staleNeighbor,
+      wrongKindNeighbor,
+      forecastNeighbor,
+    ];
+    const pageErrors = [];
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 960 },
+    });
+    // capture unexpected render errors across every fallback state
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+
+    const temperature = page.locator("[data-condition='temperature']");
+    const wind = page.locator("[data-condition='wind']");
+    const rain = page.locator("[data-condition='rain']");
+    const clouds = page.locator("[data-condition='clouds']");
+    assert.match(await temperature.locator(".condition-primary").textContent() ?? "", /68\s*°F/u);
+    assert.match(await temperature.locator(".condition-secondary").textContent() ?? "", /Air Temp\s*68\s*°F/u);
+    assert.match(await wind.locator(".condition-primary").textContent() ?? "", /13\s*mph N/u);
+    assert.match(await wind.locator(".condition-secondary").textContent() ?? "", /Gusts\s*22\s*mph/u);
+    assert.match(await rain.locator(".condition-primary").textContent() ?? "", /^0\.08\s*in\/h$/u);
+    assert.match(await rain.locator(".condition-secondary").textContent() ?? "", /Accumulation\s*0\.1\s*in/u);
+    assert.equal(await page.locator("[data-condition='humidity'] .condition-primary").innerText(), "50%");
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "25");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "5");
+    assert.equal(await clouds.locator(".condition-primary").innerText(), "90%");
+    assert.equal(await page.locator(".local-alert", { hasText: "High wind" }).count(), 0);
+    assert.equal(await page.locator(".local-alert", { hasText: "Heavy rain" }).count(), 0);
+    assert.equal(await page.locator(".local-alert", { hasText: "Air quality" }).count(), 0);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /07-light-rain\.svg$/u);
+
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    await toggle.click();
+    await page.waitForFunction(
+      // await the regional-only redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+    );
+    assert.match(await temperature.locator(".condition-primary").textContent() ?? "", /50\s*°F/u);
+    assert.match(await wind.locator(".condition-primary").textContent() ?? "", /2\s*mph SW/u);
+    assert.match(await rain.locator(".condition-primary").textContent() ?? "", /^0\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "5");
+    assert.equal(await clouds.locator(".condition-primary").innerText(), "90%");
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /05-cloudy\.svg$/u);
+    await toggle.click();
+    await page.waitForFunction(
+      // await restoration of the station-average reading
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true" &&
+        document.querySelector("[data-condition='air-quality'] .condition-primary")?.textContent?.trim() === "25",
+    );
+    assert.match(await temperature.locator(".condition-primary").textContent() ?? "", /68\s*°F/u);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /07-light-rain\.svg$/u);
+
+    await page.setViewportSize({ height: 844, width: 390 });
+    assert.match(await wind.locator(".condition-primary").textContent() ?? "", /13\s*mph N/u);
+    assert.equal(
+      await page.evaluate(
+        // reject mobile page overflow after the fallback redraw
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+      true,
+    );
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    await page.getByRole("link", { name: "Now", exact: true }).click();
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /07-light-rain\.svg$/u);
+
+    const partialFarm = localRecord({
+      id: "partial-farm",
+      metrics: {
+        apparentTemperatureC: 21,
+        pm25MicrogramsPerCubicMeter: null,
+        precipitationRateMmPerHour: null,
+        relativeHumidityPercent: 55,
+        temperatureC: 21,
+        uvIndex: null,
+        wetBulbGlobeTemperatureC: 12,
+        windDirectionDegrees: null,
+        windGustMps: 5,
+        windSpeedMps: -1,
+      },
+      providerKey: "ecowitt-local",
+      sourceKey: "ecowitt-local-live-v1",
+      stationSlug: "ballydidean-ecowitt",
+      validAt: "2026-08-22T04:56:00.000Z",
+    });
+    fixture.state.currentRecords = [regional, partialFarm, newerNeighborA, olderNeighborA, neighborB];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await temperature.locator(".condition-primary").textContent() ?? "", /70\s*°F/u);
+    assert.match(await wind.locator(".condition-primary").textContent() ?? "", /13\s*mph N/u);
+    assert.match(await rain.locator(".condition-primary").textContent() ?? "", /^0\.08\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='humidity'] .condition-primary").innerText(), "55%");
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "25");
+    assert.equal(await clouds.locator(".condition-primary").innerText(), "90%");
+
+    const opposedNeighborA = localRecord({
+      id: "opposed-a",
+      metrics: { windDirectionDegrees: 90, windGustMps: 6, windSpeedMps: 6 },
+      sourceKey: "opposed-a-v1",
+      stationSlug: "opposed-a",
+      validAt: "2026-08-22T04:57:00.000Z",
+    });
+    const opposedNeighborB = localRecord({
+      id: "opposed-b",
+      metrics: { windDirectionDegrees: 270, windGustMps: 6, windSpeedMps: 6 },
+      sourceKey: "opposed-b-v1",
+      stationSlug: "opposed-b",
+      validAt: "2026-08-22T04:57:00.000Z",
+    });
+    fixture.state.currentRecords = [regional, opposedNeighborA, opposedNeighborB];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await wind.locator(".condition-primary small").innerText(), "mph");
+
+    const midnightNeighbor = localRecord({
+      freshnessStatus: "delayed",
+      id: "midnight-neighbor",
+      metrics: { apparentTemperatureC: 10, temperatureC: 10 },
+      sourceKey: "midnight-neighbor-v1",
+      stationSlug: "midnight-neighbor",
+      validAt: "2026-08-22T06:55:00.000Z",
+    });
+    fixture.state.currentRecords = [{
+      ...regional,
+      receivedAt: "2026-08-22T06:50:00.000Z",
+      validAt: "2026-08-22T06:50:00.000Z",
+    }, midnightNeighbor];
+    fixture.state.forecastRecords = forecast.map(
+      // separate the neighboring local days around the midnight outage
+      (record) => {
+        const currentFarmDay = record.validAt >= "2026-08-22T07:00:00.000Z" &&
+          record.validAt < "2026-08-23T07:00:00.000Z";
+        const temperatureC = currentFarmDay ? 20 : 0;
+        return {
+          ...record,
+          metrics: {
+            ...record.metrics,
+            apparentTemperatureC: temperatureC,
+            temperatureC,
+          },
+        };
+      },
+    );
+    await page.clock.setFixedTime(new Date("2026-08-22T07:15:00.000Z"));
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await temperature.locator(".condition-primary").textContent() ?? "", /50\s*°F/u);
+    assert.match(
+      await temperature.locator(".condition-forecast-readings").textContent() ?? "",
+      /Max\s*68°F\s*Min\s*68°F\s*Max\s*72°F\s*Min\s*72°F/u,
+    );
+
+    fixture.state.currentRecords = [regional, staleFarm, staleNeighbor, wrongKindNeighbor, forecastNeighbor];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await temperature.locator(".condition-primary").textContent() ?? "", /50\s*°F/u);
+    assert.match(await wind.locator(".condition-primary").textContent() ?? "", /2\s*mph SW/u);
+    assert.match(await rain.locator(".condition-primary").textContent() ?? "", /^0\s*in\/h$/u);
+
+    const unavailableMetrics = Object.fromEntries(Object.keys(regional.metrics).map(
+      // remove every regional metric for the terminal empty state
+      (metric) => [metric, null],
+    ));
+    fixture.state.currentRecords = [{ ...regional, metrics: unavailableMetrics }, staleFarm, staleNeighbor, wrongKindNeighbor, forecastNeighbor];
+    fixture.state.forecastRecords = [];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await temperature.locator(".condition-status").innerText(), "Unavailable");
+    assert.equal(await wind.locator(".condition-status").innerText(), "Unavailable");
+    assert.equal(await rain.locator(".condition-status").innerText(), "Unavailable");
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-status").innerText(), "Unavailable");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-status").innerText(), "Unavailable");
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /12-unavailable\.svg$/u);
+    assert.deepEqual(pageErrors, []);
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // keep raw dashboard weather strictly model-sourced across rerenders and cache use
 test("raw current conditions never borrow local station readings or artwork", { timeout: 120_000 }, async () => {
   const fixture = await startFixtureServer();
@@ -4339,6 +4696,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       timezoneId: "UTC",
       viewport: { height: 900, width: 1440 },
     });
+    // align historical fixture forecasts with their original farm day
+    await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     await assert.doesNotReject(() => page.getByRole("heading", { name: "Ballydídean Weather" }).waitFor());
     assert.equal(
@@ -4357,8 +4716,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
       /Google Sans Flex/u,
     );
     assert.match(
-      await page.locator("[data-condition='temperature']").textContent() ?? "",
-      /61\s*°F/u,
+      await page.locator("[data-condition='temperature'] .condition-primary").textContent() ?? "",
+      /52\s*°F/u,
     );
     assert.doesNotMatch(
       await page.locator("[data-condition='air-quality']").textContent() ?? "",
@@ -4391,8 +4750,8 @@ test("real browser covers filters, pagination, last-good recovery, attribution, 
     assert.equal(await page.locator(".condition-color rect").count(), 10);
     assert.equal(await page.locator(".condition-label .material-symbols-rounded").count(), 10);
     assert.equal(await page.locator(".condition-status-color rect").count(), 10);
-    assert.equal(await page.locator(".condition-status-dark").count(), 10);
-    assert.equal(await page.locator(".condition-status-light").count(), 0);
+    assert.equal(await page.locator(".condition-status-dark").count(), 9);
+    assert.equal(await page.locator(".condition-status-light").count(), 1);
     assert.equal(
       await page.locator("[data-condition='humidity'] .condition-status-color rect").getAttribute("fill"),
       "rgb(67, 151, 86)",
@@ -8164,13 +8523,15 @@ test("real browser configures and persists every measurement unit preference", {
   try {
     browser = await launchBrowser();
     const page = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    // align historical fixture forecasts with their original farm day
+    await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
     await page.goto(fixture.origin, { waitUntil: "networkidle" });
     const currentTemperature = page.locator("[data-condition='temperature']");
-    assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /60\s*°F/u);
-    assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*61\s*°F/u);
+    assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /52\s*°F/u);
+    assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*54\s*°F/u);
     const currentWind = page.locator("[data-condition='wind']");
-    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*9\s*mph SW/u);
-    assert.match(await currentWind.textContent() ?? "", /Gusts\s*16\s*mph/u);
+    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*6\s*mph SW/u);
+    assert.match(await currentWind.textContent() ?? "", /Gusts\s*10\s*mph/u);
     assert.equal(
       await page.locator(".condition-card:not(.pressure-condition) .condition-primary strong").evaluateAll(
         // keep sunset and the other measurements on the shared primary scale
@@ -8285,10 +8646,7 @@ test("real browser configures and persists every measurement unit preference", {
       ),
       true,
     );
-    assert.match(
-      await page.locator("[data-condition='pressure']").textContent() ?? "",
-      /-1\.2/u,
-    );
+    assert.equal(await page.locator("[data-condition='pressure'] .condition-primary").innerText(), "—");
     const currentTide = page.locator("[data-condition='tide']");
     assert.match(await currentTide.locator(".condition-status").textContent() ?? "", /High/u);
     assert.match(await currentTide.locator(".condition-primary").textContent() ?? "", /8\.2\s*ft/u);
@@ -8330,7 +8688,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await page.locator("[data-condition='air-quality']").textContent() ?? "", /Max 10/u);
     assert.doesNotMatch(await page.locator("[data-condition='air-quality']").textContent() ?? "", /µg\/m³/u);
     assert.match(await page.locator("[data-condition='uv-index']").textContent() ?? "", /Max 8/u);
-    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*—/u);
+    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*-2\.3/u);
     assert.match(await page.locator("[data-condition='humidity']").textContent() ?? "", /Max 74%/u);
     assert.match(await currentTide.textContent() ?? "", /Next low\s*5:00 AM/u);
     assert.deepEqual(
@@ -8355,7 +8713,7 @@ test("real browser configures and persists every measurement unit preference", {
         { color: "rgb(0, 0, 0)", condition: "clouds", opacity: "0.75" },
         { color: "rgb(67, 151, 86)", condition: "humidity", opacity: "0.75" },
         { color: "rgb(230, 181, 25)", condition: "air-quality", opacity: "0.75" },
-        { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
+        { color: "rgb(230, 181, 25)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "pressure", opacity: "0.75" },
         { color: "rgb(207, 67, 55)", condition: "uv-index", opacity: "0.75" },
         { color: "rgb(0, 0, 0)", condition: "tide", opacity: "0.75" },
@@ -8473,15 +8831,12 @@ test("real browser configures and persists every measurement unit preference", {
     await page.locator(".current-conditions:not(.skeleton-region)").waitFor();
     await page.locator(".weather-content[aria-busy='false']").waitFor();
 
-    assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /16\s*°C/u);
-    assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*16\s*°C/u);
-    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*4\s*m\/s SW/u);
-    assert.match(await currentWind.textContent() ?? "", /Gusts\s*7\s*m\/s/u);
-    assert.match(await currentWind.textContent() ?? "", /Peak reading 7 m\/s/u);
-    assert.match(
-      await page.locator("[data-condition='pressure']").textContent() ?? "",
-      /-1\.2/u,
-    );
+    assert.match(await currentTemperature.locator(".condition-primary").textContent() ?? "", /11\s*°C/u);
+    assert.match(await currentTemperature.textContent() ?? "", /Air Temp\s*12\s*°C/u);
+    assert.match(await currentWind.textContent() ?? "", /Wind\s*Breezy\s*3\s*m\/s SW/u);
+    assert.match(await currentWind.textContent() ?? "", /Gusts\s*5\s*m\/s/u);
+    assert.match(await currentWind.textContent() ?? "", /Peak reading 5 m\/s/u);
+    assert.equal(await page.locator("[data-condition='pressure'] .condition-primary").innerText(), "—");
     assert.match(await currentTide.locator(".condition-status").textContent() ?? "", /High/u);
     assert.match(await currentTide.locator(".condition-primary").textContent() ?? "", /2\.5\s*m/u);
     assert.match(await currentTide.textContent() ?? "", /Rising/u);
@@ -8497,7 +8852,7 @@ test("real browser configures and persists every measurement unit preference", {
     assert.match(await currentRain.textContent() ?? "", /Max 2\.5 mm\/h/u);
     assert.match(await currentRain.textContent() ?? "", /Accumulation\s*2\.5\s*mm/u);
     assert.match(await currentRain.textContent() ?? "", /Total 4\.8 mm/u);
-    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*—/u);
+    assert.match(await page.locator("[data-condition='pressure']").textContent() ?? "", /Max\s*-2\.3/u);
     assert.deepEqual(
       await page.evaluate(
         // read the persisted browser preference record
