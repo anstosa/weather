@@ -2928,6 +2928,8 @@ test("adjusted temperature wind and rain icons turn gold on both forecast-bearin
         rain: true,
       });
       const page = await createFixturePage(browser, { viewport });
+      // align historical fixture forecasts with their original farm day
+      await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
       await page.goto(fixture.origin, { waitUntil: "networkidle" });
       const adjustedHome = await captureFamilyIcons(page, "home");
       assert.deepEqual(
@@ -4515,12 +4517,15 @@ test("google tag is production-only and initializes once without blocking naviga
       await page.locator(".forecast-panel").waitFor();
       await page.goBack();
       await page.locator(".current-conditions").waitFor();
+      await page.locator(".weather-content[aria-busy='false']").waitFor();
       assert.equal(tagRequests.length, tracked ? 1 : 0);
       assert.equal(await page.evaluate(
         // leave page-view events to enhanced measurement rather than duplicating them
         () => window.dataLayer?.length ?? 0,
       ), tracked ? 2 : 0);
       assert.deepEqual(errors, []);
+      // drain every proxy callback before closing its page
+      await page.unrouteAll({ behavior: "wait" });
       await page.close();
     }
   } finally {
