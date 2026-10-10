@@ -3287,7 +3287,7 @@ test("dashboard separates current conditions from the historical logs route", (c
   assert.match(fiveDayForecastHtml, /data-forecast-day="2026-08-21"><b>Fri 21<\/b>/u);
   assert.match(fiveDayForecastHtml, /data-forecast-day="2026-08-25"><b>Tue 25<\/b>/u);
   assert.equal((forecastHtml.match(/class="forecast-chart-daylight"/gu) ?? []).length, 9);
-  assert.equal((forecastHtml.match(/<linearGradient id="forecast-line-/gu) ?? []).length, 10);
+  assert.equal((forecastHtml.match(/<linearGradient id="forecast-line-/gu) ?? []).length, 11);
   assert.match(forecastHtml, /data-forecast-light="day"/u);
   assert.match(forecastHtml, /data-forecast-chart="temperature"[\s\S]*?data-forecast-min="-1\.1111111111"[\s\S]*?data-forecast-max="26\.6666666667"/u);
   assert.match(forecastHtml, /data-forecast-chart="wind"[\s\S]*?data-forecast-min="0"[\s\S]*?data-forecast-max="22\.3519999995"/u);
@@ -3302,6 +3302,7 @@ test("dashboard separates current conditions from the historical logs route", (c
   assert.match(forecastHtml, /forecast-line-air-quality-0[\s\S]*stop-color="rgb\(0, 146, 63\)"/u);
   assert.deepEqual(forecastChartSeries(forecastHtml, "temperature"), [
     { label: "Feels like", values: [forecastRecord.metrics.apparentTemperatureC] },
+    { label: "Air Temp", values: [forecastRecord.metrics.temperatureC] },
   ]);
   assert.deepEqual(forecastChartSeries(forecastHtml, "clouds"), [
     { label: "Cover", values: [forecastRecord.metrics.cloudCoverPercent] },
@@ -3516,7 +3517,9 @@ test("dashboard separates current conditions from the historical logs route", (c
   assert.doesNotMatch(html, /data-condition="air-quality"[\s\S]*?µg\/m³/u);
   assert.match(html, /data-condition="uv-index"[\s\S]*?Max[\s\S]*?2/u);
   assert.match(html, /data-condition="pressure"[\s\S]*?Max[\s\S]*?<strong>—<\/strong>[\s\S]*?condition-forecast-label"><\/span> <strong>—<\/strong>/u);
-  assert.match(html, /data-condition="humidity"[\s\S]*?Max[\s\S]*?78<small>%/u);
+  // fade the fresh nearby 81-percent reading into the regional 78-percent forecast
+  assert.match(html, /data-condition="humidity"[\s\S]*?Max[\s\S]*?81<small>%/u);
+  assert.match(renderWeatherDashboard({ ...state, forecastAdjustmentMode: "raw" }), /data-condition="humidity"[\s\S]*?Max[\s\S]*?78<small>%/u);
   assert.match(html, /data-condition="tide"[\s\S]*?Next low[\s\S]*?5:00 AM/u);
   assert.match(html, /PM2\.5 health range/u);
   assert.match(html, />Good</u);

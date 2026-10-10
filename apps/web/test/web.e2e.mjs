@@ -1418,6 +1418,7 @@ async function startFixtureServer() {
       [`/assets/${fixtureAssetVersion}/index.js`, [join(distRoot, "index.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/units.js`, [join(distRoot, "units.js"), "text/javascript; charset=utf-8"]],
       [`/assets/${fixtureAssetVersion}/solar-cloud.js`, [join(distRoot, "solar-cloud.js"), "text/javascript; charset=utf-8"]],
+      [`/assets/${fixtureAssetVersion}/local-forecast-bias.js`, [join(distRoot, "local-forecast-bias.js"), "text/javascript; charset=utf-8"]],
     ]);
     const requestedAsset = assets.get(url.pathname);
     const adminRoute = url.pathname === "/admin" || url.pathname === "/admin/";
@@ -1587,6 +1588,288 @@ test("WS90 sunlight clouds fade within 24 hours and retire on stale readings", {
     }
   } finally {
     // release the browser and fixture even on a failed assertion
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// prove browser-visible local biases stay bounded and raw data remains intact
+test("local observations bias four forecast families for only the next 24 hours", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const now = new Date("2026-06-21T20:00:00.000Z");
+  const publishedAt = "2026-06-21T19:50:00.000Z";
+  // create one current record with an exact production source identity
+  const currentRecord = (kind, id, validAt, metrics, overrides = {}) => {
+    const base = makeRecord(id, validAt, 14);
+    const physical = kind === "physical_sensor";
+    return {
+      ...base,
+      freshness: { ageSeconds: 0, label: "Current", status: "fresh" },
+      metadata: {
+        ...base.metadata,
+        provider: { ...base.metadata.provider, dataset: physical ? "get_livedata_info" : "best_match" },
+      },
+      metrics: {
+        ...base.metrics,
+        pm25MicrogramsPerCubicMeter: 20,
+        pressureHpa: 1_000,
+        relativeHumidityPercent: 50,
+        uvIndex: 6,
+        ...metrics,
+      },
+      pressureChange3hHpa: physical ? null : -0.5,
+      provenance: {
+        ...base.provenance,
+        label: physical ? "local physical station" : "model-derived current conditions",
+        providerKey: physical ? "ecowitt-local" : "open-meteo",
+        sourceId: id,
+        sourceKey: id,
+        sourceKind: kind,
+        stationSlug: physical ? "ballydidean-ecowitt" : "open-meteo-virtual",
+      },
+      receivedAt: validAt,
+      ...overrides,
+    };
+  };
+  const regional = currentRecord("model_current", "regional-current", "2026-06-21T19:45:00.000Z", {});
+  const farm = currentRecord("physical_sensor", "farm-current", now.toISOString(), {
+    pm25MicrogramsPerCubicMeter: null,
+    pressureHpa: 1_025,
+    relativeHumidityPercent: 70,
+    uvIndex: 3,
+  }, { pressureChange3hHpa: 1 });
+  // create one independently weighted nearby particulate station
+  const nearby = (id, value, stationSlug) => currentRecord(
+    "physical_sensor",
+    id,
+    now.toISOString(),
+    { pm25MicrogramsPerCubicMeter: value, uvIndex: null },
+    {
+      provenance: {
+        ...farm.provenance,
+        providerKey: "purpleair",
+        sourceId: id,
+        sourceKey: id,
+        stationSlug,
+      },
+    },
+  );
+  const currentRecords = [farm, regional, nearby("nearby-a", 8, "station-a"), nearby("nearby-b", 12, "station-b")];
+  const forecastRecords = Array.from({ length: 40 }, (_, index) => {
+    const validAt = new Date(now.getTime() + (index - 3) * 3_600_000).toISOString();
+    const base = makeRecord(`local-forecast-${String(index)}`, validAt, 14 + index / 10);
+    return {
+      ...base,
+      freshness: { ageSeconds: 600, label: "Forecast is current", status: "fresh" },
+      metadata: {
+        ...base.metadata,
+        provider: { ...base.metadata.provider, dataset: "forecast" },
+        upstream: { model: "best_match", timezone: site.timezone },
+      },
+      metrics: {
+        ...base.metrics,
+        apparentTemperatureC: 12 + index / 10,
+        pm25MicrogramsPerCubicMeter: 20,
+        pressureHpa: 1_000 + index / 10,
+        relativeHumidityPercent: 50,
+        uvIndex: 6,
+      },
+      productRunAt: publishedAt,
+      provenance: {
+        ...base.provenance,
+        label: "hourly forecast",
+        providerKey: "open-meteo",
+        sourceId: "regional-forecast",
+        sourceKey: "regional-forecast",
+        sourceKind: "forecast",
+        stationSlug: "open-meteo-virtual",
+      },
+      receivedAt: publishedAt,
+    };
+  });
+  const payload = forecastResponse(
+    "active",
+    { version: 1, temperature: true, wind: true, rain: true },
+    forecastRecords,
+  );
+  const payloadSnapshot = JSON.parse(JSON.stringify(payload));
+  const localFamilies = ["humidity", "air-quality", "uv-index", "pressure"];
+  // read the serialized values that drive every rendered chart line
+  const chartSeries = async (page) => Object.fromEntries(await Promise.all(localFamilies.map(
+    // preserve family order for direct raw comparisons
+    async (family) => [
+      family,
+      JSON.parse(await page.locator(`[data-forecast-chart='${family}']`).getAttribute("data-forecast-series"))[0].values,
+    ],
+  )));
+  // keep long experimental headings clear of their selected-value bubbles
+  const assertForecastLayout = async (page, width) => {
+    const layout = await page.locator(localFamilies.map((family) => `[data-forecast-chart='${family}']`).join(", ")).evaluateAll(
+      // compare each chart's actual browser geometry
+      (charts) => charts.map((chart) => {
+        const heading = chart.querySelector(".forecast-chart-heading");
+        const value = chart.querySelector(".forecast-chart-value");
+        const headingBounds = heading?.getBoundingClientRect();
+        const valueBounds = value?.getBoundingClientRect();
+        const chartBounds = chart.getBoundingClientRect();
+
+        // report incomplete chart furniture directly
+        if (headingBounds === undefined || valueBounds === undefined) {
+          return { family: chart.getAttribute("data-forecast-chart"), complete: false };
+        }
+        const overlaps = headingBounds.left < valueBounds.right && headingBounds.right > valueBounds.left &&
+          headingBounds.top < valueBounds.bottom && headingBounds.bottom > valueBounds.top;
+        return {
+          clipped: headingBounds.left < chartBounds.left - 1 || headingBounds.right > chartBounds.right + 1 ||
+            valueBounds.left < chartBounds.left - 1 || valueBounds.right > chartBounds.right + 1,
+          complete: true,
+          family: chart.getAttribute("data-forecast-chart"),
+          overlaps,
+        };
+      }),
+    );
+    assert.equal(
+      layout.every(
+        // require every recorded geometry guard
+        (entry) => entry.complete && !entry.overlaps && !entry.clipped,
+      ),
+      true,
+      `forecast heading or value collision at ${String(width)}px: ${JSON.stringify(layout)}`,
+    );
+    assert.equal(
+      await page.evaluate(
+        // reject document-level responsive overflow
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+      true,
+      `forecast overflow at ${String(width)}px`,
+    );
+  };
+
+  fixture.state.currentRecords = currentRecords;
+  fixture.state.forecastPayload = payload;
+
+  try {
+    browser = await launchBrowser();
+
+    // verify desktop and both supported phone widths
+    for (const viewport of [
+      { height: 900, width: 960 },
+      { height: 844, width: 390 },
+      { height: 780, width: 320 },
+    ]) {
+      fixture.state.currentRecords = currentRecords;
+      const page = await createFixturePage(browser, { timezoneId: site.timezone, viewport });
+      const pageErrors = [];
+      // retain asynchronous render failures
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      await page.clock.setFixedTime(now);
+      await page.goto(`${fixture.origin}/forecast`, { waitUntil: "networkidle" });
+      await page.getByRole("button", { name: "5 days", exact: true }).click();
+      await page.locator('[data-forecast-charts][data-forecast-days="5"]').waitFor();
+      const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      const adjusted = await chartSeries(page);
+      const adjustedTemperature = JSON.parse(
+        await page.locator("[data-forecast-chart='temperature']").getAttribute("data-forecast-series"),
+      );
+      // require visible evidence for every accepted local estimator
+      for (const family of localFamilies) {
+        assert.match(
+          await page.locator(`[data-forecast-chart='${family}'] .forecast-chart-heading`).innerText(),
+          /experimental/u,
+        );
+      }
+      await assertForecastLayout(page, viewport.width);
+      const api = await page.evaluate(
+        // inspect the same immutable API body consumed by the browser
+        async () => await fetch("/api/v1/sites/ballydidean/forecast").then(
+          // parse one normalized response
+          async (response) => await response.json(),
+        ),
+      );
+      assert.deepEqual(api, payloadSnapshot);
+      assert.deepEqual(api.data[3].metrics, forecastRecords[3].metrics);
+      assert.equal(JSON.stringify(api).includes("local-forecast-bias"), false);
+
+      await toggle.click();
+      await page.waitForFunction(
+        // wait for all four local families to return raw
+        () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false" &&
+          JSON.parse(document.querySelector("[data-forecast-chart='humidity']")?.getAttribute("data-forecast-series") ?? "[]")[0]?.values?.[3] === 50,
+      );
+      const raw = await chartSeries(page);
+      const rawTemperature = JSON.parse(
+        await page.locator("[data-forecast-chart='temperature']").getAttribute("data-forecast-series"),
+      );
+      // compare all four displayed current-hour biases
+      assert.deepEqual(
+        Object.fromEntries(localFamilies.map((family) => [family, [raw[family][3], adjusted[family][3]]])),
+        {
+          "air-quality": [20, 10],
+          humidity: [50, 70],
+          pressure: [0.2999999999999545, 1.7999999999999545],
+          "uv-index": [6, 3],
+        },
+      );
+      // retain past hours and expire exactly at the 24-hour boundary
+      for (const family of localFamilies) {
+        assert.equal(adjusted[family][2], raw[family][2], `${family} changed a past hour`);
+        assert.notEqual(adjusted[family][26], raw[family][26], `${family} missed the final covered hour`);
+        assert.equal(adjusted[family][27], raw[family][27], `${family} crossed its 24-hour expiry`);
+      }
+      assert.deepEqual(adjustedTemperature[0], rawTemperature[0]);
+      assert.notEqual(adjustedTemperature[1].values[3], rawTemperature[1].values[3]);
+      assert.equal(adjustedTemperature[1].values[3], forecastRecords[3].metrics.temperatureC + 2);
+
+      await toggle.click();
+      await page.waitForFunction(
+        // wait for the local humidity estimate to return
+        () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true" &&
+          JSON.parse(document.querySelector("[data-forecast-chart='humidity']")?.getAttribute("data-forecast-series") ?? "[]")[0]?.values?.[3] === 70,
+      );
+      await page.reload({ waitUntil: "networkidle" });
+      assert.equal(await toggle.getAttribute("aria-checked"), "true");
+      await page.getByRole("button", { name: "5 days", exact: true }).click();
+      await page.locator('[data-forecast-charts][data-forecast-days="5"]').waitFor();
+      assert.equal((await chartSeries(page)).humidity[3], 70);
+      await assertForecastLayout(page, viewport.width);
+
+      // exercise both fail-raw source gates once
+      if (viewport.width === 960) {
+        fixture.state.currentRecords = currentRecords.map(
+          // retire every physical observation past its strict freshness limit
+          (record) => record.provenance.sourceKind === "physical_sensor"
+            ? {
+              ...record,
+              freshness: { ageSeconds: 960, label: "Station reading is stale", status: "stale" },
+              receivedAt: "2026-06-21T19:44:00.000Z",
+              validAt: "2026-06-21T19:44:00.000Z",
+            }
+            : record,
+        );
+        await page.reload({ waitUntil: "networkidle" });
+        await page.getByRole("button", { name: "5 days", exact: true }).click();
+        await page.locator('[data-forecast-charts][data-forecast-days="5"]').waitFor();
+        assert.deepEqual(await chartSeries(page), raw);
+        fixture.state.currentRecords = currentRecords.filter(
+          // remove only the required regional baseline
+          (record) => record.provenance.sourceKind !== "model_current",
+        );
+        await page.reload({ waitUntil: "networkidle" });
+        await page.getByRole("button", { name: "5 days", exact: true }).click();
+        await page.locator('[data-forecast-charts][data-forecast-days="5"]').waitFor();
+        assert.deepEqual(await chartSeries(page), raw);
+      }
+      assert.deepEqual(fixture.state.forecastPayload, payloadSnapshot);
+      assert.deepEqual(pageErrors, []);
+      assert.equal((await page.screenshot()).byteLength > 1_000, true);
+      await page.close();
+    }
+  } finally {
+    // close disposable browser resources
     await browser?.close();
     fixture.server.close();
     await once(fixture.server, "close");
@@ -6856,7 +7139,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     };
 
     assert.equal(await page.locator(".forecast-chart").count(), 9);
-    assert.equal(await page.locator(".forecast-chart-line").count(), 10);
+    assert.equal(await page.locator(".forecast-chart-line").count(), 11);
     assert.deepEqual(
       await page.locator(".forecast-chart-line").evaluateAll(
         // match every forecast range
@@ -6865,7 +7148,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
       ["1.5px", "2px"],
     );
     assert.equal(await page.locator(".forecast-chart-guide").count(), 0);
-    assert.equal(await page.locator(".forecast-chart linearGradient").count(), 10);
+    assert.equal(await page.locator(".forecast-chart linearGradient").count(), 11);
     assert.equal(await page.locator(".forecast-chart-scale").count(), 18);
     assert.equal(await page.locator(".forecast-x-tick").count(), 24);
     assert.equal(await page.locator(".forecast-x-axis time").count(), 5);
@@ -6948,7 +7231,7 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     );
     assert.deepEqual(
       await page.locator('[data-forecast-chart="temperature"]').evaluate(
-        // retain only the solid feels-like series
+        // expose air temperature separately from the provider's feels-like series
         (chart) => ({
           labels: [...chart.querySelectorAll(".forecast-chart-value small")].map((label) => label.textContent),
           lineClasses: [...chart.querySelectorAll(".forecast-chart-line")].map((line) => line.getAttribute("class")),
@@ -6956,9 +7239,12 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
         }),
       ),
       {
-        labels: ["Feels like"],
-        lineClasses: ["forecast-chart-line forecast-chart-line-0"],
-        series: [{ label: "Feels like", values: forecast.slice(0, 24).map((record) => record.metrics.apparentTemperatureC) }],
+        labels: ["Feels like", "Air Temp"],
+        lineClasses: ["forecast-chart-line forecast-chart-line-0", "forecast-chart-line forecast-chart-line-1"],
+        series: [
+          { label: "Feels like", values: forecast.slice(0, 24).map((record) => record.metrics.apparentTemperatureC) },
+          { label: "Air Temp", values: forecast.slice(0, 24).map((record) => record.metrics.temperatureC) },
+        ],
       },
     );
     assert.deepEqual(

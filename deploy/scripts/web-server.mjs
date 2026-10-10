@@ -171,6 +171,7 @@ const versionedAssets = new Map([
   ["client.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "client.js"), type: "text/javascript; charset=utf-8" }],
   ["index.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "index.js"), type: "text/javascript; charset=utf-8" }],
   ["solar-cloud.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "solar-cloud.js"), type: "text/javascript; charset=utf-8" }],
+  ["local-forecast-bias.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "local-forecast-bias.js"), type: "text/javascript; charset=utf-8" }],
   ["units.js", { cache: "public, max-age=31536000, immutable", path: join(compiledRoot, "units.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 
