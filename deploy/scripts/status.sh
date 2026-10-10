@@ -38,6 +38,24 @@ current=${current:-none}
 previous=${previous:-none}
 printf 'Current release: %s\nPrevious release: %s\n' "$current" "$previous"
 
+# report the independent dashboard release markers
+current_web=$(read_optional_release_state "$deploy_dir/state/current-web-release")
+previous_web=$(read_optional_release_state "$deploy_dir/state/previous-web-release")
+effective_web=$current_web
+web_override=active
+if [[ -z "$effective_web" ]]; then
+  effective_web=$current
+  web_override=inactive
+fi
+printf 'Current web release: %s\nPrevious web release: %s\nWeb override: %s\n' \
+  "${effective_web:-none}" "${previous_web:-none}" "$web_override"
+if [[ -e "$deploy_dir/state/dashboard-web-transaction.env" ||
+  -L "$deploy_dir/state/dashboard-web-transaction.env" ]]; then
+  printf 'Web transaction: recovery-required\n'
+else
+  printf 'Web transaction: none\n'
+fi
+
 # report runtime state only after activation
 if [[ "$current" != none ]]; then
   current_env="$deploy_dir/releases/$current.env"
@@ -56,6 +74,25 @@ if [[ "$current" != none ]]; then
     validate_image_reference "$image"
     printf '  %s=%s\n' "$name" "$image"
   done
+
+
+  # report the effective dashboard image separately from the core image set
+  if [[ "$web_override" == active ]]; then
+    web_env="$deploy_dir/releases/$effective_web.web.env"
+    require_file "$web_env"
+    [[ -L "$deploy_dir/state/active-web.env" &&
+      "$(readlink "$deploy_dir/state/active-web.env")" == \
+      "../releases/$effective_web.web.env" ]] ||
+      die "active dashboard release link does not match committed state"
+  else
+    web_env=$current_env
+    [[ ! -e "$deploy_dir/state/active-web.env" &&
+      ! -L "$deploy_dir/state/active-web.env" ]] ||
+      die "dashboard release link exists without committed state"
+  fi
+  web_image=$(env_value "$web_env" WEATHER_WEB_IMAGE)
+  validate_image_reference "$web_image"
+  printf 'Dashboard image:\n  WEATHER_WEB_IMAGE=%s\n' "$web_image"
 
   require_command docker
   compose ps

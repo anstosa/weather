@@ -863,6 +863,16 @@ restore_v14_transaction() (
   exit "$state_drift"
 )
 
+# refuse control recovery that would orphan an independent dashboard
+require_no_dashboard_override() {
+  local destination=$1 marker
+  # any committed or interrupted web state requires its own rollback first
+  for marker in current-web-release previous-web-release active-web.env dashboard-web-transaction.env; do
+    [[ ! -e "$destination/deploy/state/$marker" && ! -L "$destination/deploy/state/$marker" ]] ||
+      fail "dashboard rollback is required before control recovery"
+  done
+}
+
 # recover one interrupted v14 transaction
 recover_v14_control_plane() {
   local destination=$1
@@ -879,6 +889,7 @@ recover_v14_control_plane() {
     fail "recovery paths must be absolute"
   [[ "$(dirname "$backup_root")" == "$runtime_root" ]] ||
     fail "backup root is not the fixed runtime child"
+  require_no_dashboard_override "$destination"
   verify_fixed_ancestry "$destination" "$runtime_root" "$expected_uid" \
     "$expected_gid" "$data_uid" "$data_gid"
   verify_sealed_recovery_backup "$backup_root" "$backup" \
@@ -889,6 +900,7 @@ recover_v14_control_plane() {
   flock -n "$lock_fd" || fail "another maintenance control transaction is in flight"
   # rerun every authority check after locking
   require_quiet_weather
+  require_no_dashboard_override "$destination"
   require_maintenance_predecessor_release "$destination"
   verify_fixed_ancestry "$destination" "$runtime_root" "$expected_uid" \
     "$expected_gid" "$data_uid" "$data_gid"

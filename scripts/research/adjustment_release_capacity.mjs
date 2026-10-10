@@ -22,6 +22,7 @@ export {
   evaluateAdjustmentFamilyReleaseCapacity,
   evaluateAdjustmentFullV14ReleaseCapacity,
   evaluateAdjustmentInertV14ReleaseCapacity,
+  evaluateDashboardWebReleaseCapacity,
   measureReleaseLayer,
   measureReleasePathEntry,
   weatherRegistryBlobRedirectUrl,

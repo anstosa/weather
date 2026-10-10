@@ -103,6 +103,74 @@ the detector ships with the web image through the ordinary release process.
 8. Install and enable the root-owned `weather-compose.service`. It has no
    dependency on another application unit.
 
+## Independent dashboard releases
+
+The dashboard has a separate, web-only release lane while the core remains on
+the exact `2026.10.09-1` runtime and schema 0018. It requires the verified v14
+control installer over that release's frozen v13 control identity. It does not
+run the unrelated compatibility bridge or full maintenance migration.
+
+Publish a new immutable tag only after its exact branch commit passes `Check`.
+The existing image publication workflow must pass the ARM64 image-boundary
+inspection. Then use the bounded forced-command wrapper:
+
+```bash
+deploy/scripts/ssh-run.sh dashboard-release 2026.10.10-1 2026.10.09-1 2026.10.09-1
+deploy/scripts/ssh-run.sh status
+```
+
+The operands are target dashboard release, expected core release and expected
+current dashboard release. Before the first override, the dashboard source is
+the core release. Later updates require the exact separately committed dashboard
+source. A moved core tag, incomplete or unsuccessful exact-commit workflow,
+different publication tag, or source mismatch refuses the release.
+
+Only the target web image is pulled and only the `web` service is restarted.
+The existing server, database and tunnel images, non-web containers, complete
+migration ledger, canary settings and administrator adjustment settings are
+checked for drift. No migrations, model actions, capture epochs or registration
+initialization run. Literal OCI-layer capacity accounting retains the existing
+protected byte/inode floors and next-capture, pull and metadata reserves. It
+does not count prospective image deletion as capacity.
+
+Dashboard metadata is separate from the core lifecycle:
+
+- `deploy/releases/<release>.web.env`
+- `deploy/state/current-web-release`
+- `deploy/state/previous-web-release`
+- `deploy/state/active-web.env`
+- private `deploy/state/dashboard-web-transaction.env` while a transaction is
+  incomplete
+
+The core `current-release`, `previous-release`, `schema-release` and `active.env`
+remain unchanged. Consequently, the public HTML reports the new dashboard
+release while `/api/v1/health` continues to report the retained core release.
+This is intentional component provenance, not a partially migrated core.
+
+The transaction verifies exact running web bytes and public-query compatibility
+before committing its current dashboard marker last. A failed switch restores
+the exact source web. `recover` reconciles an interrupted dashboard transaction
+and restores a committed override after exact schema-0018 core recovery,
+including host restarts. The pre-epoch recovery render excludes future-only
+bind mounts and preserves already-running non-web containers. Roll back through
+the same bounded lane:
+
+```bash
+deploy/scripts/ssh-run.sh dashboard-rollback
+deploy/scripts/ssh-run.sh dashboard-rollback-core
+```
+
+`dashboard-rollback` selects the retained previous dashboard. After multiple
+dashboard updates, use `dashboard-rollback-core` to return directly to the exact
+core web and remove all override markers after its health checks pass.
+
+Unified releases, model-family releases, the pinned compatibility bridge/full
+maintenance handoff and v14 control recovery refuse active or interrupted
+dashboard overrides. Finish dashboard recovery and rollback first; do not
+rewrite core metadata or manually swap the web container. Once the override
+markers are removed, the immutable `2026.10.09-2`/`2026.10.09-3` handoff remains
+available through its original reviewed operations.
+
 ## Optional capacity diagnostics
 
 The direct deployment path does not require a capacity sample. Run the retained

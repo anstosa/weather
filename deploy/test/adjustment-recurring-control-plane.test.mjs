@@ -514,6 +514,30 @@ test("v14 retained backup supports explicit complete recovery", async () => {
   }
 });
 
+// removing v14 controls must not orphan an active or interrupted dashboard
+test("v14 control recovery requires dashboard rollback before any restoration", async () => {
+  const fixture = await createFixture();
+  try {
+    assert.equal(runInstaller(fixture).status, 0);
+    const backup = await retainedBackup(fixture);
+    const installedBytes = await readFile(join(fixture.installed, "deploy/scripts/update.sh"));
+    // every dashboard authority marker independently blocks control recovery
+    for (const marker of ["current-web-release", "previous-web-release", "active-web.env", "dashboard-web-transaction.env"]) {
+      const path = join(fixture.installed, "deploy/state", marker);
+      await writeFile(path, "2026.10.09-4\n", { mode: 0o600 });
+      const recovered = runRecovery(fixture, backup);
+      assert.notEqual(recovered.status, 0);
+      assert.match(recovered.stderr, /dashboard rollback is required/u);
+      assert.deepEqual(await readFile(join(fixture.installed, "deploy/scripts/update.sh")), installedBytes);
+      await rm(path);
+    }
+    assert.equal(runRecovery(fixture, backup).status, 0);
+    assertPredecessor(fixture);
+  } finally {
+    await rm(fixture.root, { force: true, recursive: true });
+  }
+});
+
 test("v14 refuses an eight-path partial candidate without mutation", async () => {
   const fixture = await createFixture({ partial: true });
   try {

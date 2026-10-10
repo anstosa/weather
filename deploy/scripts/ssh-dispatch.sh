@@ -6,6 +6,8 @@ original=${SSH_ORIGINAL_COMMAND:-}
 
 # allow only fixed Weather operator verbs
 if [[ ! "$original" =~ ^(status|rollback|recover|backup|backup-stream|preflight|tempest-backfill|public-stations-backfill|tide-backfill|adjustment-archive-next|adjustment-maintenance-anchor-status-v2)$ &&
+  ! "$original" =~ ^dashboard-rollback(-core)?$ &&
+  ! "$original" =~ ^dashboard-release\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?$ &&
   ! "$original" =~ ^(yolo|stage|activate)\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?$ &&
   ! "$original" =~ ^adjustment-family-release\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?\ [0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?\ [a-f0-9]{64}\ (temperature|wind|rain)\ [a-f0-9]{64}\ [a-f0-9]{64}\ [1-9][0-9]{0,19}$ &&
   ! "$original" =~ ^adjustment-family-release-status\ [a-f0-9]{64}$ &&

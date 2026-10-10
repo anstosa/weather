@@ -325,6 +325,10 @@ const ADJUSTMENT_FULL_V14_SOURCE_REFERENCES = new Map([
   ["server", "ghcr.io/anstosa/weather-server@sha256:587dd0d34ed19086986a8081f7889fb10af2146d0d3f9ba46914389a787e5437"],
   ["web", "ghcr.io/anstosa/weather-web@sha256:34d824b03c5f84289b8f38028e751f183a953565fc929260c09b07c9e64f15ba"],
 ]);
+export const DASHBOARD_WEB_RELEASE_CAPACITY_VERSION = "dashboard-web-release-capacity/v1";
+const DASHBOARD_WEB_RELEASE_INVENTORY_VERSION = "dashboard-web-release-inventory/v1";
+const DASHBOARD_WEB_RELEASE_COMPENSATION_SCOPE = "fixed-core-web-only-source-restore";
+const DASHBOARD_WEB_RELEASE_CORE_COMMIT = "56b327d9c750946f6f6963b6fe1fa5c9bba791ca";
 export const BLUEBERRY_PROTECTED_FREE_BYTES = 2_030_043_136;
 export const BLUEBERRY_NEXT_CAPTURE_BYTES = 4_112_384;
 export const ADJUSTMENT_RUNTIME_PACKAGE_MAX_BYTES = 8 * 1_024 * 1_024;
@@ -463,6 +467,42 @@ export function evaluateAdjustmentFullV14ReleaseCapacity(record) {
     contractVersion: ADJUSTMENT_FULL_V14_CAPACITY_VERSION,
     sourceRelease: ADJUSTMENT_FULL_V14_SOURCE_RELEASE,
   });
+}
+
+// meter an independent dashboard without granting model or schema authority
+export function evaluateDashboardWebReleaseCapacity(record) {
+  // retain the one authenticated core and exact source-web restoration
+  if (record.version !== DASHBOARD_WEB_RELEASE_INVENTORY_VERSION ||
+    record.sourceRelease !== ADJUSTMENT_INERT_V14_SOURCE_RELEASE ||
+    record.compensationScope !== DASHBOARD_WEB_RELEASE_COMPENSATION_SCOPE ||
+    !Array.isArray(record.images) || record.images.length !== 6) {
+    throw new Error("dashboard web capacity scope is invalid");
+  }
+  const roles = new Map(record.images.map(
+    // distinguish every literal ownership role before physical accounting
+    (image) => [`${image.role}/${image.runtime}`, image.reference],
+  ));
+  const sourceWeb = roles.get("source/web");
+  const targetWeb = roles.get("target/web");
+
+  // every server role remains the exact deployed core image
+  for (const role of ADJUSTMENT_RELEASE_ROLES) {
+    // web-only compensation cannot substitute another server
+    if (roles.get(`${role}/server`) !== ADJUSTMENT_INERT_V14_SOURCE_REFERENCES.get("server")) {
+      throw new Error("dashboard web release must preserve the exact core server");
+    }
+  }
+  // require distinct pinned web bytes and literal source restoration
+  if (roles.size !== 6 || ADJUSTMENT_RELEASE_REFERENCE.exec(sourceWeb)?.[1] !== "web" ||
+    ADJUSTMENT_RELEASE_REFERENCE.exec(targetWeb)?.[1] !== "web" ||
+    targetWeb === sourceWeb || roles.get("compensating/web") !== sourceWeb) {
+    throw new Error("dashboard web compensation must restore the exact source web");
+  }
+  const result = evaluateAdjustmentReleaseCapacity(collectReleaseCapacityInventory(record, "dashboard-web"));
+  return Object.freeze({ ...result,
+    compensationScope: DASHBOARD_WEB_RELEASE_COMPENSATION_SCOPE,
+    contractVersion: DASHBOARD_WEB_RELEASE_CAPACITY_VERSION,
+    sourceRelease: ADJUSTMENT_INERT_V14_SOURCE_RELEASE });
 }
 
 // bind a distinct family transaction to literal new compensation images
@@ -1108,6 +1148,52 @@ export async function verifyAdjustmentFullV14GitRelease(
     sourceRelease: ADJUSTMENT_FULL_V14_SOURCE_RELEASE,
     targetRelease,
   }, readJson);
+}
+
+// prove a separately published dashboard descendant of the unchanged core
+export async function verifyDashboardWebGitRelease(
+  targetRelease,
+  coreRelease,
+  readJson = readPublicWeatherGitJson,
+) {
+  requireFamilyRelease(targetRelease, "dashboard target release");
+  // reserve the immutable maintenance releases for their original operations
+  if (coreRelease !== ADJUSTMENT_INERT_V14_SOURCE_RELEASE ||
+    [ADJUSTMENT_FULL_V14_SOURCE_RELEASE, ADJUSTMENT_FULL_V14_TARGET_RELEASE].includes(targetRelease) ||
+    typeof readJson !== "function") {
+    throw new Error("dashboard publication core or target is unsupported");
+  }
+  const sourceCommit = await resolvePublicWeatherTag(coreRelease, readJson);
+  const targetCommit = await resolvePublicWeatherTag(targetRelease, readJson);
+  // a moved core tag cannot authorize new dashboard bytes
+  if (sourceCommit !== DASHBOARD_WEB_RELEASE_CORE_COMMIT ||
+    targetRelease !== coreRelease && targetCommit === sourceCommit) {
+    throw new Error("dashboard publication Git identity differs");
+  }
+  // core rollback uses its original publication without inventing a descendant
+  if (targetRelease !== coreRelease) {
+    const compare = await readJson(`compare/${sourceCommit}...${targetCommit}?per_page=1`);
+    // the independent dashboard must descend from the retained core
+    if (compare?.status !== "ahead" || compare.behind_by !== 0 ||
+      !Number.isSafeInteger(compare.ahead_by) || compare.ahead_by < 1 ||
+      compare.base_commit?.sha !== sourceCommit) {
+      throw new Error("dashboard publication Git ancestry differs");
+    }
+  }
+  const check = await readJson(`actions/workflows/check.yml/runs?head_sha=${targetCommit}&event=push&per_page=100`);
+  const publish = await readJson(`actions/workflows/publish-images.yml/runs?head_sha=${targetCommit}&event=push&per_page=100`);
+  const checkRun = requireLatestWeatherWorkflow(check, targetCommit, 1_342_404_160, "anstosa/weather", "check.yml");
+  const publishRun = requireLatestWeatherWorkflow(publish, targetCommit, 1_342_404_160, "anstosa/weather", "publish-images.yml");
+  // match this tag and preserve Check-before-Publish ordering
+  if (publishRun.head_branch !== targetRelease ||
+    !Number.isFinite(Date.parse(checkRun.updated_at)) ||
+    Date.parse(checkRun.updated_at) > Date.parse(publishRun.created_at)) {
+    throw new Error("dashboard publication preceded Check or names another tag");
+  }
+  return Object.freeze({ checkRunId: checkRun.id,
+    contractVersion: "dashboard-web-release-proof/v1", coreRelease,
+    publishRunId: publishRun.id, sourceCommit, state: "publication_ready",
+    targetCommit, targetRelease });
 }
 
 // freeze one validated operator-settings inode before starting the new web process
@@ -8740,6 +8826,21 @@ async function collectFixedFullV14ReleaseCapacity(sourceServer, sourceWeb, targe
   });
 }
 
+// measure dashboard growth while retaining the literal core and source web
+async function collectDashboardWebReleaseCapacity(sourceWeb, targetWeb) {
+  // reject caller-shaped repositories before network or filesystem inspection
+  if (ADJUSTMENT_RELEASE_REFERENCE.exec(sourceWeb)?.[1] !== "web" ||
+    ADJUSTMENT_RELEASE_REFERENCE.exec(targetWeb)?.[1] !== "web" || sourceWeb === targetWeb) {
+    throw new Error("dashboard web capacity references are invalid");
+  }
+  const server = ADJUSTMENT_INERT_V14_SOURCE_REFERENCES.get("server");
+  const record = await collectLiteralReleaseCapacity([server, sourceWeb, server, targetWeb, server, sourceWeb]);
+  return evaluateDashboardWebReleaseCapacity({ ...record,
+    compensationScope: DASHBOARD_WEB_RELEASE_COMPENSATION_SCOPE,
+    sourceRelease: ADJUSTMENT_INERT_V14_SOURCE_RELEASE,
+    version: DASHBOARD_WEB_RELEASE_INVENTORY_VERSION });
+}
+
 // measure six literal images for one source-preserving family transaction
 async function collectFamilyReleaseCapacity(actionSha256, family, sourceRelease, ...references) {
   // reject malformed scope before registry or host inventory work
@@ -9030,6 +9131,30 @@ async function main() {
     const receipt = await collectFixedFullV14ReleaseCapacity(...argumentsList);
     process.stdout.write(`${canonicalJsonValue(receipt)}\n`);
     // a complete refusal receipt remains a failing gate
+    if (receipt.state !== "capacity_ready") process.exitCode = 3;
+    return;
+  }
+
+  // verify only the independent dashboard publication
+  if (command === "web-release-proof") {
+    // accept identities rather than paths or arbitrary repositories
+    if (argumentsList.length !== 2) {
+      throw new Error("usage: adjustment-evaluation-package.mjs web-release-proof TARGET_RELEASE EXPECTED_CORE_RELEASE");
+    }
+    const receipt = await verifyDashboardWebGitRelease(...argumentsList);
+    process.stdout.write(`${canonicalJsonValue(receipt)}\n`);
+    return;
+  }
+
+  // preserve the protected floors for the web-only source restoration lane
+  if (command === "web-release-capacity") {
+    // retain the exact two-reference grammar
+    if (argumentsList.length !== 2) {
+      throw new Error("usage: adjustment-evaluation-package.mjs web-release-capacity SOURCE_WEB TARGET_WEB");
+    }
+    const receipt = await collectDashboardWebReleaseCapacity(...argumentsList);
+    process.stdout.write(`${canonicalJsonValue(receipt)}\n`);
+    // report the measured refusal without earning admission
     if (receipt.state !== "capacity_ready") process.exitCode = 3;
     return;
   }

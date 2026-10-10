@@ -23,6 +23,27 @@ action=$1
 shift
 
 case "$action" in
+  # execute one web-only release under exact core and source CAS
+  dashboard-release)
+    (($# == 3)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
+    for release in "$1" "$2" "$3"; do
+      [[ "$release" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?$ ]] || {
+        printf 'error: invalid dashboard release\n' >&2
+        exit 2
+      }
+    done
+    exec "$deploy_dir/scripts/update.sh" dashboard-release "$@"
+    ;;
+  # roll back only the current web override
+  dashboard-rollback)
+    (($# == 0)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
+    exec "$deploy_dir/scripts/update.sh" dashboard-rollback
+    ;;
+  # return directly to the pinned core web from any override depth
+  dashboard-rollback-core)
+    (($# == 0)) || { printf 'error: invalid arguments\n' >&2; exit 2; }
+    exec "$deploy_dir/scripts/update.sh" dashboard-rollback-core
+    ;;
   # execute one fenced family-only release with a prebuilt compensation release
   adjustment-family-release)
     (($# == 9)) || { printf 'error: invalid arguments\n' >&2; exit 2; }

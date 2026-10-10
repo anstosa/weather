@@ -10,6 +10,7 @@ import { ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES,
   collectAdjustmentReleaseCapacityInventory, dockerChainIdentity, evaluateAdjustmentReleaseCapacity,
   evaluateAdjustmentFamilyReleaseCapacity, evaluateAdjustmentFullV14ReleaseCapacity,
   evaluateAdjustmentInertV14ReleaseCapacity,
+  evaluateDashboardWebReleaseCapacity,
   measureReleaseLayer, measureReleasePathEntry,
   weatherRegistryBlobRedirectUrl } from "./adjustment_release_capacity.mjs";
 
@@ -577,4 +578,79 @@ test("full v14 capacity admits only exact published bridge restoration", () => {
   const drift = structuredClone(input);
   drift.images[4] = collectedImage("compensating", "server", "e");
   assert.throws(() => evaluateAdjustmentFullV14ReleaseCapacity(drift), /reviewed bridge image/u);
+});
+
+// retain the exact core while changing only the dashboard web image
+function dashboardFixture() {
+  const input = collectedFixture();
+  const server = reviewedSourceImage("source", "server", "v13-");
+  const web = reviewedSourceImage("source", "web", "v13-");
+  input.images = [server, web, { ...structuredClone(server), role: "target" },
+    collectedImage("target", "web", "d"),
+    { ...structuredClone(server), role: "compensating" },
+    { ...structuredClone(web), role: "compensating" }];
+  input.version = "dashboard-web-release-inventory/v1";
+  input.sourceRelease = "2026.10.09-1";
+  input.compensationScope = "fixed-core-web-only-source-restore";
+  return input;
+}
+
+// web-only admission preserves existing reserves and never borrows retirement credit
+test("dashboard capacity retains exact core and source restoration with unchanged floors", () => {
+  const input = dashboardFixture();
+  const result = evaluateDashboardWebReleaseCapacity(input);
+  assert.equal(result.state, "capacity_ready");
+  assert.equal(result.contractVersion, "dashboard-web-release-capacity/v1");
+  assert.equal(result.compensationScope, "fixed-core-web-only-source-restore");
+  assert.equal(result.sourceRelease, "2026.10.09-1");
+  assert.equal(result.protectedFreeBytes, BLUEBERRY_PROTECTED_FREE_BYTES);
+  assert.equal(result.captureReservedBytes, BLUEBERRY_NEXT_CAPTURE_BYTES);
+  assert.equal(result.compatibilityFixtureBytes, ADJUSTMENT_RELEASE_COMPATIBILITY_FIXTURE_BYTES);
+  assert.equal(result.retirementCreditBytes, 0);
+  assert.equal(result.imageDigests.length, 6);
+  assert.equal(evaluateDashboardWebReleaseCapacity({ ...input, freeBytes: result.requiredFreeBytes }).state,
+    "capacity_ready");
+  assert.equal(evaluateDashboardWebReleaseCapacity({ ...input, freeBytes: result.requiredFreeBytes - 4_096 }).state,
+    "capacity_blocked");
+  assert.ok(evaluateDashboardWebReleaseCapacity({ ...input, freeInodes: 1 }).reasons.includes("inode_floor"));
+  assert.throws(() => collectAdjustmentReleaseCapacityInventory(input));
+});
+
+// changing any server role must remain outside dashboard authority
+test("dashboard capacity rejects core drift and non-source compensation", () => {
+  // exercise every server ownership slot independently
+  for (const index of [0, 2, 4]) {
+    const input = dashboardFixture();
+    input.images[index] = collectedImage(input.images[index].role, "server", "e");
+    assert.throws(() => evaluateDashboardWebReleaseCapacity(input), /exact core server/u);
+  }
+  const compensation = dashboardFixture();
+  compensation.images[5] = collectedImage("compensating", "web", "f");
+  assert.throws(() => evaluateDashboardWebReleaseCapacity(compensation), /exact source web/u);
+  const unchanged = dashboardFixture();
+  unchanged.images[3] = { ...structuredClone(unchanged.images[1]), role: "target" };
+  assert.throws(() => evaluateDashboardWebReleaseCapacity(unchanged), /exact source web/u);
+});
+
+// a separately committed dashboard may itself become the retained web source
+test("dashboard capacity admits a prior dashboard source without moving the core", () => {
+  const input = dashboardFixture();
+  const source = collectedImage("source", "web", "a");
+  input.images[1] = source;
+  input.images[5] = { ...structuredClone(source), role: "compensating" };
+  assert.equal(evaluateDashboardWebReleaseCapacity(input).state, "capacity_ready");
+});
+
+// invented scope and malformed OCI bytes never authorize web pulls
+test("dashboard capacity rejects unknown fields, duplicate roles and corrupt image bytes", () => {
+  const input = dashboardFixture();
+  assert.throws(() => evaluateDashboardWebReleaseCapacity({ ...input, sourceRelease: "2026.10.09-3" }));
+  assert.throws(() => evaluateDashboardWebReleaseCapacity({ ...input, version: "adjustment-family-release-inventory/v1" }));
+  assert.throws(() => evaluateDashboardWebReleaseCapacity({ ...input, retirementCreditBytes: 100 }));
+  const duplicate = structuredClone(input);
+  duplicate.images[5] = structuredClone(duplicate.images[1]);
+  assert.throws(() => evaluateDashboardWebReleaseCapacity(duplicate));
+  const corrupt = structuredClone(input);
+  corrupt.images[3].manifestBytes += " ";
+  assert.throws(() => evaluateDashboardWebReleaseCapacity(corrupt), /manifest digest/u);
 });

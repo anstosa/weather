@@ -9,6 +9,9 @@ usage() {
   cat <<'EOF'
 Usage:
   update.sh v14-compatibility-bridge RELEASE
+  update.sh dashboard-release TARGET_RELEASE EXPECTED_CORE_RELEASE EXPECTED_WEB_SOURCE_RELEASE
+  update.sh dashboard-rollback
+  update.sh dashboard-rollback-core
   update.sh yolo RELEASE [--from ENV_FILE]
   update.sh stage RELEASE [--from ENV_FILE]
   update.sh activate RELEASE
@@ -58,11 +61,50 @@ adjustment_family_state_root=/opt/weather/current/deploy/state/adjustment-releas
 adjustment_family_deploy_state=/opt/weather/current/deploy/state
 adjustment_family_releases=/opt/weather/current/deploy/releases
 adjustment_family_settings=/var/lib/weather/xweather/forecast-adjustment-settings.json
+dashboard_release_journal="$state_dir/dashboard-web-transaction.env"
+dashboard_release_journal_version=1
 
 # locate one validated release environment
 release_env() {
   validate_release "$1"
   printf '%s/%s.env\n' "$releases_dir" "$1"
+}
+
+# locate one isolated dashboard environment
+dashboard_release_env() {
+  validate_release "$1"
+  printf '%s/%s.web.env\n' "$releases_dir" "$1"
+}
+
+# detect any active or interrupted dashboard override
+dashboard_override_present() {
+  [[ -e "$state_dir/current-web-release" || -L "$state_dir/current-web-release" ||
+    -e "$state_dir/previous-web-release" || -L "$state_dir/previous-web-release" ||
+    -e "$state_dir/active-web.env" || -L "$state_dir/active-web.env" ||
+    -e "$dashboard_release_journal" || -L "$dashboard_release_journal" ]]
+}
+
+# require the installed root-owned dashboard state boundaries
+require_dashboard_fixed_roots() {
+  local path
+  [[ "$deploy_dir" == /opt/weather/current/deploy &&
+    "$state_dir" == /opt/weather/current/deploy/state &&
+    "$releases_dir" == /opt/weather/current/deploy/releases ]] ||
+    die "dashboard release roots differ from the installed contract"
+
+  # reject aliases, foreign owners and mutable public roots
+  for path in "$deploy_dir" "$state_dir" "$releases_dir"; do
+    [[ -d "$path" && ! -L "$path" && "$(realpath -e "$path")" == "$path" &&
+      "$(stat -c '%u:%g:%a' "$path")" == 0:0:775 ]] ||
+      die "dashboard release root metadata is unsafe: $path"
+  done
+}
+
+# keep unified releases behind the dashboard rollback boundary
+require_no_dashboard_override() {
+  if dashboard_override_present; then
+    die "dashboard web override is active or interrupted; recover and rollback it first"
+  fi
 }
 
 # hold one lifecycle lock on the fixed private state directory inode
@@ -528,7 +570,7 @@ write_weather_image_cleanup_contract() {
   local repositories_path=$4
   local references_path=$5
   local protected_ids_path=$6
-  local current previous retained_env
+  local current previous current_web previous_web retained_env retained_web_env
   current=$(read_optional_release_state "$state_dir/current-release")
   previous=$(read_optional_release_state "$state_dir/previous-release")
   printf 'current=%s\nprevious=%s\n' "$current" "$previous" >"$state_path"
@@ -548,6 +590,21 @@ write_weather_image_cleanup_contract() {
       validate_release_env "$retained_path" "$retained_env"
       append_image_cleanup_environment \
         "$retained_path" true "$repositories_path" "$references_path" "$protected_ids_path"
+    fi
+  done
+
+  current_web=$(read_optional_release_state "$state_dir/current-web-release")
+  previous_web=$(read_optional_release_state "$state_dir/previous-web-release")
+
+  # protect both dashboard override rollback boundaries independently
+  for retained_web_env in "$current_web" "$previous_web"; do
+    if [[ -n "$retained_web_env" && "$retained_web_env" != "$current" &&
+      "$retained_web_env" != "$previous" ]]; then
+      local retained_web_path
+      retained_web_path=$(dashboard_release_env "$retained_web_env")
+      validate_dashboard_release_env "$retained_web_path" "$retained_web_env" "$current"
+      append_image_cleanup_environment \
+        "$retained_web_path" true "$repositories_path" "$references_path" "$protected_ids_path"
     fi
   done
   LC_ALL=C sort -u -o "$repositories_path" "$repositories_path"
@@ -844,6 +901,170 @@ validate_release_env() {
   [[ "$control_plane" =~ ^[a-f0-9]{64}$ ]] ||
     die "invalid deployment control-plane digest"
   [[ "$control_version" =~ ^[1-9][0-9]*$ ]] || die "invalid deployment control-plane version"
+}
+
+# validate one web-only environment against its exact core release
+validate_dashboard_release_env() {
+  local path=$1
+  local expected_release=$2
+  local expected_core=$3
+  local core_env meaningful_lines allowed_fields key
+  require_canonical_descendant "$path" "$releases_dir" "dashboard release environment"
+  require_file "$path"
+  [[ ! -L "$path" ]] || die "dashboard release environment must not be a symbolic link"
+  [[ "$(stat -c '%u %a' "$path")" == "$EUID 600" ]] ||
+    die "dashboard release environment must be owner-private"
+  meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$path")
+  allowed_fields='^(WEATHER_RELEASE|WEATHER_CORE_RELEASE|WEATHER_SERVER_IMAGE|WEATHER_WEB_IMAGE|POSTGRES_IMAGE|CLOUDFLARED_IMAGE|WEATHER_DATABASE_NAME|WEATHER_POSTGRES_DIR|WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH|WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH|WEATHER_CONTROL_PLANE_SHA256|WEATHER_CONTROL_PLANE_VERSION)='
+  [[ "$meaningful_lines" -eq 12 ]] ||
+    die "dashboard release environment must contain the exact web-only format"
+  grep -qEv "$allowed_fields" "$path" &&
+    die "dashboard release environment contains an unknown or malformed value"
+  [[ "$(env_value "$path" WEATHER_RELEASE)" == "$expected_release" &&
+    "$(env_value "$path" WEATHER_CORE_RELEASE)" == "$expected_core" ]] ||
+    die "dashboard release environment identity mismatch"
+  validate_release "$expected_release"
+  validate_release "$expected_core"
+  validate_image_reference "$(env_value "$path" WEATHER_WEB_IMAGE)"
+  core_env=$(release_env "$expected_core")
+  validate_release_env "$core_env" "$expected_core"
+
+  # preserve every non-web core setting byte-for-value
+  for key in WEATHER_SERVER_IMAGE POSTGRES_IMAGE CLOUDFLARED_IMAGE \
+    WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR \
+    WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH \
+    WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH \
+    WEATHER_CONTROL_PLANE_SHA256 WEATHER_CONTROL_PLANE_VERSION; do
+    [[ "$(env_value "$path" "$key")" == "$(env_value "$core_env" "$key")" ]] ||
+      die "dashboard release changes core setting: $key"
+  done
+}
+
+# render one private web-only environment from the immutable core
+write_dashboard_release_env() (
+  local core_env=$1
+  local target=$2
+  local release=$3
+  local web_image=$4
+  local core_release key temporary
+  local -a lines
+  core_release=$(env_value "$core_env" WEATHER_RELEASE)
+  validate_release "$release"
+  validate_image_reference "$web_image"
+  require_canonical_descendant "$target" "$releases_dir" "dashboard release environment"
+  [[ ! -e "$target" && ! -L "$target" ]] ||
+    die "dashboard release environment already exists"
+  lines=(
+    "WEATHER_RELEASE=$release"
+    "WEATHER_CORE_RELEASE=$core_release"
+  )
+
+  # copy only the closed core environment contract
+  for key in WEATHER_SERVER_IMAGE WEATHER_WEB_IMAGE POSTGRES_IMAGE CLOUDFLARED_IMAGE \
+    WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR \
+    WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH \
+    WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH \
+    WEATHER_CONTROL_PLANE_SHA256 WEATHER_CONTROL_PLANE_VERSION; do
+    if [[ "$key" == WEATHER_WEB_IMAGE ]]; then
+      lines+=("WEATHER_WEB_IMAGE=$web_image")
+    else
+      lines+=("$key=$(env_value "$core_env" "$key")")
+    fi
+  done
+  umask 077
+  temporary=$(mktemp "$releases_dir/.${release}.XXXXXX.web.env.partial")
+
+  # remove an interrupted unpublished environment
+  trap 'rm -f "$temporary"' EXIT
+  printf '%s\n' "${lines[@]}" >"$temporary"
+  chmod 600 "$temporary"
+  validate_dashboard_release_env "$temporary" "$release" "$core_release"
+  sync -f "$temporary"
+  ln "$temporary" "$target" || die "dashboard release environment already exists"
+  sync -f "$releases_dir"
+  rm -f -- "$temporary"
+  sync -f "$releases_dir"
+  trap - EXIT
+  validate_dashboard_release_env "$target" "$release" "$core_release"
+)
+
+# publish the selected web environment atomically
+write_dashboard_active_symlink() {
+  (
+  local release=$1
+  local path="$state_dir/active-web.env"
+  local temporary_directory
+  validate_release "$release"
+  temporary_directory=$(mktemp -d "$state_dir/.active-web.env.XXXXXX")
+
+  # remove interrupted link writes
+  trap 'rm -rf "$temporary_directory"' EXIT
+  ln -s "../releases/$release.web.env" "$temporary_directory/active-web.env"
+  mv -Tf "$temporary_directory/active-web.env" "$path"
+  sync -f "$state_dir"
+  rmdir "$temporary_directory"
+  sync -f "$state_dir"
+  trap - EXIT
+  )
+}
+
+# remove one optional dashboard marker durably
+remove_dashboard_state() {
+  local path=$1
+  [[ "$path" == "$state_dir/current-web-release" ||
+    "$path" == "$state_dir/previous-web-release" ||
+    "$path" == "$state_dir/active-web.env" ||
+    "$path" == "$dashboard_release_journal" ]] ||
+    die "dashboard state path is outside its fixed allowlist"
+  rm -f -- "$path"
+  sync -f "$state_dir"
+}
+
+# resolve and validate the effective web source under one core
+dashboard_source_environment() {
+  local core_release=$1
+  local expected_source=$2
+  local current_web source_env expected_link
+  current_web=$(read_optional_release_state "$state_dir/current-web-release")
+
+  # fall back only to the exact committed core web
+  if [[ -z "$current_web" ]]; then
+    [[ "$expected_source" == "$core_release" ]] ||
+      die "dashboard web source CAS mismatch"
+    [[ ! -e "$state_dir/active-web.env" && ! -L "$state_dir/active-web.env" &&
+      ! -e "$state_dir/previous-web-release" && ! -L "$state_dir/previous-web-release" ]] ||
+      die "dashboard web markers are incomplete"
+    release_env "$core_release"
+    return
+  fi
+
+  [[ "$current_web" == "$expected_source" ]] ||
+    die "dashboard web source CAS mismatch"
+  source_env=$(dashboard_release_env "$current_web")
+  validate_dashboard_release_env "$source_env" "$current_web" "$core_release"
+  expected_link="../releases/$current_web.web.env"
+  [[ -L "$state_dir/active-web.env" &&
+    "$(readlink "$state_dir/active-web.env")" == "$expected_link" ]] ||
+    die "active dashboard environment does not match committed state"
+  printf '%s\n' "$source_env"
+}
+
+# bind a dashboard transaction to the unchanged live core
+require_dashboard_core_cas() {
+  local expected_core=$1
+  local current schema active core_env
+  [[ "$expected_core" == "$recurring_previous_release" ]] ||
+    die "dashboard release requires the exact allowlisted core release"
+  current=$(read_release_state "$state_dir/current-release")
+  schema=$(read_release_state "$state_dir/schema-release")
+  [[ "$current" == "$expected_core" && "$schema" == "$expected_core" ]] ||
+    die "dashboard core or schema CAS mismatch"
+  active="$state_dir/active.env"
+  [[ -L "$active" && "$(readlink "$active")" == "../releases/$expected_core.env" ]] ||
+    die "active core environment does not match committed state"
+  core_env=$(release_env "$expected_core")
+  validate_release_env "$core_env" "$expected_core"
+  require_control_plane_compatibility "$core_env"
 }
 
 # inherit one independent canary switch without accepting malformed declarations
@@ -2533,6 +2754,139 @@ restore_images() (
     "$runtime_release" "$schema_release" restore_images_runtime "$env_file"
 )
 
+# require the exact pre-epoch core used by dashboard recovery
+require_dashboard_core_runtime_identity() {
+  local env_file=$1
+  [[ "$(env_value "$env_file" WEATHER_RELEASE)" == "$recurring_previous_release" &&
+    "$(env_value "$env_file" WEATHER_CONTROL_PLANE_VERSION)" == 13 &&
+    "$(env_value "$env_file" WEATHER_CONTROL_PLANE_SHA256)" == \
+      "$recurring_previous_control_plane_sha256" &&
+    "$(env_value "$env_file" WEATHER_SERVER_IMAGE)" == \
+      "ghcr.io/anstosa/weather-server@sha256:fb140b46d6eaea463ba2d10dc74303eac515135a37c21ddb746cdce744fd23ab" &&
+    "$(env_value "$env_file" WEATHER_WEB_IMAGE)" == \
+      "ghcr.io/anstosa/weather-web@sha256:fdcb2d10da4c9ed5ec8651bafa96c9d2b240b66b85db85619b909d6e144e2d7b" ]] ||
+    die "dashboard recovery core runtime identity differs"
+}
+
+# freeze every immutable core and non-web runtime identity
+write_dashboard_core_snapshot() {
+  local env_file=$1
+  local output=$2
+  local include_runtime=${3:-true}
+  local current previous schema active environment_sha256 history settings
+  local service key expected_reference container details configured_reference image_id expected_id platform
+  [[ "$include_runtime" == true || "$include_runtime" == false ]] ||
+    die "dashboard core snapshot mode is invalid"
+  require_dashboard_core_runtime_identity "$env_file"
+  current=$(read_release_state "$state_dir/current-release")
+  previous=$(read_optional_release_state "$state_dir/previous-release")
+  schema=$(read_release_state "$state_dir/schema-release")
+  active=$(readlink "$state_dir/active.env")
+  [[ "$current" == "$recurring_previous_release" &&
+    "$schema" == "$recurring_previous_release" &&
+    "$active" == "../releases/$recurring_previous_release.env" ]] ||
+    die "dashboard core snapshot marker tuple differs"
+  environment_sha256=$(sha256sum "$env_file" | awk '{print $1}')
+  require_v14_compatibility_bridge_migration_ledger \
+    "$env_file" "$(env_value "$env_file" WEATHER_DATABASE_NAME)"
+  history=$(migration_history_sha256 \
+    "$env_file" "$(env_value "$env_file" WEATHER_DATABASE_NAME)")
+  [[ "$history" =~ ^[a-f0-9]{64}$ ]] || die "dashboard migration history hash is invalid"
+  settings=$(node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" \
+    inert-v14-settings-snapshot)
+  [[ "$settings" =~ ^[0-9]+:[0-9]+\ [a-f0-9]{64}$ ]] ||
+    die "dashboard settings snapshot is invalid"
+  umask 077
+  printf '%s\n' \
+    "ACTIVE_ENV=$active" \
+    "CORE_ENV_SHA256=$environment_sha256" \
+    "CURRENT_RELEASE=$current" \
+    "PREVIOUS_RELEASE=${previous:-absent}" \
+    "SCHEMA_RELEASE=$schema" \
+    "MIGRATION_HISTORY_SHA256=$history" \
+    "SETTINGS_SNAPSHOT=$settings" >"$output"
+
+  # bind every core setting that a web-only release must preserve
+  for key in WEATHER_SERVER_IMAGE WEATHER_WEB_IMAGE POSTGRES_IMAGE CLOUDFLARED_IMAGE \
+    WEATHER_DATABASE_NAME WEATHER_POSTGRES_DIR \
+    WEATHER_FORECAST_ADJUSTMENT_WIND_CANARY_KILL_SWITCH \
+    WEATHER_FORECAST_ADJUSTMENT_TEMPERATURE_CANARY_KILL_SWITCH \
+    WEATHER_CONTROL_PLANE_SHA256 WEATHER_CONTROL_PLANE_VERSION; do
+    printf '%s=%s\n' "$key" "$(env_value "$env_file" "$key")" >>"$output"
+  done
+
+  # bind every locally resolved core image independently of container lifetime
+  for key in WEATHER_SERVER_IMAGE WEATHER_WEB_IMAGE POSTGRES_IMAGE CLOUDFLARED_IMAGE; do
+    expected_reference=$(env_value "$env_file" "$key")
+    expected_id=$(docker image inspect --format '{{.Id}}' "$expected_reference")
+    platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$expected_reference")
+    [[ "$expected_id" =~ ^sha256:[a-f0-9]{64}$ && "$platform" == linux/arm64 ]] ||
+      die "dashboard core local image identity is invalid: $key"
+    printf 'LOCAL_%s=%s|%s\n' "$key" "$expected_id" "$platform" >>"$output"
+  done
+
+  # stable recovery proofs stop before process-local container identities
+  if [[ "$include_runtime" == false ]]; then
+    chmod 600 "$output"
+    return
+  fi
+
+  # bind all persistent non-web containers to their configured and local images
+  for service in postgres migration api worker cloudflared; do
+    container=$(WEATHER_ENV_FILE=$env_file compose ps --all --quiet "$service")
+    [[ -z "$container" || "$container" =~ ^[a-f0-9]{12,64}$ ]] ||
+      die "dashboard core container identity is invalid: $service"
+    if [[ -z "$container" ]]; then
+      [[ "$service" == migration ]] ||
+        die "dashboard core container is missing: $service"
+      printf 'CONTAINER_%s=absent\n' "$service" >>"$output"
+      continue
+    fi
+    case "$service" in
+      postgres) key=POSTGRES_IMAGE ;;
+      migration|api|worker) key=WEATHER_SERVER_IMAGE ;;
+      cloudflared) key=CLOUDFLARED_IMAGE ;;
+    esac
+    expected_reference=$(env_value "$env_file" "$key")
+    details=$(docker container inspect --format '{{.Config.Image}}|{{.Image}}' "$container")
+    IFS='|' read -r configured_reference image_id <<<"$details"
+    expected_id=$(docker image inspect --format '{{.Id}}' "$expected_reference")
+    [[ "$configured_reference" == "$expected_reference" &&
+      "$image_id" == "$expected_id" && "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] ||
+      die "dashboard core container image differs: $service"
+    printf 'CONTAINER_%s=%s|%s|%s\n' \
+      "$service" "$container" "$configured_reference" "$image_id" >>"$output"
+  done
+  chmod 600 "$output"
+}
+
+# hash one complete core snapshot after validation
+dashboard_core_snapshot_sha256() {
+  local env_file=$1
+  local output=$2
+  local include_runtime=${3:-true}
+  write_dashboard_core_snapshot "$env_file" "$output" "$include_runtime"
+  sha256sum "$output" | awk '{print $1}'
+}
+
+# restore the exact schema-18 core without future mounts, ACLs or web
+restore_dashboard_core_runtime() (
+  local env_file=$1
+  local override database
+  require_dashboard_core_runtime_identity "$env_file"
+  database=$(env_value "$env_file" WEATHER_DATABASE_NAME)
+  WEATHER_ENV_FILE=$env_file compose up -d --no-deps --no-recreate --wait postgres ||
+    return 1
+  require_v14_compatibility_bridge_migration_ledger "$env_file" "$database" || return 1
+  override=$(mktemp "$state_dir/.dashboard-core-recovery.XXXXXX.yaml") ||
+    die "dashboard core recovery override could not be created"
+  trap 'rm -f -- "$override"' EXIT
+  write_v14_compatibility_compose_override "$override"
+  require_v14_compatibility_compose_override "$env_file" "$override"
+  v14_compatibility_compose "$env_file" "$override" \
+    up -d --no-deps --no-recreate --wait api worker cloudflared
+)
+
 # restore the pre-epoch bridge runtime after authorization isolation
 restore_v14_compatibility_bridge_runtime() {
   local env_file=$1
@@ -2576,6 +2930,580 @@ start_exact_release() (
   unset WEATHER_MIGRATION_AUTHORIZATION_HISTORY_SHA256
   prepare_xweather_usage_directory || return 1
   WEATHER_ENV_FILE=$env_file compose up -d --remove-orphans --wait || return 1
+)
+
+# validate one package-produced dashboard capacity receipt
+require_dashboard_capacity_receipt() {
+  local receipt=$1
+  local source_image=$2
+  local target_image=$3
+  node --input-type=module - "$receipt" "$source_image" "$target_image" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const [path, sourceImage, targetImage] = process.argv.slice(2);
+const value = JSON.parse(readFileSync(path, "utf8"));
+const sourceDigest = sourceImage.slice(sourceImage.indexOf("@") + 1);
+const targetDigest = targetImage.slice(targetImage.indexOf("@") + 1);
+const digests = new Map((value.imageDigests ?? []).map(
+  // bind each physical digest to its closed ownership role
+  (entry) => [`${entry.role}/${entry.runtime}`, entry.digest],
+));
+
+// enforce the closed capacity decision needed by the shell caller
+if (value?.contractVersion !== "dashboard-web-release-capacity/v1" ||
+  value.compensationScope !== "fixed-core-web-only-source-restore" ||
+  value.sourceRelease !== "2026.10.09-1" ||
+  value.imageDigests?.length !== 6 || digests.size !== 6 ||
+  digests.get("source/web") !== sourceDigest ||
+  digests.get("target/web") !== targetDigest ||
+  digests.get("compensating/web") !== sourceDigest ||
+  value.state !== "capacity_ready" || value.retirementCreditBytes !== 0 ||
+  !Number.isSafeInteger(value.requiredFreeBytes) || value.requiredFreeBytes < 0 ||
+  !Number.isSafeInteger(value.requiredFreeInodes) || value.requiredFreeInodes < 0) {
+  throw new Error("dashboard web release capacity receipt is invalid");
+}
+NODE
+}
+
+# validate one package-produced dashboard publication proof
+require_dashboard_publication_proof() {
+  local receipt=$1
+  local target_release=$2
+  local expected_core=$3
+  node --input-type=module - "$receipt" "$target_release" "$expected_core" <<'NODE'
+import { readFileSync } from "node:fs";
+
+const [path, targetRelease, expectedCore] = process.argv.slice(2);
+const hash = /^[a-f0-9]{40}$/u;
+const value = JSON.parse(readFileSync(path, "utf8"));
+
+// accept only a successful immutable public web publication
+if (value?.contractVersion !== "dashboard-web-release-proof/v1" ||
+  value.coreRelease !== expectedCore || value.targetRelease !== targetRelease ||
+  value.state !== "publication_ready" || !hash.test(value.sourceCommit) ||
+  !hash.test(value.targetCommit) ||
+  !Number.isSafeInteger(value.checkRunId) || value.checkRunId < 1 ||
+  !Number.isSafeInteger(value.publishRunId) || value.publishRunId < 1) {
+  throw new Error("dashboard web release publication proof is invalid");
+}
+NODE
+}
+
+# capture one validated package decision without trusting console output
+dashboard_package_receipt() {
+  local output=$1
+  shift
+  umask 077
+  : >"$output"
+  node "$deploy_dir/scripts/adjustment-evaluation-package.mjs" "$@" >"$output"
+  [[ "$(stat -c '%a' "$output")" == 600 && "$(wc -c <"$output")" -le 65536 ]] ||
+    die "dashboard package receipt is not private and bounded"
+}
+
+# verify the running web container and its public read boundary
+verify_dashboard_web_runtime() {
+  local env_file=$1
+  local release=$2
+  local expected_image=$3
+  local container configured_image actual_image expected_id architecture details
+  container=$(WEATHER_ENV_FILE=$env_file compose ps --quiet web)
+  [[ "$container" =~ ^[a-f0-9]{12,64}$ ]] ||
+    die "dashboard web container identity is invalid"
+  details=$(docker container inspect --format '{{.Config.Image}}|{{.Image}}' "$container")
+  IFS='|' read -r configured_image actual_image <<<"$details"
+  expected_id=$(docker image inspect --format '{{.Id}}' "$expected_image")
+  [[ "$configured_image" == "$expected_image" &&
+    "$actual_image" == "$expected_id" && "$actual_image" =~ ^sha256:[a-f0-9]{64}$ ]] ||
+    die "dashboard web container image digest differs"
+  architecture=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$expected_image")
+  [[ "$architecture" == linux/arm64 ]] || die "dashboard web image is not linux/arm64"
+  WEATHER_ENV_FILE=$env_file compose exec -T web node -e \
+    "const origin='http://127.0.0.1:3000';Promise.all([fetch(origin+'/'),fetch(origin+'/api/v1/health'),fetch(origin+'/api/v1/sites')]).then(async([html,health,sites])=>{if(!html.ok||!health.ok||!sites.ok)process.exit(1);const text=await html.text();const healthBody=await health.json();const sitesBody=await sites.json();const site=sitesBody.data?.[0]?.slug;if(!text.includes('/assets/$release/')||healthBody.data?.ready!==true||typeof site!=='string')process.exit(1);const root=origin+'/api/v1/sites/'+encodeURIComponent(site);const [current,forecast]=await Promise.all([fetch(root+'/current'),fetch(root+'/forecast')]);if(!current.ok||!forecast.ok)process.exit(1);const bodies=await Promise.all([current.json(),forecast.json()]);if(bodies.some(body=>!Array.isArray(body.data)))process.exit(1)}).catch(()=>process.exit(1))" ||
+    die "dashboard web health or readable API verification failed"
+}
+
+# start only the web service under one isolated environment
+start_dashboard_web() {
+  local env_file=$1
+  WEATHER_ENV_FILE=$env_file compose up -d --no-deps --wait web
+}
+
+# publish one closed dashboard recovery journal
+write_dashboard_release_journal() {
+  local action=$1
+  local core=$2
+  local source_release=$3
+  local target_release=$4
+  local original_current=$5
+  local original_previous=$6
+  local source_env=$7
+  local target_env=$8
+  local source_image=$9
+  local target_image=${10}
+  local proof_sha256=${11}
+  local core_snapshot_sha256=${12}
+  local temporary
+  [[ "$action" == release || "$action" == rollback ]] ||
+    die "dashboard journal action is invalid"
+  for release in "$core" "$source_release" "$target_release"; do
+    validate_release "$release"
+  done
+  [[ "$original_current" == none || "$original_current" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?$ ]] ||
+    die "dashboard original current release is invalid"
+  [[ "$original_previous" == none || "$original_previous" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[1-9][0-9]?$ ]] ||
+    die "dashboard original previous release is invalid"
+  validate_image_reference "$source_image"
+  validate_image_reference "$target_image"
+  [[ "$proof_sha256" =~ ^[a-f0-9]{64}$ ]] || die "dashboard proof hash is invalid"
+  [[ "$core_snapshot_sha256" =~ ^[a-f0-9]{64}$ ]] ||
+    die "dashboard core snapshot hash is invalid"
+  temporary=$(mktemp "$state_dir/.dashboard-release-v1.XXXXXX.pending")
+  umask 077
+  printf '%s\n' \
+    "WEATHER_DASHBOARD_JOURNAL_VERSION=$dashboard_release_journal_version" \
+    "WEATHER_DASHBOARD_JOURNAL_ACTION=$action" \
+    "WEATHER_DASHBOARD_CORE_RELEASE=$core" \
+    "WEATHER_DASHBOARD_SOURCE_RELEASE=$source_release" \
+    "WEATHER_DASHBOARD_TARGET_RELEASE=$target_release" \
+    "WEATHER_DASHBOARD_ORIGINAL_CURRENT=$original_current" \
+    "WEATHER_DASHBOARD_ORIGINAL_PREVIOUS=$original_previous" \
+    "WEATHER_DASHBOARD_SOURCE_ENV=$source_env" \
+    "WEATHER_DASHBOARD_TARGET_ENV=$target_env" \
+    "WEATHER_DASHBOARD_SOURCE_IMAGE=$source_image" \
+    "WEATHER_DASHBOARD_TARGET_IMAGE=$target_image" \
+    "WEATHER_DASHBOARD_PROOF_SHA256=$proof_sha256" \
+    "WEATHER_DASHBOARD_CORE_SNAPSHOT_SHA256=$core_snapshot_sha256" >"$temporary"
+  chmod 600 "$temporary"
+  sync -f "$temporary"
+  mv "$temporary" "$dashboard_release_journal"
+  sync -f "$state_dir"
+  validate_dashboard_release_journal
+}
+
+# validate the exact pending dashboard transaction format
+validate_dashboard_release_journal() {
+  local meaningful_lines allowed_fields key value core source target
+  local source_env target_env expected_source_env expected_target_env
+  require_canonical_descendant "$dashboard_release_journal" "$state_dir" "dashboard release journal"
+  require_file "$dashboard_release_journal"
+  [[ "$(stat -c '%u %a' "$dashboard_release_journal")" == "$EUID 600" ]] ||
+    die "dashboard release journal must be owner-private"
+  meaningful_lines=$(grep -cE '^[A-Z][A-Z0-9_]*=' "$dashboard_release_journal")
+  allowed_fields='^WEATHER_DASHBOARD_(JOURNAL_VERSION|JOURNAL_ACTION|CORE_RELEASE|SOURCE_RELEASE|TARGET_RELEASE|ORIGINAL_CURRENT|ORIGINAL_PREVIOUS|SOURCE_ENV|TARGET_ENV|SOURCE_IMAGE|TARGET_IMAGE|PROOF_SHA256|CORE_SNAPSHOT_SHA256)='
+  [[ "$meaningful_lines" -eq 13 ]] || die "dashboard release journal format is invalid"
+  grep -qEv "$allowed_fields" "$dashboard_release_journal" &&
+    die "dashboard release journal contains unknown data"
+  [[ "$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_JOURNAL_VERSION)" == "$dashboard_release_journal_version" ]] ||
+    die "dashboard release journal version is unsupported"
+  value=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_JOURNAL_ACTION)
+  [[ "$value" == release || "$value" == rollback ]] || die "dashboard journal action is invalid"
+  for key in WEATHER_DASHBOARD_CORE_RELEASE WEATHER_DASHBOARD_SOURCE_RELEASE WEATHER_DASHBOARD_TARGET_RELEASE; do
+    validate_release "$(env_value "$dashboard_release_journal" "$key")"
+  done
+  core=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_CORE_RELEASE)
+  source=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_SOURCE_RELEASE)
+  target=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_TARGET_RELEASE)
+  for key in WEATHER_DASHBOARD_ORIGINAL_CURRENT WEATHER_DASHBOARD_ORIGINAL_PREVIOUS; do
+    value=$(env_value "$dashboard_release_journal" "$key")
+    [[ "$value" == none ]] || validate_release "$value"
+  done
+  for key in WEATHER_DASHBOARD_SOURCE_IMAGE WEATHER_DASHBOARD_TARGET_IMAGE; do
+    validate_image_reference "$(env_value "$dashboard_release_journal" "$key")"
+  done
+  [[ "$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_PROOF_SHA256)" =~ ^[a-f0-9]{64}$ ]] ||
+    die "dashboard journal proof hash is invalid"
+  [[ "$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_CORE_SNAPSHOT_SHA256)" =~ ^[a-f0-9]{64}$ ]] ||
+    die "dashboard journal core snapshot hash is invalid"
+  source_env=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_SOURCE_ENV)
+  target_env=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_TARGET_ENV)
+  expected_source_env=$(release_env "$source")
+  expected_target_env=$(release_env "$target")
+
+  # select web environments only for releases distinct from the core
+  if [[ "$source" != "$core" ]]; then
+    expected_source_env=$(dashboard_release_env "$source")
+    validate_dashboard_release_env "$source_env" "$source" "$core"
+  else
+    validate_release_env "$source_env" "$core"
+  fi
+  if [[ "$target" != "$core" ]]; then
+    expected_target_env=$(dashboard_release_env "$target")
+    validate_dashboard_release_env "$target_env" "$target" "$core"
+  else
+    validate_release_env "$target_env" "$core"
+  fi
+  [[ "$source_env" == "$expected_source_env" && "$target_env" == "$expected_target_env" ]] ||
+    die "dashboard journal environment path differs"
+  [[ "$(env_value "$source_env" WEATHER_WEB_IMAGE)" == \
+      "$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_SOURCE_IMAGE)" &&
+    "$(env_value "$target_env" WEATHER_WEB_IMAGE)" == \
+      "$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_TARGET_IMAGE)" ]] ||
+    die "dashboard journal web image differs"
+}
+
+# reauthorize one pending transaction against its immutable publication
+require_dashboard_journal_publication_proof() (
+  local core target expected_sha256 temporary actual_sha256
+  validate_dashboard_release_journal
+  core=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_CORE_RELEASE)
+  target=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_TARGET_RELEASE)
+  expected_sha256=$(env_value \
+    "$dashboard_release_journal" WEATHER_DASHBOARD_PROOF_SHA256)
+  temporary=$(mktemp "${TMPDIR:-/tmp}/weather-dashboard-recovery-proof.XXXXXX.json")
+
+  # remove the transient public proof on every exit
+  trap 'rm -f -- "$temporary"' EXIT
+  dashboard_package_receipt "$temporary" web-release-proof "$target" "$core"
+  require_dashboard_publication_proof "$temporary" "$target" "$core"
+  actual_sha256=$(sha256sum "$temporary" | awk '{print $1}')
+  [[ "$actual_sha256" == "$expected_sha256" ]] ||
+    die "dashboard recovery publication proof changed"
+  rm -f -- "$temporary"
+  trap - EXIT
+)
+
+# restore the marker snapshot recorded before one dashboard transaction
+restore_dashboard_marker_snapshot() {
+  local original_current=$1
+  local original_previous=$2
+
+  # restore or remove the prior current override
+  if [[ "$original_current" == none ]]; then
+    remove_dashboard_state "$state_dir/active-web.env"
+    remove_dashboard_state "$state_dir/current-web-release"
+  else
+    write_dashboard_active_symlink "$original_current"
+    write_private_state "$state_dir/current-web-release" "$original_current"
+  fi
+
+  # restore or remove the prior rollback marker
+  if [[ "$original_previous" == none ]]; then
+    remove_dashboard_state "$state_dir/previous-web-release"
+  else
+    write_private_state "$state_dir/previous-web-release" "$original_previous"
+  fi
+}
+
+# commit one web-only marker transaction with current written last
+record_dashboard_release_success() {
+  local target=$1
+  local source=$2
+  local core=$3
+
+  # remove the override after returning to the unchanged core web
+  if [[ "$target" == "$core" ]]; then
+    remove_dashboard_state "$state_dir/active-web.env"
+    remove_dashboard_state "$state_dir/previous-web-release"
+    remove_dashboard_state "$state_dir/current-web-release"
+    return
+  fi
+  write_private_state "$state_dir/previous-web-release" "$source"
+  write_dashboard_active_symlink "$target"
+  write_private_state "$state_dir/current-web-release" "$target"
+}
+
+# reconcile only a transaction whose current marker reached a known boundary
+reconcile_dashboard_release_journal() {
+  local core source target original_current original_previous current previous expected_link
+  validate_dashboard_release_journal
+  core=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_CORE_RELEASE)
+  source=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_SOURCE_RELEASE)
+  target=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_TARGET_RELEASE)
+  original_current=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_ORIGINAL_CURRENT)
+  original_previous=$(env_value "$dashboard_release_journal" WEATHER_DASHBOARD_ORIGINAL_PREVIOUS)
+  require_dashboard_core_cas "$core"
+  current=$(read_optional_release_state "$state_dir/current-web-release")
+  previous=$(read_optional_release_state "$state_dir/previous-web-release")
+
+  # retain a fully committed non-core target
+  if [[ "$target" != "$core" && "$current" == "$target" ]]; then
+    expected_link="../releases/$target.web.env"
+    [[ "$previous" == "$source" && -L "$state_dir/active-web.env" &&
+      "$(readlink "$state_dir/active-web.env")" == "$expected_link" ]] ||
+      die "committed dashboard marker transaction is incomplete"
+  # retain a fully committed return to core
+  elif [[ "$target" == "$core" && -z "$current" ]]; then
+    [[ -z "$previous" && ! -e "$state_dir/active-web.env" &&
+      ! -L "$state_dir/active-web.env" ]] ||
+      die "committed dashboard rollback markers are incomplete"
+  else
+    [[ "$current" == "${original_current/none/}" ]] ||
+      die "dashboard recovery current marker is outside the transaction"
+    restore_dashboard_marker_snapshot "$original_current" "$original_previous"
+  fi
+}
+
+# reapply only the committed web override after core recovery succeeds
+restore_dashboard_override_after_core_health() {
+  local core=$1
+  local current_web web_env image
+  current_web=$(read_optional_release_state "$state_dir/current-web-release")
+
+  # leave the restored core web active without override state
+  if [[ -z "$current_web" ]]; then
+    [[ ! -e "$state_dir/active-web.env" && ! -L "$state_dir/active-web.env" ]] ||
+      die "dashboard active link exists without a committed override"
+    web_env=$(release_env "$core")
+    image=$(env_value "$web_env" WEATHER_WEB_IMAGE)
+    start_dashboard_web "$web_env" || die "dashboard core web recovery start failed"
+    verify_dashboard_web_runtime "$web_env" "$core" "$image"
+    return
+  fi
+  web_env=$(dashboard_source_environment "$core" "$current_web")
+  image=$(env_value "$web_env" WEATHER_WEB_IMAGE)
+  start_dashboard_web "$web_env" || die "dashboard override recovery start failed"
+  verify_dashboard_web_runtime "$web_env" "$current_web" "$image"
+}
+
+# deploy one immutable web image without touching the core runtime
+dashboard_release() (
+  local target_release=$1
+  local expected_core=$2
+  local expected_source=$3
+  local core_env source_env target_env source_image target_image web_source
+  local current_web previous_web
+  local original_current original_previous proof_hash core_snapshot_before core_snapshot_after
+  local stable_snapshot_before stable_snapshot_after
+  local status=0 started=false
+  local temporary proof_before proof_after capacity_before capacity_after
+  temporary=$(mktemp -d "${TMPDIR:-/tmp}/weather-dashboard-release.XXXXXX")
+
+  # compensate every post-journal failure with the exact source web
+  # shellcheck disable=SC2317,SC2329
+  cleanup_dashboard_release() {
+    status=$?
+    if [[ "$started" == true ]]; then
+      if ! start_dashboard_web "$source_env" ||
+        ! verify_dashboard_web_runtime "$source_env" "$expected_source" "$source_image" ||
+        ! restore_dashboard_marker_snapshot "$original_current" "$original_previous"; then
+        status=1
+      else
+        remove_dashboard_state "$dashboard_release_journal" || status=1
+      fi
+    fi
+    rm -rf -- "$temporary"
+    trap - EXIT
+    exit "$status"
+  }
+  trap cleanup_dashboard_release EXIT
+  require_dashboard_core_cas "$expected_core"
+  [[ ! -e "$dashboard_release_journal" && ! -L "$dashboard_release_journal" ]] ||
+    die "dashboard release recovery is required"
+  core_env=$(release_env "$expected_core")
+  target_env=$(dashboard_release_env "$target_release")
+  current_web=$(read_optional_release_state "$state_dir/current-web-release")
+  previous_web=$(read_optional_release_state "$state_dir/previous-web-release")
+
+  # return success only for an exact already-committed retry
+  if [[ "$current_web" == "$target_release" ]]; then
+    [[ "$previous_web" == "$expected_source" ]] ||
+      die "dashboard retry source does not match committed rollback state"
+    validate_dashboard_release_env "$target_env" "$target_release" "$expected_core"
+    target_image=$(env_value "$target_env" WEATHER_WEB_IMAGE)
+    dashboard_package_receipt "$temporary/proof.after" web-release-proof \
+      "$target_release" "$expected_core"
+    require_dashboard_publication_proof \
+      "$temporary/proof.after" "$target_release" "$expected_core"
+    dashboard_core_snapshot_sha256 "$core_env" "$temporary/core.retry" >/dev/null
+    verify_dashboard_web_runtime "$target_env" "$target_release" "$target_image"
+    printf 'Dashboard web release %s is already active.\n' "$target_release"
+    started=false
+    trap - EXIT
+    rm -rf -- "$temporary"
+    return
+  fi
+  source_env=$(dashboard_source_environment "$expected_core" "$expected_source")
+  source_image=$(env_value "$source_env" WEATHER_WEB_IMAGE)
+  verify_dashboard_web_runtime "$source_env" "$expected_source" "$source_image"
+  core_snapshot_before=$(dashboard_core_snapshot_sha256 \
+    "$core_env" "$temporary/core.before")
+  stable_snapshot_before=$(dashboard_core_snapshot_sha256 \
+    "$core_env" "$temporary/core-stable.before" false)
+  [[ "$target_release" != "$expected_core" ]] ||
+    die "dashboard release target must differ from the core release"
+  web_source="$(image_repository "$source_image"):$target_release"
+  target_image=$(resolve_arm64_image "$web_source")
+
+  # reuse only exact immutable target state
+  if [[ -e "$target_env" || -L "$target_env" ]]; then
+    validate_dashboard_release_env "$target_env" "$target_release" "$expected_core"
+    [[ "$(env_value "$target_env" WEATHER_WEB_IMAGE)" == "$target_image" ]] ||
+      die "dashboard release environment image differs"
+  else
+    write_dashboard_release_env "$core_env" "$target_env" "$target_release" "$target_image"
+  fi
+  cleanup_obsolete_weather_images "$source_env" "$target_env"
+  proof_before="$temporary/proof.before"
+  capacity_before="$temporary/capacity.before"
+  dashboard_package_receipt "$proof_before" web-release-proof \
+    "$target_release" "$expected_core"
+  require_dashboard_publication_proof "$proof_before" "$target_release" "$expected_core"
+  dashboard_package_receipt "$capacity_before" web-release-capacity \
+    "$source_image" "$target_image"
+  require_dashboard_capacity_receipt "$capacity_before" "$source_image" "$target_image"
+  WEATHER_ENV_FILE=$target_env compose pull web
+  capacity_after="$temporary/capacity.after"
+  dashboard_package_receipt "$capacity_after" web-release-capacity \
+    "$source_image" "$target_image"
+  require_dashboard_capacity_receipt "$capacity_after" "$source_image" "$target_image"
+  original_current=$(read_optional_release_state "$state_dir/current-web-release")
+  original_previous=$(read_optional_release_state "$state_dir/previous-web-release")
+  original_current=${original_current:-none}
+  original_previous=${original_previous:-none}
+  proof_hash=$(sha256sum "$proof_before" | awk '{print $1}')
+  write_dashboard_release_journal release "$expected_core" "$expected_source" \
+    "$target_release" "$original_current" "$original_previous" "$source_env" \
+    "$target_env" "$source_image" "$target_image" "$proof_hash" "$stable_snapshot_before"
+  started=true
+  start_dashboard_web "$target_env" || die "dashboard web start failed"
+  verify_dashboard_web_runtime "$target_env" "$target_release" "$target_image"
+  proof_after="$temporary/proof.after"
+  dashboard_package_receipt "$proof_after" web-release-proof \
+    "$target_release" "$expected_core"
+  require_dashboard_publication_proof "$proof_after" "$target_release" "$expected_core"
+  [[ "$(sha256sum "$proof_after" | awk '{print $1}')" == "$proof_hash" ]] ||
+    die "dashboard publication proof changed during deployment"
+  require_dashboard_core_cas "$expected_core"
+  core_snapshot_after=$(dashboard_core_snapshot_sha256 \
+    "$core_env" "$temporary/core.after")
+  stable_snapshot_after=$(dashboard_core_snapshot_sha256 \
+    "$core_env" "$temporary/core-stable.after" false)
+  [[ "$core_snapshot_after" == "$core_snapshot_before" ]] ||
+    die "dashboard release changed the core runtime"
+  [[ "$stable_snapshot_after" == "$stable_snapshot_before" ]] ||
+    die "dashboard release changed stable core authority"
+  [[ "$(read_optional_release_state "$state_dir/current-web-release")" == \
+    "${original_current/none/}" ]] || die "dashboard source marker changed during deployment"
+  record_dashboard_release_success "$target_release" "$expected_source" "$expected_core"
+  remove_dashboard_state "$dashboard_release_journal"
+  started=false
+  trap - EXIT
+
+  cleanup_obsolete_weather_images "$source_env" "$target_env"
+  rm -rf -- "$temporary"
+  printf 'Dashboard web release %s is active over core %s.\n' \
+    "$target_release" "$expected_core"
+)
+
+# roll the web override back without changing core markers or services
+dashboard_rollback() (
+  local target_mode=${1:-previous}
+  local rollback_core rollback_source rollback_target rollback_source_env rollback_target_env
+  local rollback_source_image rollback_target_image
+  local rollback_original_current rollback_original_previous proof_hash
+  local core_snapshot_before core_snapshot_after
+  local stable_snapshot_before stable_snapshot_after
+  local status=0 started=false
+  local temporary proof_before proof_after
+  temporary=$(mktemp -d "${TMPDIR:-/tmp}/weather-dashboard-rollback.XXXXXX")
+
+  # compensate every post-journal failure with the exact incumbent web
+  # shellcheck disable=SC2317,SC2329
+  cleanup_dashboard_rollback() {
+    status=$?
+    if [[ "$started" == true ]]; then
+      if ! start_dashboard_web "$rollback_source_env" ||
+        ! verify_dashboard_web_runtime \
+          "$rollback_source_env" "$rollback_source" "$rollback_source_image" ||
+        ! restore_dashboard_marker_snapshot \
+          "$rollback_original_current" "$rollback_original_previous"; then
+        status=1
+      else
+        remove_dashboard_state "$dashboard_release_journal" || status=1
+      fi
+    fi
+    rm -rf -- "$temporary"
+    trap - EXIT
+    exit "$status"
+  }
+  trap cleanup_dashboard_rollback EXIT
+  [[ "$target_mode" == previous || "$target_mode" == core ]] ||
+    die "dashboard rollback target mode is invalid"
+  [[ ! -e "$dashboard_release_journal" && ! -L "$dashboard_release_journal" ]] ||
+    die "dashboard release recovery is required"
+  rollback_core=$(read_release_state "$state_dir/current-release")
+  require_dashboard_core_cas "$rollback_core"
+  rollback_source=$(read_release_state "$state_dir/current-web-release")
+  rollback_original_previous=$(read_release_state "$state_dir/previous-web-release")
+  rollback_target=$rollback_original_previous
+
+  # provide a proof-bound escape from any retained web rollback chain
+  if [[ "$target_mode" == core ]]; then
+    rollback_target=$rollback_core
+  fi
+  [[ "$rollback_source" != "$rollback_target" ]] ||
+    die "previous dashboard release matches the active web"
+  rollback_source_env=$(dashboard_source_environment "$rollback_core" "$rollback_source")
+  rollback_source_image=$(env_value "$rollback_source_env" WEATHER_WEB_IMAGE)
+  verify_dashboard_web_runtime \
+    "$rollback_source_env" "$rollback_source" "$rollback_source_image"
+  core_snapshot_before=$(dashboard_core_snapshot_sha256 \
+    "$(release_env "$rollback_core")" "$temporary/core.before")
+  stable_snapshot_before=$(dashboard_core_snapshot_sha256 \
+    "$(release_env "$rollback_core")" "$temporary/core-stable.before" false)
+
+  # select either the unchanged core or one retained web override
+  if [[ "$rollback_target" == "$rollback_core" ]]; then
+    rollback_target_env=$(release_env "$rollback_core")
+  else
+    rollback_target_env=$(dashboard_release_env "$rollback_target")
+    validate_dashboard_release_env \
+      "$rollback_target_env" "$rollback_target" "$rollback_core"
+  fi
+  rollback_target_image=$(env_value "$rollback_target_env" WEATHER_WEB_IMAGE)
+  docker image inspect "$rollback_target_image" >/dev/null ||
+    die "previous dashboard web image is unavailable"
+  proof_before="$temporary/proof.before"
+  dashboard_package_receipt \
+    "$proof_before" web-release-proof "$rollback_target" "$rollback_core"
+  require_dashboard_publication_proof \
+    "$proof_before" "$rollback_target" "$rollback_core"
+  rollback_original_current=$rollback_source
+  proof_hash=$(sha256sum "$proof_before" | awk '{print $1}')
+  write_dashboard_release_journal \
+    rollback "$rollback_core" "$rollback_source" "$rollback_target" \
+    "$rollback_original_current" "$rollback_original_previous" \
+    "$rollback_source_env" "$rollback_target_env" \
+    "$rollback_source_image" "$rollback_target_image" \
+    "$proof_hash" "$stable_snapshot_before"
+  started=true
+  start_dashboard_web "$rollback_target_env" ||
+    die "dashboard rollback web start failed"
+  verify_dashboard_web_runtime \
+    "$rollback_target_env" "$rollback_target" "$rollback_target_image"
+  proof_after="$temporary/proof.after"
+  dashboard_package_receipt \
+    "$proof_after" web-release-proof "$rollback_target" "$rollback_core"
+  require_dashboard_publication_proof \
+    "$proof_after" "$rollback_target" "$rollback_core"
+  [[ "$(sha256sum "$proof_after" | awk '{print $1}')" == "$proof_hash" ]] ||
+    die "dashboard rollback publication proof changed"
+  require_dashboard_core_cas "$rollback_core"
+  core_snapshot_after=$(dashboard_core_snapshot_sha256 \
+    "$(release_env "$rollback_core")" "$temporary/core.after")
+  stable_snapshot_after=$(dashboard_core_snapshot_sha256 \
+    "$(release_env "$rollback_core")" "$temporary/core-stable.after" false)
+  [[ "$core_snapshot_after" == "$core_snapshot_before" ]] ||
+    die "dashboard rollback changed the core runtime"
+  [[ "$stable_snapshot_after" == "$stable_snapshot_before" ]] ||
+    die "dashboard rollback changed stable core authority"
+  [[ "$(read_release_state "$state_dir/current-web-release")" == "$rollback_source" ]] ||
+    die "dashboard source marker changed during rollback"
+  record_dashboard_release_success \
+    "$rollback_target" "$rollback_source" "$rollback_core"
+  remove_dashboard_state "$dashboard_release_journal"
+  started=false
+  trap - EXIT
+
+  # release the retired override only after returning to the core web
+  if [[ "$rollback_target" == "$rollback_core" ]]; then
+    cleanup_obsolete_weather_images "$rollback_target_env" "$rollback_target_env"
+  else
+    cleanup_obsolete_weather_images "$rollback_source_env" "$rollback_target_env"
+  fi
+  rm -rf -- "$temporary"
+  printf 'Dashboard web release %s is active after web-only rollback.\n' \
+    "$rollback_target"
 )
 
 # require the inherited family command to retain the shared release lock
@@ -3689,6 +4617,7 @@ case "$action" in
       "$compensating_release" != "$expected_current_release" ]] ||
       die "adjustment-family-release release identities conflict"
     acquire_release_transaction_lock
+    require_no_dashboard_override
     require_adjustment_family_fixed_roots
     require_adjustment_family_source_cas \
       "$expected_source_release" "$expected_settings_sha256"
@@ -3704,13 +4633,42 @@ case "$action" in
     validate_release "$1"
     validate_release "$2"
     validate_release "$3"
+    require_no_dashboard_override
     apply_adjustment_family_release_unlocked "$1" "$2" "$3"
+    ;;
+  dashboard-release)
+    (($# == 3)) || die "dashboard-release requires target, core and web source releases"
+    validate_release "$1"
+    validate_release "$2"
+    validate_release "$3"
+    acquire_release_transaction_lock
+    require_dashboard_fixed_roots
+    require_command docker
+    require_command node
+    dashboard_release "$1" "$2" "$3"
+    ;;
+  dashboard-rollback)
+    (($# == 0)) || die "dashboard-rollback takes no arguments"
+    acquire_release_transaction_lock
+    require_dashboard_fixed_roots
+    require_command docker
+    require_command node
+    dashboard_rollback previous
+    ;;
+  dashboard-rollback-core)
+    (($# == 0)) || die "dashboard-rollback-core takes no arguments"
+    acquire_release_transaction_lock
+    require_dashboard_fixed_roots
+    require_command docker
+    require_command node
+    dashboard_rollback core
     ;;
   v14-compatibility-bridge)
     (($# == 1)) || die "v14-compatibility-bridge requires one immutable release"
     [[ "$EUID" == 0 ]] || die "v14-compatibility-bridge requires root"
     validate_release "$1"
     acquire_release_transaction_lock
+    require_no_dashboard_override
     require_command docker
     require_command node
     v14_compatibility_bridge_release "$1"
@@ -3719,6 +4677,7 @@ case "$action" in
     (($# == 1)) || die "inert-v14 requires one immutable release"
     validate_release "$1"
     acquire_release_transaction_lock
+    require_no_dashboard_override
     require_adjustment_family_fixed_roots
     require_command docker
     require_command node
@@ -3732,6 +4691,7 @@ case "$action" in
     shift
     validate_release "$release"
     acquire_release_transaction_lock
+    require_no_dashboard_override
     source_env=$(retained_maintenance_source_env)
 
     # accept one explicit source environment
@@ -3752,6 +4712,7 @@ case "$action" in
     shift
     validate_release "$release"
     acquire_release_transaction_lock
+    require_no_dashboard_override
     source_env=$(retained_maintenance_source_env)
 
     # accept one explicit source environment
@@ -3840,12 +4801,14 @@ case "$action" in
     require_command age
     require_command docker
     acquire_release_transaction_lock
+    require_no_dashboard_override
     start_release "$1"
     ;;
   rollback)
     (($# == 0)) || die "rollback takes no arguments"
     require_command docker
     acquire_release_transaction_lock
+    require_no_dashboard_override
     rollback_release
     ;;
   recover)
@@ -3853,12 +4816,30 @@ case "$action" in
     acquire_release_transaction_lock
     require_command docker
     require_command node
+    dashboard_recovery=false
+    dashboard_recovery_journal=false
+    dashboard_recovery_expected_stable=
+    dashboard_recovery_temporary=
+    if dashboard_override_present; then
+      dashboard_recovery=true
+      require_dashboard_fixed_roots
+    fi
+    if [[ -e "$dashboard_release_journal" || -L "$dashboard_release_journal" ]]; then
+      dashboard_recovery_journal=true
+      validate_dashboard_release_journal
+      dashboard_recovery_expected_stable=$(env_value \
+        "$dashboard_release_journal" WEATHER_DASHBOARD_CORE_SNAPSHOT_SHA256)
+      require_dashboard_journal_publication_proof
+      reconcile_dashboard_release_journal
+    fi
     current=$(read_release_state "$state_dir/current-release")
     schema_release=$(read_optional_release_state "$state_dir/schema-release")
     v14_bridge_runtime_recovery=false
     v14_schema_marker_repair=false
     # classify the retained bridge receipt against exact runtime and schema markers
     if [[ -e "$v14_compatibility_bridge_state" || -L "$v14_compatibility_bridge_state" ]]; then
+      [[ "$dashboard_recovery" == false ]] ||
+        die "dashboard and v14 bridge recovery authorities cannot coexist"
       case "$current:$schema_release" in
         "$recurring_previous_release:$recurring_previous_release"|\
         "$recurring_previous_release:$v14_compatibility_bridge_release")
@@ -3914,13 +4895,39 @@ case "$action" in
       schema_release=$current
     fi
 
+    # installed v14 must recover the pinned schema-18 core through its pre-epoch view
+    if [[ "$current" == "$recurring_previous_release" &&
+      "$schema_release" == "$recurring_previous_release" ]]; then
+      dashboard_recovery=true
+      require_dashboard_fixed_roots
+    fi
+
     current_env=$(release_env "$current")
     validate_release_env "$current_env" "$current"
     require_control_plane_compatibility "$current_env"
     require_deployment_secrets
+    if [[ "$dashboard_recovery" == true ]]; then
+      [[ "$current" == "$recurring_previous_release" &&
+        "$schema_release" == "$recurring_previous_release" ]] ||
+        die "dashboard recovery core tuple differs"
+      dashboard_recovery_temporary=$(mktemp -d \
+        "${TMPDIR:-/tmp}/weather-dashboard-recovery.XXXXXX")
+      trap 'rm -rf -- "$dashboard_recovery_temporary"' EXIT
+      WEATHER_ENV_FILE=$current_env compose up -d --no-deps --no-recreate --wait postgres
+      dashboard_recovery_full_before=$(dashboard_core_snapshot_sha256 \
+        "$current_env" "$dashboard_recovery_temporary/core.before")
+      dashboard_recovery_stable_before=$(dashboard_core_snapshot_sha256 \
+        "$current_env" "$dashboard_recovery_temporary/core-stable.before" false)
+      if [[ "$dashboard_recovery_journal" == true &&
+        "$dashboard_recovery_stable_before" != "$dashboard_recovery_expected_stable" ]]; then
+        die "dashboard recovery stable core proof differs from its journal"
+      fi
+    fi
     # keep source-two recovery independent of future-state bind files
     if [[ "$v14_bridge_runtime_recovery" == true ]]; then
       restore_v14_compatibility_bridge_images "$current_env" "$current" "$schema_release"
+    elif [[ "$dashboard_recovery" == true ]]; then
+      restore_dashboard_core_runtime "$current_env"
     else
       restore_images "$current_env" "$current" "$schema_release"
     fi
@@ -3929,6 +4936,22 @@ case "$action" in
       write_private_state "$state_dir/schema-release" "$full_v14_release"
     fi
     write_active_symlink "$current"
+    if [[ "$dashboard_recovery" == true ]]; then
+      dashboard_recovery_full_after=$(dashboard_core_snapshot_sha256 \
+        "$current_env" "$dashboard_recovery_temporary/core.after")
+      dashboard_recovery_stable_after=$(dashboard_core_snapshot_sha256 \
+        "$current_env" "$dashboard_recovery_temporary/core-stable.after" false)
+      [[ "$dashboard_recovery_full_after" == "$dashboard_recovery_full_before" &&
+        "$dashboard_recovery_stable_after" == "$dashboard_recovery_stable_before" ]] ||
+        die "dashboard recovery changed the stable core or non-web runtime"
+      restore_dashboard_override_after_core_health "$current"
+      if [[ "$dashboard_recovery_journal" == true ]]; then
+        remove_dashboard_state "$dashboard_release_journal"
+      fi
+      rm -rf -- "$dashboard_recovery_temporary"
+      dashboard_recovery_temporary=
+      trap - EXIT
+    fi
     ;;
   status)
     (($# == 0)) || die "status takes no arguments"
