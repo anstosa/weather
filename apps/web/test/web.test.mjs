@@ -14,6 +14,7 @@ import {
   buildViewerContextUrl,
   clearestCloudRange,
   cloudBand,
+  currentWeatherIcon,
   DEFAULT_UNIT_PREFERENCES,
   FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
   eveningSunTimes,
@@ -1240,6 +1241,200 @@ test("raw mode uses model current values without sensor fallback or homepage sup
   assert.match(renderWeatherDashboard(rawState, "admin", true), /data-property-sensor-form/u);
   assert.match(renderWeatherDashboard(rawState, "logs", true), /Past conditions/u);
   assert.match(renderWeatherDashboard(rawState, "trends", true), /data-trend-metric-control/u);
+});
+
+// create one regional current-hour gap and contradictory station readings
+function regionalGapState(forecastOverrides = {}) {
+  const regional = {
+    ...record,
+    validAt: "2026-08-22T20:00:00.000Z",
+    metrics: { ...record.metrics, pm25MicrogramsPerCubicMeter: null, precipitationRateMmPerHour: null, uvIndex: null },
+  };
+  const hour = {
+    ...forecastRecord,
+    validAt: "2026-08-22T20:00:00.000Z",
+    productRunAt: "2026-08-22T19:00:00.000Z",
+    receivedAt: "2026-08-22T19:05:00.000Z",
+    freshness: { ...forecastRecord.freshness, ageSeconds: 2_700, status: "delayed" },
+    metrics: { ...forecastRecord.metrics, pm25MicrogramsPerCubicMeter: 9, precipitationRateMmPerHour: 2.54, uvIndex: 3 },
+    ...forecastOverrides,
+  };
+  const local = {
+    ...ecowittRecord,
+    metrics: { ...ecowittRecord.metrics, pm25MicrogramsPerCubicMeter: 50, precipitationRateMmPerHour: 8, uvIndex: 10 },
+  };
+  return {
+    ...forecastState([hour], null),
+    current: [regional, local],
+    forecastAdjustmentMode: "raw",
+  };
+}
+
+// fill regional cards from raw hourly metrics without modifying source records
+test("regional current gaps use the matching fresh forecast hour for cards and artwork", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T20:45:00.000Z") });
+  const state = regionalGapState();
+  const original = structuredClone(state);
+  const html = renderWeatherDashboard(state);
+  assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0\.1<small>in\/h/u);
+  assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>9/u);
+  assert.match(conditionCardHtml(html, "uv-index"), /class="condition-primary"><strong>3/u);
+  assert.match(conditionCardHtml(html, "temperature"), /class="condition-primary"><strong>60<small>°F/u);
+  assert.doesNotMatch(html, /class="alert-list"/u);
+  assert.equal(currentWeatherIcon(state).name, "09-heavy-rain");
+  assert.match(html, /\/weather-icons\/09-heavy-rain\.svg/u);
+  assert.deepEqual(state, original);
+
+  const adjusted = renderWeatherDashboard({ ...state, forecastAdjustmentMode: "adjusted" });
+  assert.match(conditionCardHtml(adjusted, "rain"), /class="condition-primary"><strong>0\.31<small>in\/h/u);
+  assert.match(conditionCardHtml(adjusted, "air-quality"), /class="condition-primary"><strong>50/u);
+  assert.match(conditionCardHtml(adjusted, "uv-index"), /class="condition-primary"><strong>10/u);
+});
+
+// retain valid current zeros and use forecast zeros without adjustment metadata
+test("regional forecast supplements preserve current values and accept zero", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T20:15:00.000Z") });
+  const state = regionalGapState();
+  const hour = state.forecast[0];
+  state.forecast = [{
+    ...hour,
+    metrics: { ...hour.metrics, pm25MicrogramsPerCubicMeter: 0, precipitationRateMmPerHour: 0, uvIndex: 0 },
+    rainAdjustment: { ...rainAdjustmentDecision(hour), correctedPrecipitationMm: 8 },
+  }];
+  const html = renderWeatherDashboard(state);
+  assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0<small>in\/h/u);
+  assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>0/u);
+  assert.match(conditionCardHtml(html, "uv-index"), /class="condition-primary"><strong>0/u);
+  assert.equal(currentWeatherIcon(state).name, "03-partly-cloudy");
+  state.current = [{ ...state.current[0], metrics: { ...state.current[0].metrics, pm25MicrogramsPerCubicMeter: 12, precipitationRateMmPerHour: 0, uvIndex: 4 } }];
+  state.forecast = [hour];
+  const existing = renderWeatherDashboard(state);
+  assert.match(conditionCardHtml(existing, "rain"), /class="condition-primary"><strong>0<small>in\/h/u);
+  assert.match(conditionCardHtml(existing, "air-quality"), /class="condition-primary"><strong>12/u);
+  assert.match(conditionCardHtml(existing, "uv-index"), /class="condition-primary"><strong>4/u);
+});
+
+// reject stale wrong-hour and incompatible products without station fallback
+test("regional current supplements fail unavailable outside the exact compatible hour", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T20:15:00.000Z") });
+  const state = regionalGapState();
+  const hour = state.forecast[0];
+  const rejected = [
+    [],
+    [{ ...hour, validAt: "2026-08-22T19:00:00.000Z" }],
+    [{ ...hour, validAt: "2026-08-22T21:00:00.000Z" }],
+    [{ ...hour, productRunAt: "2026-08-22T18:00:00.000Z", receivedAt: "2026-08-22T20:05:00.000Z" }],
+    [{ ...hour, productRunAt: "2026-08-22T21:00:00.000Z" }],
+    [{ ...hour, productRunAt: null, receivedAt: "2026-08-22T18:00:00.000Z" }],
+    [{ ...hour, provenance: { ...hour.provenance, providerKey: "another-model" } }],
+    [{ ...hour, provenance: { ...hour.provenance, stationSlug: "other-location" } }],
+    [{ ...hour, provenance: { ...hour.provenance, sourceKind: "physical_sensor" } }],
+    [{ ...hour, metrics: { ...hour.metrics, pm25MicrogramsPerCubicMeter: null, precipitationRateMmPerHour: -1, uvIndex: Number.NaN } }],
+  ];
+  // keep each missing card honest even while a physical station has readings
+  for (const forecast of rejected) {
+    const html = renderWeatherDashboard({ ...state, forecast });
+    // verify all three visible primary values rather than daily summaries
+    for (const key of ["rain", "air-quality", "uv-index"]) {
+      assert.match(conditionCardHtml(html, key), /class="condition-primary"><strong>—<\/strong>/u);
+      assert.match(conditionCardHtml(html, key), /Unavailable/u);
+    }
+    assert.equal(currentWeatherIcon({ ...state, forecast }).name, "12-unavailable");
+  }
+  const missingCurrent = renderWeatherDashboard({ ...state, current: [state.current[1]] });
+  assert.match(missingCurrent, /No current weather value is available yet\./u);
+});
+
+// select the newest regional revision and roll over without nearest-hour reuse
+test("regional forecast supplements select the newest run and expire at the hour boundary", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T20:59:59.999Z") });
+  const state = regionalGapState();
+  const hour = state.forecast[0];
+  const newer = {
+    ...hour,
+    productRunAt: "2026-08-22T20:00:00.000Z",
+    receivedAt: "2026-08-22T20:05:00.000Z",
+    metrics: { ...hour.metrics, pm25MicrogramsPerCubicMeter: 40, precipitationRateMmPerHour: 8 },
+  };
+  state.forecast = [hour, newer];
+  const html = renderWeatherDashboard(state);
+  assert.match(conditionCardHtml(html, "rain"), /class="condition-primary"><strong>0\.31<small>in\/h/u);
+  assert.match(conditionCardHtml(html, "air-quality"), /class="condition-primary"><strong>40/u);
+  assert.match(html, /Current rain 0\.31 in\/h/u);
+  assert.match(html, /PM2\.5 is 40 µg\/m³/u);
+  assert.equal(currentWeatherIcon(state).name, "09-heavy-rain");
+  context.mock.timers.tick(1);
+  const expired = renderWeatherDashboard(state);
+  assert.match(conditionCardHtml(expired, "rain"), /class="condition-primary"><strong>—<\/strong>/u);
+  assert.equal(currentWeatherIcon(state).name, "12-unavailable");
+  state.forecast = [{ ...hour, validAt: "2026-08-22T21:00:00.000Z" }];
+  assert.match(conditionCardHtml(renderWeatherDashboard(state), "rain"), /class="condition-primary"><strong>0\.1<small>in\/h/u);
+});
+
+// accept receipt time when a provider omits an explicit forecast run timestamp
+test("regional forecast supplements use a recent receipt only when the run timestamp is absent", (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T20:45:00.000Z") });
+  const state = regionalGapState({ productRunAt: null, receivedAt: "2026-08-22T20:30:00.000Z" });
+  assert.match(conditionCardHtml(renderWeatherDashboard(state), "air-quality"), /class="condition-primary"><strong>9/u);
+});
+
+// refresh raw regional forecasts without full reloads or overlapping background reads
+test("regional current polling refreshes its forecast on cadence and retains safe failures", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-22T20:15:00.000Z") });
+  const state = regionalGapState();
+  const requests = [];
+  let forecast = state.forecast;
+  let pendingForecast = null;
+  let failForecast = false;
+  let failCurrent = false;
+  // control the two independent public weather products
+  const fetcher = async (input) => {
+    const url = String(input);
+    requests.push(url);
+    // isolate current failures from successful regional forecast reads
+    if (url.includes("/current")) {
+      return failCurrent ? Response.json({}, { status: 503 }) : Response.json({ data: state.current, site });
+    }
+    // delay or fail only selected forecast attempts
+    if (url.includes("/forecast")) {
+      return pendingForecast ?? (failForecast ? Response.json({}, { status: 503 }) : Response.json({ data: forecast, site }));
+    }
+    return Response.json({ data: [], site });
+  };
+  const controller = new WeatherDashboardController({ fetcher, storage: null, view: "forecast" });
+  await controller.initialize();
+  controller.toggleForecastAdjustmentMode();
+  requests.length = 0;
+  context.mock.timers.tick(14 * 60_000);
+  await controller.refreshCurrentReadings();
+  assert.equal(requests.filter((url) => url.includes("/forecast")).length, 0);
+  context.mock.timers.tick(60_000);
+  forecast = [{ ...forecast[0], productRunAt: "2026-08-22T20:20:00.000Z", metrics: { ...forecast[0].metrics, pm25MicrogramsPerCubicMeter: 15 } }];
+  let resolveForecast;
+  pendingForecast = new Promise(
+    // retain one controlled background request
+    (resolve) => { resolveForecast = resolve; },
+  );
+  failCurrent = true;
+  const first = controller.refreshCurrentReadings();
+  const second = controller.refreshCurrentReadings();
+  assert.equal(requests.filter((url) => url.includes("/forecast")).length, 1);
+  resolveForecast(Response.json({ data: forecast, site }));
+  await Promise.all([first, second]);
+  pendingForecast = null;
+  assert.equal(controller.state.loading, false);
+  assert.equal(controller.state.forecastDays, 1);
+  assert.match(conditionCardHtml(renderWeatherDashboard(controller.state), "air-quality"), /class="condition-primary"><strong>15/u);
+  assert.equal(requests.some((url) => url.includes("/tides") || url.includes("/daily-precipitation")), false);
+  const retained = controller.state.forecast;
+  failCurrent = false;
+  failForecast = true;
+  context.mock.timers.tick(15 * 60_000);
+  await controller.refreshCurrentReadings();
+  assert.equal(controller.state.forecast, retained);
+  context.mock.timers.tick(2 * 60 * 60_000);
+  await controller.refreshCurrentReadings();
+  assert.match(conditionCardHtml(renderWeatherDashboard(controller.state), "air-quality"), /class="condition-primary"><strong>—<\/strong>/u);
 });
 
 // keep ECMWF temperature explicit, opt-in, and independent from wind metadata

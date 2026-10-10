@@ -935,6 +935,10 @@ const EMPTY_STATE: DashboardState = {
 export const FORECAST_ADJUSTMENT_MODE_STORAGE_KEY = "weather.forecast-adjustment-mode.v1";
 export const NOW_ICON_STORAGE_KEY = "weather.now-icon.ballydidean.v1";
 const NOW_ICON_CACHE_TTL_MS = 30 * 60 * 1_000;
+// allow two hourly regional source cadences without keeping an old run indefinitely
+const REGIONAL_FORECAST_MAX_AGE_MS = 2 * 60 * 60 * 1_000;
+// check the regional run without requesting another forecast every minute
+const REGIONAL_FORECAST_REFRESH_MS = 15 * 60 * 1_000;
 
 // retain only the three public inputs needed to choose weather artwork
 function parseNowIconInputs(value: unknown): NowIconInputs | null {
@@ -3339,6 +3343,7 @@ export class WeatherDashboardController {
   #homeNetworkRefresh: Promise<void> | null = null;
   #currentRefresh: Promise<void> | null = null;
   #currentGeneration = 0;
+  #lastForecastRefreshAt = 0;
   #view: WeatherView;
   #state: DashboardState;
 
@@ -3423,7 +3428,7 @@ export class WeatherDashboardController {
       : "raw";
 
     persistForecastAdjustmentMode(this.#storage, forecastAdjustmentMode);
-    const inputs = currentWeatherIconInputs(this.#state.current, forecastAdjustmentMode);
+    const inputs = currentWeatherIconInputs(this.#state.current, forecastAdjustmentMode, false, this.#state.forecast);
     const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
     persistNowIconCache(this.#storage, cachedNowIcon);
     this.patch({ cachedNowIcon, forecastAdjustmentMode });
@@ -3459,20 +3464,52 @@ export class WeatherDashboardController {
       return this.#currentRefresh;
     }
     const generation = this.#currentGeneration;
+    const refreshForecast = this.#state.forecastAdjustmentMode === "raw" &&
+      Date.now() - this.#lastForecastRefreshAt >= REGIONAL_FORECAST_REFRESH_MS;
+    // throttle failed forecast attempts as well as successful reads
+    if (refreshForecast) {
+      this.#lastForecastRefreshAt = Date.now();
+    }
     // isolate failures from the retained forecast and let timestamp gates retire old estimates
     const refresh = (async (): Promise<void> => {
       try {
-        const response = await getJson<RecordsResponse>(this.#fetcher, buildCurrentUrl(this.#apiBaseUrl, site.slug, {}));
-        const responseSite = requireProductSite(response.site);
+        const [response, forecast] = await Promise.all([
+          // retain last-good current readings independently of forecast refresh failures
+          getJson<RecordsResponse>(this.#fetcher, buildCurrentUrl(this.#apiBaseUrl, site.slug, {})).catch(() => null),
+          refreshForecast
+            ? getForecastJson(this.#fetcher, buildForecastUrl(this.#apiBaseUrl, site.slug, this.#state.forecastDays)).then(
+                // reject incompatible sites before using the new regional run
+                (result) => { requireProductSite(result.site); return result; },
+              ).catch(() => null)
+            : Promise.resolve(null),
+        ]);
         // ignore late responses from former routes sites or full-weather loads
         if (generation !== this.#currentGeneration || this.#state.selectedSite?.slug !== site.slug || this.#state.loading) {
           return;
         }
+        // re-evaluate expiry without renewing the cache after a complete read failure
+        if (response === null && forecast === null) {
+          this.emit();
+          return;
+        }
+        const responseSite = response === null ? site : requireProductSite(response.site);
+        const current = response?.data ?? this.#state.current;
+        const forecastRecords = forecast?.data ?? this.#state.forecast;
         const forecastAdjustmentMode = this.#state.forecastAdjustmentMode;
-        const inputs = currentWeatherIconInputs(response.data, forecastAdjustmentMode);
+        const inputs = currentWeatherIconInputs(current, forecastAdjustmentMode, false, forecastRecords);
         const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
         persistNowIconCache(this.#storage, cachedNowIcon);
-        this.patch({ current: response.data, cachedNowIcon, selectedSite: responseSite });
+        this.patch({
+          current,
+          cachedNowIcon,
+          selectedSite: responseSite,
+          forecast: forecastRecords,
+          forecastPressureContext: forecast?.pressureContext ?? this.#state.forecastPressureContext,
+          forecastAdjustmentSettings: forecast?.adjustmentSettings ?? this.#state.forecastAdjustmentSettings,
+          forecastAdjustmentRuntime: forecast?.adjustmentRuntime ?? this.#state.forecastAdjustmentRuntime,
+          forecastRainAdjustmentRuntime: forecast?.rainAdjustmentRuntime ?? this.#state.forecastRainAdjustmentRuntime,
+          forecastTemperatureAdjustmentRuntime: forecast?.temperatureAdjustmentRuntime ?? this.#state.forecastTemperatureAdjustmentRuntime,
+        });
       } catch {
         // preserve last-good raw readings while re-rendering to enforce freshness
         if (generation === this.#currentGeneration) {
@@ -3614,6 +3651,8 @@ export class WeatherDashboardController {
     }
 
     const previousDays = this.#state.forecastDays;
+    // fence background reads from the former forecast range
+    this.#currentGeneration += 1;
     this.patch({ error: null, forecastDays: days, loading: true });
 
     try {
@@ -3622,6 +3661,7 @@ export class WeatherDashboardController {
         buildForecastUrl(this.#apiBaseUrl, site.slug, days),
       );
       const responseSite = requireProductSite(response.site);
+      this.#lastForecastRefreshAt = Date.now();
       this.patch({
         error: null,
         forecast: response.data,
@@ -3931,7 +3971,7 @@ export class WeatherDashboardController {
         ).then((response) => {
           const responseSite = requireProductSite(response.site);
           const forecastAdjustmentMode = this.#state.forecastAdjustmentMode;
-          const inputs = currentWeatherIconInputs(response.data, forecastAdjustmentMode);
+          const inputs = currentWeatherIconInputs(response.data, forecastAdjustmentMode, false, this.#state.forecast);
           const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
           persistNowIconCache(this.#storage, cachedNowIcon);
           this.patch({ current: response.data, cachedNowIcon, selectedSite: responseSite, sites: [responseSite] });
@@ -4042,6 +4082,15 @@ export class WeatherDashboardController {
         trendGeneratedAt: trends?.generatedAt ?? this.#state.trendGeneratedAt,
         trends: trends?.data ?? this.#state.trends,
       };
+      // cache the completed regional blend rather than the earlier current-only response
+      if (needsForecast) {
+        this.#lastForecastRefreshAt = Date.now();
+        const forecastAdjustmentMode = this.#state.forecastAdjustmentMode;
+        const inputs = currentWeatherIconInputs(this.#state.current, forecastAdjustmentMode, false, this.#state.forecast);
+        const cachedNowIcon = inputs === null ? null : { ...inputs, cachedAt: Date.now(), forecastAdjustmentMode };
+        persistNowIconCache(this.#storage, cachedNowIcon);
+        this.#state = { ...this.#state, cachedNowIcon };
+      }
       this.emit();
     } catch (error) {
       // keep cold artwork loading until current settles even when a sibling fails first
@@ -4266,7 +4315,6 @@ export function mountWeatherDashboard(
   options: DashboardOptions = {},
 ): WeatherDashboardController {
   const controller = new WeatherDashboardController(options);
-  let previousForecast: readonly WeatherRecord[] | undefined;
   bindHomepageTitleSize(root);
 
   // redraw and wire one state snapshot
@@ -4275,17 +4323,16 @@ export function mountWeatherDashboard(
     const forecastHadFocus = root.querySelector("[data-forecast-charts]") === document.activeElement;
     const forecastPosition = root.querySelector<HTMLElement>("[data-forecast-charts]")
       ?.dataset.forecastSelectedPosition;
-    const retainForecast = !state.loading && state.forecast === previousForecast;
+    const retainForecast = !state.loading;
     root.innerHTML = renderWeatherDashboard(state, controller.view, controller.isAdmin);
 
-    // retain the selected forecast hour across preferences and current-only redraws
+    // retain the selected forecast hour across preferences and background weather refreshes
     if ((toggleHadFocus || retainForecast) && forecastPosition !== undefined && forecastPosition !== null) {
       root.querySelector<HTMLElement>("[data-forecast-charts]")
         ?.setAttribute("data-forecast-initial-index", forecastPosition);
     }
 
     bindDashboardControls(root, controller);
-    previousForecast = state.forecast;
     fitHomepageTitle(root);
 
     // retain keyboard focus on the replaced preference switch
@@ -4293,7 +4340,7 @@ export function mountWeatherDashboard(
       root.querySelector<HTMLButtonElement>("[data-forecast-adjustment-toggle]")
         ?.focus({ preventScroll: true });
     }
-    // keep keyboard scrubbing usable after an automatic current refresh
+    // keep keyboard scrubbing usable after an automatic weather refresh
     if (forecastHadFocus && retainForecast) {
       root.querySelector<HTMLElement>("[data-forecast-charts]")?.focus({ preventScroll: true });
     }
@@ -4486,11 +4533,11 @@ export function renderWeatherDashboard(
 
 // select the approved artwork from the same current metrics as the homepage cards
 export function currentWeatherIcon(
-  state: Pick<DashboardState, "current" | "selectedSite"> & Partial<Pick<DashboardState, "forecastAdjustmentMode">>,
+  state: Pick<DashboardState, "current" | "selectedSite"> & Partial<Pick<DashboardState, "forecast" | "forecastAdjustmentMode">>,
   now = new Date(),
 ): Readonly<{ name: string; label: string }> {
   const projected = withSolarCloudAdjustment(state, now);
-  return selectCurrentWeatherIcon(currentWeatherIconInputs(projected.current, state.forecastAdjustmentMode, true), state.selectedSite ?? PRODUCT_SITE, now);
+  return selectCurrentWeatherIcon(currentWeatherIconInputs(projected.current, state.forecastAdjustmentMode, true, state.forecast, now), state.selectedSite ?? PRODUCT_SITE, now);
 }
 
 // share selected source priority and cloud provenance between live and cached artwork
@@ -4498,8 +4545,10 @@ function currentWeatherIconInputs(
   records: readonly WeatherRecord[],
   mode: ForecastAdjustmentMode = "adjusted",
   useSolarAdjustment = false,
+  forecast: readonly WeatherRecord[] = [],
+  now = new Date(),
 ): NowIconInputs | null {
-  const current = preferredCurrentRecords(records, mode);
+  const current = preferredCurrentRecords(records, mode, forecast, now);
   const rain = findMetric(current, "precipitationRateMmPerHour");
   const windy = (findMetric(current, "windSpeedMps") ?? 0) >= 8.9408;
   const cloudRecord = current.find(
@@ -4556,7 +4605,7 @@ function renderCurrentWeatherIcon(state: DashboardState, now = new Date()): stri
     (state.cachedNowIcon.forecastAdjustmentMode ?? "adjusted") === mode
     ? state.cachedNowIcon
     : null;
-  const inputs = currentWeatherIconInputs(state.current, mode, true) ?? cached;
+  const inputs = currentWeatherIconInputs(state.current, mode, true, state.forecast, now) ?? cached;
   // loading is not an unavailable weather condition
   if (inputs === null && state.loading) {
     return `<span class="section-nav-weather-icon section-nav-weather-skeleton skeleton-line" role="img" aria-label="Loading current weather" aria-busy="true"></span>`;
@@ -4827,7 +4876,7 @@ function renderCurrent(state: DashboardState): string {
     return renderCurrentSkeleton();
   }
 
-  const currentRecords = preferredCurrentRecords(state.current, state.forecastAdjustmentMode);
+  const currentRecords = preferredCurrentRecords(state.current, state.forecastAdjustmentMode, state.forecast);
   const current = currentRecords[0];
 
   // render an honest empty state
@@ -4963,12 +5012,17 @@ function renderIndoorHouse(state: DashboardState): string {
 function preferredCurrentRecords(
   records: readonly WeatherRecord[],
   mode: ForecastAdjustmentMode = "adjusted",
+  forecast: readonly WeatherRecord[] = [],
+  now = new Date(),
 ): readonly WeatherRecord[] {
   // never fill regional gaps with physical station readings
   if (mode === "raw") {
     return records.filter(
       // retain only the current regional product
       (record) => record.provenance.sourceKind === "model_current",
+    ).map(
+      // supplement only missing current fields with the matching regional hour
+      (record) => regionalCurrentForecastRecord(record, forecast, now),
     );
   }
 
@@ -4976,6 +5030,43 @@ function preferredCurrentRecords(
     // preserve API order within each source priority
     (left, right) => currentRecordPriority(left) - currentRecordPriority(right),
   );
+}
+
+// fill three regional gaps without replacing current values or applying corrections
+function regionalCurrentForecastRecord(
+  current: WeatherRecord,
+  forecast: readonly WeatherRecord[],
+  now: Date,
+): WeatherRecord {
+  const hour = Math.floor(now.getTime() / 3_600_000) * 3_600_000;
+  const regional = forecast.filter(
+    // reject physical sources other locations stale products and adjacent hours
+    (record) => record.provenance.sourceKind === "forecast" &&
+      record.provenance.providerKey === current.provenance.providerKey &&
+      record.provenance.stationSlug === current.provenance.stationSlug &&
+      Date.parse(record.validAt) === hour &&
+      Date.parse(record.productRunAt ?? record.receivedAt) <= now.getTime() &&
+      now.getTime() - Date.parse(record.productRunAt ?? record.receivedAt) <= REGIONAL_FORECAST_MAX_AGE_MS,
+  ).toSorted(
+    // prefer the newest published run independently of response ordering
+    (left, right) => Date.parse(right.productRunAt ?? right.receivedAt) - Date.parse(left.productRunAt ?? left.receivedAt) ||
+      Date.parse(right.receivedAt) - Date.parse(left.receivedAt),
+  )[0];
+  // keep missing forecast hours honestly unavailable
+  if (regional === undefined) {
+    return current;
+  }
+  // accept dry nighttime and clean-air zeros without inventing invalid values
+  const usable = (value: number | null): number | null => value !== null && Number.isFinite(value) && value >= 0 ? value : null;
+  return {
+    ...current,
+    metrics: {
+      ...current.metrics,
+      pm25MicrogramsPerCubicMeter: current.metrics.pm25MicrogramsPerCubicMeter ?? usable(regional.metrics.pm25MicrogramsPerCubicMeter),
+      precipitationRateMmPerHour: current.metrics.precipitationRateMmPerHour ?? usable(regional.metrics.precipitationRateMmPerHour),
+      uvIndex: current.metrics.uvIndex ?? usable(regional.metrics.uvIndex),
+    },
+  };
 }
 
 // rank a current reading for the single-location homepage
@@ -5050,7 +5141,7 @@ function renderCurrentSkeleton(): string {
 
 // show observed pressure movement beside the day's strongest change and its time
 function renderPressureCondition(state: DashboardState): string {
-  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode).find(
+  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode, state.forecast).find(
     // keep pressure and its tendency attached to one station
     (record) => record.metrics.pressureHpa !== null && Number.isFinite(record.metrics.pressureHpa),
   );
@@ -5719,7 +5810,7 @@ function renderAlerts(state: DashboardState): string {
 // derive watches and displayed readings from the selected forecast values
 function deriveAlerts(state: DashboardState): readonly LocalWeatherAlert[] {
   const alerts: LocalWeatherAlert[] = [];
-  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode);
+  const current = preferredCurrentRecords(state.current, state.forecastAdjustmentMode, state.forecast);
   const useForecastAdjustments = state.forecastAdjustmentMode !== "raw";
   const forecastLow = minimumMetric(state.forecast, "temperatureC", useForecastAdjustments);
   const apparentHigh = maximumMetric(current, "apparentTemperatureC");

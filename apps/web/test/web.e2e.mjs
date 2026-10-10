@@ -3168,6 +3168,341 @@ test("raw current conditions never borrow local station readings or artwork", { 
   }
 });
 
+// fill bounded regional current gaps from the exact raw forecast hour
+test("raw current conditions fill regional rain air quality and UV from the matching forecast hour", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const regionalCurrent = {
+    ...current,
+    metrics: {
+      ...current.metrics,
+      cloudCoverPercent: 5,
+      pm25MicrogramsPerCubicMeter: null,
+      precipitationRateMmPerHour: null,
+      uvIndex: null,
+      windSpeedMps: 1,
+    },
+  };
+  const quietLocal = {
+    ...physicalCurrent,
+    metrics: {
+      ...physicalCurrent.metrics,
+      pm25MicrogramsPerCubicMeter: 2,
+      precipitationRateMmPerHour: 0,
+      uvIndex: 1,
+      windSpeedMps: 1,
+    },
+  };
+  const matchingForecast = {
+    ...makeForecastRecord(22),
+    freshness: {
+      ageSeconds: 2_220,
+      label: "Forecast value is delayed",
+      status: "delayed",
+    },
+    id: "regional-current-hour",
+    metrics: {
+      ...makeForecastRecord(22).metrics,
+      pm25MicrogramsPerCubicMeter: 50,
+      precipitationMm: 8,
+      precipitationRateMmPerHour: 8,
+      uvIndex: 9,
+    },
+    productRunAt: "2026-08-22T05:20:00.000Z",
+    receivedAt: "2026-08-22T05:21:00.000Z",
+    validAt: "2026-08-22T05:00:00.000Z",
+  };
+  const forecastRecords = forecast.map(
+    // replace only the wall-clock forecast hour
+    (record) => record.validAt === matchingForecast.validAt ? matchingForecast : record,
+  );
+  const adjustedPayload = forecastResponse(
+    "active",
+    { version: 1, temperature: true, wind: true, rain: true },
+    forecastRecords,
+  );
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "active";
+    fixture.state.currentRecords = [regionalCurrent, quietLocal];
+    fixture.state.forecastPayload = {
+      ...adjustedPayload,
+      data: adjustedPayload.data.map(
+        // make the governed rain value visibly different from the raw regional rate
+        (record) => ({
+          ...record,
+          rainAdjustment: {
+            ...activeRainAdjustment(record),
+            correctedPrecipitationMm: record.id === matchingForecast.id
+              ? 0
+              : record.metrics.precipitationMm,
+          },
+        }),
+      ),
+      rainAdjustmentRuntime: activeRainRuntime(),
+    };
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 960 },
+    });
+    await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").innerText(), /^0\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "2");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "1");
+    assert.equal(await page.locator(".local-alert", { hasText: "Air quality" }).count(), 0);
+    assert.equal(await page.locator(".local-alert", { hasText: "Heavy rain" }).count(), 0);
+    assert.doesNotMatch(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /heavy-rain/u);
+
+    const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+    await toggle.click();
+    await page.waitForFunction(
+      // await the regional-only redraw
+      () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+    );
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").innerText(), /^0\.31\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "50");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "9");
+    assert.match(await page.locator(".local-alert", { hasText: "Heavy rain" }).innerText(), /Current rain 0\.31 in\/h/u);
+    assert.match(await page.locator(".local-alert", { hasText: "Air quality" }).innerText(), /PM2\.5 is 50/u);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /09-heavy-rain\.svg$/u);
+
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await toggle.getAttribute("aria-checked"), "false");
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "50");
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /09-heavy-rain\.svg$/u);
+    await page.getByRole("link", { name: "Now", exact: true }).click();
+    await page.waitForFunction(
+      // await the route's current-condition refresh rather than its numeric skeleton
+      () => document.querySelector("[data-condition='uv-index'] .condition-primary")?.textContent?.trim() === "9",
+    );
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "9");
+
+    fixture.state.currentRecords = [{
+      ...regionalCurrent,
+      metrics: {
+        ...regionalCurrent.metrics,
+        pm25MicrogramsPerCubicMeter: 6,
+        precipitationRateMmPerHour: 1,
+        uvIndex: 2,
+      },
+    }, quietLocal];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").innerText(), /^0\.04\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "6");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "2");
+    assert.doesNotMatch(await page.locator(".local-alert", { hasText: "Heavy rain" }).innerText(), /Current rain/u);
+    assert.equal(await page.locator(".local-alert", { hasText: "Air quality" }).count(), 0);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /07-light-rain\.svg$/u);
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// reject every forecast value outside the regional current fallback contract
+test("raw current forecast fallback rejects wrong stale missing and invalid hours", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const regionalCurrent = {
+    ...current,
+    metrics: {
+      ...current.metrics,
+      pm25MicrogramsPerCubicMeter: null,
+      precipitationRateMmPerHour: null,
+      uvIndex: null,
+    },
+  };
+  const hazardousLocal = {
+    ...physicalCurrent,
+    metrics: {
+      ...physicalCurrent.metrics,
+      pm25MicrogramsPerCubicMeter: 75,
+      precipitationRateMmPerHour: 12,
+      uvIndex: 11,
+    },
+  };
+  const exactForecast = {
+    ...makeForecastRecord(22),
+    freshness: {
+      ageSeconds: 600,
+      label: "Forecast value is current",
+      status: "fresh",
+    },
+    id: "exact-regional-hour",
+    metrics: {
+      ...makeForecastRecord(22).metrics,
+      pm25MicrogramsPerCubicMeter: 0,
+      precipitationRateMmPerHour: 0,
+      uvIndex: 0,
+    },
+    productRunAt: "2026-08-22T05:20:00.000Z",
+    receivedAt: "2026-08-22T05:21:00.000Z",
+    validAt: "2026-08-22T05:00:00.000Z",
+  };
+  const unavailableCases = [
+    {
+      label: "wrong hour",
+      records: [{ ...exactForecast, id: "wrong-hour", validAt: "2026-08-22T04:00:00.000Z" }],
+    },
+    {
+      label: "stale hour",
+      records: [{ ...exactForecast, productRunAt: "2026-08-22T02:00:00.000Z", receivedAt: "2026-08-22T05:21:00.000Z", id: "stale-hour" }],
+    },
+    {
+      label: "future run",
+      records: [{ ...exactForecast, productRunAt: "2026-08-22T06:00:00.000Z", id: "future-run" }],
+    },
+    {
+      label: "wrong source identity",
+      records: [
+        { ...exactForecast, id: "wrong-provider", provenance: { ...exactForecast.provenance, providerKey: "other-model" } },
+        { ...exactForecast, id: "wrong-station", provenance: { ...exactForecast.provenance, stationSlug: "other-grid" } },
+        { ...exactForecast, id: "wrong-kind", provenance: { ...exactForecast.provenance, sourceKind: "model_current" } },
+      ],
+    },
+    {
+      label: "invalid metrics",
+      records: [{
+        ...exactForecast,
+        id: "negative-values",
+        metrics: {
+          ...exactForecast.metrics,
+          pm25MicrogramsPerCubicMeter: -1,
+          precipitationRateMmPerHour: -1,
+          uvIndex: -1,
+        },
+      }],
+    },
+    { label: "missing hour", records: [] },
+  ];
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.adjustmentMode = "active";
+    fixture.state.currentRecords = [regionalCurrent, hazardousLocal];
+    const page = await createFixturePage(browser, {
+      timezoneId: "America/Los_Angeles",
+      viewport: { height: 900, width: 960 },
+    });
+    await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
+    await page.addInitScript(
+      // begin with the explicit regional-only preference
+      (key) => localStorage.setItem(key, "raw"),
+      FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+    );
+
+    // require every excluded candidate to leave all three cards unavailable
+    for (const unavailableCase of unavailableCases) {
+      fixture.state.forecastPayload = null;
+      fixture.state.forecastRecords = unavailableCase.records;
+      await page.goto(fixture.origin, { waitUntil: "networkidle" });
+      assert.equal(await page.locator("[data-condition='rain'] .condition-status").innerText(), "Unavailable", unavailableCase.label);
+      assert.equal(await page.locator("[data-condition='air-quality'] .condition-status").innerText(), "Unavailable", unavailableCase.label);
+      assert.equal(await page.locator("[data-condition='uv-index'] .condition-status").innerText(), "Unavailable", unavailableCase.label);
+      assert.equal(await page.locator(".local-alert").count(), 0, unavailableCase.label);
+      assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /12-unavailable\.svg$/u, unavailableCase.label);
+    }
+
+    fixture.state.forecastRecords = [exactForecast];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").innerText(), /^0\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='rain'] .condition-status").innerText(), "Dry");
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "0");
+    assert.notEqual(await page.locator("[data-condition='air-quality'] .condition-status").innerText(), "Unavailable");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "0");
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-status").innerText(), "Low");
+
+    fixture.state.currentRecords = [hazardousLocal];
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal(await page.getByText("No current weather value is available yet.", { exact: true }).count(), 1);
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /12-unavailable\.svg$/u);
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// keep long-lived raw cards and selected forecast hours current without full reloads
+test("raw regional current cards refresh hourly products on the background forecast cadence", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  fixture.state.currentRecords = [current, physicalCurrent];
+  fixture.state.forecastRecords = forecast.map(
+    // publish one recent regional run with quiet initial current-hour readings
+    (record) => ({
+      ...record,
+      productRunAt: "2026-08-22T05:20:00.000Z",
+      receivedAt: "2026-08-22T05:21:00.000Z",
+      metrics: { ...record.metrics, pm25MicrogramsPerCubicMeter: 5, precipitationRateMmPerHour: 0, uvIndex: 0 },
+    }),
+  );
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, { timezoneId: site.timezone, viewport: { height: 900, width: 960 } });
+    await page.clock.install({ time: new Date("2026-08-22T05:37:00.000Z") });
+    await page.addInitScript(
+      // retain the raw preference across navigation
+      (key) => localStorage.setItem(key, "raw"),
+      FORECAST_ADJUSTMENT_MODE_STORAGE_KEY,
+    );
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    assert.equal(await page.locator("[data-condition='air-quality'] .condition-primary").innerText(), "5");
+    const before = [...fixture.state.requests];
+    fixture.state.forecastRecords = fixture.state.forecastRecords.map(
+      // make the next run visibly distinct without changing current records
+      (record) => ({ ...record, metrics: { ...record.metrics, pm25MicrogramsPerCubicMeter: 12, precipitationRateMmPerHour: 2.54, uvIndex: 3 } }),
+    );
+    await page.clock.fastForward(15 * 60_000);
+    await page.waitForFunction(
+      // await the background forecast response and complete redraw
+      () => document.querySelector("[data-condition='air-quality'] .condition-primary")?.textContent === "12",
+    );
+    assert.match(await page.locator("[data-condition='rain'] .condition-primary").innerText(), /^0\.1\s*in\/h$/u);
+    assert.equal(await page.locator("[data-condition='uv-index'] .condition-primary").innerText(), "3");
+    assert.match(await page.locator(".section-nav-weather-icon").getAttribute("src") ?? "", /09-heavy-rain\.svg$/u);
+    const background = fixture.state.requests.slice(before.length);
+    assert.equal(background.filter((url) => url.includes("/sites/ballydidean/forecast")).length, 1);
+    assert.equal(background.some((url) => url.includes("/tides") || url.includes("/daily-precipitation")), false);
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    const grid = page.locator("[data-forecast-charts]");
+    await grid.focus();
+    await page.keyboard.press("ArrowRight");
+    const selected = await grid.getAttribute("data-forecast-selected-position");
+    const forecastReads = fixture.state.requests.filter(
+      // count only regional product reads
+      (url) => url.includes("/sites/ballydidean/forecast"),
+    ).length;
+    const nextForecast = page.waitForResponse(
+      // await the next regional forecast refresh
+      (response) => response.url().includes("/sites/ballydidean/forecast") && response.status() === 200,
+    );
+    await page.clock.fastForward(15 * 60_000);
+    await nextForecast;
+    assert.equal(fixture.state.requests.filter(
+      // require one bounded refresh per interval
+      (url) => url.includes("/sites/ballydidean/forecast"),
+    ).length, forecastReads + 1);
+    assert.equal(await grid.getAttribute("data-forecast-selected-position"), selected);
+    assert.equal(await grid.evaluate(
+      // preserve the keyboard interaction through the redraw
+      (element) => element === document.activeElement,
+    ), true);
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // verify the privacy policy as a static offline document
 test("settings opens a readable no-script privacy policy that remains available offline", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();
