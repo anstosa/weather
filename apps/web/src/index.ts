@@ -4521,7 +4521,7 @@ export function mountWeatherDashboard(
   options: DashboardOptions = {},
 ): WeatherDashboardController {
   const controller = new WeatherDashboardController(options);
-  bindHomepageTitleSize(root);
+  bindDashboardSize(root);
 
   // redraw and wire one state snapshot
   controller.subscribe((state) => {
@@ -4585,8 +4585,8 @@ function bindCurrentReadingsRefresh(root: HTMLElement, controller: WeatherDashbo
   timer = window.setInterval(refresh, 60_000);
 }
 
-// refit the fixed-height title after viewport and font changes
-function bindHomepageTitleSize(root: HTMLElement): void {
+// refit dashboard labels after viewport and font changes
+function bindDashboardSize(root: HTMLElement): void {
   const observer = new ResizeObserver(() => {
     // release the observer when its application root is removed
     if (!root.isConnected) {
@@ -4594,9 +4594,14 @@ function bindHomepageTitleSize(root: HTMLElement): void {
       return;
     }
     fitHomepageTitle(root);
+    fitForecastValueLabels(root);
   });
   observer.observe(root);
-  void document.fonts.ready.then(() => fitHomepageTitle(root));
+  // measure labels again after the final fonts load
+  void document.fonts.ready.then(() => {
+    fitHomepageTitle(root);
+    fitForecastValueLabels(root);
+  });
 }
 
 // retain one complete title line at the largest size that fits beside the switch
@@ -4612,6 +4617,34 @@ function fitHomepageTitle(root: HTMLElement): void {
   if (text.scrollWidth > text.clientWidth && text.clientWidth > 0) {
     const size = Number.parseFloat(getComputedStyle(heading).fontSize);
     heading.style.fontSize = `${size * (text.clientWidth - 1) / text.scrollWidth}px`;
+  }
+}
+
+// keep selected forecast values clear of chart headings
+function fitForecastValueLabels(root: HTMLElement): void {
+  // preserve the preferred plot edge unless its pill would cover the title
+  for (const chart of root.querySelectorAll<HTMLElement>("[data-forecast-chart]")) {
+    const value = chart.querySelector<HTMLElement>(".forecast-chart-value");
+    const heading = chart.querySelector<HTMLElement>(".forecast-chart-heading h3");
+    const preferredEdge = value?.dataset.forecastValueEdge;
+    // skip skeletons and incomplete chart furniture
+    if (value === null || heading === null || preferredEdge === undefined) {
+      continue;
+    }
+    value.classList.toggle("forecast-chart-value-top", preferredEdge === "top");
+    value.classList.toggle("forecast-chart-value-bottom", preferredEdge === "bottom");
+    // lower pills cannot intersect the fixed top heading
+    if (preferredEdge !== "top") {
+      continue;
+    }
+    const valueBounds = value.getBoundingClientRect();
+    const headingBounds = heading.getBoundingClientRect();
+    // retain a small clearance around the actual title rather than its padded wrapper
+    if (valueBounds.left < headingBounds.right + 2 && valueBounds.right > headingBounds.left - 2 &&
+      valueBounds.top < headingBounds.bottom + 2 && valueBounds.bottom > headingBounds.top - 2) {
+      value.classList.remove("forecast-chart-value-top");
+      value.classList.add("forecast-chart-value-bottom");
+    }
   }
 }
 
@@ -6866,7 +6899,7 @@ function renderForecastChart(
             },
           ).join("")}
         </svg>
-        <output class="forecast-chart-value forecast-chart-value-${valueEdge}" aria-live="off">
+        <output class="forecast-chart-value forecast-chart-value-${valueEdge}" data-forecast-value-edge="${valueEdge}" aria-live="off">
           ${chart.series.map(
             // show every value intersecting the shared line
             (series, seriesIndex) => `<span><small>${escapeHtml(series.label)}</small><strong data-forecast-value="${String(seriesIndex)}">${escapeHtml(compactMeasurement(formatForecastChartValue(series.values[selectedIndex] ?? null, chart.format, units)) ?? "—")}</strong></span>`,
@@ -11816,15 +11849,15 @@ function bindForecastCharts(
 
       const edge = forecastValueLabelEdge(values, chart.minimum, chart.maximum);
 
-      // move the pill away from its line intersections
+      // retain the data-driven edge before checking heading clearance
       if (chart.value !== null) {
-        chart.value.classList.toggle("forecast-chart-value-top", edge === "top");
-        chart.value.classList.toggle("forecast-chart-value-bottom", edge === "bottom");
+        chart.value.dataset.forecastValueEdge = edge;
       }
 
       const label = chart.element.querySelector("h3")?.textContent?.trim() ?? "Forecast";
       summaries.push(`${label}: ${chartSummary.join(", ")}`);
     }
+    fitForecastValueLabels(grid);
 
     const clock = formatForecastHour(
       selectedTime,

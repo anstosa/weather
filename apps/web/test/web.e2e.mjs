@@ -1696,6 +1696,14 @@ test("local observations bias four forecast families for only the next 24 hours"
   );
   const payloadSnapshot = JSON.parse(JSON.stringify(payload));
   const localFamilies = ["humidity", "air-quality", "uv-index", "pressure"];
+  const collisionFamilies = [
+    "temperature",
+    "wind",
+    "rain-rate",
+    "clouds",
+    ...localFamilies,
+    "tide",
+  ];
   // read the serialized values that drive every rendered chart line
   const chartSeries = async (page) => Object.fromEntries(await Promise.all(localFamilies.map(
     // preserve family order for direct raw comparisons
@@ -1706,10 +1714,10 @@ test("local observations bias four forecast families for only the next 24 hours"
   )));
   // keep long experimental headings clear of their selected-value bubbles
   const assertForecastLayout = async (page, width) => {
-    const layout = await page.locator(localFamilies.map((family) => `[data-forecast-chart='${family}']`).join(", ")).evaluateAll(
+    const layout = await page.locator(collisionFamilies.map((family) => `[data-forecast-chart='${family}']`).join(", ")).evaluateAll(
       // compare each chart's actual browser geometry
       (charts) => charts.map((chart) => {
-        const heading = chart.querySelector(".forecast-chart-heading");
+        const heading = chart.querySelector(".forecast-chart-heading h3");
         const value = chart.querySelector(".forecast-chart-value");
         const headingBounds = heading?.getBoundingClientRect();
         const valueBounds = value?.getBoundingClientRect();
@@ -1747,6 +1755,48 @@ test("local observations bias four forecast families for only the next 24 hours"
       `forecast overflow at ${String(width)}px`,
     );
   };
+  // scrub across and away from the title zone without hiding either surface
+  const assertCrosshairClear = async (page, width) => {
+    const grid = page.locator("[data-forecast-charts]");
+    await grid.press("Home");
+    assert.equal(Number(await grid.getAttribute("aria-valuenow")), 0);
+    await assertForecastLayout(page, width);
+    const nearTitle = await page.locator(collisionFamilies.map(
+      // inspect every local family's chosen bubble edge
+      (family) => `[data-forecast-chart='${family}'] .forecast-chart-value`,
+    ).join(", ")).evaluateAll(
+      // retain the edge selected after collision fitting
+      (values) => values.map((value) => ({
+        bottom: value.classList.contains("forecast-chart-value-bottom"),
+        key: value.closest("[data-forecast-chart]")?.getAttribute("data-forecast-chart"),
+        top: value.classList.contains("forecast-chart-value-top"),
+      })),
+    );
+    await grid.press("End");
+    assert.equal(Number(await grid.getAttribute("aria-valuenow")) > 0, true);
+    await assertForecastLayout(page, width);
+    const awayFromTitle = await page.locator(collisionFamilies.map(
+      // inspect the same bubbles outside the title zone
+      (family) => `[data-forecast-chart='${family}'] .forecast-chart-value`,
+    ).join(", ")).evaluateAll(
+      // retain each restored preferred edge
+      (values) => values.map((value) => ({
+        bottom: value.classList.contains("forecast-chart-value-bottom"),
+        key: value.closest("[data-forecast-chart]")?.getAttribute("data-forecast-chart"),
+        top: value.classList.contains("forecast-chart-value-top"),
+      })),
+    );
+    assert.equal(
+      awayFromTitle.some(
+        // require one preferred top edge to restore after leaving the title
+        (edge) => edge.top && nearTitle.find((candidate) => candidate.key === edge.key)?.bottom === true,
+      ),
+      true,
+      `forecast bubbles did not restore outside the title at ${String(width)}px: ${JSON.stringify({ awayFromTitle, nearTitle })}`,
+    );
+    await grid.press("Home");
+    await assertForecastLayout(page, width);
+  };
 
   fixture.state.currentRecords = currentRecords;
   fixture.state.forecastPayload = payload;
@@ -1756,6 +1806,7 @@ test("local observations bias four forecast families for only the next 24 hours"
 
     // verify desktop and both supported phone widths
     for (const viewport of [
+      { height: 1000, width: 1440 },
       { height: 900, width: 960 },
       { height: 844, width: 390 },
       { height: 780, width: 320 },
@@ -1783,6 +1834,7 @@ test("local observations bias four forecast families for only the next 24 hours"
         );
       }
       await assertForecastLayout(page, viewport.width);
+      await assertCrosshairClear(page, viewport.width);
       const api = await page.evaluate(
         // inspect the same immutable API body consumed by the browser
         async () => await fetch("/api/v1/sites/ballydidean/forecast").then(
@@ -1804,6 +1856,8 @@ test("local observations bias four forecast families for only the next 24 hours"
       const rawTemperature = JSON.parse(
         await page.locator("[data-forecast-chart='temperature']").getAttribute("data-forecast-series"),
       );
+      await assertForecastLayout(page, viewport.width);
+      await assertCrosshairClear(page, viewport.width);
       // compare all four displayed current-hour biases
       assert.deepEqual(
         Object.fromEntries(localFamilies.map((family) => [family, [raw[family][3], adjusted[family][3]]])),
@@ -1823,6 +1877,60 @@ test("local observations bias four forecast families for only the next 24 hours"
       assert.deepEqual(adjustedTemperature[0], rawTemperature[0]);
       assert.notEqual(adjustedTemperature[1].values[3], rawTemperature[1].values[3]);
       assert.equal(adjustedTemperature[1].values[3], forecastRecords[3].metrics.temperatureC + 2);
+
+      // retain one selected hour while responsive geometry changes around it
+      if (viewport.width === 1440) {
+        const grid = page.locator("[data-forecast-charts]");
+        await grid.press("Home");
+        // select one point that fits at desktop but crosses phone headings
+        for (let index = 0; index < 9; index += 1) {
+          await grid.press("ArrowRight");
+        }
+        const selected = await grid.getAttribute("data-forecast-selected-position");
+        const edges = async () => await page.locator(collisionFamilies.map(
+          // inspect every local family's responsive edge
+          (family) => `[data-forecast-chart='${family}'] .forecast-chart-value`,
+        ).join(", ")).evaluateAll(
+          // retain each edge by stable chart key
+          (values) => Object.fromEntries(values.map((value) => [
+            value.closest("[data-forecast-chart]")?.getAttribute("data-forecast-chart"),
+            value.classList.contains("forecast-chart-value-top") ? "top" : "bottom",
+          ])),
+        );
+        const desktopEdges = await edges();
+        assert.equal(Object.values(desktopEdges).includes("top"), true);
+
+        // force collision fitting at both phone breakpoints
+        const phoneEdges = [];
+        for (const resized of [
+          { height: 844, width: 390 },
+          { height: 780, width: 320 },
+        ]) {
+          await page.setViewportSize(resized);
+          await page.evaluate(
+            // wait for responsive observers and one painted chart frame
+            async () => await new Promise((resolveFrame) => requestAnimationFrame(() => resolveFrame())),
+          );
+          assert.equal(await grid.getAttribute("data-forecast-selected-position"), selected);
+          await assertForecastLayout(page, resized.width);
+          phoneEdges.push(await edges());
+        }
+        assert.equal(
+          Object.entries(desktopEdges).some(
+            // require a desktop top edge to move below a phone heading
+            ([family, edge]) => edge === "top" && phoneEdges.every((entry) => entry[family] === "bottom"),
+          ),
+          true,
+        );
+        await page.setViewportSize(viewport);
+        await page.evaluate(
+          // wait for the restored desktop fit
+          async () => await new Promise((resolveFrame) => requestAnimationFrame(() => resolveFrame())),
+        );
+        assert.equal(await grid.getAttribute("data-forecast-selected-position"), selected);
+        await assertForecastLayout(page, viewport.width);
+        assert.deepEqual(await edges(), desktopEdges);
+      }
 
       await toggle.click();
       await page.waitForFunction(
@@ -7580,14 +7688,14 @@ test("forecast charts share one touch-controlled crosshair", { timeout: 60_000 }
     await swipe(bounds.x + 8, touchY, bounds.x + 8, touchY);
     assert.deepEqual(
       await page.locator('[data-forecast-chart="uv-index"]').evaluate(
-        // keep one left-edge pill opposite its line without title avoidance
+        // move the left-edge pill opposite the title while retaining its line
         (chart) => ({
           headingTop: chart.querySelector(".forecast-chart-heading")?.classList.contains("forecast-chart-heading-top"),
           valueTop: chart.querySelector(".forecast-chart-value")?.classList.contains("forecast-chart-value-top"),
           valueBottom: chart.querySelector(".forecast-chart-value")?.classList.contains("forecast-chart-value-bottom"),
         }),
       ),
-      { headingTop: true, valueBottom: false, valueTop: true },
+      { headingTop: true, valueBottom: true, valueTop: false },
     );
     assert.deepEqual(
       await page.locator(".forecast-chart-shell").evaluate(
