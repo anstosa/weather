@@ -1722,16 +1722,25 @@ test("local observations bias four forecast families for only the next 24 hours"
         const headingBounds = heading?.getBoundingClientRect();
         const valueBounds = value?.getBoundingClientRect();
         const chartBounds = chart.getBoundingClientRect();
+        const children = value === null ? [] : [...value.querySelectorAll("small, strong")].map(
+          // retain every visible label and value rectangle
+          (child) => child.getBoundingClientRect(),
+        );
 
         // report incomplete chart furniture directly
-        if (headingBounds === undefined || valueBounds === undefined) {
+        if (headingBounds === undefined || valueBounds === undefined || children.length === 0) {
           return { family: chart.getAttribute("data-forecast-chart"), complete: false };
         }
-        const overlaps = headingBounds.left < valueBounds.right && headingBounds.right > valueBounds.left &&
-          headingBounds.top < valueBounds.bottom && headingBounds.bottom > valueBounds.top;
+        const overlaps = valueBounds.left < headingBounds.right + 2 && valueBounds.right > headingBounds.left - 2 &&
+          valueBounds.top < headingBounds.bottom + 2 && valueBounds.bottom > headingBounds.top - 2;
+        const within = (bounds) => bounds.left >= chartBounds.left - 1 && bounds.right <= chartBounds.right + 1 &&
+          bounds.top >= chartBounds.top - 1 && bounds.bottom <= chartBounds.bottom + 1;
         return {
-          clipped: headingBounds.left < chartBounds.left - 1 || headingBounds.right > chartBounds.right + 1 ||
-            valueBounds.left < chartBounds.left - 1 || valueBounds.right > chartBounds.right + 1,
+          childrenFit: children.every(
+            // require both the label and numeric value to survive chart clipping
+            (bounds) => within(bounds),
+          ),
+          clipped: !within(headingBounds) || !within(valueBounds),
           complete: true,
           family: chart.getAttribute("data-forecast-chart"),
           overlaps,
@@ -1741,7 +1750,7 @@ test("local observations bias four forecast families for only the next 24 hours"
     assert.equal(
       layout.every(
         // require every recorded geometry guard
-        (entry) => entry.complete && !entry.overlaps && !entry.clipped,
+        (entry) => entry.complete && entry.childrenFit && !entry.overlaps && !entry.clipped,
       ),
       true,
       `forecast heading or value collision at ${String(width)}px: ${JSON.stringify(layout)}`,
@@ -1758,6 +1767,13 @@ test("local observations bias four forecast families for only the next 24 hours"
   // scrub across and away from the title zone without hiding either surface
   const assertCrosshairClear = async (page, width) => {
     const grid = page.locator("[data-forecast-charts]");
+    // move a fixed number of hourly steps from one grid edge
+    const move = async (key, count) => {
+      // retain deterministic keyboard scrubbing
+      for (let index = 0; index < count; index += 1) {
+        await grid.press(key);
+      }
+    };
     await grid.press("Home");
     assert.equal(Number(await grid.getAttribute("aria-valuenow")), 0);
     await assertForecastLayout(page, width);
@@ -1772,8 +1788,12 @@ test("local observations bias four forecast families for only the next 24 hours"
         top: value.classList.contains("forecast-chart-value-top"),
       })),
     );
+    await move("ArrowRight", 13);
+    assert.equal(Number(await grid.getAttribute("aria-valuenow")), 13);
+    await assertForecastLayout(page, width);
     await grid.press("End");
-    assert.equal(Number(await grid.getAttribute("aria-valuenow")) > 0, true);
+    const last = Number(await grid.getAttribute("aria-valuenow"));
+    assert.equal(last > 26, true);
     await assertForecastLayout(page, width);
     const awayFromTitle = await page.locator(collisionFamilies.map(
       // inspect the same bubbles outside the title zone
@@ -1794,6 +1814,9 @@ test("local observations bias four forecast families for only the next 24 hours"
       true,
       `forecast bubbles did not restore outside the title at ${String(width)}px: ${JSON.stringify({ awayFromTitle, nearTitle })}`,
     );
+    await move("ArrowLeft", 13);
+    assert.equal(Number(await grid.getAttribute("aria-valuenow")), last - 13);
+    await assertForecastLayout(page, width);
     await grid.press("Home");
     await assertForecastLayout(page, width);
   };

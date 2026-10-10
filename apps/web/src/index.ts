@@ -4620,7 +4620,7 @@ function fitHomepageTitle(root: HTMLElement): void {
   }
 }
 
-// keep selected forecast values clear of chart headings
+// contain selected forecast values without covering chart headings
 function fitForecastValueLabels(root: HTMLElement): void {
   // preserve the preferred plot edge unless its pill would cover the title
   for (const chart of root.querySelectorAll<HTMLElement>("[data-forecast-chart]")) {
@@ -4633,14 +4633,21 @@ function fitForecastValueLabels(root: HTMLElement): void {
     }
     value.classList.toggle("forecast-chart-value-top", preferredEdge === "top");
     value.classList.toggle("forecast-chart-value-bottom", preferredEdge === "bottom");
+    value.style.marginLeft = "0px";
+    const valueBounds = value.getBoundingClientRect();
+    const chartBounds = chart.getBoundingClientRect();
+    const innerLeft = chartBounds.left + chart.clientLeft;
+    const innerRight = innerLeft + chart.clientWidth;
+    const shift = Math.max(innerLeft - valueBounds.left, Math.min(0, innerRight - valueBounds.right));
+    // use actual pill width rather than the fixed crosshair edge threshold
+    value.style.marginLeft = `${String(shift)}px`;
     // lower pills cannot intersect the fixed top heading
     if (preferredEdge !== "top") {
       continue;
     }
-    const valueBounds = value.getBoundingClientRect();
     const headingBounds = heading.getBoundingClientRect();
     // retain a small clearance around the actual title rather than its padded wrapper
-    if (valueBounds.left < headingBounds.right + 2 && valueBounds.right > headingBounds.left - 2 &&
+    if (valueBounds.left + shift < headingBounds.right + 2 && valueBounds.right + shift > headingBounds.left - 2 &&
       valueBounds.top < headingBounds.bottom + 2 && valueBounds.bottom > headingBounds.top - 2) {
       value.classList.remove("forecast-chart-value-top");
       value.classList.add("forecast-chart-value-bottom");
