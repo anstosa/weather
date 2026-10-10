@@ -9113,6 +9113,206 @@ test("real browser configures and persists every measurement unit preference", {
   }
 });
 
+// align the desktop rail to each route without moving the mobile toolbar
+test("desktop navigation aligns with the first visible route content", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+
+  // compare one desktop rail against its direct content surface
+  const assertDesktopAlignment = async (page, selector, expectedMargin, label) => {
+    const layout = await page.locator("main.shell").evaluate(
+      // measure only the route's first visible content element
+      (shell, { selector }) => {
+        const content = shell.querySelector(".weather-content");
+        const first = content?.querySelector(`:scope > ${selector}`);
+        const navigation = shell.querySelector(".section-nav");
+
+        // require complete desktop route geometry
+        if (!(content instanceof HTMLElement) || !(first instanceof HTMLElement) || !(navigation instanceof HTMLElement)) {
+          throw new Error(`navigation alignment is incomplete for ${selector}`);
+        }
+
+        const contentBounds = content.getBoundingClientRect();
+        const firstBounds = first.getBoundingClientRect();
+        const navigationBounds = navigation.getBoundingClientRect();
+        return {
+          contentOffset: firstBounds.top - contentBounds.top,
+          firstMargin: getComputedStyle(first).marginTop,
+          navigationMargin: getComputedStyle(navigation).marginTop,
+          navigationOffset: navigationBounds.top - contentBounds.top,
+          position: getComputedStyle(navigation).position,
+          topDifference: navigationBounds.top - firstBounds.top,
+        };
+      },
+      { selector },
+    );
+    const expectedPixels = Number.parseFloat(expectedMargin);
+    assert.ok(Math.abs(layout.topDifference) < 1, `${label}: ${JSON.stringify(layout)}`);
+    assert.ok(Math.abs(layout.contentOffset - expectedPixels) < 1, `${label}: content moved ${JSON.stringify(layout)}`);
+    assert.ok(Math.abs(layout.navigationOffset - expectedPixels) < 1, `${label}: rail offset ${JSON.stringify(layout)}`);
+    assert.equal(layout.firstMargin, expectedMargin, label);
+    assert.equal(layout.navigationMargin, expectedMargin, label);
+    assert.equal(layout.position, "sticky", label);
+  };
+  // preserve the sticky viewport inset after the document scrolls
+  const assertStickyInset = async (page, label) => {
+    await page.evaluate(() => window.scrollTo(0, Math.min(400, document.documentElement.scrollHeight - innerHeight)));
+    assert.deepEqual(
+      await page.locator(".section-nav").evaluate(
+        // capture the active sticky position
+        (navigation) => ({
+          computedTop: getComputedStyle(navigation).top,
+          position: getComputedStyle(navigation).position,
+          top: navigation.getBoundingClientRect().top,
+        }),
+      ),
+      { computedTop: "16px", position: "sticky", top: 16 },
+      label,
+    );
+    await page.evaluate(() => window.scrollTo(0, 0));
+  };
+  // retain the fixed bottom navigation below the desktop breakpoint
+  const assertMobileNavigation = async (page, label) => {
+    assert.deepEqual(
+      await page.locator(".section-nav").evaluate(
+        // measure the complete bottom toolbar
+        (navigation) => {
+          const bounds = navigation.getBoundingClientRect();
+          return {
+            bottomAligned: Math.abs(bounds.bottom - document.documentElement.clientHeight) < 1,
+            marginTop: getComputedStyle(navigation).marginTop,
+            position: getComputedStyle(navigation).position,
+            widthAligned: Math.abs(bounds.width - document.documentElement.clientWidth) < 1,
+          };
+        },
+      ),
+      { bottomAligned: true, marginTop: "0px", position: "fixed", widthAligned: true },
+      label,
+    );
+  };
+
+  try {
+    browser = await launchBrowser();
+    const page = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    await assertDesktopAlignment(page, ".current-conditions", "16px", "home loaded");
+    await assertStickyInset(page, "home sticky inset");
+
+    // put one alert before the current cards without changing their spacing
+    const ordinaryCurrent = fixture.state.currentRecords;
+    fixture.state.currentRecords = ordinaryCurrent.map(
+      // force current heat and air-quality alerts from every eligible source
+      (record) => ({
+        ...record,
+        metrics: {
+          ...record.metrics,
+          apparentTemperatureC: 40,
+          pm25MicrogramsPerCubicMeter: 100,
+          temperatureC: 40,
+          wetBulbGlobeTemperatureC: 35,
+        },
+      }),
+    );
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator(".alert-list").waitFor();
+    await assertDesktopAlignment(page, ".alert-list", "16px", "home alerts");
+    fixture.state.currentRecords = ordinaryCurrent;
+
+    // exercise each loaded public route through browser navigation
+    await page.getByRole("link", { name: "Forecast", exact: true }).click();
+    await page.locator(".forecast-panel:not(.skeleton-region)").waitFor();
+    await assertDesktopAlignment(page, ".forecast-panel", "19.2px", "forecast loaded");
+    await assertStickyInset(page, "forecast sticky inset");
+    await page.getByRole("link", { name: "Trends", exact: true }).click();
+    await page.locator(".trends-panel:not(.skeleton-region)").waitFor();
+    await assertDesktopAlignment(page, ".trends-panel", "19.2px", "trends loaded");
+    await page.getByRole("link", { name: "Map", exact: true }).click();
+    await page.locator(".property-map-panel:not(.skeleton-region)").waitFor();
+    await assertDesktopAlignment(page, ".property-map-panel", "19.2px", "map loaded");
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await page.locator(".settings-page").waitFor();
+    await assertDesktopAlignment(page, ".settings-page", "0px", "settings loaded");
+    await page.getByRole("link", { name: "Logs", exact: true }).click();
+    await page.locator(".weather-content[aria-busy='false']").waitFor();
+    await assertDesktopAlignment(page, ".panel", "19.2px", "logs loaded");
+
+    // retain alignment at every representative desktop width and the exact breakpoint
+    await page.goto(fixture.origin, { waitUntil: "networkidle" });
+    for (const width of [1_440, 768, 673]) {
+      await page.setViewportSize({ height: 900, width });
+      await assertDesktopAlignment(page, ".current-conditions", "16px", `home ${width}px`);
+    }
+    for (const width of [672, 390, 320]) {
+      await page.setViewportSize({ height: 844, width });
+      await assertMobileNavigation(page, `mobile ${width}px`);
+    }
+    await page.close();
+
+    // hold the initial homepage reads behind its aligned skeleton
+    const loadingHome = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    let releaseHomeReads;
+    const homeReadsReleased = new Promise(
+      // expose one deterministic homepage loading gate
+      (resolveRelease) => {
+        releaseHomeReads = resolveRelease;
+      },
+    );
+    await loadingHome.route(
+      /\/api\/v1\/sites\/ballydidean\/(?:current|daily-precipitation|forecast|tides)/u,
+      // hold all first-load weather reads
+      async (route) => {
+        await homeReadsReleased;
+        await route.continue();
+      },
+    );
+    await loadingHome.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    await assertSkeletonLoadingState(loadingHome, ".current-conditions.skeleton-region");
+    await assertDesktopAlignment(loadingHome, ".current-conditions", "16px", "home loading");
+    releaseHomeReads();
+    await assertSkeletonLoadingSettled(loadingHome);
+    await loadingHome.close();
+
+    // hold the forecast behind its route-matched panel skeleton
+    const loadingForecast = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    let releaseForecastReads;
+    const forecastReadsReleased = new Promise(
+      // expose one deterministic forecast loading gate
+      (resolveRelease) => {
+        releaseForecastReads = resolveRelease;
+      },
+    );
+    await loadingForecast.route(
+      /\/api\/v1\/sites\/ballydidean\/forecast(?:\?|$)/u,
+      // hold the initial forecast response
+      async (route) => {
+        await forecastReadsReleased;
+        await route.continue();
+      },
+    );
+    await loadingForecast.goto(`${fixture.origin}/forecast`, { waitUntil: "domcontentloaded" });
+    await assertSkeletonLoadingState(loadingForecast, ".forecast-panel.skeleton-region");
+    await assertDesktopAlignment(loadingForecast, ".forecast-panel", "19.2px", "forecast loading");
+    releaseForecastReads();
+    await assertSkeletonLoadingSettled(loadingForecast);
+    await loadingForecast.close();
+
+    // align one actionable error before all fallback content
+    fixture.state.failReads = true;
+    const errorPage = await createFixturePage(browser, { viewport: { height: 900, width: 960 } });
+    await errorPage.goto(fixture.origin, { waitUntil: "networkidle" });
+    await errorPage.locator(".notice.error").waitFor();
+    await assertDesktopAlignment(errorPage, ".notice.error", "16px", "home error");
+    await errorPage.close();
+    fixture.state.failReads = false;
+  } finally {
+    // restore fixture state before disposing browser resources
+    fixture.state.failReads = false;
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
 // preserve tablet geometry with shared primary measurement sizes
 test("real browser keeps the tablet masthead and compact navigation in separate rows", { timeout: 60_000 }, async () => {
   const fixture = await startFixtureServer();

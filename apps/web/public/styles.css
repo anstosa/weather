@@ -462,6 +462,19 @@ a {
   background: var(--md-sys-color-surface-container);
 }
 
+/* align the desktop rail with visible content without moving the content */
+@media (width > 42rem) {
+  /* match current cards, alerts and feedback */
+  .shell:has(> .weather-content > :is(.current-conditions, .alert-list, .notice):first-child) > .section-nav {
+    margin-top: 1rem;
+  }
+
+  /* match panel spacing while keeping settings at its existing aligned position */
+  .shell:has(> .weather-content > .panel:first-child) > .section-nav {
+    margin-top: 1.2rem;
+  }
+}
+
 .section-nav a {
   display: flex;
   flex-direction: column;
