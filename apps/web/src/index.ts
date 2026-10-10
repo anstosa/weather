@@ -4957,6 +4957,7 @@ function renderCurrent(state: DashboardState): string {
         })}
       ${renderCloudsCondition(state)}
       ${renderConditionCard({
+          adjusted: useForecastAdjustments,
           band: humidityBand(current.metrics.relativeHumidityPercent, current.metrics.temperatureC),
           className: "compact-condition",
           icon: "humidity_percentage",
@@ -4965,6 +4966,7 @@ function renderCurrent(state: DashboardState): string {
           forecast: forecastHumidity(forecast, useForecastAdjustments),
         })}
       ${renderConditionCard({
+          adjusted: useForecastAdjustments,
           band: airQualityBand(airQuality),
           className: "air-quality-condition",
           icon: "masks",
@@ -4974,6 +4976,7 @@ function renderCurrent(state: DashboardState): string {
         })}
       ${renderPressureCondition(state)}
       ${renderConditionCard({
+          adjusted: useForecastAdjustments,
           band: uvBand(uvIndex),
           className: "compact-condition",
           icon: "wb_sunny",
@@ -5282,6 +5285,8 @@ function renderPressureCondition(state: DashboardState): string {
   const site = state.selectedSite ?? PRODUCT_SITE;
   const maximum = strongestPressureChange(state.forecast, new Date(), site.timezone);
   return renderConditionCard({
+    // identify the selected mode without changing pressure readings
+    adjusted: state.forecastAdjustmentMode !== "raw",
     band: { ...pressureChangeBand(change), detail: "" },
     className: "compact-condition pressure-condition",
     forecast: {
@@ -6528,6 +6533,8 @@ function buildForecastCharts(
       series: [{ label: "Cover", values: metric("cloudCoverPercent") }],
     },
     {
+      // mark mode-dependent presentation independently of correction evidence
+      adjusted: useAdjustments,
       format: "humidity",
       icon: "humidity_percentage",
       key: "humidity",
@@ -6536,6 +6543,7 @@ function buildForecastCharts(
       temperaturesC: metric("temperatureC"),
     },
     {
+      adjusted: useAdjustments,
       domain: HISTORICAL_FORECAST_DOMAINS.airQuality,
       format: "airQuality",
       icon: "masks",
@@ -6544,6 +6552,7 @@ function buildForecastCharts(
       series: [{ label: "PM2.5", values: metric("pm25MicrogramsPerCubicMeter") }],
     },
     {
+      adjusted: useAdjustments,
       domain: FIXED_FORECAST_DOMAINS.uvIndex,
       format: "uvIndex",
       icon: "wb_sunny",
@@ -6552,6 +6561,7 @@ function buildForecastCharts(
       series: [{ label: "Index", values: metric("uvIndex") }],
     },
     {
+      adjusted: useAdjustments,
       domain: { maximum: pressureExtent, minimum: -pressureExtent },
       format: "pressureChange",
       icon: "speed",

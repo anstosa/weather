@@ -932,6 +932,60 @@ async function captureFamilyIcons(page, view) {
   return icons;
 }
 
+// capture icons governed only by the global adjustment preference
+async function captureGlobalModeIcons(page, view) {
+  const selectors = view === "home"
+    ? {
+      "air-quality": "[data-condition='air-quality'] .condition-label > .material-symbols-rounded",
+      humidity: "[data-condition='humidity'] .condition-label > .material-symbols-rounded",
+      pressure: "[data-condition='pressure'] .condition-label > .material-symbols-rounded",
+      "uv-index": "[data-condition='uv-index'] .condition-label > .material-symbols-rounded",
+    }
+    : {
+      "air-quality": "[data-forecast-chart='air-quality'] .forecast-chart-heading .material-symbols-rounded",
+      humidity: "[data-forecast-chart='humidity'] .forecast-chart-heading .material-symbols-rounded",
+      pressure: "[data-forecast-chart='pressure'] .forecast-chart-heading .material-symbols-rounded",
+      "uv-index": "[data-forecast-chart='uv-index'] .forecast-chart-heading .material-symbols-rounded",
+    };
+  const icons = {};
+
+  // inspect every global-mode icon independently
+  for (const [family, selector] of Object.entries(selectors)) {
+    const icon = page.locator(selector);
+    icons[family] = {
+      className: await icon.getAttribute("class"),
+      color: await icon.evaluate(
+        // read the final inherited icon color
+        (element) => getComputedStyle(element).color,
+      ),
+    };
+  }
+
+  return icons;
+}
+
+// capture four icon-only families without their decorative headings
+async function captureGlobalModeData(page, view) {
+  const families = ["humidity", "air-quality", "pressure", "uv-index"];
+  return Object.fromEntries(await Promise.all(families.map(
+    // retain rendered readings or serialized chart series per family
+    async (family) => {
+      const root = page.locator(view === "home"
+        ? `[data-condition='${family}']`
+        : `[data-forecast-chart='${family}']`);
+      return [family, view === "home"
+        ? {
+          primary: await root.locator(".condition-primary").textContent(),
+          forecast: await root.locator(".condition-forecast-readings").textContent(),
+        }
+        : {
+          series: await root.getAttribute("data-forecast-series"),
+          values: await root.locator("[data-forecast-value]").allTextContents(),
+        }];
+    },
+  )));
+}
+
 // capture stable document-space section geometry
 async function captureSectionGeometry(page, selectors) {
   const geometry = {};
@@ -2943,12 +2997,12 @@ test("adjusted temperature wind and rain icons turn gold on both forecast-bearin
         ),
         true,
       );
-      assert.equal(
+      assert.deepEqual(
         await page.locator("[data-condition='humidity'] .condition-label > .material-symbols-rounded").evaluate(
-          // keep unrelated condition icons unchanged
-          (element) => getComputedStyle(element).color,
+          // expose humidity through the global adjustment preference
+          (element) => ({ className: element.getAttribute("class"), color: getComputedStyle(element).color }),
         ),
-        normal,
+        { className: "material-symbols-rounded forecast-adjusted-icon", color: gold },
       );
 
       await page.getByRole("link", { name: "Forecast" }).click();
@@ -3012,6 +3066,166 @@ test("adjusted temperature wind and rain icons turn gold on both forecast-bearin
         Object.fromEntries(Object.entries(await captureFamilyIcons(page, "forecast")).map(([family, icon]) => [family, icon.color])),
         { rain: normal, temperature: normal, wind: normal },
       );
+      await page.close();
+    }
+  } finally {
+    // close disposable fixture resources
+    await browser?.close();
+    fixture.server.close();
+    await once(fixture.server, "close");
+  }
+});
+
+// expose four context families whenever the global adjustment preference is on
+test("adjustment mode colors humidity air quality pressure and UV icons without changing data", { timeout: 120_000 }, async () => {
+  const fixture = await startFixtureServer();
+  let browser;
+  const gold = "rgb(197, 138, 16)";
+  const normal = "rgb(33, 26, 31)";
+  const evidenceCases = [
+    {
+      label: "missing evidence",
+      payload: { data: forecast.slice(0, 24), site },
+    },
+    {
+      label: "faulted evidence",
+      payload: forecastResponse(
+        "fault",
+        { version: 1, temperature: true, wind: true, rain: true },
+        forecast.slice(0, 24),
+      ),
+    },
+    {
+      label: "disabled families",
+      payload: forecastResponse(
+        "active",
+        { version: 1, temperature: false, wind: false, rain: false },
+        forecast.slice(0, 24),
+      ),
+    },
+  ];
+  // require one complete global-mode icon state
+  const assertGlobalIcons = async (page, view, color, marked, label) => {
+    const icons = await captureGlobalModeIcons(page, view);
+    assert.deepEqual(
+      Object.fromEntries(Object.entries(icons).map(
+        // compare each icon's final browser presentation
+        ([family, icon]) => [family, {
+          color: icon.color,
+          marked: icon.className?.split(" ").includes("forecast-adjusted-icon") ?? false,
+        }],
+      )),
+      Object.fromEntries(Object.keys(icons).map(
+        // apply the global expectation equally across all four families
+        (family) => [family, { color, marked }],
+      )),
+      label,
+    );
+  };
+  // require tide and sunset to remain outside the global icon mode
+  const assertStableIcons = async (page, view, label) => {
+    const selectors = view === "home"
+      ? [
+        "[data-condition='tide'] .condition-label > .material-symbols-rounded",
+        "[data-condition='sunset'] .condition-label > .material-symbols-rounded",
+      ]
+      : ["[data-forecast-chart='tide'] .forecast-chart-heading .material-symbols-rounded"];
+    assert.deepEqual(
+      await Promise.all(selectors.map(
+        // inspect each excluded family
+        async (selector) => await page.locator(selector).evaluate(
+          // retain its normal class and color
+          (element) => ({ className: element.getAttribute("class"), color: getComputedStyle(element).color }),
+        ),
+      )),
+      selectors.map(
+        // require unchanged decoration for every excluded family
+        () => ({ className: "material-symbols-rounded", color: normal }),
+      ),
+      label,
+    );
+  };
+
+  try {
+    browser = await launchBrowser();
+    fixture.state.currentRecords = [current];
+
+    // verify both responsive layouts against every evidence state
+    for (const viewport of [
+      { height: 900, width: 960 },
+      { height: 844, width: 390 },
+    ]) {
+      const page = await createFixturePage(browser, { viewport });
+      // align historical fixture forecasts with their original farm day
+      await page.clock.setFixedTime(new Date("2026-08-22T05:37:00.000Z"));
+
+      // separate global preference from correction evidence
+      for (const evidenceCase of evidenceCases) {
+        fixture.state.forecastPayload = evidenceCase.payload;
+        await page.goto(fixture.origin, { waitUntil: "networkidle" });
+        const toggle = page.getByRole("switch", { name: "Adjusted", exact: true });
+        assert.equal(await toggle.getAttribute("aria-checked"), "true", evidenceCase.label);
+        const adjustedHomeData = await captureGlobalModeData(page, "home");
+        await assertGlobalIcons(page, "home", gold, true, `${evidenceCase.label} home on`);
+        await assertStableIcons(page, "home", `${evidenceCase.label} home exclusions`);
+
+        await page.getByRole("link", { name: "Forecast", exact: true }).click();
+        await page.locator("[data-forecast-charts]").waitFor();
+        const adjustedForecastData = await captureGlobalModeData(page, "forecast");
+        await assertGlobalIcons(page, "forecast", gold, true, `${evidenceCase.label} forecast on`);
+        await assertStableIcons(page, "forecast", `${evidenceCase.label} forecast exclusions`);
+        assert.deepEqual(
+          Object.fromEntries(Object.entries(await captureFamilyIcons(page, "forecast")).map(
+            // keep evidence-governed families normal without active corrections
+            ([family, icon]) => [family, icon.color],
+          )),
+          { rain: normal, temperature: normal, wind: normal },
+          evidenceCase.label,
+        );
+        assert.deepEqual(
+          await page.locator("[data-forecast-chart='clouds'] .forecast-chart-heading .material-symbols-rounded").evaluate(
+            // keep cloud evidence behavior independent
+            (element) => ({ className: element.getAttribute("class"), color: getComputedStyle(element).color }),
+          ),
+          { className: "material-symbols-rounded", color: normal },
+          evidenceCase.label,
+        );
+
+        await toggle.click();
+        await page.waitForFunction(
+          // await the complete raw icon redraw
+          () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+        );
+        await assertGlobalIcons(page, "forecast", normal, false, `${evidenceCase.label} forecast off`);
+        await assertStableIcons(page, "forecast", `${evidenceCase.label} raw forecast exclusions`);
+        assert.deepEqual(await captureGlobalModeData(page, "forecast"), adjustedForecastData, evidenceCase.label);
+        await toggle.click();
+        await page.waitForFunction(
+          // await restoration of the global icon treatment
+          () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true",
+        );
+        await assertGlobalIcons(page, "forecast", gold, true, `${evidenceCase.label} forecast restored`);
+        assert.deepEqual(await captureGlobalModeData(page, "forecast"), adjustedForecastData, evidenceCase.label);
+
+        await page.getByRole("link", { name: "Now", exact: true }).click();
+        await page.locator(".weather-content[aria-busy='false']").waitFor();
+        await assertGlobalIcons(page, "home", gold, true, `${evidenceCase.label} home restored`);
+        assert.deepEqual(await captureGlobalModeData(page, "home"), adjustedHomeData, evidenceCase.label);
+        await toggle.click();
+        await page.waitForFunction(
+          // await the homepage raw icon redraw
+          () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "false",
+        );
+        await assertGlobalIcons(page, "home", normal, false, `${evidenceCase.label} home off`);
+        await assertStableIcons(page, "home", `${evidenceCase.label} raw home exclusions`);
+        assert.deepEqual(await captureGlobalModeData(page, "home"), adjustedHomeData, evidenceCase.label);
+        await toggle.click();
+        await page.waitForFunction(
+          // await the next evidence case in adjusted mode
+          () => document.querySelector("[data-forecast-adjustment-toggle]")?.getAttribute("aria-checked") === "true",
+        );
+        await assertGlobalIcons(page, "home", gold, true, `${evidenceCase.label} home rerestored`);
+      }
       await page.close();
     }
   } finally {

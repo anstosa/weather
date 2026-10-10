@@ -1651,7 +1651,7 @@ h2 {
   font-size: 1.1rem;
 }
 
-/* mark only selected active adjustment families with the switch's gold */
+/* mark adjusted-mode icons with the switch's gold */
 .condition-label .forecast-adjusted-icon,
 .forecast-chart-heading .forecast-adjusted-icon {
   color: var(--forecast-adjusted-color);

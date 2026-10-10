@@ -2275,8 +2275,8 @@ test("temperature wind and rain icons identify selected active forecast adjustme
       assert.equal(familyIconIsAdjusted(regional[view], view, family), false, `${view} raw ${family}`);
     }
   }
-  assert.equal((adjusted.home.match(/forecast-adjusted-icon/gu) ?? []).length, 3);
-  assert.equal((adjusted.forecast.match(/forecast-adjusted-icon/gu) ?? []).length, 3);
+  assert.equal((adjusted.home.match(/forecast-adjusted-icon/gu) ?? []).length, 7);
+  assert.equal((adjusted.forecast.match(/forecast-adjusted-icon/gu) ?? []).length, 7);
 
   // keep readings and serialized chart values unchanged for zero corrections
   for (const family of families) {
@@ -2362,6 +2362,51 @@ test("temperature wind and rain icons identify selected active forecast adjustme
   const loadingState = { ...forecastState([], null), loading: true };
   assert.doesNotMatch(renderWeatherDashboard(loadingState, "home"), /forecast-adjusted-icon/u);
   assert.doesNotMatch(renderWeatherDashboard(loadingState, "forecast"), /forecast-adjusted-icon/u);
+});
+
+// identify the selected mode without requiring an active model for these icons
+test("humidity air quality pressure and UV icons follow the global adjustment mode", () => {
+  const state = forecastState([forecastRecord], null);
+  const modes = ["adjusted", "raw"];
+  const conditions = ["humidity", "air-quality", "pressure", "uv-index"];
+  const rendered = {};
+
+  // render both selected modes without model correction evidence
+  for (const mode of modes) {
+    rendered[mode] = {
+      home: renderWeatherDashboard({ ...state, forecastAdjustmentMode: mode }, "home"),
+      forecast: renderWeatherDashboard({ ...state, forecastAdjustmentMode: mode }, "forecast"),
+    };
+
+    // apply the global mode consistently on both routes
+    for (const view of ["home", "forecast"]) {
+      // inspect every newly mode-colored icon
+      for (const condition of conditions) {
+        assert.equal(familyIconIsAdjusted(rendered[mode][view], view, condition), mode === "adjusted");
+      }
+      assert.equal(familyIconIsAdjusted(rendered[mode][view], view, "tide"), false);
+    }
+    assert.equal(familyIconIsAdjusted(rendered[mode].home, "home", "sunset"), false);
+  }
+
+  // preserve readings and chart series when adding only the selected-mode marker
+  for (const condition of conditions) {
+    assert.equal(
+      conditionCardHtml(rendered.adjusted.home, condition)
+        .replace('material-symbols-rounded forecast-adjusted-icon', 'material-symbols-rounded'),
+      conditionCardHtml(rendered.raw.home, condition),
+    );
+    assert.deepEqual(
+      forecastChartSeries(rendered.adjusted.forecast, condition),
+      forecastChartSeries(rendered.raw.forecast, condition),
+    );
+  }
+
+  const noForecast = renderWeatherDashboard({ ...state, forecast: [] }, "home");
+  // retain the selected-mode marker even without forecast adjustment evidence
+  for (const condition of conditions) {
+    assert.equal(familyIconIsAdjusted(noForecast, "home", condition), true);
+  }
 });
 
 test("malformed settings and rain evidence fall back to unchanged raw values", () => {
